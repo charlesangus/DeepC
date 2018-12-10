@@ -2,7 +2,7 @@
 
 Suite of Deep compositing tools for Foundry's Nuke.
 
-## DeepCWorld
+## DeepCWorldPosition
 
 Generates world position data from straight Deep renders.
 
