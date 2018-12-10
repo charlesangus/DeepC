@@ -38,8 +38,12 @@ Build has been tested on Centos 6.8 with devtoolset-2 (as recommended in NDK dev
 
 ### Linux
 
+Install prerequisites:
+
+```bash
 sudo wget http://people.centos.org/tru/devtools-2/devtools-2.repo -O /etc/yum.repos.d/devtools-2.repo
 sudo yum install devtoolset-2-gcc devtoolset-2-binutils devtoolset-2-gcc-c++ mesa-libGLU-devel
+```
 
 Add to .bashrc on dev machine, or run before each build:
 
