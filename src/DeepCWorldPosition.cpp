@@ -20,7 +20,7 @@ static const char* const HELP =
     "optionally output premultiplied data (to conform to Deep standards).\n"
     "by: Charles A Taylor";
 
-class C_DeepWorldPosition : public DeepPixelOp
+class DeepCWorldPosition : public DeepPixelOp
 {
     ChannelSet output_channelset;
     int _depthSampleType;
@@ -40,7 +40,7 @@ class C_DeepWorldPosition : public DeepPixelOp
     Matrix4 window_matrix;
 
 public:
-    C_DeepWorldPosition(Node* node) : DeepPixelOp(node),
+    DeepCWorldPosition(Node* node) : DeepPixelOp(node),
     output_channelset(Chan_Black),
     _depthSampleType(0),
     _premultOutput(false)
@@ -134,7 +134,7 @@ public:
                                 ) const;
 };
 
-void C_DeepWorldPosition::_validate(bool for_real)
+void DeepCWorldPosition::_validate(bool for_real)
 {
 
     CameraOp* _camOp = dynamic_cast<CameraOp*>(Op::input(1));
@@ -176,7 +176,7 @@ void C_DeepWorldPosition::_validate(bool for_real)
     std::cout << "_premultOutput" << _premultOutput << "\n";
 }
 
-void C_DeepWorldPosition::processSample(
+void DeepCWorldPosition::processSample(
     int y,
     int x,
     const DD::Image::DeepPixel& deepPixel,
@@ -248,7 +248,7 @@ void C_DeepWorldPosition::processSample(
 }
 
 
-void C_DeepWorldPosition::knobs(Knob_Callback f)
+void DeepCWorldPosition::knobs(Knob_Callback f)
 {
     ChannelMask_knob(f, &output_channelset, "output_channelset");
     Divider(f, "");
@@ -261,5 +261,5 @@ void C_DeepWorldPosition::knobs(Knob_Callback f)
 }
 
 
-static Op* build(Node* node) { return new C_DeepWorldPosition(node); }
-const Op::Description C_DeepWorldPosition::d("C_DeepWorldPosition", 0, build);
+static Op* build(Node* node) { return new DeepCWorldPosition(node); }
+const Op::Description DeepCWorldPosition::d("DeepCWorldPosition", 0, build);
