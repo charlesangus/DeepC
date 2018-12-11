@@ -171,9 +171,6 @@ void DeepCWorldPosition::_validate(bool for_real)
     new_channelset = _deepInfo.channels();
     new_channelset += output_channelset;
     _deepInfo = DeepInfo(_deepInfo.formats(), _deepInfo.box(), new_channelset);
-
-    std::cout << "_depthSampleType " << _depthSampleType << "\n";
-    std::cout << "_premultOutput" << _premultOutput << "\n";
 }
 
 void DeepCWorldPosition::processSample(
