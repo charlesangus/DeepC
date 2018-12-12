@@ -302,6 +302,7 @@ void DeepCPMatteGrade::knobs(Knob_Callback f)
 {
     InputOnly_ChannelSet_knob(f, &process_channelset, 0, "channels");
     InputOnly_ChannelSet_knob(f, &wp_channelset, 0, "position_data");
+    SetFlags(f, Knob::NO_ALPHA_PULLDOWN);
     Bool_knob(f, &_unpremultRGB, "unpremult_rgb", "(Un)premult RGB");
     SetFlags(f, Knob::STARTLINE);
     Tooltip(f, "Unpremultiply channels in 'channels' before grading, \n"

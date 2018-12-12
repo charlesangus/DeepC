@@ -248,6 +248,7 @@ void DeepCWorldPosition::processSample(
 void DeepCWorldPosition::knobs(Knob_Callback f)
 {
     ChannelMask_knob(f, &output_channelset, "output_channelset");
+    SetFlags(f, Knob::NO_ALPHA_PULLDOWN);
     Divider(f, "");
     Enumeration_knob(f, &_depthSampleType, depthSampleTypeNames, "depth_sample");
     Bool_knob(f, &_premultOutput, "premultiplied_output");
