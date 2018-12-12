@@ -30,3 +30,9 @@
 *.exe
 *.out
 *.app
+
+# ignore debug run file
+install_and_run.bash
+
+# ignore temp files
+*~
