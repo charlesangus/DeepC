@@ -155,7 +155,7 @@ class DeepCPNoiseGrade : public DeepPixelOp
             _fractalType = 0;
 
             _frequency = .5f;
-            _octaves = 5f;
+            _octaves = 5;
             _gain = .5f;
             _lacunarity = 2.0f;
             // cellular
@@ -163,7 +163,7 @@ class DeepCPNoiseGrade : public DeepPixelOp
             _distanceFunction = 0;
             _cellularDistanceIndex0 = 0;
             _cellularDistanceIndex1 = 1;
-            
+
             for (int i=0; i<3; i++)
             {
                 blackpointIn[i] = 0.0f;
