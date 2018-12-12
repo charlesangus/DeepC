@@ -505,12 +505,13 @@ void DeepCPNoiseGrade::knobs(Knob_Callback f)
     // EndGroup Noise
     EndGroup(f);
 
+    /*
     Divider(f, "Shape");
     Enumeration_knob(f, &_shape, shapeNames, "shape");
     Enumeration_knob(f, &_falloffType, falloffTypeNames, "falloffType");
     Float_knob(f, &_falloff, "falloff");
     Float_knob(f, &_falloffGamma, "falloff_gamma");
-
+    */
 
     Divider(f, "Grades");
     BeginClosedGroup(f, "Inside Mask Grades");
