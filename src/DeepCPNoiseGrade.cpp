@@ -529,7 +529,7 @@ void DeepCPNoiseGrade::knobs(Knob_Callback f)
     Float_knob(f, &_falloffGamma, "falloff_gamma");
     */
 
-    Divider(f, "Grades");
+    Divider(f, "");
     BeginClosedGroup(f, "Inside Mask Grades");
 
     Color_knob(f, blackpointIn, IRange(-1, 1), "blackpoint_inside", "blackpoint");
