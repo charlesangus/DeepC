@@ -1,14 +1,22 @@
 CXX ?= g++
 LINK ?= g++
 NDKDIR ?= /usr/local/Nuke11.1v6/
+FASTNOISEDIR ?= /media/sf_git/FastNoise/
 CXXFLAGS ?= -g -c \
             -DUSE_GLEW \
             -I$(NDKDIR)/include \
-            -DFN_EXAMPLE_PLUGIN -fPIC -msse 
+            -I$(FASTNOISEDIR) \
+            -DFN_EXAMPLE_PLUGIN -fPIC -msse
 LINKFLAGS ?= -L$(NDKDIR) \
-             -L./ 
-LIBS ?= -lDDImage
+             -L$(FASTNOISEDIR) \
+             -L./
+LIBS ?= -lDDImage \
+        -lFastNoise
 LINKFLAGS += -shared
+
+TESTLINKFLAGS ?= -L./ \
+                 -L$(FASTNOISEDIR)
+TESTLIB ?= -lFastNoise
 
 SRC_DIR = src
 OBJ_DIR = obj
@@ -33,12 +41,11 @@ what:
 
 # make object files from source
 $(OBJ_DIR)/%.os: $(SRC_DIR)/%.cpp
-	$(CXX) $(CXXFLAGS) -o $(@) $<
+	$(CXX) -std=c++11 $(CXXFLAGS) -o $(@) $<
 
 # link object files into plugins
 $(PLUGIN_DIR)/%.so: $(OBJ_DIR)/%.os
-	$(LINK) $(LINKFLAGS) $(LIBS) -o $(@) $<
-
+	$(LINK) -std=c++11 $(LINKFLAGS) -o $(@) $< $(LIBS)
 
 clean:
 	rm -rf $(OBJ_DIR)/*.os \
