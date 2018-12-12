@@ -443,9 +443,11 @@ void DeepCPNoiseGrade::knobs(Knob_Callback f)
     "as required by the Deep spec.");
 
 
-    Divider(f, "PMask");
-    BeginGroup(f, "PMask");
+    Divider(f);
+    BeginGroup(f, "Noise");
+    BeginGroup(f, "Position");
     Axis_knob(f, &_axisKnob, "selection");
+    EndGroup(f); // Position
     Enumeration_knob(f, &_noiseType, noiseTypeNames, "noiseType");
     Tooltip(f,
         "Value: 3D noise - sort of square and blocky\n"
@@ -454,7 +456,21 @@ void DeepCPNoiseGrade::knobs(Knob_Callback f)
         "Cellular: 3D noise - aka Voronoi\n"
         "Cubic: 3D noise - more random than Perlin?\n"
     );
+    Float_knob(f, &_noiseWarp, "noise_warp_strength");
+    Tooltip(f,
+        "Mult the position data by a simplex noise\n"
+        "before generating the main noise, creating\n"
+        "swirly patterns."
+    );
+    Float_knob(f, &_noiseEvolution, "noise_evolution");
+    Tooltip(f,
+        "For Simplex noise (the only 4D noise), this smoothly\n"
+        "changes the noise in a non-spatial dimension (sort \n"
+        "of like time...)."
+    );
     // fractal functions
+    BeginClosedGroup(f, "Fractal");
+    Enumeration_knob(f, &_fractalType, fractalTypeNames, "fractal_type");
     Float_knob(f, &_frequency, "frequency");
     Tooltip(f,
     "Affects how coarse the noise output is.\n"
@@ -474,8 +490,9 @@ void DeepCPNoiseGrade::knobs(Knob_Callback f)
         "The relative strength of noise from each layer\n"
         "when compared to the last one."
     );
-    Enumeration_knob(f, &_fractalType, fractalTypeNames, "fractal_type");
+    EndGroup(f); // Fractal
     // cellular functions
+    BeginClosedGroup(f, "Cellular");
     Enumeration_knob(f, &_distanceFunction, distanceFunctionNames, "distance_function");
     Tooltip(f,
         "The distance function used to calculate the cell\n"
@@ -484,19 +501,8 @@ void DeepCPNoiseGrade::knobs(Knob_Callback f)
     Enumeration_knob(f, &_cellularReturnType, cellularReturnTypeNames, "cellular_type");
     Int_knob(f, &_cellularDistanceIndex0, "cellular_distance_index0");
     Int_knob(f, &_cellularDistanceIndex1, "cellular_distance_index1");
-    Float_knob(f, &_noiseWarp, "noise_warp_strength");
-    Tooltip(f,
-        "Mult the position data by a simplex noise\n"
-        "before generating the main noise, creating\n"
-        "swirly patterns."
-    );
-    Float_knob(f, &_noiseEvolution, "noise_evolution");
-    Tooltip(f,
-        "For Simplex noise (the only 4D noise), this smoothly\n"
-        "changes the noise in a non-spatial dimension (sort \n"
-        "of like time...)."
-    );
-    // EndGroup PMask
+    EndGroup(f); // Cellular
+    // EndGroup Noise
     EndGroup(f);
 
     Divider(f, "Shape");
