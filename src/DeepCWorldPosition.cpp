@@ -192,7 +192,7 @@ void DeepCWorldPosition::processSample(
     Matrix4 inverse_window;
 
     // get pixel location normalized to 0-1 range, store in uvx and uvy
-    Op::input_format().to_uv((float)x, (float)y, uvx, uvy);
+    convertibleFormat()->to_uv((float)x, (float)y, uvx, uvy);
 
     ndc_x = uvx * 2.0f - 1.0f;
     ndc_y = uvy * 2.0f - 1.0f;
