@@ -17,19 +17,19 @@ static const char* const falloffTypeNames[] = { "linear", "smooth", 0 };
 
 // keep mappings for the noise types and names from FastNoise
 static const char* const noiseTypeNames[] = {
-    "Value",
-    "Perlin",
     "Simplex",
     "Cellular",
     "Cubic",
+    "Perlin",
+    "Value",
     0
 };
 static const FastNoise::NoiseType noiseTypes[] = {
-    FastNoise::Value,
-    FastNoise::PerlinFractal,
     FastNoise::SimplexFractal,
     FastNoise::Cellular,
-    FastNoise::Cubic
+    FastNoise::Cubic,
+    FastNoise::PerlinFractal,
+    FastNoise::Value
 };
 
 static const char* const fractalTypeNames[] = {
@@ -45,15 +45,15 @@ static const FastNoise::FractalType fractalTypes[] = {
 };
 
 static const char* const distanceFunctionNames[] = {
+    "Natural",
     "Euclidean",
     "Manhattan",
-    "Natural",
     0
 };
 static const FastNoise::CellularDistanceFunction distanceFunctions[] = {
+    FastNoise::Natural,
     FastNoise::Euclidean,
     FastNoise::Manhattan,
-    FastNoise::Natural,
 };
 
 static const char* const cellularReturnTypeNames[] = {
@@ -86,6 +86,8 @@ class DeepCPNoiseGrade : public DeepPixelOp
     bool _unpremultPosition;
 
     Matrix4 _axisKnob;
+
+    // noise related
     float _frequency;
     int _octaves;
     float _gain;
@@ -146,8 +148,22 @@ class DeepCPNoiseGrade : public DeepPixelOp
         {
             // defaults mostly go here
             _axisKnob.makeIdentity();
+            _noiseType = 0;
             _noiseEvolution = 0.0f;
             _noiseWarp = 0.0f;
+
+            _fractalType = 0;
+
+            _frequency = .5f;
+            _octaves = 5f;
+            _gain = .5f;
+            _lacunarity = 2.0f;
+            // cellular
+            _cellularReturnType = 0;
+            _distanceFunction = 0;
+            _cellularDistanceIndex0 = 0;
+            _cellularDistanceIndex1 = 1;
+            
             for (int i=0; i<3; i++)
             {
                 blackpointIn[i] = 0.0f;
