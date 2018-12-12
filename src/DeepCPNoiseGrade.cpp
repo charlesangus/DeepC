@@ -460,10 +460,10 @@ void DeepCPNoiseGrade::knobs(Knob_Callback f)
 
 
     Divider(f);
-    BeginGroup(f, "Noise");
     BeginGroup(f, "Position");
     Axis_knob(f, &_axisKnob, "selection");
     EndGroup(f); // Position
+    BeginClosedGroup(f, "Noise");
     Enumeration_knob(f, &_noiseType, noiseTypeNames, "noiseType");
     Tooltip(f,
         "Value: 3D noise - sort of square and blocky\n"
