@@ -14,10 +14,6 @@ LIBS ?= -lDDImage \
         -lFastNoise
 LINKFLAGS += -shared
 
-TESTLINKFLAGS ?= -L./ \
-                 -L$(FASTNOISEDIR)
-TESTLIB ?= -lFastNoise
-
 SRC_DIR = src
 OBJ_DIR = obj
 PLUGIN_DIR = plugin
