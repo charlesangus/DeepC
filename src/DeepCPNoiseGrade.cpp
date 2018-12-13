@@ -288,6 +288,10 @@ void DeepCPNoiseGrade::_validate(bool for_real)
     //       optimally pass through in those cases
 
     DeepPixelOp::_validate(for_real);
+    ChannelSet new_channelset;
+    new_channelset = _deepInfo.channels();
+    new_channelset += wp_channelset;
+    _deepInfo = DeepInfo(_deepInfo.formats(), _deepInfo.box(), new_channelset);
 }
 
 void DeepCPNoiseGrade::processSample(
