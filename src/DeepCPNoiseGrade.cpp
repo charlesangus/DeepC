@@ -315,15 +315,19 @@ void DeepCPNoiseGrade::processSample(
     foreach(z, wp_channelset) {
         if (colourIndex(z) >= 3)
         {
+            std::cout << "colour index over 2\n";
             continue;
         }
         if (_unpremultPosition)
         {
             position[colourIndex(z)] = deepPixel.getUnorderedSample(sampleNo, z) / alpha;
+            std::cout << "grabbing position and unpremulting " << position[colourIndex(z)] << "\n";
         } else {
             position[colourIndex(z)] = deepPixel.getUnorderedSample(sampleNo, z);
+            std::cout << "grabbing position " << position[colourIndex(z)] << "\n";
         }
     }
+    std::cout << "position should be init-ed now " << position[0] << ", " << position[1] << ", " << position[2] << "\n";
     position[3] = 1.0f;
     Matrix4 inverse__axisKnob = _axisKnob.inverse();
     position = inverse__axisKnob * position;
