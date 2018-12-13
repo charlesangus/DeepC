@@ -440,7 +440,8 @@ void DeepCPNoiseGrade::processSample(
             {
                 output.push_back(output_val);
             } else {
-                output_val = output_val * _mix + input_val * (1 - _mix);
+                output_val = output_val * _mix + input_val * (1.0f - _mix);
+                output.push_back(output_val);
             } // we checked for mix == 0 earlier
         } else {
             output.push_back(deepPixel.getUnorderedSample(sampleNo, z));
