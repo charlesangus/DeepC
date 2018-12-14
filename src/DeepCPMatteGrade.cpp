@@ -1,4 +1,4 @@
-#include "DDImage/DeepPixelOp.h"
+#include "DDImage/DeepFilterOp.h"
 #include "DDImage/Knobs.h"
 #include "DDImage/RGB.h"
 #include "DDImage/ChannelSet.h"
@@ -13,14 +13,15 @@ using namespace DD::Image;
 static const char* const shapeNames[] = { "sphere", "cube", 0 };
 static const char* const falloffTypeNames[] = { "linear", "smooth", 0 };
 
-class DeepCPMatteGrade : public DeepPixelOp
+class DeepCPMatteGrade : public DeepFilterOp
 {
     // values knobs write into go here
     ChannelSet process_channelset;
-    ChannelSet wp_channelset;
+    ChannelSet auxiliaryChannelSet;
     bool _unpremultRGB;
     bool _unpremultPosition;
 
+    float _positionPick[2];
     Matrix4 _axisKnob;
 
 
@@ -49,9 +50,9 @@ class DeepCPMatteGrade : public DeepPixelOp
 
     public:
 
-        DeepCPMatteGrade(Node* node) : DeepPixelOp(node),
+        DeepCPMatteGrade(Node* node) : DeepFilterOp(node),
             process_channelset(Mask_RGB),
-            wp_channelset(Chan_Black),
+            auxiliaryChannelSet(Chan_Black),
             _unpremultRGB(true),
             _unpremultPosition(false),
             _shape(0),
@@ -61,6 +62,9 @@ class DeepCPMatteGrade : public DeepPixelOp
             _mix(1.0f)
         {
             // defaults mostly go here
+            _positionPick[0] = 0.0f;
+            _positionPick[1] = 0.0f;
+            
             _axisKnob.makeIdentity();
 
             for (int i=0; i<3; i++)
@@ -83,70 +87,30 @@ class DeepCPMatteGrade : public DeepPixelOp
             }
         }
 
+        void _validate(bool);
+        
+        virtual bool doDeepEngine(DD::Image::Box box, const ChannelSet &channels, DeepOutputPlane &plane);
 
-        // Wrapper function to work around the "non-virtual thunk" issue on linux when symbol hiding is enabled.
-        virtual bool doDeepEngine(DD::Image::Box box, const ChannelSet &channels, DeepOutputPlane &plane)
-        {
-            return DeepPixelOp::doDeepEngine(box, channels, plane);
-        }
-
-
-        // Wrapper function to work around the "non-virtual thunk" issue on linux when symbol hiding is enabled.
-        virtual void getDeepRequests(DD::Image::Box box, const DD::Image::ChannelSet& channels, int count, std::vector<RequestData>& requests)
-        {
-            DeepPixelOp::getDeepRequests(box, channels, count, requests);
-        }
-
-
-        // We always need the rgb no matter what channels are asked for:
-        void in_channels(int, ChannelSet& channels) const
-        {
-            if (channels & Mask_RGB)
-                channels += Mask_RGB;
-            channels += process_channelset;
-            channels += wp_channelset;
-            channels += Chan_Alpha;
-        }
-
+        virtual void getDeepRequests(DD::Image::Box box, const DD::Image::ChannelSet& channels, int count, std::vector<RequestData>& requests);
+        
+        virtual void knobs(Knob_Callback);
+        
+        virtual int knob_changed(DD::Image::Knob* k);
+        
         // need to understand these better
         static const Iop::Description d;
         const char* Class() const { return d.name; }
-
-
-        // for menu listing and function controls
-        virtual void knobs(Knob_Callback);
-
-
 
         virtual Op* op()
         {
             return this;
         }
 
-        void _validate(bool);
-        virtual void processSample(int y,
-                                   int x,
-                                   const DD::Image::DeepPixel& deepPixel,
-                                   size_t sampleNo,
-                                   const DD::Image::ChannelSet& channels,
-                                   DeepOutPixel& output
-                                   ) const;
-
         const char* node_help() const;
 };
 
 
-// Safe power function that does something reasonable for negative numbers
-// e must be clamped to the range -MAXPOW..MAXPOW
-// Retained as an option to replace normal power function later if needed
-#define MAXPOW 1000.0f
-static inline float P(float x, float e)
-{
-    return x > 0 ? powf(x, e) : x;
-}
-
-void DeepCPMatteGrade::_validate(bool for_real)
-{
+void DeepCPMatteGrade::_validate(bool for_real) {
     // make safe the gamma values
     for (int i = 0; i < 3; i++) {
         gammaIn[i] = clamp(gammaIn[i], 0.00001f, 65500.0f);
@@ -159,150 +123,195 @@ void DeepCPMatteGrade::_validate(bool for_real)
 
     // make safe the mix
     _mix = clamp(_mix, 0.0f, 1.0f);
+    
+    DeepFilterOp::_validate(for_real);
 
-    // TODO: should probably check into whether we're using an outside
-    //       grade, and if not, we can optimize by not processing any
-    //       pixel with m == 0.0f;
-
-    // TODO: should check for a few degenerate states like mix=0 and
-    //       optimally pass through in those cases
-
-    DeepPixelOp::_validate(for_real);
+    DD::Image::ChannelSet outputChannels = _deepInfo.channels();
+    outputChannels += auxiliaryChannelSet;
+    _deepInfo = DeepInfo(_deepInfo.formats(), _deepInfo.box(), outputChannels);
 }
 
-void DeepCPMatteGrade::processSample(
-    int y,
-    int x,
-    const DD::Image::DeepPixel& deepPixel,
-    size_t sampleNo,
-    const DD::Image::ChannelSet& channels,
-    DeepOutPixel& output) const
+void DeepCPMatteGrade::getDeepRequests(Box bbox, const DD::Image::ChannelSet& channels, int count, std::vector<RequestData>& requests) {
+    if (!input0())
+        return;
+    DD::Image::ChannelSet get_channels = channels;
+    get_channels += auxiliaryChannelSet;
+    requests.push_back(RequestData(input0(), bbox, get_channels, count));
+}
+
+bool DeepCPMatteGrade::doDeepEngine(
+    Box bbox,
+    const DD::Image::ChannelSet& outputChannels,
+    DeepOutputPlane& deep_out_plane
+    )
 {
+    if (!input0())
+        return true;
 
-    // alpha
-    float alpha;
-    alpha = deepPixel.getUnorderedSample(sampleNo, Chan_Alpha);
+    deep_out_plane = DeepOutputPlane(outputChannels, bbox);
 
-    // generate mask
-    float m;
-    Vector4 position;
-    float distance;
+    DD::Image::ChannelSet get_channels = outputChannels;
+    get_channels += auxiliaryChannelSet;
 
-    foreach(z, wp_channelset) {
-        if (colourIndex(z) >= 3)
-        {
-            continue;
-        }
-        if (_unpremultPosition)
-        {
-            position[colourIndex(z)] = deepPixel.getUnorderedSample(sampleNo, z) / alpha;
-        } else {
-            position[colourIndex(z)] = deepPixel.getUnorderedSample(sampleNo, z);
-        }
-    }
-    position[3] = 1.0f;
-    Matrix4 inverse__axisKnob = _axisKnob.inverse();
-    position = inverse__axisKnob * position;
-    position = position.divide_w();
+    DeepPlane deepInPlane;
+    if (!input0()->deepEngine(bbox, get_channels, deepInPlane))
+        return false;
 
-    if (_shape == 0)
+    const DD::Image::ChannelSet inputChannels = input0()->deepInfo().channels();
+
+    const int nOutputChans = outputChannels.size();
+    
+    for (Box::iterator it = bbox.begin(); it != bbox.end(); ++it)
     {
-        // sphere
-        distance = pow(position[0] * position[0] + position[1] * position[1] + position[2] * position[2], .5);
-    } else
-    {
-        // cube
-        distance = clamp(1-abs(position[0])) * clamp(1-abs(position[1])) * clamp(1-abs(position[2]));
-    }
-    distance = clamp((1 - distance) / _falloff, 0.0f, 1.0f);
-    distance = pow(distance, 1.0f / _falloffGamma);
+        if (Op::aborted())
+            return false; // bail fast on user-interrupt
 
-    // falloff
-    if (_falloffType == 0)
-    {
-        m = clamp(distance, 0.0f, 1.0f);
-    } else if (_falloffType == 1)
-    {
-        m = smoothstep(0.0f, 1.0f, distance);
-    }
-
-    // process the sample
-    float input_val;
-    float inside_val;
-    float outside_val;
-    float output_val;
-
-    foreach(z, channels) {
-        // channels we know we should ignore
-        if (
-               z == Chan_Z
-            || z == Chan_Alpha
-            || z == Chan_DeepFront
-            || z == Chan_DeepBack
-            )
-        {
-            output.push_back(deepPixel.getUnorderedSample(sampleNo, z));
+        // Get the deep pixel from the input plane:
+        DeepPixel deepInPixel = deepInPlane.getPixel(it);
+        const unsigned nSamples = deepInPixel.getSampleCount();
+        if (nSamples == 0) {
+            deep_out_plane.addHole(); // no samples, skip it
             continue;
         }
 
-        // bail if mix is 0
-        if (_mix == 0.0f)
+        DeepOutPixel deepOutputPixel;
+        deepOutputPixel.reserve(nSamples*nOutputChans);
+        
+        // for each sample
+        for (unsigned sampleNo=0; sampleNo < nSamples; ++sampleNo)
         {
-            output.push_back(deepPixel.getUnorderedSample(sampleNo, z));
-            continue;
-        }
-
-        // is this the best way to restrict the processed channelset? maybe...
-        if (process_channelset & z)
-        {
-            // only operate on rgb, i.e. first three channels
-            if (colourIndex(z) >= 3)
+            // alpha
+            float alpha;
+            if (inputChannels.contains(Chan_Alpha))
             {
-                output.push_back(deepPixel.getUnorderedSample(sampleNo, z));
-                continue;
+                alpha = deepInPixel.getUnorderedSample(sampleNo, Chan_Alpha);
+            } else
+            {
+                alpha = 1.0f;
             }
 
-            // do the thing, zhu-lee
-            if (_unpremultRGB)
-            {
-                input_val = deepPixel.getUnorderedSample(sampleNo, z) / alpha;
-            } else {
-                input_val = deepPixel.getUnorderedSample(sampleNo, z);
+            // generate mask
+            float m;
+            Vector4 position;
+            float distance;
+            
+            foreach(z, auxiliaryChannelSet) {
+                if (colourIndex(z) >= 3)
+                {
+                    continue;
+                }
+                if (inputChannels.contains(z))
+                {
+                    // grab data from auxiliary channelset
+                    if (_unpremultPosition)
+                    {
+                        position[colourIndex(z)] = deepInPixel.getUnorderedSample(sampleNo, z) / alpha;
+                    } else {
+                        position[colourIndex(z)] = deepInPixel.getUnorderedSample(sampleNo, z);
+                    }
+                }
             }
+            position[3] = 1.0f;
+            Matrix4 inverse__axisKnob = _axisKnob.inverse();
+            position = inverse__axisKnob * position;
+            position = position.divide_w();
 
-            // val * multiply * (gain - lift) / (whitepoint - blackpoint) + offset + lift - (multiply * (gain - lift) / (whitepoint - blackpoint)) * blackpoint, 1/gamma
-            // i believe this is similar or identical to what nuke uses in a grade node, so should be familiar
-            // despite not really being reasonable
-            inside_val= pow(input_val * multiplyIn[colourIndex(z)] * (whiteIn[colourIndex(z)] - blackIn[colourIndex(z)]) / (whitepointIn[colourIndex(z)] - blackpointIn[colourIndex(z)]) + addIn[colourIndex(z)] + blackIn[colourIndex(z)] - (multiplyIn[colourIndex(z)] * (whiteIn[colourIndex(z)] - blackIn[colourIndex(z)]) / (whitepointIn[colourIndex(z)] - blackpointIn[colourIndex(z)])) * blackpointIn[colourIndex(z)], 1.0f/gammaIn[colourIndex(z)]);
-
-            outside_val= pow(input_val * multiplyOut[colourIndex(z)] * (whiteOut[colourIndex(z)] - blackOut[colourIndex(z)]) / (whitepointOut[colourIndex(z)] - blackpointOut[colourIndex(z)]) + addOut[colourIndex(z)] + blackOut[colourIndex(z)] - (multiplyOut[colourIndex(z)] * (whiteOut[colourIndex(z)] - blackOut[colourIndex(z)]) / (whitepointOut[colourIndex(z)] - blackpointOut[colourIndex(z)])) * blackpointOut[colourIndex(z)], 1.0f/gammaOut[colourIndex(z)]);
-
-            // apply mask
-            output_val = (inside_val * m + outside_val * (1 - m));
-
-            if (_unpremultRGB)
+            if (_shape == 0)
             {
-                output_val = output_val * alpha;
-            } // need do nothing if we're not required to premult
-
-            if (_mix == 1.0f)
+                // sphere
+                distance = pow(position[0] * position[0] + position[1] * position[1] + position[2] * position[2], .5);
+            } else
             {
-                output.push_back(output_val);
-            } else {
-                output_val = output_val * _mix + input_val * (1.0f - _mix);
-                output.push_back(output_val);
-            } // we checked for mix == 0 earlier
-        } else {
-            output.push_back(deepPixel.getUnorderedSample(sampleNo, z));
-            continue;
+                // cube
+                distance = clamp(1-abs(position[0])) * clamp(1-abs(position[1])) * clamp(1-abs(position[2]));
+            }
+            distance = clamp((1 - distance) / _falloff, 0.0f, 1.0f);
+            distance = pow(distance, 1.0f / _falloffGamma);
+
+            // falloff
+            if (_falloffType == 0)
+            {
+                m = clamp(distance, 0.0f, 1.0f);
+            } else if (_falloffType == 1)
+            {
+                m = smoothstep(0.0f, 1.0f, distance);
+            }
+            
+            
+            // process the sample
+            float input_val;
+            float inside_val;
+            float outside_val;
+            float output_val;
+            // for each channel
+            foreach(z, outputChannels)
+            {
+                // channels we know we should ignore
+                if (
+                       z == Chan_Z
+                    || z == Chan_Alpha
+                    || z == Chan_DeepFront
+                    || z == Chan_DeepBack
+                    )
+                {
+                    deepOutputPixel.push_back(deepInPixel.getUnorderedSample(sampleNo, z));
+                    continue;
+                }
+
+                // bail if mix is 0
+                if (_mix == 0.0f)
+                {
+                    deepOutputPixel.push_back(deepInPixel.getUnorderedSample(sampleNo, z));
+                    continue;
+                }
+
+
+                // only operate on rgb, i.e. first three channels
+                if (colourIndex(z) >= 3)
+                {
+                    deepOutputPixel.push_back(deepInPixel.getUnorderedSample(sampleNo, z));
+                    continue;
+                }
+
+                // do the thing, zhu-lee
+                input_val = deepInPixel.getUnorderedSample(sampleNo, z);
+                if (_unpremultRGB)
+                    input_val /= alpha;
+
+                // val * multiply * (gain - lift) / (whitepoint - blackpoint) + offset + lift - (multiply * (gain - lift) / (whitepoint - blackpoint)) * blackpoint, 1/gamma
+                // i believe this is similar or identical to what nuke uses in a grade node, so should be familiar
+                // despite not really being reasonable
+                inside_val= pow(input_val * multiplyIn[colourIndex(z)] * (whiteIn[colourIndex(z)] - blackIn[colourIndex(z)]) / (whitepointIn[colourIndex(z)] - blackpointIn[colourIndex(z)]) + addIn[colourIndex(z)] + blackIn[colourIndex(z)] - (multiplyIn[colourIndex(z)] * (whiteIn[colourIndex(z)] - blackIn[colourIndex(z)]) / (whitepointIn[colourIndex(z)] - blackpointIn[colourIndex(z)])) * blackpointIn[colourIndex(z)], 1.0f/gammaIn[colourIndex(z)]);
+
+                outside_val= pow(input_val * multiplyOut[colourIndex(z)] * (whiteOut[colourIndex(z)] - blackOut[colourIndex(z)]) / (whitepointOut[colourIndex(z)] - blackpointOut[colourIndex(z)]) + addOut[colourIndex(z)] + blackOut[colourIndex(z)] - (multiplyOut[colourIndex(z)] * (whiteOut[colourIndex(z)] - blackOut[colourIndex(z)]) / (whitepointOut[colourIndex(z)] - blackpointOut[colourIndex(z)])) * blackpointOut[colourIndex(z)], 1.0f/gammaOut[colourIndex(z)]);
+
+                // apply mask
+                output_val = (inside_val * m + outside_val * (1 - m));
+
+                if (_unpremultRGB)
+                {
+                    output_val = output_val * alpha;
+                } // need do nothing if we're not required to premult
+
+                if (_mix == 1.0f)
+                {
+                    deepOutputPixel.push_back(output_val);
+                } else {
+                    output_val = output_val * _mix + input_val * (1.0f - _mix);
+                    deepOutputPixel.push_back(output_val);
+                } // we checked for mix == 0 earlier
+            }
         }
+        // Add to output plane:
+        deep_out_plane.addPixel(deepOutputPixel);
     }
+    return true;
 }
 
 void DeepCPMatteGrade::knobs(Knob_Callback f)
 {
-    InputOnly_ChannelSet_knob(f, &process_channelset, 0, "channels");
-    InputOnly_ChannelSet_knob(f, &wp_channelset, 0, "position_data");
+    ChannelSet_knob(f, &process_channelset, 0, "channels");
+    ChannelSet_knob(f, &auxiliaryChannelSet, 0, "position_data");
     SetFlags(f, Knob::NO_ALPHA_PULLDOWN);
     Bool_knob(f, &_unpremultRGB, "unpremult_rgb", "(Un)premult RGB");
     SetFlags(f, Knob::STARTLINE);
@@ -319,7 +328,9 @@ void DeepCPMatteGrade::knobs(Knob_Callback f)
 
     Divider(f, "PMask");
     BeginGroup(f, "PMask");
+    // XY_knob(f, &_positionPick, "position_picker");
     Axis_knob(f, &_axisKnob, "selection");
+    SetFlags(f, Knob::ALWAYS_SAVE);
     EndGroup(f);
 
     Divider(f, "Shape");
@@ -371,7 +382,60 @@ void DeepCPMatteGrade::knobs(Knob_Callback f)
 
     Float_knob(f, &_mix, "mix");
 }
+/*
+int DeepCPMatteGrade::knob_changed(DD::Image::Knob* k)
+{
+    if(k->is("position_picker"))
+    {
+        if (!input0())
+            return true;
+        
+        Vector2 image_position;
+        image_position[0] = knob("position_picker")->get_value(0);
+        image_position[1] = knob("position_picker")->get_value(1);
+        Box bbox((int)image_position[0],
+                 (int)image_position[1],
+                 (int)image_position[0] + 1,
+                 (int)image_position[1] + 1);
+        
+        
+        DeepPlane deepInPlane;
+        if (!input0()->deepEngine(bbox, auxiliaryChannelSet, deepInPlane))
+            return false;
 
+        const DD::Image::ChannelSet inputChannels = input0()->deepInfo().channels();
+        DeepPixel deepInPixel = deepInPlane.getPixel((int)image_position[1], (int)image_position[0]);
+        
+        Vector3 position;
+        float distance;
+        
+        foreach(z, auxiliaryChannelSet) {
+            if (colourIndex(z) >= 3)
+            {
+                continue;
+            }
+            if (inputChannels.contains(z))
+            {
+                // grab data from auxiliary channelset
+                if (_unpremultPosition)
+                {
+                    // TODO: get alpha as well
+                    position[colourIndex(z)] = deepInPixel.getOrderedSample(0, z) / 1.0f;
+                } else {
+                    position[colourIndex(z)] = deepInPixel.getOrderedSample(0, z);
+                }
+            }
+        }
+        knob("translate")->set_value(position[0], 0);
+        knob("translate")->set_value(position[1], 1);
+        knob("translate")->set_value(position[2], 2);
+        
+        return 1;
+    }
+
+    return DeepFilterOp::knob_changed(k);
+}
+*/
 const char* DeepCPMatteGrade::node_help() const
 {
     return
