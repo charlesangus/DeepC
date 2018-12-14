@@ -12,7 +12,7 @@ Generates world position data from straight Deep renders.
 
 Grades Deep images based on a spherical or cubic mask from a position pass.
 
-## DeepCPNoiseGrade
+### DeepCPNoiseGrade
 
 Grades Deep images based on noise generated from a position pass.
 
