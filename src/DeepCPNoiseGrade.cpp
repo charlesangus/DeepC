@@ -335,7 +335,8 @@ bool DeepCPNoiseGrade::doDeepEngine(
             position[1] += positionDisturbance[1] * _noiseWarp;
             position[2] += positionDisturbance[2] * _noiseWarp;
 
-            if (_noiseType==2)
+            // TODO: handle this better; fragile now - depends on order of noise list
+            if (_noiseType==0)
             {
                 // GetNoise(x, y, z, w) only implemented for simplex so far
                 noiseValue = _fastNoise.GetNoise(position[0], position[1], position[2], _noiseEvolution);
