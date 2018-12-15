@@ -377,9 +377,9 @@ void DeepCGrade::knobs(Knob_Callback f)
 
     Divider(f, "");
     Input_Channel_knob(f, &_maskChannel, 1, 1, "mask");
+    Bool_knob(f, &_invertMask, "invert_mask", "invert");
     Bool_knob(f, &_unpremult, "unpremult", "(un)premult by alpha");
     SetFlags(f, Knob::STARTLINE);
-    Bool_knob(f, &_invertMask, "invert_mask", "invert");
     Float_knob(f, &_mix, "mix");
 }
 
