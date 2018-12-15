@@ -395,7 +395,11 @@ int DeepCGrade::knob_changed(DD::Image::Knob* k)
             knob("mask")->set_value(Chan_Black);
         } else
         {
-            knob("mask")->set_value(_rememberedMaskChannel);
+
+            if (_rememberedMaskChannel == Chan_Black)
+                { knob("mask")->set_value(Chan_Alpha); }
+            else
+                { knob("mask")->set_value(_rememberedMaskChannel); }
         }
         return 1;
     }
