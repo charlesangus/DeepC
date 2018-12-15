@@ -328,15 +328,16 @@ bool DeepCGrade::doDeepEngine(
                 if (_whiteClamp)
                     output_val = MIN(output_val, 1.0f);
 
-                if (_unpremult)
-                    output_val = output_val * alpha;
-
                 // we checked for mix == 0 earlier, only need to handle non-1
                 if (_mix < 1.0f)
                     output_val = output_val * _mix + input_val * (1.0f - _mix);
 
                 if (_doMask)
                     output_val = output_val * sideMaskVal + input_val * (1.0f - sideMaskVal);
+
+                if (_unpremult)
+                    output_val = output_val * alpha;
+
                 deepOutputPixel.push_back(output_val);
             }
         }
