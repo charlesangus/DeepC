@@ -1,9 +1,12 @@
 #include "DDImage/DeepFilterOp.h"
+#include "DDImage/DeepSample.h"
 #include "DDImage/Knobs.h"
 #include "DDImage/RGB.h"
 #include "DDImage/ChannelSet.h"
 #include "DDImage/Channel.h"
 #include "DDImage/Matrix4.h"
+#include "DDImage/Row.h"
+#include "DDImage/Black.h"
 
 #include "FastNoise.h"
 
@@ -80,9 +83,9 @@ static const FastNoise::CellularReturnType cellularReturnTypes[] = {
 class DeepCPNoise : public DeepFilterOp
 {
     // values knobs write into go here
-    ChannelSet process_channelset;
-    ChannelSet wp_channelset;
-    bool _unpremultRGB;
+    ChannelSet _outputChannelSet;
+    ChannelSet _auxiliaryChannelSet;
+    bool _unpremultOutput;
     bool _unpremultPosition;
 
     Matrix4 _axisKnob;
@@ -104,27 +107,31 @@ class DeepCPNoise : public DeepFilterOp
     float _noiseEvolution;
     float _noiseWarp;
 
-    int _shape;
-    int _falloffType;
-    float _falloff;
-    float _falloffGamma;
+    float blackpoint[3];
+    float whitepoint[3];
+    float black[3];
+    float white[3];
+    float multiply[3];
+    float add[3];
+    float gamma[3];
 
-    float blackpointIn[3];
-    float whitepointIn[3];
-    float blackIn[3];
-    float whiteIn[3];
-    float multiplyIn[3];
-    float addIn[3];
-    float gammaIn[3];
+    // precalculate grade coefficients
+    float A[3];
+    float B[3];
+    float G[3];
 
-    float blackpointOut[3];
-    float whitepointOut[3];
-    float blackOut[3];
-    float whiteOut[3];
-    float multiplyOut[3];
-    float addOut[3];
-    float gammaOut[3];
+    //
+    bool _reverse;
+    bool _blackClamp;
+    bool _whiteClamp;
 
+    // masking
+    Channel _sideMaskChannel;
+    Channel _rememberedMaskChannel;
+    ChannelSet _sideMaskChannelSet;
+    Iop* _maskOp;
+    bool _doSideMask;
+    bool _invertMask;
     float _mix;
 
     FastNoise _fastNoise;
@@ -135,15 +142,16 @@ class DeepCPNoise : public DeepFilterOp
     public:
 
         DeepCPNoise(Node* node) : DeepFilterOp(node),
-            process_channelset(Mask_RGB),
-            wp_channelset(Chan_Black),
-            _unpremultRGB(true),
+            _outputChannelSet(Mask_RGB),
+            _auxiliaryChannelSet(Chan_Black),
+            _rememberedMaskChannel(Chan_Black),
+            _sideMaskChannel(Chan_Black),
+            _sideMaskChannelSet(Chan_Black),
+            _unpremultOutput(true),
             _unpremultPosition(false),
             _noiseType(0),
-            _shape(0),
-            _falloffType(0),
-            _falloff(1.0f),
-            _falloffGamma(1.0f),
+            _doSideMask(false),
+            _invertMask(false),
             _mix(1.0f)
         {
             // defaults mostly go here
@@ -163,94 +171,69 @@ class DeepCPNoise : public DeepFilterOp
             _distanceFunction = 0;
             _cellularDistanceIndex0 = 0;
             _cellularDistanceIndex1 = 1;
-
             for (int i=0; i<3; i++)
             {
-                blackpointIn[i] = 0.0f;
-                whitepointIn[i] = 1.0f;
-                blackIn[i] = 0.0f;
-                whiteIn[i] = 1.0f;
-                multiplyIn[i] = 1.0f;
-                addIn[i] = 0.0f;
-                gammaIn[i] = 1.0f;
-
-                blackpointOut[i] = 0.0f;
-                whitepointOut[i] = 1.0f;
-                blackOut[i] = 0.0f;
-                whiteOut[i] = 1.0f;
-                multiplyOut[i] = 1.0f;
-                addOut[i] = 0.0f;
-                gammaOut[i] = 1.0f;
+                blackpoint[i] = 0.0f;
+                whitepoint[i] = 1.0f;
+                black[i] = 0.0f;
+                white[i] = 1.0f;
+                multiply[i] = 1.0f;
+                add[i] = 0.0f;
+                gamma[i] = 1.0f;
             }
         }
 
-
+        void _validate(bool);
+        bool test_input(int n, Op *op)  const;
+        Op* default_input(int input) const;
+        const char* input_label(int input, char* buffer) const;
         virtual bool doDeepEngine(DD::Image::Box box, const ChannelSet &channels, DeepOutputPlane &plane);
+        virtual void getDeepRequests(DD::Image::Box box, const DD::Image::ChannelSet& channels, int count, std::vector<RequestData>& requests);
+        virtual void knobs(Knob_Callback);
+        virtual int knob_changed(DD::Image::Knob* k);
 
-
-        // Wrapper function to work around the "non-virtual thunk" issue on linux when symbol hiding is enabled.
-        virtual void getDeepRequests(DD::Image::Box box, const DD::Image::ChannelSet& channels, int count, std::vector<RequestData>& requests)
-        {
-             DeepFilterOp::getDeepRequests(box, channels, count, requests);
-        }
-
-
-        // We always need the rgb no matter what channels are asked for:
-        void in_channels(int, ChannelSet& channels) const
-        {
-            if (channels & Mask_RGB)
-                channels += Mask_RGB;
-            channels += process_channelset;
-            channels += wp_channelset;
-            channels += Chan_Alpha;
-        }
-
-        // need to understand these better
+        virtual int minimum_inputs() const { return 2; }
+        virtual int maximum_inputs() const { return 2; }
+        virtual int optional_input() const { return 1; }
         static const Iop::Description d;
         const char* Class() const { return d.name; }
-
-
-        // for menu listing and function controls
-        virtual void knobs(Knob_Callback);
-
-
-
-        virtual Op* op()
-        {
-            return this;
-        }
-
-        void _validate(bool);
-
+        virtual Op* op() { return this; }
         const char* node_help() const;
 };
 
 
-// Safe power function that does something reasonable for negative numbers
-// e must be clamped to the range -MAXPOW..MAXPOW
-// Retained as an option to replace normal power function later if needed
-#define MAXPOW 1000.0f
-static inline float P(float x, float e)
-{
-    return x > 0 ? powf(x, e) : x;
-}
-
 void DeepCPNoise::_validate(bool for_real)
 {
-    // make safe the gamma values
-    for (int i = 0; i < 3; i++) {
-        gammaIn[i] = clamp(gammaIn[i], 0.00001f, 65500.0f);
-        gammaOut[i] = clamp(gammaOut[i], 0.00001f, 65500.0f);
-    }
-    _falloffGamma = clamp(_falloffGamma, 0.00001f, 65500.0f);
 
-    // make safe the falloff
-    _falloff = clamp(_falloff, 0.00001f, 1.0f);
+    for (int i = 0; i < 3; i++) {
+        // make safe the gamma values
+        gamma[i] = clamp(gamma[i], 0.00001f, 65500.0f);
+
+        // for calculating the grade - precompute the coefficients
+        A[i] = multiply[i] * ((white[i] - black[i]) / (whitepoint[i] - blackpoint[i]));
+        B[i] = add[i] + black[i] - A[i] * blackpoint[i];
+        G[i] = 1.0f / gamma[i];
+        if (_reverse)
+        {
+            // opposite linear ramp
+            if (A[i])
+            {
+                A[i] = 1.0f / A[i];
+            } else
+            {
+                A[i] = 1.0f;
+            }
+            B[i] = -B[i] * A[i];
+            // inverse gamma
+            G[i] = 1.0f/G[i];
+        }
+    }
+
 
     // make safe the mix
     _mix = clamp(_mix, 0.0f, 1.0f);
 
-    // Make Noise objects
+     // Make Noise objects
 
     _fastNoise.SetNoiseType(noiseTypes[_noiseType]);
     _fastNoise.SetFrequency(_frequency);
@@ -269,232 +252,300 @@ void DeepCPNoise::_validate(bool for_real)
     _noiseWarpFastNoiseY.SetNoiseType(FastNoise::Simplex);
     _noiseWarpFastNoiseZ.SetNoiseType(FastNoise::Simplex);
 
-    // TODO: should probably check into whether we're using an outside
-    //       grade, and if not, we can optimize by not processing any
-    //       pixel with m == 0.0f;
+    _sideMaskChannelSet = _sideMaskChannel;
 
-    // TODO: should check for a few degenerate states like mix=0 and
-    //       optimally pass through in those cases
+    _maskOp = dynamic_cast<Iop*>(Op::input(1));
+    if (_maskOp != NULL && _sideMaskChannel != Chan_Black)
+    {
+        _maskOp->validate(for_real);
+        _doSideMask = true;
+    } else {
+        _doSideMask = false;
+    }
 
-     DeepFilterOp::_validate(for_real);
+    DeepFilterOp::_validate(for_real);
 
+    // add our output channels to the _deepInfo
     ChannelSet new_channelset;
     new_channelset = _deepInfo.channels();
-    new_channelset += wp_channelset;
+    new_channelset += _outputChannelSet;
     _deepInfo = DeepInfo(_deepInfo.formats(), _deepInfo.box(), new_channelset);
 }
 
-bool DeepCPNoise::doDeepEngine(DD::Image::Box box, const ChannelSet& channels, DeepOutputPlane& outPlane)
+
+bool DeepCPNoise::test_input(int input, Op *op)  const
 {
-    if (!input0())
-	   return true;
-
-    DeepOp* in = input0();
-    DeepPlane inPlane;
-
-    ChannelSet needed = channels;
-    needed += Mask_DeepFront;
-    needed += wp_channelset;
-
-    if (!in->deepEngine(box, needed, inPlane))
-	   return false;
-
-    outPlane = DeepOutputPlane(needed, box);
-
-    for (DD::Image::Box::iterator it = box.begin(); it != box.end(); it++)
-	{
-
-		const int x = it.x;
-		const int y = it.y;
-
-		DeepPixel inPixel = inPlane.getPixel(it);
-
-		DeepOutPixel outPixel(inPixel.getSampleCount() * channels.size());
-
-		for (size_t sampleNo = 0; sampleNo < inPixel.getSampleCount(); sampleNo++)
-		{
-
-			 // float z = inPixel.getUnorderedSample(sample, DD::Image::Chan_DeepFront);
-
-		    // alpha
-		    float alpha;
-		    alpha = inPixel.getUnorderedSample(sampleNo, Chan_Alpha);
-
-		    // generate mask
-		    float m;
-		    Vector4 position;
-		    float distance;
-
-            // wp_channelset &= channels;
-            position[0] = 0.0f;
-            position[1] = 0.0f;
-            position[2] = 0.0f;
-            position[3] = 0.0f;
-		    foreach(z, wp_channelset) {
-		        if (colourIndex(z) >= 3)
-		        {
-                    std::cout << "bailing, colour index is " << colourIndex(z) << "\n";
-		            continue;
-		        }
-		        if (z == Chan_Unused)
-		        {
-		            std::cout << "Chan_Unused in wp_channelset\n";
-		            position[colourIndex(z)] = 0.0f;
-		            continue;
-		        }
-		        if (_unpremultPosition)
-		        {
-		            position[colourIndex(z)] = inPixel.getUnorderedSample(sampleNo, z) / alpha;
-                    std::cout << "unpremult position at " << position[0] << ", " << position[1] << ", " << position[2] << "\n";
-		        } else {
-		            position[colourIndex(z)] = inPixel.getUnorderedSample(sampleNo, z);
-                    std::cout << "position at " << position[0] << ", " << position[1] << ", " << position[2] << "\n";
-		        }
-		    }
-		    position[3] = 1.0f;
-		    Matrix4 inverse__axisKnob = _axisKnob.inverse();
-		    position = inverse__axisKnob * position;
-		    position = position.divide_w();
-
-		    if (_shape == 0)
-		    {
-		        // sphere
-		        distance = pow(position[0] * position[0] + position[1] * position[1] + position[2] * position[2], .5);
-		    } else
-		    {
-		        // cube
-		        distance = clamp(1-abs(position[0])) * clamp(1-abs(position[1])) * clamp(1-abs(position[2]));
-		    }
-
-
-		    float noiseValue;
-		    float positionDisturbance[3];
-		    positionDisturbance[0] = _noiseWarpFastNoiseX.GetSimplex(position[0], position[1], position[2], _noiseEvolution+1000);
-		    positionDisturbance[1] = _noiseWarpFastNoiseX.GetSimplex(position[0], position[1], position[2], _noiseEvolution+2000);
-		    positionDisturbance[2] = _noiseWarpFastNoiseX.GetSimplex(position[0], position[1], position[2], _noiseEvolution+3000);
-
-		    position[0] += positionDisturbance[0] * _noiseWarp;
-		    position[1] += positionDisturbance[1] * _noiseWarp;
-		    position[2] += positionDisturbance[2] * _noiseWarp;
-
-		    if (_noiseType==2)
-		    {
-		        // GetNoise(x, y, z, w) only implemented for simplex so far
-		        noiseValue = _fastNoise.GetNoise(position[0], position[1], position[2], _noiseEvolution);
-		    } else
-		    {
-		        noiseValue = _fastNoise.GetNoise(position[0], position[1], position[2]);
-		    }
-		    m = 1.0f - clamp(noiseValue * .5f + .5f, 0.0f, 1.0f);
-
-
-		    m = clamp((1 - m) / _falloff, 0.0f, 1.0f);
-		    m = pow(m, 1.0f / _falloffGamma);
-
-		    // falloff
-		    if (_falloffType == 0)
-		    {
-		        m = clamp(m, 0.0f, 1.0f);
-		    } else if (_falloffType == 1)
-		    {
-		        m = smoothstep(0.0f, 1.0f, m);
-		    }
-
-		    // process the sample
-		    float input_val;
-		    float inside_val;
-		    float outside_val;
-		    float outPixel_val;
-
-		    foreach(z, channels)
-            {
-		        // channels we know we should ignore
-		        if (
-		                z == Chan_Z
-		            || z == Chan_Alpha
-		            || z == Chan_DeepFront
-		            || z == Chan_DeepBack
-		            )
-		        {
-		            outPixel.push_back(inPixel.getUnorderedSample(sampleNo, z));
-		            continue;
-		        }
-
-		        // bail if mix is 0
-		        if (_mix == 0.0f)
-		        {
-		            outPixel.push_back(inPixel.getUnorderedSample(sampleNo, z));
-		            continue;
-		        }
-
-		        // is this the best way to restrict the processed channelset? maybe...
-		        if (process_channelset & z)
-		        {
-		            // only operate on rgb, i.e. first three channels
-		            if (colourIndex(z) >= 3)
-		            {
-		                outPixel.push_back(inPixel.getUnorderedSample(sampleNo, z));
-		                continue;
-		            }
-
-		            // do the thing, zhu-lee
-		            if (_unpremultRGB)
-		            {
-		                input_val = inPixel.getUnorderedSample(sampleNo, z) / alpha;
-		            } else {
-		                input_val = inPixel.getUnorderedSample(sampleNo, z);
-		            }
-
-		            // val * multiply * (gain - lift) / (whitepoint - blackpoint) + offset + lift - (multiply * (gain - lift) / (whitepoint - blackpoint)) * blackpoint, 1/gamma
-		            // i believe this is similar or identical to what nuke uses in a grade node, so should be familiar
-		            // despite not really being reasonable
-		            inside_val= pow(input_val * multiplyIn[colourIndex(z)] * (whiteIn[colourIndex(z)] - blackIn[colourIndex(z)]) / (whitepointIn[colourIndex(z)] - blackpointIn[colourIndex(z)]) + addIn[colourIndex(z)] + blackIn[colourIndex(z)] - (multiplyIn[colourIndex(z)] * (whiteIn[colourIndex(z)] - blackIn[colourIndex(z)]) / (whitepointIn[colourIndex(z)] - blackpointIn[colourIndex(z)])) * blackpointIn[colourIndex(z)], 1.0f/gammaIn[colourIndex(z)]);
-
-		            outside_val= pow(input_val * multiplyOut[colourIndex(z)] * (whiteOut[colourIndex(z)] - blackOut[colourIndex(z)]) / (whitepointOut[colourIndex(z)] - blackpointOut[colourIndex(z)]) + addOut[colourIndex(z)] + blackOut[colourIndex(z)] - (multiplyOut[colourIndex(z)] * (whiteOut[colourIndex(z)] - blackOut[colourIndex(z)]) / (whitepointOut[colourIndex(z)] - blackpointOut[colourIndex(z)])) * blackpointOut[colourIndex(z)], 1.0f/gammaOut[colourIndex(z)]);
-
-		            // apply mask
-		            outPixel_val = (inside_val * m + outside_val * (1 - m));
-
-		            if (_unpremultRGB)
-		            {
-		                outPixel_val = outPixel_val * alpha;
-		            } // need do nothing if we're not required to premult
-
-		            if (_mix == 1.0f)
-		            {
-		                outPixel.push_back(outPixel_val);
-		            } else {
-		                outPixel_val = outPixel_val * _mix + input_val * (1 - _mix);
-		            } // we checked for mix == 0 earlier
-		        } else {
-		            outPixel.push_back(inPixel.getUnorderedSample(sampleNo, z));
-		            continue;
-		        }
-        	}
-		}
-
-		outPlane.addPixel(outPixel);
+    switch (input)
+    {
+        case 0:
+            return DeepFilterOp::test_input(input, op);
+        case 1:
+            return dynamic_cast<Iop*>(op) != 0;
     }
-
-    return true;
 }
 
 
+Op* DeepCPNoise::default_input(int input) const
+{
+    switch (input)
+    {
+        case 0:
+            return DeepFilterOp::default_input(input);
+         case 1:
+             Black* dummy;
+             return dynamic_cast<Op*>(dummy);
+    }
+}
+
+
+const char* DeepCPNoise::input_label(int input, char* buffer) const
+{
+    switch (input)
+    {
+        case 0: return "";
+        case 1: return "mask";
+    }
+}
+
+void DeepCPNoise::getDeepRequests(Box bbox, const DD::Image::ChannelSet& channels, int count, std::vector<RequestData>& requests)
+{
+    if (!input0())
+        return;
+
+    // make sure we're asking for all required channels
+    ChannelSet get_channels = channels;
+    get_channels += _auxiliaryChannelSet;
+    get_channels += Chan_DeepBack;
+    get_channels += Chan_DeepFront;
+    requests.push_back(RequestData(input0(), bbox, get_channels, count));
+
+    // make sure to request anything we want from the Iop side, too
+    if (_doSideMask)
+        _maskOp->request(bbox, _sideMaskChannelSet, count);
+}
+
+bool DeepCPNoise::doDeepEngine(
+    Box bbox,
+    const DD::Image::ChannelSet& outputChannels,
+    DeepOutputPlane& deep_out_plane
+    )
+{
+    if (!input0())
+        return true;
+
+    deep_out_plane = DeepOutputPlane(outputChannels, bbox);
+
+    DD::Image::ChannelSet get_channels = outputChannels;
+    get_channels += _auxiliaryChannelSet;
+
+    DeepPlane deepInPlane;
+    if (!input0()->deepEngine(bbox, get_channels, deepInPlane))
+        return false;
+
+    const DD::Image::ChannelSet inputChannels = input0()->deepInfo().channels();
+
+    const int nOutputChans = outputChannels.size();
+
+    // mask input stuff
+    const float* inptr;
+    float sideMaskVal;
+    int currentYRow;
+    Row maskRow(bbox.x(), bbox.r());
+
+    if (_doSideMask)
+    {
+        _maskOp->get(bbox.y(), bbox.x(), bbox.r(), _sideMaskChannelSet, maskRow);
+        inptr = maskRow[_sideMaskChannel] + bbox.x();
+        currentYRow = bbox.y();
+    }
+
+    float result;
+
+    for (Box::iterator it = bbox.begin(); it != bbox.end(); ++it)
+    {
+        if (Op::aborted())
+            return false; // bail fast on user-interrupt
+
+        // Get the deep pixel from the input plane:
+        DeepPixel deepInPixel = deepInPlane.getPixel(it);
+        const unsigned nSamples = deepInPixel.getSampleCount();
+        if (nSamples == 0) {
+            deep_out_plane.addHole(); // no samples, skip it
+            continue;
+        }
+
+        // create initialized, don't create and then init
+        size_t outPixelSize;
+        outPixelSize = nSamples * nOutputChans * sizeof(float);
+        DeepOutPixel deepOutputPixel(outPixelSize);
+
+        if (_doSideMask)
+        {
+            if (currentYRow != it.y)
+            {
+                // we have not already gotten this row, get it now
+                _maskOp->get(it.y, bbox.x(), bbox.r(), _sideMaskChannelSet, maskRow);
+                inptr = maskRow[_sideMaskChannel] + bbox.x();
+                sideMaskVal = inptr[it.x];
+                sideMaskVal = clamp(sideMaskVal);
+                currentYRow = it.y;
+            } else
+            {
+                // we've already got this row, just get the value
+                sideMaskVal = inptr[it.x];
+                sideMaskVal = clamp(sideMaskVal);
+            }
+            if (_invertMask)
+                sideMaskVal = 1.0f - sideMaskVal;
+        }
+
+        // for each sample
+        for (unsigned sampleNo=0; sampleNo < nSamples; ++sampleNo)
+        {
+
+            // alpha
+            float alpha;
+            if (inputChannels.contains(Chan_Alpha))
+            {
+                alpha = deepInPixel.getUnorderedSample(sampleNo, Chan_Alpha);
+            } else
+            {
+                alpha = 1.0f;
+            }
+
+            // generate noise
+            float m;
+            Vector4 position;
+            float noiseValue;
+            float positionDisturbance[3];
+
+            foreach(z, _auxiliaryChannelSet) {
+                if (colourIndex(z) >= 3)
+                {
+                    continue;
+                }
+                if (inputChannels.contains(z))
+                {
+                    // grab data from auxiliary channelset
+                    if (_unpremultPosition)
+                    {
+                        position[colourIndex(z)] = deepInPixel.getUnorderedSample(sampleNo, z) / alpha;
+                    } else {
+                        position[colourIndex(z)] = deepInPixel.getUnorderedSample(sampleNo, z);
+                    }
+                }
+            }
+            position[3] = 1.0f;
+            Matrix4 inverse__axisKnob = _axisKnob.inverse();
+            position = inverse__axisKnob * position;
+            position = position.divide_w();
+
+            positionDisturbance[0] = _noiseWarpFastNoiseX.GetSimplex(position[0], position[1], position[2], _noiseEvolution+1000);
+            positionDisturbance[1] = _noiseWarpFastNoiseX.GetSimplex(position[0], position[1], position[2], _noiseEvolution+2000);
+            positionDisturbance[2] = _noiseWarpFastNoiseX.GetSimplex(position[0], position[1], position[2], _noiseEvolution+3000);
+
+            position[0] += positionDisturbance[0] * _noiseWarp;
+            position[1] += positionDisturbance[1] * _noiseWarp;
+            position[2] += positionDisturbance[2] * _noiseWarp;
+
+            // TODO: handle this better; fragile now - depends on order of noise list
+            if (_noiseType==0)
+            {
+                // GetNoise(x, y, z, w) only implemented for simplex so far
+                noiseValue = _fastNoise.GetNoise(position[0], position[1], position[2], _noiseEvolution);
+            } else
+            {
+                noiseValue = _fastNoise.GetNoise(position[0], position[1], position[2]);
+            }
+            m = 1.0f - clamp(noiseValue * .5f + .5f, 0.0f, 1.0f);
+
+            // process the sample
+            float input_val;
+            float inside_val;
+            float outside_val;
+            float output_val;
+            int cIndex;
+            // for each channel
+            foreach(z, outputChannels)
+            {
+                cIndex = colourIndex(z);
+                // passthrough channels we know we should ignore
+                // passthrough all but the output channels
+                // only operate on rgb, i.e. first three channels
+                // bail if mix is 0
+                if (
+                       z == Chan_Z
+                    || z == Chan_Alpha
+                    || z == Chan_DeepFront
+                    || z == Chan_DeepBack
+                    || !_outputChannelSet.contains(z)
+                    || _mix == 0.0f
+                    )
+                {
+                    deepOutputPixel.push_back(deepInPixel.getUnorderedSample(sampleNo, z));
+                    continue;
+                }
+
+                input_val = m;
+                output_val = m;
+
+                // grade the noise; i *think* it will be more efficient to
+                // do it here, than in a separate op (with all associated)
+                // copying and whatnot
+
+                if (_reverse)
+                {
+                    // opposite gamma, precomputed
+                    if (G[cIndex] != 1.0f)
+                        input_val = pow(input_val, G[cIndex]);
+                    // then inverse linear ramp we have already precomputed
+                    output_val = A[cIndex] * input_val + B[cIndex];
+                } else
+                {
+                    output_val = A[cIndex] * input_val + B[cIndex];
+                    if (G[cIndex] != 1.0f)
+                        output_val = pow(output_val, G[cIndex]);
+                }
+
+                if (_blackClamp)
+                    output_val = MAX(output_val, 0.0f);
+
+                if (_whiteClamp)
+                    output_val = MIN(output_val, 1.0f);
+
+                // we checked for mix == 0 earlier, only need to handle non-1
+                if (_mix < 1.0f)
+                    output_val = output_val * _mix;
+
+                if (_doSideMask)
+                    output_val = output_val * sideMaskVal;
+
+                if (!_unpremultOutput)
+                    output_val = output_val * alpha;
+
+                deepOutputPixel.push_back(output_val);
+            }
+        }
+        // Add to output plane:
+        deep_out_plane.addPixel(deepOutputPixel);
+    }
+    return true;
+}
+
 void DeepCPNoise::knobs(Knob_Callback f)
 {
-    InputOnly_ChannelSet_knob(f, &process_channelset, 0, "channels");
-    InputOnly_ChannelSet_knob(f, &wp_channelset, 0, "position_data");
-    SetFlags(f, Knob::NO_ALPHA_PULLDOWN);
-    Bool_knob(f, &_unpremultRGB, "unpremult_rgb", "(Un)premult RGB");
+    Input_ChannelSet_knob(f, &_auxiliaryChannelSet, 0, "position_data");
+    Input_ChannelSet_knob(f, &_outputChannelSet, 0, "output");
+    Bool_knob(f, &_unpremultOutput, "unpremult_output", "unpremultiplied output");
     SetFlags(f, Knob::STARTLINE);
-    Tooltip(f, "Unpremultiply channels in 'channels' before grading, \n"
-    "then premult again after. This is always by rgba.alpha, as this \n"
+    Tooltip(f, "Unpremultiply channels in 'channels' before grading, "
+    "then premult again after. This is always by rgba.alpha, as this "
     "is how Deep data is constructed. Should probably always be checked.");
     Bool_knob(f, &_unpremultPosition, "unpremult_position_data", "Unpremult Position Data");
-    Tooltip(f, "Uncheck for ScanlineRender Deep data, check for (probably) \n"
-    "all other renderers. Nuke stores position data from the ScanlineRender \n"
-    "node unpremultiplied, contrary to the Deep spec. Other renderers \n"
-    "presumably store position data (and all other data) premultiplied, \n"
+    Tooltip(f, "Uncheck for ScanlineRender Deep data, check for (probably) "
+    "all other renderers. Nuke stores position data from the ScanlineRender "
+    "node unpremultiplied, contrary to the Deep spec. Other renderers "
+    "presumably store position data (and all other data) premultiplied, "
     "as required by the Deep spec.");
 
 
@@ -505,35 +556,35 @@ void DeepCPNoise::knobs(Knob_Callback f)
     BeginClosedGroup(f, "Noise");
     Enumeration_knob(f, &_noiseType, noiseTypeNames, "noiseType");
     Tooltip(f,
-        "Value: 3D noise - sort of square and blocky\n"
-        "Perlin: 3D noise - the classic\n"
-        "Simplex: 4D noise - aka improved perlin\n"
-        "Cellular: 3D noise - aka Voronoi\n"
-        "Cubic: 3D noise - more random than Perlin?\n"
+        "Simplex: 4D noise - aka improved perlin"
+        "Cellular: 3D noise - aka Voronoi"
+        "Cubic: 3D noise - more random than Perlin?"
+        "Perlin: 3D noise - the classic"
+        "Value: 3D noise - sort of square and blocky"
     );
     Float_knob(f, &_noiseWarp, "noise_warp_strength");
     Tooltip(f,
-        "Mult the position data by a simplex noise\n"
-        "before generating the main noise, creating\n"
+        "Mult the position data by a simplex noise"
+        "before generating the main noise, creating"
         "swirly patterns."
     );
     Float_knob(f, &_noiseEvolution, "noise_evolution");
     Tooltip(f,
-        "For Simplex noise (the only 4D noise), this smoothly\n"
-        "changes the noise in a non-spatial dimension (sort \n"
-        "of like time...)."
+        "For Simplex noise (the only 4D noise), this smoothly"
+        "changes the noise in a non-spatial dimension ("
+        "like evolution over time...)."
     );
     // fractal functions
     BeginClosedGroup(f, "Fractal");
     Enumeration_knob(f, &_fractalType, fractalTypeNames, "fractal_type");
     Float_knob(f, &_frequency, "frequency");
     Tooltip(f,
-    "Affects how coarse the noise output is.\n"
-    "Used in all noise generation except White Noise.\n"
+    "Affects how coarse the noise output is."
+    "Used in all noise generation except White Noise."
     );
     Int_knob(f, &_octaves, "fractal_octaves");
     Tooltip(f,
-        "The amount of noise layers used to create the fractal.\n"
+        "The amount of noise layers used to create the fractal."
         "Used in all fractal noise generation."
     );
     Float_knob(f, &_lacunarity, "lacunarity");
@@ -542,7 +593,7 @@ void DeepCPNoise::knobs(Knob_Callback f)
     );
     Float_knob(f, &_gain, "fractal_gain");
     Tooltip(f,
-        "The relative strength of noise from each layer\n"
+        "The relative strength of noise from each layer"
         "when compared to the last one."
     );
     EndGroup(f); // Fractal
@@ -550,7 +601,7 @@ void DeepCPNoise::knobs(Knob_Callback f)
     BeginClosedGroup(f, "Cellular");
     Enumeration_knob(f, &_distanceFunction, distanceFunctionNames, "distance_function");
     Tooltip(f,
-        "The distance function used to calculate the cell\n"
+        "The distance function used to calculate the cell"
         "for a given point."
     );
     Enumeration_knob(f, &_cellularReturnType, cellularReturnTypeNames, "cellular_type");
@@ -560,55 +611,61 @@ void DeepCPNoise::knobs(Knob_Callback f)
     // EndGroup Noise
     EndGroup(f);
 
-    /*
-    Divider(f, "Shape");
-    Enumeration_knob(f, &_shape, shapeNames, "shape");
-    Enumeration_knob(f, &_falloffType, falloffTypeNames, "falloffType");
-    Float_knob(f, &_falloff, "falloff");
-    Float_knob(f, &_falloffGamma, "falloff_gamma");
-    */
-
     Divider(f, "");
-    BeginClosedGroup(f, "Inside Mask Grades");
+    BeginClosedGroup(f, "Noise Grade");
 
-    Color_knob(f, blackpointIn, IRange(-1, 1), "blackpoint_inside", "blackpoint");
+    Color_knob(f, blackpoint, IRange(-1, 1), "blackpoint", "blackpoint");
     Tooltip(f, "This color is turned into black");
-    Color_knob(f, whitepointIn, IRange(0, 4), "whitepoint_inside", "whitepoint");
+    Color_knob(f, whitepoint, IRange(0, 4), "whitepoint", "whitepoint");
     Tooltip(f, "This color is turned into white");
-    Color_knob(f, blackIn, IRange(-1, 1), "black_inside", "lift");
+    Color_knob(f, black, IRange(-1, 1), "black", "lift");
     Tooltip(f, "Black is turned into this color");
-    Color_knob(f, whiteIn, IRange(0, 4), "white_inside", "gain");
+    Color_knob(f, white, IRange(0, 4), "white", "gain");
     Tooltip(f, "White is turned into this color");
-    Color_knob(f, multiplyIn, IRange(0, 4), "multiply_inside", "multiply");
+    Color_knob(f, multiply, IRange(0, 4), "multiply", "multiply");
     Tooltip(f, "Constant to multiply result by");
-    Color_knob(f, addIn, IRange(-1, 1), "add_inside", "offset");
+    Color_knob(f, add, IRange(-1, 1), "add", "offset");
     Tooltip(f, "Constant to add to result (raises both black & white, unlike lift)");
-    Color_knob(f, gammaIn, IRange(0.2, 5), "gamma_inside", "gamma");
+    Color_knob(f, gamma, IRange(0.2, 5), "gamma", "gamma");
     Tooltip(f, "Gamma correction applied to final result");
+    Bool_knob(f, &_reverse, "reverse");
+    SetFlags(f, Knob::STARTLINE);
+    Bool_knob(f, &_blackClamp, "black_clamp");
+    Bool_knob(f, &_whiteClamp, "white_clamp");
+
 
     EndGroup(f);
 
-    BeginClosedGroup(f, "Outside Mask Grades");
-
-    Color_knob(f, blackpointOut, IRange(-1, 1), "blackpoint_outside", "blackpoint");
-    Tooltip(f, "This color is turned into black");
-    Color_knob(f, whitepointOut, IRange(0, 4), "whitepoint_outside", "whitepoint");
-    Tooltip(f, "This color is turned into white");
-    Color_knob(f, blackOut, IRange(-1, 1), "black_outside", "lift");
-    Tooltip(f, "Black is turned into this color");
-    Color_knob(f, whiteOut, IRange(0, 4), "white_outside", "gain");
-    Tooltip(f, "White is turned into this color");
-    Color_knob(f, multiplyOut, IRange(0, 4), "multiply_outside", "multiply");
-    Tooltip(f, "Constant to multiply result by");
-    Color_knob(f, addOut, IRange(-1, 1), "add_outside", "offset");
-    Tooltip(f, "Constant to add to result (raises both black & white, unlike lift)");
-    Color_knob(f, gammaOut, IRange(0.2, 5), "gamma_outside", "gamma");
-    Tooltip(f, "Gamma correction applied to final result");
-
-    EndGroup(f);
     Divider(f, "");
 
+    // Input_Channel_knob(f, &_deepMaskChannel, 1, 1, "deep_mask", "deep input mask");
+    // Bool_knob(f, &_invertDeepMask, "invert_deep_mask", "invert");
+    Input_Channel_knob(f, &_sideMaskChannel, 1, 1, "side_mask", "side input mask");
+    Bool_knob(f, &_invertMask, "invert_mask", "invert");
     Float_knob(f, &_mix, "mix");
+}
+
+int DeepCPNoise::knob_changed(DD::Image::Knob* k)
+{
+    if (k->is("inputChange"))
+    {
+        // test input 1
+        bool input1_connected = dynamic_cast<Iop*>(input(1)) != 0;
+        if (!input1_connected)
+        {
+            _rememberedMaskChannel = _sideMaskChannel;
+            knob("side_mask")->set_value(Chan_Black);
+        } else
+        {
+            if (_rememberedMaskChannel == Chan_Black)
+                { knob("side_mask")->set_value(Chan_Alpha); }
+            else
+                { knob("side_mask")->set_value(_rememberedMaskChannel); }
+        }
+        return 1;
+    }
+
+    return DeepFilterOp::knob_changed(k);
 }
 
 const char* DeepCPNoise::node_help() const
