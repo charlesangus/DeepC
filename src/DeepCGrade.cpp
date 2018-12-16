@@ -36,28 +36,40 @@ class DeepCGrade : public DeepFilterOp
     bool _whiteClamp;
 
     // masking
+    Channel _deepMaskChannel;
+    ChannelSet _deepMaskChannelSet;
+    bool _doDeepMask;
+    bool _invertDeepMask;
+    bool _unpremultDeepMask;
+
     bool _unpremult;
-    Channel _maskChannel;
+    Channel _sideMaskChannel;
     Channel _rememberedMaskChannel;
-    ChannelSet _maskChannelSet;
+    ChannelSet _sideMaskChannelSet;
     Iop* _maskOp;
-    bool _doMask;
-    bool _invertMask;
+    bool _doSideMask;
+    bool _invertSideMask;
+
     float _mix;
 
     public:
 
         DeepCGrade(Node* node) : DeepFilterOp(node),
             _processChannelSet(Mask_RGB),
-            _maskChannel(Chan_Black),
+            _sideMaskChannel(Chan_Black),
             _rememberedMaskChannel(Chan_Black),
-            _maskChannelSet(Chan_Black),
+            _sideMaskChannelSet(Chan_Black),
+            _deepMaskChannel(Chan_Black),
+            _deepMaskChannelSet(Chan_Black),
             _reverse(false),
             _blackClamp(false),
             _whiteClamp(false),
             _unpremult(true),
-            _doMask(false),
-            _invertMask(false),
+            _doDeepMask(false),
+            _invertDeepMask(false),
+            _unpremultDeepMask(false),
+            _doSideMask(false),
+            _invertSideMask(false),
             _mix(1.0f)
         {
             for (int i=0; i<3; i++)
@@ -91,7 +103,8 @@ class DeepCGrade : public DeepFilterOp
 };
 
 
-void DeepCGrade::_validate(bool for_real) {
+void DeepCGrade::_validate(bool for_real)
+{
 
     for (int i = 0; i < 3; i++) {
         // make safe the gamma values
@@ -121,23 +134,28 @@ void DeepCGrade::_validate(bool for_real) {
     // make safe the mix
     _mix = clamp(_mix, 0.0f, 1.0f);
 
-    _maskChannelSet = _maskChannel;
+    _sideMaskChannelSet = _sideMaskChannel;
+    _deepMaskChannelSet = _deepMaskChannel;
 
     _maskOp = dynamic_cast<Iop*>(Op::input(1));
-    if (_maskOp != NULL && _maskChannel != Chan_Black)
+    if (_maskOp != NULL && _sideMaskChannel != Chan_Black)
     {
         _maskOp->validate(for_real);
-        _doMask = true;
+        _doSideMask = true;
     } else {
-        _doMask = false;
+        _doSideMask = false;
     }
 
+    if (_deepMaskChannel != Chan_Black)
+    { _doDeepMask = true; }
+    else
+    { _doDeepMask = false; }
 
     DeepFilterOp::_validate(for_real);
 
     // DD::Image::ChannelSet outputChannels = _deepInfo.channels();
     // outputChannels += _auxiliaryChannelSet;
-    // outputChannels += _maskChannelSet;
+    // outputChannels += _sideMaskChannelSet;
     // outputChannels += Chan_DeepBack;
     // outputChannels += Chan_DeepFront;
     // _deepInfo = DeepInfo(_deepInfo.formats(), _deepInfo.box(), outputChannels);
@@ -183,12 +201,13 @@ void DeepCGrade::getDeepRequests(Box bbox, const DD::Image::ChannelSet& channels
     if (!input0())
         return;
     DD::Image::ChannelSet get_channels = channels;
+    get_channels += _deepMaskChannel;
     get_channels += Chan_DeepBack;
     get_channels += Chan_DeepFront;
     requests.push_back(RequestData(input0(), bbox, get_channels, count));
 
-    if (_doMask)
-        _maskOp->request(bbox, _maskChannelSet, count);
+    if (_doSideMask)
+        _maskOp->request(bbox, _sideMaskChannelSet, count);
 }
 
 bool DeepCGrade::doDeepEngine(
@@ -218,10 +237,10 @@ bool DeepCGrade::doDeepEngine(
     int currentYRow;
     Row maskRow(bbox.x(), bbox.r());
 
-    if (_doMask)
+    if (_doSideMask)
     {
-        _maskOp->get(bbox.y(), bbox.x(), bbox.r(), _maskChannelSet, maskRow);
-        inptr = maskRow[_maskChannel] + bbox.x();
+        _maskOp->get(bbox.y(), bbox.x(), bbox.r(), _sideMaskChannelSet, maskRow);
+        inptr = maskRow[_sideMaskChannel] + bbox.x();
         currentYRow = bbox.y();
     }
 
@@ -240,18 +259,21 @@ bool DeepCGrade::doDeepEngine(
             continue;
         }
 
+        ChannelSet available;
+        available = deepInPixel.channels();
+
         // create initialized, don't create and then init
         size_t outPixelSize;
         outPixelSize = nSamples * nOutputChans * sizeof(float);
         DeepOutPixel deepOutputPixel(outPixelSize);
 
-        if (_doMask)
+        if (_doSideMask)
         {
             if (currentYRow != it.y)
             {
                 // we have not already gotten this row, get it now
-                _maskOp->get(it.y, bbox.x(), bbox.r(), _maskChannelSet, maskRow);
-                inptr = maskRow[_maskChannel] + bbox.x();
+                _maskOp->get(it.y, bbox.x(), bbox.r(), _sideMaskChannelSet, maskRow);
+                inptr = maskRow[_sideMaskChannel] + bbox.x();
                 sideMaskVal = inptr[it.x];
                 sideMaskVal = clamp(sideMaskVal);
                 currentYRow = it.y;
@@ -261,7 +283,7 @@ bool DeepCGrade::doDeepEngine(
                 sideMaskVal = inptr[it.x];
                 sideMaskVal = clamp(sideMaskVal);
             }
-            if (_invertMask)
+            if (_invertSideMask)
                 sideMaskVal = 1.0f - sideMaskVal;
         }
 
@@ -271,13 +293,39 @@ bool DeepCGrade::doDeepEngine(
 
             // alpha
             float alpha;
-            if (inputChannels.contains(Chan_Alpha))
+            if (available.contains(Chan_Alpha))
             {
                 alpha = deepInPixel.getUnorderedSample(sampleNo, Chan_Alpha);
             } else
             {
                 alpha = 1.0f;
             }
+
+            // deep masking
+            float deepMaskVal;
+            if (_doDeepMask)
+            {
+                if (available.contains(_deepMaskChannel))
+                {
+                    deepMaskVal = deepInPixel.getUnorderedSample(sampleNo, _deepMaskChannel);
+                    if (_unpremultDeepMask)
+                    {
+                        if (alpha != 0.0f)
+                        {
+                            deepMaskVal /= alpha;
+                        } else
+                        {
+                            deepMaskVal = 0.0f;
+                        }
+                    }
+                    if (_invertDeepMask)
+                        deepMaskVal = 1.0f - deepMaskVal;
+                } else
+                {
+                    deepMaskVal = 1.0f;
+                }
+            }
+
 
             // process the sample
             float input_val;
@@ -301,21 +349,12 @@ bool DeepCGrade::doDeepEngine(
                        z == Chan_Z
                     || z == Chan_DeepFront
                     || z == Chan_DeepBack
+                    || cIndex >= 3
+                    || _mix == 0.0f
+                    || (_doDeepMask && deepMaskVal == 0.0f)
+                    || (_doSideMask && sideMaskVal == 0.0f)
+                    || !_processChannelSet.contains(z)
                     )
-                {
-                    deepOutputPixel.push_back(deepInPixel.getUnorderedSample(sampleNo, z));
-                    continue;
-                }
-
-                // bail if mix is 0
-                if (_mix == 0.0f)
-                {
-                    deepOutputPixel.push_back(deepInPixel.getUnorderedSample(sampleNo, z));
-                    continue;
-                }
-
-                // only operate on rgb, i.e. first three channels
-                if (cIndex >= 3)
                 {
                     deepOutputPixel.push_back(deepInPixel.getUnorderedSample(sampleNo, z));
                     continue;
@@ -359,8 +398,11 @@ bool DeepCGrade::doDeepEngine(
                 if (_mix < 1.0f)
                     output_val = output_val * _mix + input_val * (1.0f - _mix);
 
-                if (_doMask)
+                if (_doSideMask)
                     output_val = output_val * sideMaskVal + input_val * (1.0f - sideMaskVal);
+
+                if (_doDeepMask)
+                    output_val = output_val * deepMaskVal + input_val * (1.0f - deepMaskVal);
 
                 if (_unpremult)
                     output_val = output_val * alpha;
@@ -403,8 +445,13 @@ void DeepCGrade::knobs(Knob_Callback f)
     Bool_knob(f, &_whiteClamp, "white_clamp");
 
     Divider(f, "");
-    Input_Channel_knob(f, &_maskChannel, 1, 1, "mask");
-    Bool_knob(f, &_invertMask, "invert_mask", "invert");
+
+    Input_Channel_knob(f, &_deepMaskChannel, 1, 0, "deep_mask", "deep input mask");
+    Bool_knob(f, &_invertDeepMask, "invert_deep_mask", "invert");
+    Bool_knob(f, &_unpremultDeepMask, "unpremult_deep_mask", "unpremult");
+
+    Input_Channel_knob(f, &_sideMaskChannel, 1, 1, "side_mask");
+    Bool_knob(f, &_invertSideMask, "invert_mask", "invert");
     Bool_knob(f, &_unpremult, "unpremult", "(un)premult by alpha");
     SetFlags(f, Knob::STARTLINE);
     Float_knob(f, &_mix, "mix");
@@ -418,15 +465,15 @@ int DeepCGrade::knob_changed(DD::Image::Knob* k)
         bool input1_connected = dynamic_cast<Iop*>(input(1)) != 0;
         if (!input1_connected)
         {
-            _rememberedMaskChannel = _maskChannel;
-            knob("mask")->set_value(Chan_Black);
+            _rememberedMaskChannel = _sideMaskChannel;
+            knob("side_mask")->set_value(Chan_Black);
         } else
         {
 
             if (_rememberedMaskChannel == Chan_Black)
-                { knob("mask")->set_value(Chan_Alpha); }
+                { knob("side_mask")->set_value(Chan_Alpha); }
             else
-                { knob("mask")->set_value(_rememberedMaskChannel); }
+                { knob("side_mask")->set_value(_rememberedMaskChannel); }
         }
         return 1;
     }
