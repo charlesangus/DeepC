@@ -25,6 +25,11 @@ class DeepCGrade : public DeepFilterOp
     float add[3];
     float gamma[3];
 
+    // precalculate grade coefficients
+    float A[3];
+    float B[3];
+    float G[3];
+
     //
     bool _reverse;
     bool _blackClamp;
@@ -87,10 +92,31 @@ class DeepCGrade : public DeepFilterOp
 
 
 void DeepCGrade::_validate(bool for_real) {
-    // make safe the gamma values
+
     for (int i = 0; i < 3; i++) {
+        // make safe the gamma values
         gamma[i] = clamp(gamma[i], 0.00001f, 65500.0f);
+
+        // for calculating the grade - precompute the coefficients
+        A[i] = multiply[i] * ((white[i] - black[i]) / (whitepoint[i] - blackpoint[i]));
+        B[i] = add[i] + black[i] - A[i] * blackpoint[i];
+        G[i] = 1.0f / gamma[i];
+        if (_reverse)
+        {
+            // opposite linear ramp
+            if (A[i])
+            {
+                A[i] = 1.0f / A[i];
+            } else
+            {
+                A[i] = 1.0f;
+            }
+            B[i] = -B[i] * A[i];
+            // inverse gamma
+            G[i] = 1.0f/G[i];
+        }
     }
+
 
     // make safe the mix
     _mix = clamp(_mix, 0.0f, 1.0f);
@@ -105,7 +131,7 @@ void DeepCGrade::_validate(bool for_real) {
     } else {
         _doMask = false;
     }
-    std::cout << "_doMask is " << _doMask << "\n";
+
 
     DeepFilterOp::_validate(for_real);
 
@@ -199,10 +225,6 @@ bool DeepCGrade::doDeepEngine(
         currentYRow = bbox.y();
     }
 
-    // for calculating the grade
-    float A;
-    float B;
-    float G;
     float result;
 
     for (Box::iterator it = bbox.begin(); it != bbox.end(); ++it)
@@ -218,8 +240,8 @@ bool DeepCGrade::doDeepEngine(
             continue;
         }
 
-        DeepOutPixel deepOutputPixel;
-        deepOutputPixel.reserve(nSamples*nOutputChans);
+        // create initialized, don't create and then init
+        DeepOutPixel deepOutputPixel(nSamples * nOutputChans);
 
         if (_doMask)
         {
@@ -260,13 +282,21 @@ bool DeepCGrade::doDeepEngine(
             float inside_val;
             float outside_val;
             float output_val;
+            int cIndex;
             // for each channel
             foreach(z, outputChannels)
             {
-                // channels we know we should ignore
+                cIndex = colourIndex(z);
+                // we already have the alpha, don't get it again
+                if (z == Chan_Alpha)
+                {
+                    deepOutputPixel.push_back(alpha);
+                    continue;
+                }
+
+                // channels we know we should pass through
                 if (
                        z == Chan_Z
-                    || z == Chan_Alpha
                     || z == Chan_DeepFront
                     || z == Chan_DeepBack
                     )
@@ -283,7 +313,7 @@ bool DeepCGrade::doDeepEngine(
                 }
 
                 // only operate on rgb, i.e. first three channels
-                if (colourIndex(z) >= 3)
+                if (cIndex >= 3)
                 {
                     deepOutputPixel.push_back(deepInPixel.getUnorderedSample(sampleNo, z));
                     continue;
@@ -300,26 +330,21 @@ bool DeepCGrade::doDeepEngine(
                 // A = multiply * (gain-lift)/(whitepoint-blackpoint)
                 // B = offset + lift - A*blackpoint
                 // output = pow(A*input + B, 1/gamma)
-                A = multiply[colourIndex(z)] * ((white[colourIndex(z)] - black[colourIndex(z)]) / (whitepoint[colourIndex(z)] - blackpoint[colourIndex(z)]));
-                B = add[colourIndex(z)] + black[colourIndex(z)] - A * blackpoint[colourIndex(z)];
-                G = 1.0f / gamma[colourIndex(z)];
+                // these are precomputed and reversed if necessary in
+                // _validate()
+
                 if (_reverse)
                 {
-                    // opposite gamma
-                    input_val = pow(input_val, 1.0f / G);
-                    // opposite linear ramp
-                    if (A)
-                    {
-                        A = 1.0f / A;
-                    } else
-                    {
-                        A = 1.0f;
-                    }
-                    B = -B * A;
-                    output_val = A * input_val + B;
+                    // opposite gamma, precomputed
+                    if (G[cIndex] != 1.0f)
+                        input_val = pow(input_val, G[cIndex]);
+                    // then inverse linear ramp we have already precomputed
+                    output_val = A[cIndex] * input_val + B[cIndex];
                 } else
                 {
-                    output_val = pow(A * input_val + B, G);
+                    output_val = A[cIndex] * input_val + B[cIndex];
+                    if (G[cIndex] != 1.0f)
+                        output_val = pow(output_val, G[cIndex]);
                 }
 
                 if (_blackClamp)
