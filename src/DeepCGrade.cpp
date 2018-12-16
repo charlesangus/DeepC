@@ -241,7 +241,9 @@ bool DeepCGrade::doDeepEngine(
         }
 
         // create initialized, don't create and then init
-        DeepOutPixel deepOutputPixel(nSamples * nOutputChans);
+        size_t outPixelSize;
+        outPixelSize = nSamples * nOutputChans * sizeOf(float)
+        DeepOutPixel deepOutputPixel(outPixelSize);
 
         if (_doMask)
         {
