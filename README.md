@@ -8,10 +8,6 @@ Suite of Deep compositing plugins for Foundry's Nuke.
 
 A clone of the regular Grade node, but with added options for Deep. Integrates with DeepCPMatte and DeepCPNoise by optionally taking Deep masks from the B-stream. Takes a flat image as a mask in the side input.
 
-### DeepCSat
-
-A clone of the regular Saturation node, but Deep. Takes Deep masks in the B-stream and flat masks in the side input.
-
 ### DeepCWorldPosition
 
 Generates world position data from straight Deep renders. Useful if your 3D render doesn't come with a Deep position pass.
@@ -39,6 +35,12 @@ Coming soon...
 ### DeepCRemoveChannels
 
 Coming soon...
+
+### DeepCSat
+
+Coming soon...
+
+A clone of the regular Saturation node, but Deep. Takes Deep masks in the B-stream and flat masks in the side input.
 
 ### DeepCID
 
