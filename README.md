@@ -4,23 +4,33 @@ Suite of Deep compositing plugins for Foundry's Nuke.
 
 ## Plugins
 
-### DeepCWorldPosition
-
-Generates world position data from straight Deep renders.
-
-### DeepCPMatteGrade
-
-Grades Deep images based on a spherical or cubic mask from a position pass.
-
-### DeepCPNoiseGrade
-
-Grades Deep images based on noise generated from a position pass.
-
 ### DeepCGrade
 
-Coming soon...
+A clone of the regular Grade node, but with added options for Deep. Integrates with DeepCPMatte and DeepCPNoise by optionally taking Deep masks from the B-stream. Takes a flat image as a mask in the side input.
 
-A clone of the regular Grade node, but with added options for Deep. Improves on the DeepColorCorrect node by providing a simpler, more familiar interface, as well as extended masking options.
+### DeepCSat
+
+A clone of the regular Saturation node, but Deep. Takes Deep masks in the B-stream and flat masks in the side input.
+
+### DeepCWorldPosition
+
+Generates world position data from straight Deep renders. Useful if your 3D render doesn't come with a Deep position pass.
+
+### DeepCPMatte
+
+Generates a spherical or cubic mask from Deep position data, for use in other DeepC nodes.
+
+### DeepCPNoise
+
+Generates a 3D or 4D noise mask from Deep position data, for use in other DeepC nodes. Much better than the builtin Nuke noise options, this is based on the FastNoise library. Critically, it offers 4D fractal noise, so your 3D noise pass can evolve across a 4th dimension over time without sliding.
+
+Includes:
+
+- 4D simplex noise
+- 3D cellular noise (many varieties)
+- 3D value noise
+- 3D perlin noise
+- 3D cubic noise
 
 ### DeepCAddChannels
 
@@ -35,6 +45,12 @@ Coming soon...
 Coming soon...
 
 Easily manipulate IDs in Deep data, combine with other masks, etc.
+
+### DeepCShuffle
+
+Coming soon...
+
+Simplified version of the Shuffle node for Deep images.
 
 ## Build
 
