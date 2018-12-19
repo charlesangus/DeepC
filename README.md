@@ -2,7 +2,11 @@
 
 ![DeepCAnglerfish](https://raw.githubusercontent.com/charlesangus/DeepC/master/icon/anglerfish_icon_medium_black.png?token=AEfZ8WAwpM_lo1i8A9D2iJY7ZDRI6tonks5cIuu-wA%3D%3D)
 
-Suite of Deep compositing plugins for Foundry's Nuke.
+Welcome to the DeepC, a suite of Deep compositing plugins for Foundry's Nuke. While I'm sure large studios have something similar to these tools, this open-source project makes them available to small and mid-size studios.
+
+## Get Them!
+
+![Check the releases page for this repo](https://github.com/charlesangus/DeepC/releases) to get the compiled versions of the plugins. Currently, I've only compiled them for Linux, but that's presumably the most useful for folks, anyway. Windows versions as and when I can, if I can. If you'd like to compile for Mac and contribute back, that would be much appreciated, as I don't have a Mac for development.
 
 ## Plugins
 
@@ -30,6 +34,8 @@ Includes:
 - 3D perlin noise
 - 3D cubic noise
 
+## Future Plans
+
 ### DeepCAddChannels
 
 Coming soon...
@@ -56,9 +62,10 @@ Coming soon...
 
 Simplified version of the Shuffle node for Deep images.
 
+
 ## Build
 
-Build has been tested on Centos 6.8 with devtoolset-2 (as recommended in NDK dev guide) and Nuke 11.1.
+Build has been tested on Centos 6.8 with devtoolset-2 (as recommended in NDK dev guide). Compiles against 11.0-11.3, tested really only on 11.1. Let me know how it goes...
 
 ### Linux
 
