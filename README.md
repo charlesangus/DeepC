@@ -1,4 +1,4 @@
-# DeepC
+# ![DeepC](https://raw.githubusercontent.com/charlesangus/DeepC/master/icon/anglerfish_icon_large_black.png?token=AEfZ8dBF4EeIbeloTW6-TN8YI-RFCe3zks5cIurywA%3D%3D) DeepC
 
 Suite of Deep compositing plugins for Foundry's Nuke.
 
