@@ -20,7 +20,7 @@ static const char* const HELP =
     "optionally output premultiplied data (to conform to Deep standards).\n"
     "by: Charles A Taylor";
 
-class DeepCWorldPosition : public DeepPixelOp
+class DeepCWorld : public DeepPixelOp
 {
     ChannelSet output_channelset;
     int _depthSampleType;
@@ -40,7 +40,7 @@ class DeepCWorldPosition : public DeepPixelOp
     Matrix4 window_matrix;
 
 public:
-    DeepCWorldPosition(Node* node) : DeepPixelOp(node),
+    DeepCWorld(Node* node) : DeepPixelOp(node),
     output_channelset(Chan_Black),
     _depthSampleType(0),
     _premultOutput(false)
@@ -134,7 +134,7 @@ public:
                                 ) const;
 };
 
-void DeepCWorldPosition::_validate(bool for_real)
+void DeepCWorld::_validate(bool for_real)
 {
 
     CameraOp* _camOp = dynamic_cast<CameraOp*>(Op::input(1));
@@ -173,7 +173,7 @@ void DeepCWorldPosition::_validate(bool for_real)
     _deepInfo = DeepInfo(_deepInfo.formats(), _deepInfo.box(), new_channelset);
 }
 
-void DeepCWorldPosition::processSample(
+void DeepCWorld::processSample(
     int y,
     int x,
     const DD::Image::DeepPixel& deepPixel,
@@ -245,7 +245,7 @@ void DeepCWorldPosition::processSample(
 }
 
 
-void DeepCWorldPosition::knobs(Knob_Callback f)
+void DeepCWorld::knobs(Knob_Callback f)
 {
     ChannelSet_knob(f, &output_channelset, "output_channelset");
     SetFlags(f, Knob::NO_ALPHA_PULLDOWN);
@@ -259,5 +259,5 @@ void DeepCWorldPosition::knobs(Knob_Callback f)
 }
 
 
-static Op* build(Node* node) { return new DeepCWorldPosition(node); }
-const Op::Description DeepCWorldPosition::d("DeepCWorldPosition", 0, build);
+static Op* build(Node* node) { return new DeepCWorld(node); }
+const Op::Description DeepCWorld::d("DeepCWorld", 0, build);
