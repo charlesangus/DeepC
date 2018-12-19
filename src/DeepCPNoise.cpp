@@ -671,7 +671,7 @@ int DeepCPNoise::knob_changed(DD::Image::Knob* k)
 const char* DeepCPNoise::node_help() const
 {
     return
-    "Mask a grade op by a world-position pass.";
+    "Generate noise to use for grading operations.";
 }
 
 static Op* build(Node* node) { return new DeepCPNoise(node); }
