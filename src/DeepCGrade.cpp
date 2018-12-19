@@ -67,7 +67,7 @@ class DeepCGrade : public DeepFilterOp
             _unpremult(true),
             _doDeepMask(false),
             _invertDeepMask(false),
-            _unpremultDeepMask(false),
+            _unpremultDeepMask(true),
             _doSideMask(false),
             _invertSideMask(false),
             _mix(1.0f)
@@ -398,11 +398,16 @@ bool DeepCGrade::doDeepEngine(
                 if (_mix < 1.0f)
                     output_val = output_val * _mix + input_val * (1.0f - _mix);
 
+                float mask = 1.0f;
+
                 if (_doSideMask)
-                    output_val = output_val * sideMaskVal + input_val * (1.0f - sideMaskVal);
+                    mask *= sideMaskVal;
 
                 if (_doDeepMask)
-                    output_val = output_val * deepMaskVal + input_val * (1.0f - deepMaskVal);
+                    mask *= deepMaskVal;
+
+                if (_doDeepMask || _doSideMask)
+                    output_val = output_val * mask + input_val * (1.0f - mask);
 
                 if (_unpremult)
                     output_val = output_val * alpha;
@@ -419,6 +424,7 @@ bool DeepCGrade::doDeepEngine(
 void DeepCGrade::knobs(Knob_Callback f)
 {
     Input_ChannelSet_knob(f, &_processChannelSet, 0, "channels");
+    Bool_knob(f, &_unpremult, "unpremult", "(un)premult by alpha");
     Tooltip(f, "Unpremultiply channels in 'channels' before grading, "
     "then premult again after. This is always by rgba.alpha, as this "
     "is how Deep data is constructed. Should probably always be checked.");
@@ -452,8 +458,6 @@ void DeepCGrade::knobs(Knob_Callback f)
 
     Input_Channel_knob(f, &_sideMaskChannel, 1, 1, "side_mask");
     Bool_knob(f, &_invertSideMask, "invert_mask", "invert");
-    Bool_knob(f, &_unpremult, "unpremult", "(un)premult by alpha");
-    SetFlags(f, Knob::STARTLINE);
     Float_knob(f, &_mix, "mix");
 }
 
