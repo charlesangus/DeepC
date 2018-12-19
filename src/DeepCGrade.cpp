@@ -484,7 +484,10 @@ int DeepCGrade::knob_changed(DD::Image::Knob* k)
 const char* DeepCGrade::node_help() const
 {
     return
-    "Mask a grade op by a world-position pass.";
+    "Deep Grade with inline Deep masking and side-input"
+    "flat-image masking. Compatible with the regular "
+    "Grade node, i.e. gives same output for same "
+    "knob settings and input, except works in Deep.";
 }
 
 static Op* build(Node* node) { return new DeepCGrade(node); }
