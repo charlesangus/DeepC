@@ -35,6 +35,13 @@ Includes:
 - 3D perlin noise
 - 3D cubic noise
 
+### DeepCAddChannels
+
+Ever wanted to add a channel or channelset to a Deep stream? Well, now you can! And without doing that gross DeepToImage->DeepMerge hack.
+
+### DeepCRemoveChannels
+
+Ever had extra channels in a Deep stream, cluttering things up? Wish you could get rid of them? Look no further...
 
 ## Why DeepC?
 
@@ -58,17 +65,9 @@ Now that basic functionality is implemented, the focus will be on accelerating t
 
 ## Get Them!
 
-![Check the releases page for this repo](https://github.com/charlesangus/DeepC/releases) to get the compiled versions of the plugins. Currently, I've only compiled them for Linux, but that's presumably the most useful for folks, anyway. Windows versions as and when I can, if I can. If you'd like to compile for Mac and contribute back, that would be much appreciated, as I don't have a Mac for development.
+[Check the releases page for this repo](https://github.com/charlesangus/DeepC/releases) to get the compiled versions of the plugins. Currently, I've only compiled them for Linux, but that's presumably the most useful for folks, anyway. Windows versions as and when I can, if I can. If you'd like to compile for Mac and contribute back, that would be much appreciated, as I don't have a Mac for development.
 
 ## Future Plans
-
-### DeepCAddChannels
-
-Coming soon...
-
-### DeepCRemoveChannels
-
-Coming soon...
 
 ### DeepCSat
 
@@ -87,6 +86,12 @@ Easily manipulate IDs in Deep data, combine with other masks, etc.
 Coming soon...
 
 Simplified version of the Shuffle node for Deep images.
+
+### DeepCompress
+
+Coming soon...
+
+Much like how samples can be compressed in the renderer by merging samples closer than a certain threshold, this node will allow merging of samples in the Deep stream to cut down on processing time when the render is too heavy.
 
 ## Build
 
