@@ -242,8 +242,6 @@ bool DeepCGrade::doDeepEngine(
         currentYRow = bbox.y();
     }
 
-    float result;
-
     for (Box::iterator it = bbox.begin(); it != bbox.end(); ++it)
     {
         if (Op::aborted())
