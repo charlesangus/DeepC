@@ -1,49 +1,69 @@
-CXX ?= g++
-LINK ?= g++
-NDKDIR ?= /usr/local/Nuke11.1v6/
-FASTNOISEDIR ?= /media/sf_git/FastNoise/
-CXXFLAGS ?= -g -c \
+CXX = g++
+LINK = g++
+STD = -std=c++11
+FASTNOISEDIR = /media/sf_git/FastNoise/
+CXX_FLAGS = -g -c \
             -DUSE_GLEW \
-            -I$(NDKDIR)/include \
+            -I$(NDK_STUB)$(1)/include \
             -I$(FASTNOISEDIR) \
             -DFN_EXAMPLE_PLUGIN -fPIC -msse
-LINKFLAGS ?= -L$(NDKDIR) \
+LINK_FLAGS = -L$(NDK_STUB)$(1) \
              -L$(FASTNOISEDIR) \
-             -L./
-LIBS ?= -lDDImage \
-        -lFastNoise
-LINKFLAGS += -shared
+             -L./ \
+             -shared
+LIBS = -lDDImage \
+       -lFastNoise
+
+# plugins will be built against each of these nuke versions
+NVS = 11.2v5 11.3v1
+
+# we assume that each Nuke version lives in a folder called NukeXX.XvX
+# in the same parent dir, so we can simply append to a stub
+NDK_STUB = /usr/local/Nuke
 
 SRC_DIR = src
-OBJ_DIR = obj
-PLUGIN_DIR = plugin
+OBJ_DIR_STUB = obj
+PLUGIN_DIR_STUB = plugin
+# $(1) will be subbed with the Nuke version
+OBJ_DIR = $(OBJ_DIR_STUB)/Linux/$(1)
+PLUGIN_DIR = $(PLUGIN_DIR_STUB)/Linux/$(1)
+
+# GET ALL THE SOURCE FILES
 SRC_FILES = $(wildcard $(SRC_DIR)/*.cpp)
-OBJ_FILES = $(patsubst $(SRC_DIR)/%.cpp, $(OBJ_DIR)/%.os, $(SRC_FILES))
-PLUGIN_FILES = $(patsubst $(SRC_DIR)/%.cpp, $(PLUGIN_DIR)/%.so, $(SRC_FILES))
 
-all: ndkexists what $(PLUGIN_FILES)
+# GET ALL THE PLUGIN FILES TO GENERATE
+# FOR EACH SOURCE FILE, sub cpp with so
+# FOR EACH NUKE VERSION
+# SUB IN NUKE VERSION
+PLUGIN_FILES = $(foreach NV, $(NVS), $(patsubst $(SRC_DIR)/%.cpp, $(PLUGIN_DIR_STUB)/Linux/$(NV)/%.so, $(SRC_FILES)))
+$(info $$PLUGIN_FILES is [${PLUGIN_FILES}])
+all: $(PLUGIN_FILES)
 
-ndkexists:
-	@if test -d $(NDKDIR); \
-	then echo "using NDKDIR from ${NDKDIR}"; \
-	else echo "NDKDIR dir not found! Please set NDKDIR"; exit 2; \
-	fi
+.SECONDARY:
 
-what:
-	@echo $(SRC_FILES); \
-	echo $(OBJ_FILES); \
-	echo $(PLUGIN_FILES); \
-	echo $(PLUGIN_DIR)/%.so;
+# GENERIC OBJ - WILL BE FILLED IN FOR EACH NUKE VERSION
+define OBJ_TEMPLATE
+$(OBJ_DIR)/%.o: $$(SRC_DIR)/%.cpp | $(OBJ_DIR)
+	$(CXX) $(STD) $(CXX_FLAGS) -o $$@ $$<
+$(OBJ_DIR):
+	mkdir -p $$@
+endef
 
-# make object files from source
-$(OBJ_DIR)/%.os: $(SRC_DIR)/%.cpp
-	$(CXX) -std=c++11 $(CXXFLAGS) -o $(@) $<
+# GENERIC PLUGIN - WILL BE FILLED IN FOR EACH NUKE VERSION
+define PLG_TEMPLATE
+$(PLUGIN_DIR)/%.so: $(OBJ_DIR)/%.o | $(PLUGIN_DIR)
+	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$< $(LIBS)
+$(PLUGIN_DIR):
+	mkdir -p $$@
+endef
 
-# link object files into plugins
-$(PLUGIN_DIR)/%.so: $(OBJ_DIR)/%.os
-	$(LINK) -std=c++11 $(LINKFLAGS) -o $(@) $< $(LIBS)
+# print the substituted templates
+# $(foreach NV,$(NVS),$(info $(call OBJ_TEMPLATE,$(NV))))
+# $(foreach NV,$(NVS),$(info $(call PLG_TEMPLATE,$(NV))))
+
+# sub in the templates
+$(foreach NV,$(NVS),$(eval $(call OBJ_TEMPLATE,$(NV))))
+$(foreach NV,$(NVS),$(eval $(call PLG_TEMPLATE,$(NV))))
 
 clean:
-	rm -rf $(OBJ_DIR)/*.os \
-	       $(PLUGIN_DIR)/*.so
-
+	rm -rf $(PLUGIN_FILES) $(OBJ_DIR_STUB)/*/*/*.o
