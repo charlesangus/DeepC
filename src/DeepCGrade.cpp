@@ -232,7 +232,6 @@ bool DeepCGrade::doDeepEngine(
     const int nOutputChans = outputChannels.size();
 
     // mask input stuff
-    const float* inptr;
     float sideMaskVal;
     int currentYRow;
     Row maskRow(bbox.x(), bbox.r());
@@ -240,7 +239,6 @@ bool DeepCGrade::doDeepEngine(
     if (_doSideMask)
     {
         _maskOp->get(bbox.y(), bbox.x(), bbox.r(), _sideMaskChannelSet, maskRow);
-        inptr = maskRow[_sideMaskChannel] + bbox.x();
         currentYRow = bbox.y();
     }
 
@@ -273,14 +271,13 @@ bool DeepCGrade::doDeepEngine(
             {
                 // we have not already gotten this row, get it now
                 _maskOp->get(it.y, bbox.x(), bbox.r(), _sideMaskChannelSet, maskRow);
-                inptr = maskRow[_sideMaskChannel] + bbox.x();
-                sideMaskVal = inptr[it.x];
+                sideMaskVal = maskRow[_sideMaskChannel][it.x];;
                 sideMaskVal = clamp(sideMaskVal);
                 currentYRow = it.y;
             } else
             {
                 // we've already got this row, just get the value
-                sideMaskVal = inptr[it.x];
+                sideMaskVal = maskRow[_sideMaskChannel][it.x];;
                 sideMaskVal = clamp(sideMaskVal);
             }
             if (_invertSideMask)
