@@ -137,7 +137,7 @@ class DeepCPNoise : public DeepFilterOp
     ChannelSet _sideMaskChannelSet;
     Iop* _maskOp;
     bool _doSideMask;
-    bool _invertMask;
+    bool _invertSideMask;
     float _mix;
 
     FastNoise _fastNoise;
@@ -162,7 +162,7 @@ class DeepCPNoise : public DeepFilterOp
             _unpremultPosition(false),
             _noiseType(0),
             _doSideMask(false),
-            _invertMask(false),
+            _invertSideMask(false),
             _mix(1.0f)
         {
             // defaults mostly go here
@@ -364,7 +364,6 @@ bool DeepCPNoise::doDeepEngine(
     const int nOutputChans = outputChannels.size();
 
     // mask input stuff
-    const float* inptr;
     float sideMaskVal;
     int currentYRow;
     Row maskRow(bbox.x(), bbox.r());
@@ -372,7 +371,6 @@ bool DeepCPNoise::doDeepEngine(
     if (_doSideMask)
     {
         _maskOp->get(bbox.y(), bbox.x(), bbox.r(), _sideMaskChannelSet, maskRow);
-        inptr = maskRow[_sideMaskChannel] + bbox.x();
         currentYRow = bbox.y();
     }
 
@@ -407,17 +405,11 @@ bool DeepCPNoise::doDeepEngine(
             {
                 // we have not already gotten this row, get it now
                 _maskOp->get(it.y, bbox.x(), bbox.r(), _sideMaskChannelSet, maskRow);
-                inptr = maskRow[_sideMaskChannel] + bbox.x();
-                sideMaskVal = inptr[it.x];
-                sideMaskVal = clamp(sideMaskVal);
                 currentYRow = it.y;
-            } else
-            {
-                // we've already got this row, just get the value
-                sideMaskVal = inptr[it.x];
-                sideMaskVal = clamp(sideMaskVal);
             }
-            if (_invertMask)
+            sideMaskVal = maskRow[_sideMaskChannel][it.x];
+            sideMaskVal = clamp(sideMaskVal);
+            if (_invertSideMask)
                 sideMaskVal = 1.0f - sideMaskVal;
         }
 
@@ -699,7 +691,7 @@ void DeepCPNoise::knobs(Knob_Callback f)
     Bool_knob(f, &_unpremultDeepMask, "unpremult_deep_mask", "unpremult");
 
     Input_Channel_knob(f, &_sideMaskChannel, 1, 1, "side_mask", "side input mask");
-    Bool_knob(f, &_invertMask, "invert_mask", "invert");
+    Bool_knob(f, &_invertSideMask, "invert_mask", "invert");
     Float_knob(f, &_mix, "mix");
 }
 

@@ -269,15 +269,10 @@ bool DeepCGrade::doDeepEngine(
             {
                 // we have not already gotten this row, get it now
                 _maskOp->get(it.y, bbox.x(), bbox.r(), _sideMaskChannelSet, maskRow);
-                sideMaskVal = maskRow[_sideMaskChannel][it.x];;
-                sideMaskVal = clamp(sideMaskVal);
                 currentYRow = it.y;
-            } else
-            {
-                // we've already got this row, just get the value
-                sideMaskVal = maskRow[_sideMaskChannel][it.x];;
-                sideMaskVal = clamp(sideMaskVal);
             }
+            sideMaskVal = maskRow[_sideMaskChannel][it.x];
+            sideMaskVal = clamp(sideMaskVal);
             if (_invertSideMask)
                 sideMaskVal = 1.0f - sideMaskVal;
         }
