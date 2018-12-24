@@ -354,10 +354,14 @@ bool DeepCPNoise::doDeepEngine(
 
     DD::Image::ChannelSet get_channels = outputChannels;
     get_channels += _auxiliaryChannelSet;
+    get_channels += _deepMaskChannel;
 
     DeepPlane deepInPlane;
     if (!input0()->deepEngine(bbox, get_channels, deepInPlane))
         return false;
+
+    ChannelSet available;
+    available = deepInPlane.channels();
 
     const DD::Image::ChannelSet inputChannels = input0()->deepInfo().channels();
 
@@ -388,11 +392,6 @@ bool DeepCPNoise::doDeepEngine(
             deep_out_plane.addHole(); // no samples, skip it
             continue;
         }
-
-
-        ChannelSet available;
-        available = deepInPixel.channels();
-
 
         // create initialized, don't create and then init
         size_t outPixelSize;
@@ -449,7 +448,6 @@ bool DeepCPNoise::doDeepEngine(
                         deepMaskVal = 1.0f - deepMaskVal;
                 } else
                 {
-                    std::cout << "pixel didn't contain deepmask channel\n";
                     deepMaskVal = 1.0f;
                 }
             }
