@@ -488,5 +488,5 @@ const char* DeepCGrade::node_help() const
     "knob settings and input, except works in Deep.";
 }
 
-static Op* build(Node* node) { return new DeepCWrapper(node); }
-const Op::Description DeepCWrapper::d("DeepCWrapper", 0, build);
+static Op* build(Node* node) { return new DeepCGrade(node); }
+const Op::Description DeepCGrade::d("DeepCGrade", 0, build);
