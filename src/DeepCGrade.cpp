@@ -140,9 +140,13 @@ void DeepCGrade::_validate(bool for_real)
     }
 
     if (_deepMaskChannel != Chan_Black)
-    { _doDeepMask = true; }
+    {
+        _doDeepMask = true;
+    }
     else
-    { _doDeepMask = false; }
+    {
+        _doDeepMask = false;
+    }
 
     DeepFilterOp::_validate(for_real);
 
@@ -213,10 +217,15 @@ bool DeepCGrade::doDeepEngine(
         return true;
 
     DD::Image::ChannelSet get_channels = requestedChannels;
+    get_channels += _deepMaskChannel;
+    get_channels += Chan_Alpha;
 
     DeepPlane deepInPlane;
     if (!input0()->deepEngine(bbox, get_channels, deepInPlane))
         return false;
+
+    ChannelSet available;
+    available = deepInPlane.channels();
 
     DeepInPlaceOutputPlane inPlaceOutPlane(requestedChannels, bbox);
     inPlaceOutPlane.reserveSamples(deepInPlane.getTotalSampleCount());
@@ -233,7 +242,6 @@ bool DeepCGrade::doDeepEngine(
     {
         _maskOp->get(bbox.y(), bbox.x(), bbox.r(), _sideMaskChannel, maskRow);
         currentYRow = bbox.y();
-        std::cout << "first y row is init to " << currentYRow << "\n";
     }
 
     for (Box::iterator it = bbox.begin(); it != bbox.end(); ++it)
@@ -248,14 +256,10 @@ bool DeepCGrade::doDeepEngine(
         inPlaceOutPlane.setSampleCount(it, deepInPixel.getSampleCount());
         DeepOutputPixel outPixel = inPlaceOutPlane.getPixel(it);
 
-        ChannelSet available;
-        available = deepInPixel.channels();
-
         if (_doSideMask)
         {
             if (currentYRow != it.y)
             {
-                std::cout << "getting a new row for " << it.y << "\n";
                 // we have not already gotten this row, get it now
                 _maskOp->get(it.y, bbox.x(), bbox.r(), _sideMaskChannel, maskRow);
                 sideMaskVal = maskRow[_sideMaskChannel][it.x];
@@ -263,7 +267,6 @@ bool DeepCGrade::doDeepEngine(
                 currentYRow = it.y;
             } else
             {
-                std::cout << "we already had this row " << it.y <<"\n";
                 // we've already got this row, just get the value
                 sideMaskVal = maskRow[_sideMaskChannel][it.x];
                 sideMaskVal = clamp(sideMaskVal);
