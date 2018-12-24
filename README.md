@@ -7,7 +7,8 @@ Welcome to the DeepC, a suite of Deep compositing plugins for Foundry's Nuke. Wh
 
 ## Plugins
 
-What are the tools offered in the DeepC toolkit?
+What are the tools offered in the DeepC toolkit? You can read a quick description of each one below, and then head over to the [Examples](https://github.com/charlesangus/DeepC/wiki/Examples) page for some visuals.
+
 
 ### DeepCGrade
 
