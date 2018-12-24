@@ -85,7 +85,7 @@ class DeepCPNoise : public DeepFilterOp
     // values knobs write into go here
     ChannelSet _outputChannelSet;
     ChannelSet _auxiliaryChannelSet;
-    bool _unpremultOutput;
+    bool _premultOutput;
     bool _unpremultPosition;
 
     Matrix4 _axisKnob;
@@ -158,8 +158,8 @@ class DeepCPNoise : public DeepFilterOp
             _doDeepMask(false),
             _invertDeepMask(false),
             _unpremultDeepMask(true),
-            _unpremultOutput(false),
-            _unpremultPosition(false),
+            _premultOutput(true),
+            _unpremultPosition(true),
             _noiseType(0),
             _doSideMask(false),
             _invertSideMask(false),
@@ -567,7 +567,7 @@ bool DeepCPNoise::doDeepEngine(
                 if (_doDeepMask || _doSideMask)
                     output_val = output_val * mask;
 
-                if (!_unpremultOutput)
+                if (_premultOutput)
                     output_val *= alpha;
 
                 deepOutputPixel.push_back(output_val);
@@ -582,17 +582,17 @@ bool DeepCPNoise::doDeepEngine(
 void DeepCPNoise::knobs(Knob_Callback f)
 {
     Input_ChannelSet_knob(f, &_auxiliaryChannelSet, 0, "position_data");
-    Bool_knob(f, &_unpremultPosition, "unpremult_position_data", "Unpremult Position Data");
+    Bool_knob(f, &_unpremultPosition, "unpremult_position_data", "unpremult position");
     Tooltip(f, "Uncheck for ScanlineRender Deep data, check for (probably) "
     "all other renderers. Nuke stores position data from the ScanlineRender "
     "node unpremultiplied, contrary to the Deep spec. Other renderers "
     "presumably store position data (and all other data) premultiplied, "
     "as required by the Deep spec.");
     Input_ChannelSet_knob(f, &_outputChannelSet, 0, "output");
-    Bool_knob(f, &_unpremultOutput, "unpremult_output", "output unpremultiplied");
+    Bool_knob(f, &_premultOutput, "premult_output", "premult output");
     Tooltip(f, "If, for some reason, you want your mask stored without "
-    "premultipling it, contrary to the Deep spec. "
-    "Should probably never be checked.");
+    "premultipling it, contrary to the Deep spec, uncheck this. "
+    "Should probably always be checked.");
 
 
     Divider(f);
