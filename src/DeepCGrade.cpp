@@ -10,7 +10,7 @@
 
 using namespace DD::Image;
 
-class DeepCWrapper : public DeepFilterOp
+class DeepCGrade : public DeepFilterOp
 {
     // values knobs write into go here
     ChannelSet _processChannelSet;
@@ -52,7 +52,7 @@ class DeepCWrapper : public DeepFilterOp
 
     public:
 
-        DeepCWrapper(Node* node) : DeepFilterOp(node),
+        DeepCGrade(Node* node) : DeepFilterOp(node),
             _processChannelSet(Mask_RGB),
             _sideMaskChannel(Chan_Black),
             _rememberedMaskChannel(Chan_Black),
@@ -99,7 +99,7 @@ class DeepCWrapper : public DeepFilterOp
 };
 
 
-void DeepCWrapper::_validate(bool for_real)
+void DeepCGrade::_validate(bool for_real)
 {
 
     for (int i = 0; i < 3; i++) {
@@ -155,7 +155,7 @@ void DeepCWrapper::_validate(bool for_real)
 }
 
 
-bool DeepCWrapper::test_input(int input, Op *op)  const
+bool DeepCGrade::test_input(int input, Op *op)  const
 {
     switch (input)
     {
@@ -167,7 +167,7 @@ bool DeepCWrapper::test_input(int input, Op *op)  const
 }
 
 
-Op* DeepCWrapper::default_input(int input) const
+Op* DeepCGrade::default_input(int input) const
 {
     switch (input)
     {
@@ -180,7 +180,7 @@ Op* DeepCWrapper::default_input(int input) const
 }
 
 
-const char* DeepCWrapper::input_label(int input, char* buffer) const
+const char* DeepCGrade::input_label(int input, char* buffer) const
 {
     switch (input)
     {
@@ -189,7 +189,7 @@ const char* DeepCWrapper::input_label(int input, char* buffer) const
     }
 }
 
-void DeepCWrapper::getDeepRequests(Box bbox, const DD::Image::ChannelSet& channels, int count, std::vector<RequestData>& requests)
+void DeepCGrade::getDeepRequests(Box bbox, const DD::Image::ChannelSet& channels, int count, std::vector<RequestData>& requests)
 {
     if (!input0())
         return;
@@ -203,7 +203,7 @@ void DeepCWrapper::getDeepRequests(Box bbox, const DD::Image::ChannelSet& channe
         _maskOp->request(bbox, _sideMaskChannel, count);
 }
 
-bool DeepCWrapper::doDeepEngine(
+bool DeepCGrade::doDeepEngine(
     Box bbox,
     const DD::Image::ChannelSet& requestedChannels,
     DeepOutputPlane& deepOutPlane
@@ -415,7 +415,7 @@ bool DeepCWrapper::doDeepEngine(
     return true;
 }
 
-void DeepCWrapper::knobs(Knob_Callback f)
+void DeepCGrade::knobs(Knob_Callback f)
 {
     Input_ChannelSet_knob(f, &_processChannelSet, 0, "channels");
     Bool_knob(f, &_unpremult, "unpremult", "(un)premult by alpha");
@@ -455,7 +455,7 @@ void DeepCWrapper::knobs(Knob_Callback f)
     Float_knob(f, &_mix, "mix");
 }
 
-int DeepCWrapper::knob_changed(DD::Image::Knob* k)
+int DeepCGrade::knob_changed(DD::Image::Knob* k)
 {
     if (k->is("inputChange"))
     {
@@ -479,7 +479,7 @@ int DeepCWrapper::knob_changed(DD::Image::Knob* k)
     return DeepFilterOp::knob_changed(k);
 }
 
-const char* DeepCWrapper::node_help() const
+const char* DeepCGrade::node_help() const
 {
     return
     "Deep Grade with inline Deep masking and side-input"
