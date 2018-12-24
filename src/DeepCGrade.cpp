@@ -307,7 +307,7 @@ bool DeepCGrade::doDeepEngine(
                         deepMaskVal = 1.0f - deepMaskVal;
                 } else
                 {
-                    deepMaskVal = 1.0f;
+                    deepMaskVal = 0.0f;
                 }
             }
 
