@@ -48,6 +48,8 @@ class DeepCPMatte : public DeepFilterOp
     bool _invertSideMask;
     float _mix;
 
+    ChannelSet allNeededDeepChannels;
+
     public:
 
         DeepCPMatte(Node* node) : DeepFilterOp(node),
@@ -65,7 +67,8 @@ class DeepCPMatte : public DeepFilterOp
             _premultOutput(true),
             _doSideMask(false),
             _invertSideMask(false),
-            _mix(1.0f)
+            _mix(1.0f),
+            allNeededDeepChannels(Chan_Black)
         {
             // defaults mostly go here
             _positionPick[0] = _positionPick[1] = 0.0f;
@@ -77,6 +80,7 @@ class DeepCPMatte : public DeepFilterOp
             _falloffGamma = 1.0f;
         }
 
+        void findNeededDeepChannels(ChannelSet& neededDeepChannels);
         void _validate(bool);
         bool test_input(int n, Op *op)  const;
         Op* default_input(int input) const;
@@ -94,6 +98,19 @@ class DeepCPMatte : public DeepFilterOp
         virtual Op* op() { return this; }
         const char* node_help() const;
 };
+
+void DeepCPMatte::findNeededDeepChannels(ChannelSet& neededDeepChannels)
+{
+    neededDeepChannels = Chan_Black;
+    neededDeepChannels += _outputChannelSet;
+    neededDeepChannels += _auxiliaryChannelSet;
+    if (_doDeepMask)
+        neededDeepChannels += _deepMaskChannel;
+    if (_premultOutput || _unpremultDeepMask)
+        neededDeepChannels += Chan_Alpha;
+    neededDeepChannels += Chan_DeepBack;
+    neededDeepChannels += Chan_DeepFront;
+}
 
 
 void DeepCPMatte::_validate(bool for_real)
@@ -119,6 +136,8 @@ void DeepCPMatte::_validate(bool for_real)
     { _doDeepMask = true; }
     else
     { _doDeepMask = false; }
+
+    findNeededDeepChannels(allNeededDeepChannels);
 
     DeepFilterOp::_validate(for_real);
 
@@ -150,29 +169,28 @@ void DeepCPMatte::getDeepRequests(Box bbox, const DD::Image::ChannelSet& channel
 
 bool DeepCPMatte::doDeepEngine(
     Box bbox,
-    const DD::Image::ChannelSet& outputChannels,
-    DeepOutputPlane& deep_out_plane
+    const DD::Image::ChannelSet& requestedChannels,
+    DeepOutputPlane& deepOutPlane
     )
 {
     if (!input0())
         return true;
 
-    deep_out_plane = DeepOutputPlane(outputChannels, bbox);
-
-    DD::Image::ChannelSet get_channels = outputChannels;
-    get_channels += _auxiliaryChannelSet;
-    get_channels += _deepMaskChannel;
+    DD::Image::ChannelSet getChannels = requestedChannels;
+    getChannels += allNeededDeepChannels;
 
     DeepPlane deepInPlane;
-    if (!input0()->deepEngine(bbox, get_channels, deepInPlane))
+    if (!input0()->deepEngine(bbox, getChannels, deepInPlane))
         return false;
 
     ChannelSet available;
     available = deepInPlane.channels();
 
+    DeepInPlaceOutputPlane inPlaceOutPlane(requestedChannels, bbox);
+    inPlaceOutPlane.reserveSamples(deepInPlane.getTotalSampleCount());
     const DD::Image::ChannelSet inputChannels = input0()->deepInfo().channels();
 
-    const int nOutputChans = outputChannels.size();
+    const int nOutputChans = requestedChannels.size();
 
     // mask input stuff
     float sideMaskVal;
@@ -181,11 +199,9 @@ bool DeepCPMatte::doDeepEngine(
 
     if (_doSideMask)
     {
-        _maskOp->get(bbox.y(), bbox.x(), bbox.r(), _sideMaskChannelSet, maskRow);
+        _maskOp->get(bbox.y(), bbox.x(), bbox.r(), _sideMaskChannel, maskRow);
         currentYRow = bbox.y();
     }
-
-    float result;
 
     for (Box::iterator it = bbox.begin(); it != bbox.end(); ++it)
     {
@@ -194,47 +210,48 @@ bool DeepCPMatte::doDeepEngine(
 
         // Get the deep pixel from the input plane:
         DeepPixel deepInPixel = deepInPlane.getPixel(it);
-        const unsigned nSamples = deepInPixel.getSampleCount();
-        if (nSamples == 0) {
-            deep_out_plane.addHole(); // no samples, skip it
-            continue;
-        }
+        size_t inPixelSamples = deepInPixel.getSampleCount();
 
-        // create initialized, don't create and then init
-        size_t outPixelSize;
-        outPixelSize = nSamples * nOutputChans * sizeof(float);
-        DeepOutPixel deepOutputPixel(outPixelSize);
+        inPlaceOutPlane.setSampleCount(it, deepInPixel.getSampleCount());
+        DeepOutputPixel outPixel = inPlaceOutPlane.getPixel(it);
 
         if (_doSideMask)
         {
             if (currentYRow != it.y)
             {
                 // we have not already gotten this row, get it now
-                _maskOp->get(it.y, bbox.x(), bbox.r(), _sideMaskChannelSet, maskRow);
+                _maskOp->get(it.y, bbox.x(), bbox.r(), _sideMaskChannel, maskRow);
+                sideMaskVal = maskRow[_sideMaskChannel][it.x];
+                sideMaskVal = clamp(sideMaskVal);
                 currentYRow = it.y;
+            } else
+            {
+                // we've already got this row, just get the value
+                sideMaskVal = maskRow[_sideMaskChannel][it.x];
+                sideMaskVal = clamp(sideMaskVal);
             }
-            sideMaskVal = maskRow[_sideMaskChannel][it.x];
-            sideMaskVal = clamp(sideMaskVal);
             if (_invertSideMask)
                 sideMaskVal = 1.0f - sideMaskVal;
         }
 
         // for each sample
-        for (unsigned sampleNo=0; sampleNo < nSamples; ++sampleNo)
+        for (size_t sampleNo = 0; sampleNo < inPixelSamples; sampleNo++)
         {
 
             // alpha
             float alpha;
-            if (available.contains(Chan_Alpha))
+            alpha = 1.0f;
+            if (
+                available.contains(Chan_Alpha)
+                && (_premultOutput || _unpremultDeepMask)
+                )
             {
                 alpha = deepInPixel.getUnorderedSample(sampleNo, Chan_Alpha);
-            } else
-            {
-                alpha = 1.0f;
             }
 
             // deep masking
             float deepMaskVal;
+            deepMaskVal = 0.0f;
             if (_doDeepMask)
             {
                 if (available.contains(_deepMaskChannel))
@@ -252,11 +269,12 @@ bool DeepCPMatte::doDeepEngine(
                     }
                     if (_invertDeepMask)
                         deepMaskVal = 1.0f - deepMaskVal;
-                } else
-                {
-                    deepMaskVal = 1.0f;
                 }
             }
+
+            const float* inData = deepInPixel.getUnorderedSample(sampleNo);
+            float* outData = outPixel.getWritableUnorderedSample(sampleNo);
+
 
             // generate mask
             float m;
@@ -308,38 +326,37 @@ bool DeepCPMatte::doDeepEngine(
 
             // process the sample
             float input_val;
-            float inside_val;
-            float outside_val;
-            float output_val;
             int cIndex;
             // for each channel
-            foreach(z, outputChannels)
+            foreach(z, requestedChannels)
             {
                 cIndex = colourIndex(z);
-                // passthrough channels we know we should ignore
-                // passthrough all but the output channels
-                // only operate on rgb, i.e. first three channels
-                // bail if mix is 0
+
+                // channels we know we should pass through
                 if (
-                       z == Chan_Z
-                    || z == Chan_Alpha
+                       z == Chan_Alpha
+                    || z == Chan_Z
                     || z == Chan_DeepFront
                     || z == Chan_DeepBack
-                    || !_outputChannelSet.contains(z)
+                    || z == _auxiliaryChannelSet
+                    || cIndex >= 3
                     || _mix == 0.0f
+                    || (_doDeepMask && deepMaskVal == 0.0f)
+                    || (_doSideMask && sideMaskVal == 0.0f)
+                    || !_outputChannelSet.contains(z)
                     )
                 {
-                    deepOutputPixel.push_back(deepInPixel.getUnorderedSample(sampleNo, z));
+                    *outData = *inData;
+                    ++outData;
+                    ++inData;
                     continue;
                 }
 
                 input_val = m;
-                output_val = m;
+                if (_premultOutput)
+                    input_val /= alpha;
 
-
-                // we checked for mix == 0 earlier, only need to handle non-1
-                if (_mix < 1.0f)
-                    output_val *= _mix;
+                *outData = m;
 
                 float mask = 1.0f;
 
@@ -350,17 +367,25 @@ bool DeepCPMatte::doDeepEngine(
                     mask *= deepMaskVal;
 
                 if (_doDeepMask || _doSideMask)
-                    output_val = output_val * mask;
+                    *outData = *outData * mask + input_val * (1.0f - mask);
+
+                // we checked for mix == 0 earlier, only need to handle non-1
+                if (_mix < 1.0f)
+                    *outData = *outData * _mix + input_val * (1.0f - _mix);
 
                 if (_premultOutput)
-                    output_val *= alpha;
+                    *outData *= alpha;
 
-                deepOutputPixel.push_back(output_val);
+                if (available.contains(z))
+                    ++inData;
+                ++outData;
             }
         }
-        // Add to output plane:
-        deep_out_plane.addPixel(deepOutputPixel);
     }
+
+    // inPlaceOutPlane.reviseSamples();
+    mFnAssert(inPlaceOutPlane.isComplete());
+    deepOutPlane = inPlaceOutPlane;
     return true;
 }
 
