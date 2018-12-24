@@ -2,11 +2,13 @@ CXX = g++
 LINK = g++
 STD = -std=c++11
 FASTNOISEDIR = /media/sf_git/FastNoise/
-CXX_FLAGS = -g -c \
-            -DUSE_GLEW \
-            -I$(NDK_STUB)$(1)/include \
-            -I$(FASTNOISEDIR) \
-            -DFN_EXAMPLE_PLUGIN -fPIC -msse
+CXXFLAGS = -c \
+           -DUSE_GLEW \
+           -I$(NDK_STUB)$(1)/include \
+           -I$(FASTNOISEDIR) \
+           -DFN_EXAMPLE_PLUGIN \
+           -fPIC \
+           -msse -msse2 -msse3 -mssse3 -msse4 -msse4.1 -msse4.2 -mavx
 LINK_FLAGS = -L$(NDK_STUB)$(1) \
              -L$(FASTNOISEDIR) \
              -L./ \
@@ -37,14 +39,22 @@ SRC_FILES = $(wildcard $(SRC_DIR)/*.cpp)
 # SUB IN NUKE VERSION
 PLUGIN_FILES = $(foreach NV, $(NVS), $(patsubst $(SRC_DIR)/%.cpp, $(PLUGIN_DIR_STUB)/Linux/$(NV)/%.so, $(SRC_FILES)))
 $(info $$PLUGIN_FILES is [${PLUGIN_FILES}])
+
+# setup flags for debug and release
+debug:      CXXFLAGS    += -g
+release:    CXXFLAGS    += -O3
+
 all: $(PLUGIN_FILES)
+
+debug: all
+release: all
 
 .SECONDARY:
 
 # GENERIC OBJ - WILL BE FILLED IN FOR EACH NUKE VERSION
 define OBJ_TEMPLATE
 $(OBJ_DIR)/%.o: $$(SRC_DIR)/%.cpp | $(OBJ_DIR)
-	$(CXX) $(STD) $(CXX_FLAGS) -o $$@ $$<
+	$(CXX) $(STD) $(CXXFLAGS) -o $$@ $$<
 $(OBJ_DIR):
 	mkdir -p $$@
 endef
