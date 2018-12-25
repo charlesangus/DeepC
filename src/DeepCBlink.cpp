@@ -17,6 +17,21 @@ using namespace DD::Image;
 // #include "DDImage/Blink.h"
 #include "Blink/Blink.h"
 
+/*
+TODO: optimizer to use blink or not depending on what's faster - presumably,
+if the GPU is available, there's a sample count above which it's better to
+use the GPU and below which it's not worth the copying of data
+TODO: test on a real machine with a real gpu
+TODO: test with more complex function - gain isn't really stressing Blink
+TODO: any way to get a bigger chunk of the image to process? or is Deep limited
+to working in scanlines. blink would likely be better on larger pieces...
+TODO: tidy this up to be a pleasant-looking proof of concept, maybe a grade node
+TODO: possible to do a few (dozen) rows at a time, cache the output, and then
+other engine calls can just check if this row is cached already and return it?
+presumably yes...
+TODO: 
+*/
+
 
 static const char* const shapeNames[] = { "sphere", "cube", 0 };
 static const char* const falloffTypeNames[] = { "smooth", "linear", 0 };
