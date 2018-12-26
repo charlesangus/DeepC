@@ -82,14 +82,14 @@ class DeepCPMatte : public DeepFilterOp
 
         void findNeededDeepChannels(ChannelSet& neededDeepChannels);
         void _validate(bool);
-        bool test_input(int n, Op *op)  const;
-        Op* default_input(int input) const;
-        const char* input_label(int input, char* buffer) const;
         virtual bool doDeepEngine(DD::Image::Box box, const ChannelSet &channels, DeepOutputPlane &plane);
         virtual void getDeepRequests(DD::Image::Box box, const DD::Image::ChannelSet& channels, int count, std::vector<RequestData>& requests);
         virtual void knobs(Knob_Callback);
         virtual int knob_changed(DD::Image::Knob* k);
 
+        bool test_input(int n, Op *op)  const;
+        Op* default_input(int input) const;
+        const char* input_label(int input, char* buffer) const;
         virtual int minimum_inputs() const { return 2; }
         virtual int maximum_inputs() const { return 2; }
         virtual int optional_input() const { return 1; }
@@ -98,6 +98,7 @@ class DeepCPMatte : public DeepFilterOp
         virtual Op* op() { return this; }
         const char* node_help() const;
 };
+
 
 void DeepCPMatte::findNeededDeepChannels(ChannelSet& neededDeepChannels)
 {
