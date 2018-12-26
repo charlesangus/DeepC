@@ -195,14 +195,14 @@ class DeepCPNoise : public DeepFilterOp
         }
 
         void _validate(bool);
-        bool test_input(int n, Op *op)  const;
-        Op* default_input(int input) const;
-        const char* input_label(int input, char* buffer) const;
         virtual bool doDeepEngine(DD::Image::Box box, const ChannelSet &channels, DeepOutputPlane &plane);
         virtual void getDeepRequests(DD::Image::Box box, const DD::Image::ChannelSet& channels, int count, std::vector<RequestData>& requests);
         virtual void knobs(Knob_Callback);
         virtual int knob_changed(DD::Image::Knob* k);
 
+        bool test_input(int n, Op *op)  const;
+        Op* default_input(int input) const;
+        const char* input_label(int input, char* buffer) const;
         virtual int minimum_inputs() const { return 2; }
         virtual int maximum_inputs() const { return 2; }
         virtual int optional_input() const { return 1; }
@@ -288,40 +288,6 @@ void DeepCPNoise::_validate(bool for_real)
     _deepInfo = DeepInfo(_deepInfo.formats(), _deepInfo.box(), new_channelset);
 }
 
-
-bool DeepCPNoise::test_input(int input, Op *op)  const
-{
-    switch (input)
-    {
-        case 0:
-            return DeepFilterOp::test_input(input, op);
-        case 1:
-            return dynamic_cast<Iop*>(op) != 0;
-    }
-}
-
-
-Op* DeepCPNoise::default_input(int input) const
-{
-    switch (input)
-    {
-        case 0:
-            return DeepFilterOp::default_input(input);
-         case 1:
-             Black* dummy;
-             return dynamic_cast<Op*>(dummy);
-    }
-}
-
-
-const char* DeepCPNoise::input_label(int input, char* buffer) const
-{
-    switch (input)
-    {
-        case 0: return "";
-        case 1: return "mask";
-    }
-}
 
 void DeepCPNoise::getDeepRequests(Box bbox, const DD::Image::ChannelSet& channels, int count, std::vector<RequestData>& requests)
 {
@@ -715,6 +681,42 @@ int DeepCPNoise::knob_changed(DD::Image::Knob* k)
 
     return DeepFilterOp::knob_changed(k);
 }
+
+
+bool DeepCPNoise::test_input(int input, Op *op)  const
+{
+    switch (input)
+    {
+        case 0:
+            return DeepFilterOp::test_input(input, op);
+        case 1:
+            return dynamic_cast<Iop*>(op) != 0;
+    }
+}
+
+
+Op* DeepCPNoise::default_input(int input) const
+{
+    switch (input)
+    {
+        case 0:
+            return DeepFilterOp::default_input(input);
+         case 1:
+             Black* dummy;
+             return dynamic_cast<Op*>(dummy);
+    }
+}
+
+
+const char* DeepCPNoise::input_label(int input, char* buffer) const
+{
+    switch (input)
+    {
+        case 0: return "";
+        case 1: return "mask";
+    }
+}
+
 
 const char* DeepCPNoise::node_help() const
 {
