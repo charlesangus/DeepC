@@ -29,7 +29,7 @@ TODO: tidy this up to be a pleasant-looking proof of concept, maybe a grade node
 TODO: possible to do a few (dozen) rows at a time, cache the output, and then
 other engine calls can just check if this row is cached already and return it?
 presumably yes...
-TODO: 
+TODO:
 */
 
 
@@ -58,33 +58,7 @@ kernel GainKernel : ImageComputationKernel<eComponentWise>\n\
 class DeepCBlink : public DeepFilterOp
 {
     // values knobs write into go here
-    ChannelSet _outputChannelSet;
-    ChannelSet _auxiliaryChannelSet;
-    bool _premultOutput;
-    bool _unpremultPosition;
-
-    float _positionPick[2];
-    Matrix4 _axisKnob;
-
-    int _shape;
-    int _falloffType;
-    float _falloff;
-    float _falloffGamma;
-
-    // masking
-    Channel _deepMaskChannel;
-    ChannelSet _deepMaskChannelSet;
-    bool _doDeepMask;
-    bool _invertDeepMask;
-    bool _unpremultDeepMask;
-
-    Channel _sideMaskChannel;
-    Channel _rememberedMaskChannel;
-    ChannelSet _sideMaskChannelSet;
-    Iop* _maskOp;
-    bool _doSideMask;
-    bool _invertSideMask;
-    float _mix;
+    ChannelSet _processChannelSet;
 
     ChannelSet allNeededDeepChannels;
 
@@ -100,66 +74,39 @@ class DeepCBlink : public DeepFilterOp
     public:
 
         DeepCBlink(Node* node) : DeepFilterOp(node),
-            _outputChannelSet(Mask_RGB),
-            _auxiliaryChannelSet(Chan_Black),
-            _deepMaskChannel(Chan_Black),
-            _deepMaskChannelSet(Chan_Black),
-            _rememberedMaskChannel(Chan_Black),
-            _sideMaskChannel(Chan_Black),
-            _sideMaskChannelSet(Chan_Black),
-            _doDeepMask(false),
-            _invertDeepMask(false),
-            _unpremultDeepMask(true),
-            _unpremultPosition(true),
-            _premultOutput(true),
-            _doSideMask(false),
-            _invertSideMask(false),
-            _mix(1.0f),
-            allNeededDeepChannels(Chan_Black)
-            , _gpuDevice(Blink::ComputeDevice::CurrentGPUDevice())
-            , _useGPUIfAvailable(true)
-            , _gainProgram(GainKernel)
+            _processChannelSet(Mask_RGB),
+            allNeededDeepChannels(Chan_Black),
+            _gpuDevice(Blink::ComputeDevice::CurrentGPUDevice()),
+            _useGPUIfAvailable(true),
+            _gainProgram(GainKernel)
         {
-            // defaults mostly go here
-            _positionPick[0] = _positionPick[1] = 0.0f;
-            _axisKnob.makeIdentity();
-
-            _shape = 0;
-            _falloffType = 0;
-            _falloff = 1.0f;
-            _falloffGamma = 1.0f;
-
             _gain = 1.0f;
         }
 
         void findNeededDeepChannels(ChannelSet& neededDeepChannels);
         void _validate(bool);
-        bool test_input(int n, Op *op)  const;
-        Op* default_input(int input) const;
-        const char* input_label(int input, char* buffer) const;
         virtual bool doDeepEngine(DD::Image::Box box, const ChannelSet &channels, DeepOutputPlane &plane);
         virtual void getDeepRequests(DD::Image::Box box, const DD::Image::ChannelSet& channels, int count, std::vector<RequestData>& requests);
         virtual void knobs(Knob_Callback);
-        virtual int knob_changed(DD::Image::Knob* k);
 
-        virtual int minimum_inputs() const { return 2; }
-        virtual int maximum_inputs() const { return 2; }
-        virtual int optional_input() const { return 1; }
+
+        // bool test_input(int n, Op *op)  const;
+        // Op* default_input(int input) const;
+        // const char* input_label(int input, char* buffer) const;
+        // virtual int minimum_inputs() const { return 1; }
+        // virtual int maximum_inputs() const { return 1; }
         static const Iop::Description d;
         const char* Class() const { return d.name; }
         virtual Op* op() { return this; }
         const char* node_help() const;
 };
 
+
 void DeepCBlink::findNeededDeepChannels(ChannelSet& neededDeepChannels)
 {
     neededDeepChannels = Chan_Black;
-    neededDeepChannels += _outputChannelSet;
-    neededDeepChannels += _auxiliaryChannelSet;
-    if (_doDeepMask)
-        neededDeepChannels += _deepMaskChannel;
-    if (_premultOutput || _unpremultDeepMask)
-        neededDeepChannels += Chan_Alpha;
+    neededDeepChannels += _processChannelSet;
+    neededDeepChannels += Chan_Alpha;
     neededDeepChannels += Chan_DeepBack;
     neededDeepChannels += Chan_DeepFront;
 }
@@ -168,36 +115,9 @@ void DeepCBlink::findNeededDeepChannels(ChannelSet& neededDeepChannels)
 void DeepCBlink::_validate(bool for_real)
 {
 
-    _falloffGamma = clamp(_falloffGamma, 0.00001f, 65500.0f);
-
-    // make safe the mix
-    _mix = clamp(_mix, 0.0f, 1.0f);
-
-    _sideMaskChannelSet = _sideMaskChannel;
-
-    _maskOp = dynamic_cast<Iop*>(Op::input(1));
-    if (_maskOp != NULL && _sideMaskChannel != Chan_Black)
-    {
-        _maskOp->validate(for_real);
-        _doSideMask = true;
-    } else {
-        _doSideMask = false;
-    }
-
-    if (_deepMaskChannel != Chan_Black)
-    { _doDeepMask = true; }
-    else
-    { _doDeepMask = false; }
-
     findNeededDeepChannels(allNeededDeepChannels);
 
     DeepFilterOp::_validate(for_real);
-
-    // add our output channels to the _deepInfo
-    ChannelSet new_channelset;
-    new_channelset = _deepInfo.channels();
-    new_channelset += _outputChannelSet;
-    _deepInfo = DeepInfo(_deepInfo.formats(), _deepInfo.box(), new_channelset);
 }
 
 
@@ -208,15 +128,8 @@ void DeepCBlink::getDeepRequests(Box bbox, const DD::Image::ChannelSet& channels
 
     // make sure we're asking for all required channels
     ChannelSet get_channels = channels;
-    get_channels += _auxiliaryChannelSet;
-    get_channels += _deepMaskChannel;
-    get_channels += Chan_DeepBack;
-    get_channels += Chan_DeepFront;
+    get_channels += allNeededDeepChannels;
     requests.push_back(RequestData(input0(), bbox, get_channels, count));
-
-    // make sure to request anything we want from the Iop side, too
-    if (_doSideMask)
-        _maskOp->request(bbox, _sideMaskChannelSet, count);
 }
 
 bool DeepCBlink::doDeepEngine(
@@ -256,6 +169,19 @@ bool DeepCBlink::doDeepEngine(
         imageBuffer[i] = .05f * (float)i;
     }
 
+    int numChannels;
+    if (_processChannelSet.all())
+    {
+        // handle dealing with multiple channelsets...
+        // for now, just bail
+        return false;
+    }
+    numChannels = _processChannelSet.size(); // need to know how many channels we're dealing with so we can tell Blink
+    if (numChannels > 4)
+    {
+        // we could handle this somehow, but for now, just bail
+        return false;
+    }
     std::vector<float*> outDatas; // vector of pointers to writable data for the channels we're Blink processing
     for (Box::iterator it = bbox.begin(); it != bbox.end(); ++it)
     {
@@ -284,11 +210,11 @@ bool DeepCBlink::doDeepEngine(
             {
                 cIndex = colourIndex(z);
 
-                if (_outputChannelSet.contains(z))
+                if (_processChannelSet.contains(z))
                 {
                     *imageBufferData = *inData;
                     ++imageBufferData;
-                    outDatas.push_back(outData);
+                    outDatas.push_back(outData); // we wil need this pointer later, to write the Blinkified data into
                 } else {
                     *outData = *inData;
                 }
@@ -310,11 +236,20 @@ bool DeepCBlink::doDeepEngine(
 
     // create a blink image to stuff our buffer into
     Blink::Rect falseRect = {0, 0, totalSamples + 1, 1}; // x1, y1, x2, y2
-    Blink::PixelInfo aPixelInfo = {4, kBlinkDataFloat};
+    Blink::PixelInfo aPixelInfo = {numChannels, kBlinkDataFloat}; // number of channels, afaict float is correct for second parameter
     Blink::ImageInfo imageInfo(falseRect, aPixelInfo);
 
     Blink::Image blinkImage(imageInfo, computeDevice);
-    Blink::BufferDesc bufferDesc(sizeof(float) * 4, sizeof(float) * totalSamples * 4, sizeof(float));
+    // set up a BufferDesc so Blink knows what we're giving it
+    // pixelStepBytes: length in bytes to step from one pixel to the next,
+    // rowStepBytes: length in bytes from one row to the next (likely only to be one row),
+    // componentStepBytes: length in bytes from one componenent to the next
+    Blink::BufferDesc bufferDesc(
+        sizeof(float) * numChannels,
+        sizeof(float) * totalSamples * numChannels,
+        sizeof(float));
+
+    // copy our image buffer into the blink image
     blinkImage.copyFromBuffer(imageBuffer, bufferDesc);
 
     // Distribute our input image from the device used by NUKE to our ComputeDevice.
@@ -325,10 +260,9 @@ bool DeepCBlink::doDeepEngine(
     Blink::ComputeDeviceBinder binder(computeDevice);
 
     // Make a vector containing the images we want to run the first kernel over.
+    // if we're passing in multiple images, i.e. multiple inputs to the Blink
+    // kernel, we would add them to this vector
     std::vector<Blink::Image> images;
-
-    // // The gain kernel requires only the output image as input/output.
-    images.clear();
     images.push_back(blinkImageOnComputeDevice);
 
     // Make a Blink::Kernel from the source in _gainProgram to do the gain.
@@ -349,10 +283,9 @@ bool DeepCBlink::doDeepEngine(
     {
         if (Op::aborted())
             return false; // bail fast on user-interrupt
-        **it = *outImageBufferData;
+        **it = *outImageBufferData; //need to double de-reference the iterator, once to get the pointer, once to get the data pointed to
         ++outImageBufferData;
     }
-
 
     // inPlaceOutPlane.reviseSamples();
     mFnAssert(inPlaceOutPlane.isComplete());
@@ -362,43 +295,9 @@ bool DeepCBlink::doDeepEngine(
 
 void DeepCBlink::knobs(Knob_Callback f)
 {
-    Input_ChannelSet_knob(f, &_auxiliaryChannelSet, 0, "position_data");
-    Bool_knob(f, &_unpremultPosition, "unpremult_position_data", "unpremult position");
-    Tooltip(f, "Uncheck for ScanlineRender Deep data, check for (probably) "
-    "all other renderers. Nuke stores position data from the ScanlineRender "
-    "node unpremultiplied, contrary to the Deep spec. Other renderers "
-    "presumably store position data (and all other data) premultiplied, "
-    "as required by the Deep spec.");
-    Input_ChannelSet_knob(f, &_outputChannelSet, 0, "output");
-    Bool_knob(f, &_premultOutput, "premult_output", "premult output");
-    Tooltip(f, "If, for some reason, you want your mask stored without "
-    "premultipling it, contrary to the Deep spec, uncheck this. "
-    "Should probably always be checked.");
-
+    Input_ChannelSet_knob(f, &_processChannelSet, 0, "output");
 
     Divider(f);
-    BeginGroup(f, "Position");
-    Axis_knob(f, &_axisKnob, "selection");
-    EndGroup(f); // Position
-
-    Divider(f, "");
-    Enumeration_knob(f, &_shape, shapeNames, "shape");
-    Enumeration_knob(f, &_falloffType, falloffTypeNames, "falloffType");
-    Float_knob(f, &_falloff, "falloff");
-    Float_knob(f, &_falloffGamma, "falloff_gamma");
-
-    Divider(f, "");
-
-    Input_Channel_knob(f, &_deepMaskChannel, 1, 0, "deep_mask", "deep input mask");
-    Bool_knob(f, &_invertDeepMask, "invert_deep_mask", "invert");
-    Bool_knob(f, &_unpremultDeepMask, "unpremult_deep_mask", "unpremult");
-
-    Input_Channel_knob(f, &_sideMaskChannel, 1, 1, "side_mask", "side input mask");
-    Bool_knob(f, &_invertSideMask, "invert_mask", "invert");
-    Float_knob(f, &_mix, "mix");
-
-
-    Divider(f, "");
     // Add GPU knobs
     Newline(f, "Local GPU: ");
     const bool hasGPU = _gpuDevice.available();
@@ -415,69 +314,10 @@ void DeepCBlink::knobs(Knob_Callback f)
 }
 
 
-int DeepCBlink::knob_changed(DD::Image::Knob* k)
-{
-    if (k->is("inputChange"))
-    {
-        // test input 1
-        bool input1_connected = dynamic_cast<Iop*>(input(1)) != 0;
-        if (!input1_connected)
-        {
-            _rememberedMaskChannel = _sideMaskChannel;
-            knob("side_mask")->set_value(Chan_Black);
-        } else
-        {
-            if (_rememberedMaskChannel == Chan_Black)
-                { knob("side_mask")->set_value(Chan_Alpha); }
-            else
-                { knob("side_mask")->set_value(_rememberedMaskChannel); }
-        }
-        return 1;
-    }
-
-    return DeepFilterOp::knob_changed(k);
-}
-
-
-bool DeepCBlink::test_input(int input, Op *op)  const
-{
-    switch (input)
-    {
-        case 0:
-            return DeepFilterOp::test_input(input, op);
-        case 1:
-            return dynamic_cast<Iop*>(op) != 0;
-    }
-}
-
-
-Op* DeepCBlink::default_input(int input) const
-{
-    switch (input)
-    {
-        case 0:
-            return DeepFilterOp::default_input(input);
-         case 1:
-             Black* dummy;
-             return dynamic_cast<Op*>(dummy);
-    }
-}
-
-
-const char* DeepCBlink::input_label(int input, char* buffer) const
-{
-    switch (input)
-    {
-        case 0: return "";
-        case 1: return "mask";
-    }
-}
-
-
 const char* DeepCBlink::node_help() const
 {
     return
-    "Generate noise to use for grading operations.";
+    "Proof-of-concept of running Deep through Blink.";
 }
 
 static Op* build(Node* node) { return new DeepCBlink(node); }
