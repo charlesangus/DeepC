@@ -338,8 +338,6 @@ bool DeepCPMatte::doDeepEngine(
                     || z == Chan_Z
                     || z == Chan_DeepFront
                     || z == Chan_DeepBack
-                    || z == _auxiliaryChannelSet
-                    || cIndex >= 3
                     || _mix == 0.0f
                     || (_doDeepMask && deepMaskVal == 0.0f)
                     || (_doSideMask && sideMaskVal == 0.0f)
