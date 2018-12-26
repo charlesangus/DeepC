@@ -156,10 +156,7 @@ void DeepCPMatte::getDeepRequests(Box bbox, const DD::Image::ChannelSet& channel
 
     // make sure we're asking for all required channels
     ChannelSet get_channels = channels;
-    get_channels += _auxiliaryChannelSet;
-    get_channels += _deepMaskChannel;
-    get_channels += Chan_DeepBack;
-    get_channels += Chan_DeepFront;
+    get_channels += allNeededDeepChannels;
     requests.push_back(RequestData(input0(), bbox, get_channels, count));
 
     // make sure to request anything we want from the Iop side, too
