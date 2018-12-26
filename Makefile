@@ -14,7 +14,8 @@ LINK_FLAGS = -L$(NDK_STUB)$(1) \
              -L./ \
              -shared
 LIBS = -lDDImage \
-       -lFastNoise
+       -lFastNoise \
+	   -lRIPFramework
 
 # plugins will be built against each of these nuke versions
 NVS = 11.2v5 11.3v1
