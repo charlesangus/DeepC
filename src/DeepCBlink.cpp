@@ -215,13 +215,22 @@ bool DeepCBlink::doDeepEngine(
                     *imageBufferData = *inData;
                     ++imageBufferData;
                     outDatas.push_back(outData); // we wil need this pointer later, to write the Blinkified data into
-                } else {
-                    *outData = *inData;
                 }
+                *outData = *inData;
                 ++outData;
                 ++inData;
             }
         }
+    }
+
+    if (_processChannelSet == Chan_Black)
+    {
+        // get out if we're not supposed to do anything
+        // there's probably a cheaper way to do this
+        // inPlaceOutPlane.reviseSamples();
+        mFnAssert(inPlaceOutPlane.isComplete());
+        deepOutPlane = inPlaceOutPlane;
+        return true;
     }
 
     // Now we have the whole input plane in our output plane, and the ChannelSet
