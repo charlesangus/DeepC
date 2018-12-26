@@ -216,6 +216,8 @@ bool DeepCBlink::doDeepEngine(
                     ++imageBufferData;
                     outDatas.push_back(outData); // we wil need this pointer later, to write the Blinkified data into
                 }
+                // copy the whole input plane across; we'll overwrite the necessary
+                // data if we need to
                 *outData = *inData;
                 ++outData;
                 ++inData;
