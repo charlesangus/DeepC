@@ -2,23 +2,19 @@ CXX = g++
 LINK = g++
 STD = -std=c++11
 FASTNOISEDIR = /media/sf_git/FastNoise/
-CXXFLAGS = -c \
-           -DUSE_GLEW \
+CXXFLAGS = -c -g \
            -I$(NDK_STUB)$(1)/include \
            -I$(FASTNOISEDIR) \
-           -DFN_EXAMPLE_PLUGIN \
+		   -Isrc \
            -fPIC \
            -msse -msse2 -msse3 -mssse3 -msse4 -msse4.1 -msse4.2 -mavx
-LINK_FLAGS = -L$(NDK_STUB)$(1) \
-             -L$(FASTNOISEDIR) \
-             -L./ \
-             -shared
-LIBS = -lDDImage \
-       -lFastNoise \
-	   -lRIPFramework
+LINK_FLAGS = -shared \
+             -L$(NDK_STUB)$(1)
+LIBS = -lDDImage
 
 # plugins will be built against each of these nuke versions
-NVS = 11.2v5 11.3v1
+NVS = 11.2v5
+# 11.3v1
 
 # we assume that each Nuke version lives in a folder called NukeXX.XvX
 # in the same parent dir, so we can simply append to a stub
@@ -64,6 +60,12 @@ endef
 define PLG_TEMPLATE
 $(PLUGIN_DIR)/%.so: $(OBJ_DIR)/%.o | $(PLUGIN_DIR)
 	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$< $(LIBS)
+$(PLUGIN_DIR)/DeepCBlink.so: $(OBJ_DIR)/DeepCBlink.o | $(PLUGIN_DIR)
+	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$^ $(LIBS)
+$(PLUGIN_DIR)/DeepCGrade.so: $(OBJ_DIR)/DeepCGrade.o $(OBJ_DIR)/DeepCWrapper.o | $(PLUGIN_DIR)
+	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$^ $(LIBS) -lRIPFramework
+$(PLUGIN_DIR)/DeepCPNoise.so: $(OBJ_DIR)/DeepCPNoise.o | $(PLUGIN_DIR)
+	$(LINK) $(STD) $(LINK_FLAGS) -L$(FASTNOISEDIR) -o $$@ $$^ $(LIBS) -lFastNoise
 $(PLUGIN_DIR):
 	mkdir -p $$@
 endef
@@ -78,3 +80,4 @@ $(foreach NV,$(NVS),$(eval $(call PLG_TEMPLATE,$(NV))))
 
 clean:
 	rm -rf $(PLUGIN_FILES) $(OBJ_DIR_STUB)/*/*/*.o
+	rm -rf $(PLUGIN_FILES) $(OBJ_DIR_STUB)/*/*/*.so
