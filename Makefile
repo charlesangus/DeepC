@@ -2,7 +2,7 @@ CXX = g++
 LINK = g++
 STD = -std=c++11
 FASTNOISEDIR = /media/sf_git/FastNoise/
-CXXFLAGS = -c -g \
+CXXFLAGS = -c \
            -I$(NDK_STUB)$(1)/include \
            -I$(FASTNOISEDIR) \
 		   -Isrc \
