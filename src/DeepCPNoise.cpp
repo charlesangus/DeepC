@@ -65,7 +65,7 @@ static const FastNoise::CellularReturnType cellularReturnTypes[] = {
     FastNoise::Distance2Div,
 };
 
-class DeepCPN : public DeepCMWrapper
+class DeepCPNoise : public DeepCMWrapper
 {
 
     // knob variables
@@ -114,10 +114,10 @@ class DeepCPN : public DeepCMWrapper
 
     public:
 
-        DeepCPN(Node* node) : DeepCMWrapper(node)
+        DeepCPNoise(Node* node) : DeepCMWrapper(node)
         {
             _auxChannelKnobName = "position_data";
-            
+
             _axisKnob.makeIdentity();
 
             // noise
@@ -174,7 +174,7 @@ class DeepCPN : public DeepCMWrapper
         const char* node_help() const;
 };
 
-void DeepCPN::_validate(bool for_real)
+void DeepCPNoise::_validate(bool for_real)
 {
     // must call parent function first
     // in case we want to modify the _deepInfo
@@ -228,7 +228,7 @@ mattes and so on.
 TODO: probably better to work with a pointer and length, and then this can
 return arrays of data if desired.
 */
-void DeepCPN::wrappedPerSample(
+void DeepCPNoise::wrappedPerSample(
     Box::iterator it,
     size_t sampleNo,
     float alpha,
@@ -281,7 +281,7 @@ void DeepCPN::wrappedPerSample(
 }
 
 
-void DeepCPN::wrappedPerChannel(
+void DeepCPNoise::wrappedPerChannel(
     const float inputVal,
     float perSampleData,
     Channel z,
@@ -341,7 +341,7 @@ void DeepCPN::wrappedPerChannel(
 }
 
 
-void DeepCPN::custom_knobs(Knob_Callback f)
+void DeepCPNoise::custom_knobs(Knob_Callback f)
 {
     BeginGroup(f, "Position");
     Axis_knob(f, &_axisKnob, "selection");
@@ -425,12 +425,12 @@ void DeepCPN::custom_knobs(Knob_Callback f)
 }
 
 
-const char* DeepCPN::node_help() const
+const char* DeepCPNoise::node_help() const
 {
     return
     "Generate noise to use for grading operations.";
 }
 
 
-static Op* build(Node* node) { return new DeepCPN(node); }
-const Op::Description DeepCPN::d("DeepCPN", 0, build);
+static Op* build(Node* node) { return new DeepCPNoise(node); }
+const Op::Description DeepCPNoise::d("DeepCPNoise", 0, build);
