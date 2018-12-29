@@ -29,9 +29,11 @@ NDK_STUB = /usr/local/Nuke
 SRC_DIR = src
 OBJ_DIR_STUB = obj
 PLUGIN_DIR_STUB = plugin
+RELEASE_DIR_STUB = release
 # $(1) will be subbed with the Nuke version
 OBJ_DIR = $(OBJ_DIR_STUB)/Linux/$(1)
 PLUGIN_DIR = $(PLUGIN_DIR_STUB)/Linux/$(1)
+RELEASE_DIR = $(RELEASE_DIR_STUB)
 
 # GET ALL THE SOURCE FILES
 SRC_FILES = $(wildcard $(SRC_DIR)/*.cpp)
@@ -43,7 +45,7 @@ SRC_FILES = $(wildcard $(SRC_DIR)/*.cpp)
 PLUGIN_FILES = $(foreach NV, $(NVS), $(patsubst $(SRC_DIR)/%.cpp, $(PLUGIN_DIR_STUB)/Linux/$(NV)/%.so, $(SRC_FILES)))
 $(info $$PLUGIN_FILES is [${PLUGIN_FILES}])
 
-.PHONY: all clean
+.PHONY: all release clean clean-release
 
 all: $(PLUGIN_FILES)
 
@@ -71,9 +73,21 @@ $(PLUGIN_DIR)/DeepCBlink.so: $(OBJ_DIR)/DeepCBlink.o | $(PLUGIN_DIR)
 	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$^ $(LIBS)
 $(PLUGIN_DIR)/DeepCGrade.so: $(OBJ_DIR)/DeepCGrade.o $(OBJ_DIR)/DeepCWrapper.o | $(PLUGIN_DIR)
 	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$^ $(LIBS) -lRIPFramework
+$(PLUGIN_DIR)/DeepCSaturation.so: $(OBJ_DIR)/DeepCSaturation.o $(OBJ_DIR)/DeepCWrapper.o | $(PLUGIN_DIR)
+	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$^ $(LIBS) -lRIPFramework
 $(PLUGIN_DIR)/DeepCPNoise.so: $(OBJ_DIR)/DeepCPNoise.o $(OBJ_DIR)/DeepCMWrapper.o $(OBJ_DIR)/DeepCWrapper.o | $(PLUGIN_DIR)
 	$(LINK) $(STD) $(LINK_FLAGS) -L$(FASTNOISEDIR) -o $$@ $$^ $(LIBS) -lFastNoise
 $(PLUGIN_DIR):
+	mkdir -p $$@
+endef
+
+release: $(foreach NV,$(NVS),release-$(NV))
+
+define RELEASE_TEMPLATE
+release-$(NV): $(PLUGIN_FILES) | $(RELEASE_DIR)
+	rm -rf $(PLUGIN_DIR)/*Wrapper*.so
+	zip -j $(RELEASE_DIR)/Linux-$(1) $(PLUGIN_DIR)/*
+$(RELEASE_DIR):
 	mkdir -p $$@
 endef
 
@@ -84,7 +98,11 @@ endef
 # sub in the templates
 $(foreach NV,$(NVS),$(eval $(call OBJ_TEMPLATE,$(NV))))
 $(foreach NV,$(NVS),$(eval $(call PLG_TEMPLATE,$(NV))))
+$(foreach NV,$(NVS),$(eval $(call RELEASE_TEMPLATE,$(NV))))
 
 clean:
 	rm -rf $(PLUGIN_FILES) $(OBJ_DIR_STUB)/*/*/*.o
 	rm -rf $(PLUGIN_FILES) $(PLUGIN_DIR_STUB)/*/*/*.so
+
+clean-release:
+	rm -rf $(RELEASE_DIR)
