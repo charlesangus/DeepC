@@ -214,7 +214,9 @@ bool DeepCWrapper::doDeepEngine(
                 cIndex = colourIndex(z);
 
 
-                const float& inData = deepInPixel.getUnorderedSample(sampleNo, z);
+                const float& inData = inPixelChannels.contains(z)
+                                      ? deepInPixel.getUnorderedSample(sampleNo, z)
+                                      : 0.0f;
                 float& outData = outPixel.getWritableUnorderedSample(sampleNo, z);
 
                 // channels we know we should pass through
