@@ -36,6 +36,10 @@ Includes:
 - 3D perlin noise
 - 3D cubic noise
 
+### DeepCID
+
+Easily manipulate IDs in Deep data, combine with other masks, etc. Can take integer object IDs (better for Deep) or traditional colour mattes.
+
 ### DeepCAddChannels
 
 Ever wanted to add a channel or channelset to a Deep stream? Well, now you can! And without doing that gross DeepToImage->DeepMerge hack.
@@ -43,6 +47,10 @@ Ever wanted to add a channel or channelset to a Deep stream? Well, now you can! 
 ### DeepCRemoveChannels
 
 Ever had extra channels in a Deep stream, cluttering things up? Wish you could get rid of them? Look no further...
+
+### DeepCBlink
+
+Just a toy at the moment which performs a gain on the image, but demonstrates an approach to getting Blink working on Deep images. This approach works for kernels which need only the current pixel to operate. Experimental proof-of-concept, not really "useful" as a node.
 
 ## Why DeepC?
 
@@ -75,12 +83,6 @@ Now that basic functionality is implemented, the focus will be on accelerating t
 Coming soon...
 
 A clone of the regular Saturation node, but Deep. Takes Deep masks in the B-stream and flat masks in the side input.
-
-### DeepCID
-
-Coming soon...
-
-Easily manipulate IDs in Deep data, combine with other masks, etc.
 
 ### DeepCShuffle
 
