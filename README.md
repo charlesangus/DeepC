@@ -4,6 +4,13 @@
 
 Welcome to the DeepC, a suite of Deep compositing plugins for Foundry's Nuke. While I'm sure large studios have something similar to these tools, this open-source project makes them available to small and mid-size studios.
 
+## TOC
+
+[Plugins](https://github.com/charlesangus/DeepC#plugins)
+[Why DeepC?](https://github.com/charlesangus/DeepC#why-deepc)
+[Get Them!](https://github.com/charlesangus/DeepC#get-them)
+[Build](https://github.com/charlesangus/DeepC#build)
+[Contributing](https://github.com/charlesangus/DeepC#contributing)
 
 ## Plugins
 
