@@ -241,7 +241,7 @@ bool DeepCWrapper::doDeepEngine(
                 if (_unpremult)
                     inputVal /= alpha;
 
-                wrappedPerChannel(inputVal, 1.0f, z, outData);
+                wrappedPerChannel(inputVal, perSampleData, z, outData);
 
                 float mask = _mix;
                 mask *= sideMaskVal;
