@@ -36,3 +36,8 @@ install_and_run.bash
 
 # ignore temp files
 *~
+
+# generated folders
+obj
+plugin
+release
