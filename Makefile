@@ -60,11 +60,17 @@ endef
 define PLG_TEMPLATE
 $(PLUGIN_DIR)/%.so: $(OBJ_DIR)/%.o | $(PLUGIN_DIR)
 	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$< $(LIBS)
+$(PLUGIN_DIR)/DeepCMWrapper.so: $(OBJ_DIR)/DeepCMWrapper.o $(OBJ_DIR)/DeepCWrapper.o | $(PLUGIN_DIR)
+	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$^ $(LIBS)
+$(PLUGIN_DIR)/DeepCPMatte.so: $(OBJ_DIR)/DeepCPMatte.o $(OBJ_DIR)/DeepCMWrapper.o $(OBJ_DIR)/DeepCWrapper.o | $(PLUGIN_DIR)
+	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$^ $(LIBS)
+$(PLUGIN_DIR)/DeepCID.so: $(OBJ_DIR)/DeepCID.o $(OBJ_DIR)/DeepCMWrapper.o $(OBJ_DIR)/DeepCWrapper.o | $(PLUGIN_DIR)
+	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$^ $(LIBS)
 $(PLUGIN_DIR)/DeepCBlink.so: $(OBJ_DIR)/DeepCBlink.o | $(PLUGIN_DIR)
 	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$^ $(LIBS)
 $(PLUGIN_DIR)/DeepCGrade.so: $(OBJ_DIR)/DeepCGrade.o $(OBJ_DIR)/DeepCWrapper.o | $(PLUGIN_DIR)
 	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$^ $(LIBS) -lRIPFramework
-$(PLUGIN_DIR)/DeepCPNoise.so: $(OBJ_DIR)/DeepCPNoise.o | $(PLUGIN_DIR)
+$(PLUGIN_DIR)/DeepCPNoise.so: $(OBJ_DIR)/DeepCPNoise.o $(OBJ_DIR)/DeepCMWrapper.o $(OBJ_DIR)/DeepCWrapper.o | $(PLUGIN_DIR)
 	$(LINK) $(STD) $(LINK_FLAGS) -L$(FASTNOISEDIR) -o $$@ $$^ $(LIBS) -lFastNoise
 $(PLUGIN_DIR):
 	mkdir -p $$@
