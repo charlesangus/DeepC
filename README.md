@@ -21,6 +21,10 @@ What are the tools offered in the DeepC toolkit? You can read a quick descriptio
 
 The familiar Grade node, updated to work with Deep data. Grading without masking isn't much use, so DeepCGrade supports both Deep and flat masks working in tandem, for maximum flexibility. Use DeepCPMatte or DeepCPNoise to create Deep masks upstream of DeepCGrade, or pipe in a roto in the side, just like you're used to doing.
 
+### DeepCSaturation
+
+Simple rec709 saturation function on Deep data. Same masking options as DeepCGrade.
+
 ### DeepCWorld
 
 Generates world position data from straight Deep renders and a Camera node. Useful if your 3D render doesn't come with a Deep position pass. Just pipe in the Camera, choose the channels to stick the World Position data in, and there you are! Can output premultiplied position data (like most renderers), or unpremultiplied position data (like the ScanlineRender node).
