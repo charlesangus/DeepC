@@ -12,27 +12,28 @@ using namespace DD::Image;
 
 class DeepCWrapper : public DeepFilterOp
 {
-    // values knobs write into go here
-    ChannelSet _processChannelSet;
-    bool _unpremult;
+    protected:
+        // values knobs write into go here
+        ChannelSet _processChannelSet;
+        bool _unpremult;
 
-    // masking
-    Channel _deepMaskChannel;
-    bool _doDeepMask;
-    bool _invertDeepMask;
-    bool _unpremultDeepMask;
+        // masking
+        Channel _deepMaskChannel;
+        bool _doDeepMask;
+        bool _invertDeepMask;
+        bool _unpremultDeepMask;
 
-    Channel _sideMaskChannel;
-    Channel _rememberedMaskChannel;
-    Iop* _maskOp;
-    bool _doSideMask;
-    bool _invertSideMask;
+        Channel _sideMaskChannel;
+        Channel _rememberedMaskChannel;
+        Iop* _maskOp;
+        bool _doSideMask;
+        bool _invertSideMask;
 
-    float _mix;
+        float _mix;
 
-    float _gain;
+        float _gain;
 
-    ChannelSet _allNeededDeepChannels;
+        ChannelSet _allNeededDeepChannels;
 
     public:
 
