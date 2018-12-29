@@ -46,8 +46,12 @@ class DeepCGrade : public DeepCWrapper
 
         void _validate(bool);
 
-        virtual void wrappedPerSample(Box::iterator it, DeepPixel deepInPixel, size_t sampleNo, float &perSampleData);
-        virtual void wrappedPerChannel(const float inputVal, float perSampleData, Channel z, float& outData);
+        virtual void wrappedPerChannel(
+            const float inputVal,
+            float perSampleData,
+            Channel z,
+            float& outData
+            );
 
         virtual void custom_knobs(Knob_Callback f);
 
@@ -87,22 +91,15 @@ void DeepCGrade::_validate(bool for_real)
 }
 
 /*
-Do per-sample, channel-agnostic processing. Used for things like generating P
-mattes and so on.
-TODO: probably better to work with a pointer and length, and then this can
-return arrays of data if desired.
-*/
-void DeepCGrade::wrappedPerSample(Box::iterator it, DeepPixel deepInPixel, size_t sampleNo, float &perSampleData)
-{
-    perSampleData = 1.0f;
-}
-
-
-/*
 The guts. Do any processing on the channel value. The result will be masked
 and mixed appropriately.
 */
-void DeepCGrade::wrappedPerChannel(const float inputVal, float perSampleData, Channel z, float& outData)
+void DeepCGrade::wrappedPerChannel(
+    const float inputVal,
+    float perSampleData,
+    Channel z,
+    float& outData
+    )
 {
     int cIndex = colourIndex(z);
     if (_reverse)
