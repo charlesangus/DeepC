@@ -6,11 +6,11 @@ Welcome to the DeepC, a suite of Deep compositing plugins for Foundry's Nuke. Wh
 
 ## TOC
 
-[Plugins](https://github.com/charlesangus/DeepC#plugins)
-[Why DeepC?](https://github.com/charlesangus/DeepC#why-deepc)
-[Get Them!](https://github.com/charlesangus/DeepC#get-them)
-[Build](https://github.com/charlesangus/DeepC#build)
-[Contributing](https://github.com/charlesangus/DeepC#contributing)
+- [Plugins](https://github.com/charlesangus/DeepC#plugins)
+- [Why DeepC?](https://github.com/charlesangus/DeepC#why-deepc)
+- [Get Them!](https://github.com/charlesangus/DeepC#get-them)
+- [Build](https://github.com/charlesangus/DeepC#build)
+- [Contributing](https://github.com/charlesangus/DeepC#contributing)
 
 ## Plugins
 
