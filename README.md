@@ -89,12 +89,6 @@ Now that basic functionality is implemented, the focus will be on accelerating t
 
 ## Future Plans
 
-### DeepCSat
-
-Coming soon...
-
-A clone of the regular Saturation node, but Deep. Takes Deep masks in the B-stream and flat masks in the side input.
-
 ### DeepCShuffle
 
 Coming soon...
