@@ -12,6 +12,13 @@ LINK_FLAGS = -shared \
              -L$(NDK_STUB)$(1)
 LIBS = -lDDImage
 
+DEBUG ?= 1
+ifeq (DEBUG, 1)
+    CXXFLAGS += -g
+else
+    CXXFLAGS += -O3
+endif
+
 # plugins will be built against each of these nuke versions
 NVS = 11.2v5 11.3v1
 
@@ -36,14 +43,9 @@ SRC_FILES = $(wildcard $(SRC_DIR)/*.cpp)
 PLUGIN_FILES = $(foreach NV, $(NVS), $(patsubst $(SRC_DIR)/%.cpp, $(PLUGIN_DIR_STUB)/Linux/$(NV)/%.so, $(SRC_FILES)))
 $(info $$PLUGIN_FILES is [${PLUGIN_FILES}])
 
-# setup flags for debug and release
-debug:      CXXFLAGS    += -g
-release:    CXXFLAGS    += -O3
+.PHONY: all clean
 
 all: $(PLUGIN_FILES)
-
-debug: all
-release: all
 
 .SECONDARY:
 
@@ -85,4 +87,4 @@ $(foreach NV,$(NVS),$(eval $(call PLG_TEMPLATE,$(NV))))
 
 clean:
 	rm -rf $(PLUGIN_FILES) $(OBJ_DIR_STUB)/*/*/*.o
-	rm -rf $(PLUGIN_FILES) $(OBJ_DIR_STUB)/*/*/*.so
+	rm -rf $(PLUGIN_FILES) $(PLUGIN_DIR_STUB)/*/*/*.so
