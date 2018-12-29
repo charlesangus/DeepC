@@ -75,26 +75,21 @@ bool DeepCRemoveChannels::doDeepEngine(DD::Image::Box bbox, const DD::Image::Cha
         // Get the deep pixel from the input plane:
         DeepPixel deepInPixel = deepInPlane.getPixel(it);
         size_t inPixelSamples = deepInPixel.getSampleCount();
+        ChannelSet inPixelChannels = deepInPixel.channels();
 
         inPlaceOutPlane.setSampleCount(it, deepInPixel.getSampleCount());
         DeepOutputPixel outPixel = inPlaceOutPlane.getPixel(it);
 
         // copy samples to DeepOutputPlane
-        for (size_t sample = 0; sample < inPixelSamples; sample++)
+        for (size_t sampleNo = 0; sampleNo < inPixelSamples; sampleNo++)
         {
-            const float* inData = deepInPixel.getUnorderedSample(sample);
-            float* outData = outPixel.getWritableUnorderedSample(sample);
             foreach (z, requestedChannels)
             {
-                if (inputChannels.contains(z))
-                {
-                    *outData = *inData;
-                    ++outData;
-                    ++inData;
-                } else {
-                    *outData = 0.0f;
-                    ++outData;
-                }
+                const float& inData = inPixelChannels.contains(z)
+                                      ? deepInPixel.getUnorderedSample(sampleNo, z)
+                                      : 0.0f;
+                float& outData = outPixel.getWritableUnorderedSample(sampleNo, z);
+                outData = inData;
             }
         }
     }
