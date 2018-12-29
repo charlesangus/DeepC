@@ -43,7 +43,7 @@ public:
     DeepCWorld(Node* node) : DeepPixelOp(node),
     output_channelset(Chan_Black),
     _depthSampleType(0),
-    _premultOutput(false)
+    _premultOutput(true)
     {}
 
 
