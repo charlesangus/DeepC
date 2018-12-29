@@ -125,3 +125,17 @@ Possible someday...
 ### Mac
 
 Unlikely...
+
+## Contributing
+
+Currently, DeepC is maintained by only me. I'd love your contributions, though!
+
+If you'd like to contribute, please fork the project make a new feature branch for your contribution. Ideally, also let me know what you're up to so we don't duplicate efforts!
+
+Once you're happy with your work, submit a pull request so I can merge your work back in.
+
+### Conventions
+
+- 4-space hard tabs
+- private/protected variable names start with '_' (one underscore)
+- variable/function names use lowerCamelCase
