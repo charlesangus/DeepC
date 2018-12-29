@@ -369,7 +369,9 @@ const char* DeepCWrapper::input_label(int input, char* buffer) const
 const char* DeepCWrapper::node_help() const
 {
     return
-    "Like NukeWrapper, but for Deep nodes.";
+    "Like NukeWrapper, but for Deep nodes."
+    "Should never be used directly, exists "
+    "to be inherited from.";
 }
 
 static Op* build(Node* node) { return new DeepCWrapper(node); }
