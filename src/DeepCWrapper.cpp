@@ -74,7 +74,13 @@ mattes and so on.
 TODO: probably better to work with a pointer and length, and then this can
 return arrays of data if desired.
 */
-void DeepCWrapper::wrappedPerSample(Box::iterator it, DeepPixel deepInPixel, size_t sampleNo, float &perSampleData)
+void DeepCWrapper::wrappedPerSample(
+    Box::iterator it,
+    size_t sampleNo,
+    float alpha,
+    DeepPixel deepInPixel,
+    float &perSampleData
+    )
 {
     perSampleData = 1.0f;
 }
@@ -201,7 +207,7 @@ bool DeepCWrapper::doDeepEngine(
             }
 
             float perSampleData;
-            wrappedPerSample(it, deepInPixel, sampleNo, perSampleData);
+            wrappedPerSample(it, sampleNo, alpha, deepInPixel, perSampleData);
 
             // process the sample
             float inputVal;
