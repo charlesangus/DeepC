@@ -27,7 +27,6 @@ the DeepInfo object to e.g. add more channels into the stream.
 */
 void DeepCWrapper::_validate(bool for_real)
 {
-
     // make safe the mix - values outside of 0-1 are meaningless
     _mix = clamp(_mix, 0.0f, 1.0f);
 
@@ -56,7 +55,12 @@ void DeepCWrapper::_validate(bool for_real)
 }
 
 
-void DeepCWrapper::getDeepRequests(Box bbox, const DD::Image::ChannelSet& channels, int count, std::vector<RequestData>& requests)
+void DeepCWrapper::getDeepRequests(
+    Box bbox,
+    const DD::Image::ChannelSet& channels,
+    int count,
+    std::vector<RequestData>& requests
+    )
 {
     if (!input0())
         return;
@@ -90,7 +94,12 @@ void DeepCWrapper::wrappedPerSample(
 The guts. Do any processing on the channel value. The result will be masked
 and mixed appropriately.
 */
-void DeepCWrapper::wrappedPerChannel(const float inputVal, float perSampleData, Channel z, float& outData)
+void DeepCWrapper::wrappedPerChannel(
+    const float inputVal,
+    float perSampleData,
+    Channel z,
+    float& outData
+    )
 {
     outData = inputVal * _gain;
 }
