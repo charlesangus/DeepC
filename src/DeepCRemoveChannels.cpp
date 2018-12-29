@@ -5,7 +5,7 @@
 
 using namespace DD::Image;
 
-class DeepCAddChannels : public DeepFilterOp
+class DeepCRemoveChannels : public DeepFilterOp
 {
     ChannelSet channels;
     ChannelSet channels2;
@@ -13,7 +13,7 @@ class DeepCAddChannels : public DeepFilterOp
     ChannelSet channels4;
 public:
 
-    DeepCAddChannels(Node* node) : DeepFilterOp(node)
+    DeepCRemoveChannels(Node* node) : DeepFilterOp(node)
     {
         channels = Mask_None;
         channels2 = channels3 = channels4 = Mask_None;
@@ -31,26 +31,29 @@ public:
     const char* node_help() const;
 };
 
-void DeepCAddChannels::_validate(bool for_real)
+
+void DeepCRemoveChannels::_validate(bool for_real)
 {
     DeepFilterOp::_validate(for_real);
 
     ChannelSet new_channelset;
     new_channelset = _deepInfo.channels();
-    new_channelset += channels;
-    new_channelset += channels2;
-    new_channelset += channels3;
-    new_channelset += channels4;
+    new_channelset -= channels;
+    new_channelset -= channels2;
+    new_channelset -= channels3;
+    new_channelset -= channels4;
     _deepInfo = DeepInfo(_deepInfo.formats(), _deepInfo.box(), new_channelset);
 }
 
-void DeepCAddChannels::getDeepRequests(Box bbox, const DD::Image::ChannelSet& requestedChannels, int count, std::vector<RequestData>& requests)
+
+void DeepCRemoveChannels::getDeepRequests(Box bbox, const DD::Image::ChannelSet& requestedChannels, int count, std::vector<RequestData>& requests)
 {
     //deepInput = dynamic_cast<DeepOp*>(input0());
     requests.push_back(RequestData(input0(), bbox, requestedChannels, count));
 }
 
-bool DeepCAddChannels::doDeepEngine(DD::Image::Box bbox, const DD::Image::ChannelSet& requestedChannels, DeepOutputPlane& deepOutPlane)
+
+bool DeepCRemoveChannels::doDeepEngine(DD::Image::Box bbox, const DD::Image::ChannelSet& requestedChannels, DeepOutputPlane& deepOutPlane)
 {
     if (!input0())
         return true;
@@ -102,7 +105,8 @@ bool DeepCAddChannels::doDeepEngine(DD::Image::Box bbox, const DD::Image::Channe
     return true;
 }
 
-void DeepCAddChannels::knobs(Knob_Callback f)
+
+void DeepCRemoveChannels::knobs(Knob_Callback f)
 {
     ChannelMask_knob(f, &channels, "channels");
     ChannelMask_knob(f, &channels2, "channels2", "and");
@@ -110,12 +114,13 @@ void DeepCAddChannels::knobs(Knob_Callback f)
     ChannelMask_knob(f, &channels4, "channels4", "and");
 }
 
-const char* DeepCAddChannels::node_help() const
+
+const char* DeepCRemoveChannels::node_help() const
 {
     return
-    "Add Channels to a Deep data stream.";
+    "Remove channels from a Deep data stream.";
 }
 
 
-static Op* build(Node* node) { return new DeepCAddChannels(node); }
-const Op::Description DeepCAddChannels::d("DeepCAddChannels", 0, build);
+static Op* build(Node* node) { return new DeepCRemoveChannels(node); }
+const Op::Description DeepCRemoveChannels::d("DeepCRemoveChannels", 0, build);
