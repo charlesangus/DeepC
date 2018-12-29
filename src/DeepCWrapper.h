@@ -54,19 +54,41 @@ class DeepCWrapper : public DeepFilterOp
             _gain = 1.0f;
         }
 
-        void findNeededDeepChannels(ChannelSet& neededDeepChannels);
-        void _validate(bool);
-        void getDeepRequests(DD::Image::Box box, const DD::Image::ChannelSet& channels, int count, std::vector<RequestData>& requests);
+        virtual void findNeededDeepChannels(
+            ChannelSet& neededDeepChannels
+            );
+        virtual void _validate(bool);
+        virtual void getDeepRequests(
+            DD::Image::Box box,
+            const DD::Image::ChannelSet& channels,
+            int count,
+            std::vector<RequestData>& requests
+            );
 
-        virtual void wrappedPerSample(Box::iterator it, DeepPixel deepInPixel, size_t sampleNo, float &perSampleData);
-        virtual void wrappedPerChannel(const float inputVal, float perSampleData, Channel z, float& outData);
+        virtual void wrappedPerSample(
+            Box::iterator it,
+            size_t sampleNo,
+            float alpha,
+            DeepPixel deepInPixel,
+            float &perSampleData
+            );
+        virtual void wrappedPerChannel(
+            const float inputVal,
+            float perSampleData,
+            Channel z,
+            float& outData
+            );
 
-        bool doDeepEngine(DD::Image::Box box, const ChannelSet &channels, DeepOutputPlane &plane);
-        void top_knobs(Knob_Callback f);
+        bool doDeepEngine(
+            DD::Image::Box box,
+            const ChannelSet &channels,
+            DeepOutputPlane &plane
+            );
+        virtual void top_knobs(Knob_Callback f);
         virtual void custom_knobs(Knob_Callback f);
-        void bottom_knobs(Knob_Callback f);
-        void knobs(Knob_Callback);
-        int knob_changed(DD::Image::Knob* k);
+        virtual void bottom_knobs(Knob_Callback f);
+        virtual void knobs(Knob_Callback f);
+        virtual int knob_changed(DD::Image::Knob* k);
 
 
         bool test_input(int n, Op *op)  const;
