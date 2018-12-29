@@ -13,8 +13,7 @@ LINK_FLAGS = -shared \
 LIBS = -lDDImage
 
 # plugins will be built against each of these nuke versions
-NVS = 11.2v5
-# 11.3v1
+NVS = 11.2v5 11.3v1
 
 # we assume that each Nuke version lives in a folder called NukeXX.XvX
 # in the same parent dir, so we can simply append to a stub
