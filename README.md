@@ -17,25 +17,25 @@ Welcome to the DeepC, a suite of Deep compositing plugins for Foundry's Nuke. Wh
 What are the tools offered in the DeepC toolkit? You can read a quick description of each one below, and then head over to the [Examples](https://github.com/charlesangus/DeepC/wiki/Examples) page for some visuals.
 
 
-### DeepCGrade ![](https://raw.githubusercontent.com/charlesangus/DeepC/v0.5.0/icons/DeepCGrade.png)
+### ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCGrade.png) DeepCGrade
 
 The familiar Grade node, updated to work with Deep data. Grading without masking isn't much use, so DeepCGrade supports both Deep and flat masks working in tandem, for maximum flexibility. Use DeepCPMatte or DeepCPNoise to create Deep masks upstream of DeepCGrade, or pipe in a roto in the side, just like you're used to doing.
 
-### DeepCSaturation
+### ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCSaturation.png) DeepCSaturation
 
 Simple rec709 saturation function on Deep data. Same masking options as DeepCGrade.
 
-### DeepCWorld
+### ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCWorld.png) DeepCWorld
 
 Generates world position data from straight Deep renders and a Camera node. Useful if your 3D render doesn't come with a Deep position pass. Just pipe in the Camera, choose the channels to stick the World Position data in, and there you are! Can output premultiplied position data (like most renderers), or unpremultiplied position data (like the ScanlineRender node).
 
 Because DeepCWorld uses the NDK, it can add channels freely to the Deep stream without using hacks (like the Constant->Shuffle->DeepToImage->DeepMerge trick), and it can easily grab the data it needs from the Camera node just by plugging it in.
 
-### DeepCPMatte
+### ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCPMatte.png) DeepCPMatte
 
 Generates a spherical or cubic mask from Deep position data, for use in other DeepC nodes. Outputs the mask in the channel of your choice. Like DeepCWorld, can create channels on the fly.
 
-### DeepCPNoise
+### ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCPNoise.png) DeepCPNoise
 
 Generates a 3D or 4D noise mask from Deep position data, for use in other DeepC nodes. Much better than the builtin Nuke noise options, this is based on the FastNoise library. Critically, it offers 4D fractal noise, so your 3D noise pass can evolve across a 4th dimension over time without sliding.
 
@@ -47,19 +47,19 @@ Includes:
 - 3D perlin noise
 - 3D cubic noise
 
-### DeepCID
+### ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCID.png) DeepCID
 
 Easily manipulate IDs in Deep data, combine with other masks, etc. Can take integer object IDs (better for Deep) or traditional colour mattes.
 
-### DeepCAddChannels
+### ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCAddChannels.png) DeepCAddChannels
 
 Ever wanted to add a channel or channelset to a Deep stream? Well, now you can! And without doing that gross DeepToImage->DeepMerge hack.
 
-### DeepCRemoveChannels
+### ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCRemoveChannels.png) DeepCRemoveChannels
 
 Ever had extra channels in a Deep stream, cluttering things up? Wish you could get rid of them? Look no further...
 
-### DeepCShuffle
+### ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCShuffle.png) DeepCShuffle
 
 Very basic Shuffle node for copying/blanking channels.
 
