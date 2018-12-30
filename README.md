@@ -59,6 +59,10 @@ Ever wanted to add a channel or channelset to a Deep stream? Well, now you can! 
 
 Ever had extra channels in a Deep stream, cluttering things up? Wish you could get rid of them? Look no further...
 
+### DeepCShuffle
+
+Very basic Shuffle node for copying/blanking channels.
+
 ### DeepCBlink
 
 Just a toy at the moment which performs a gain on the image, but demonstrates an approach to getting Blink working on Deep images. This approach works for kernels which need only the current pixel to operate. Experimental proof-of-concept, not really "useful" as a node.
