@@ -26,6 +26,10 @@ DeepCChannel.addCommand(
     "DeepCRemoveChannels",
     lambda: nuke.createNode("DeepCRemoveChannels"),
     icon="DeepCRemoveChannels.png")
+DeepCChannel.addCommand(
+    "DeepCShuffle",
+    lambda: nuke.createNode("DeepCShuffle"),
+    icon="DeepCShuffle.png")
 DeepCColor.addCommand(
     "DeepCGrade",
     lambda: nuke.createNode("DeepCGrade"),
