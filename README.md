@@ -17,7 +17,7 @@ Welcome to the DeepC, a suite of Deep compositing plugins for Foundry's Nuke. Wh
 What are the tools offered in the DeepC toolkit? You can read a quick description of each one below, and then head over to the [Examples](https://github.com/charlesangus/DeepC/wiki/Examples) page for some visuals.
 
 
-### DeepCGrade
+### DeepCGrade ![](https://raw.githubusercontent.com/charlesangus/DeepC/v0.5.0/icons/DeepCGrade.png)
 
 The familiar Grade node, updated to work with Deep data. Grading without masking isn't much use, so DeepCGrade supports both Deep and flat masks working in tandem, for maximum flexibility. Use DeepCPMatte or DeepCPNoise to create Deep masks upstream of DeepCGrade, or pipe in a roto in the side, just like you're used to doing.
 
