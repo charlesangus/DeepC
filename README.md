@@ -1,6 +1,6 @@
 # DeepC
 
-![DeepCAnglerfish](https://raw.githubusercontent.com/charlesangus/DeepC/master/icon/anglerfish_icon_medium_black.png?token=AEfZ8WAwpM_lo1i8A9D2iJY7ZDRI6tonks5cIuu-wA%3D%3D)
+![DeepCAnglerfish](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/anglerfish_icon_medium_black.png)
 
 Welcome to the DeepC, a suite of Deep compositing plugins for Foundry's Nuke. While I'm sure large studios have something similar to these tools, this open-source project makes them available to small and mid-size studios.
 
