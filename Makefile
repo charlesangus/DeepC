@@ -33,7 +33,8 @@ RELEASE_DIR_STUB = release
 # $(1) will be subbed with the Nuke version
 OBJ_DIR = $(OBJ_DIR_STUB)/Linux/$(1)
 PLUGIN_DIR = $(PLUGIN_DIR_STUB)/Linux/$(1)
-RELEASE_DIR = $(RELEASE_DIR_STUB)/Linux
+RELEASE_DIR = $(RELEASE_DIR_STUB)/Linux/$(1)
+ICON_DIR = icons
 RELEASE_VERSIONS = $(foreach NV,$(NVS),release-$(NV))
 # GET ALL THE SOURCE FILES
 SRC_FILES = $(wildcard $(SRC_DIR)/*.cpp)
@@ -81,16 +82,21 @@ $(PLUGIN_DIR):
 	mkdir -p $$@
 endef
 
-release: $(RELEASE_VERSIONS) | $(RELEASE_DIR)
+release: $(RELEASE_VERSIONS)
 
 define RELEASE_TEMPLATE
-release-$(NV): $(PLUGIN_FILES) | $(RELEASE_DIR)
-	rm -rf $(PLUGIN_DIR)/*Wrapper*.so
-	zip -j $(RELEASE_DIR)/Linux-$(1) $(PLUGIN_DIR)/*
+release-$(NV): $(PLUGIN_FILES)
+	mkdir -p $(RELEASE_DIR)
+	cp $(PLUGIN_DIR)/* $(RELEASE_DIR)/
+	cp python/* $(RELEASE_DIR)
+	mkdir -p $(RELEASE_DIR)/icons
+	cp icons/DeepC*.png $(RELEASE_DIR)/icons/
+	rm -rf $(RELEASE_DIR)/*Wrapper*.so
+	cd $(RELEASE_DIR); \
+	zip -r DeepC-Linux-$(1).zip *
+	cp $(RELEASE_DIR)/*.zip $(RELEASE_DIR_STUB)/
 endef
 
-$(RELEASE_DIR):
-	mkdir -p $@
 
 # print the substituted templates
 # $(foreach NV,$(NVS),$(info $(call OBJ_TEMPLATE,$(NV))))
@@ -106,4 +112,4 @@ clean:
 	rm -rf $(PLUGIN_FILES) $(PLUGIN_DIR_STUB)/*/*/*.so
 
 clean-release:
-	rm -rf $(RELEASE_DIR)
+	rm -rf $(RELEASE_DIR_STUB)/*
