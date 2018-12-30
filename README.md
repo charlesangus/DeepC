@@ -93,12 +93,6 @@ Now that basic functionality is implemented, the focus will be on accelerating t
 
 ## Future Plans
 
-### DeepCShuffle
-
-Coming soon...
-
-Simplified version of the Shuffle node for Deep images.
-
 ### DeepCompress
 
 Coming soon...
