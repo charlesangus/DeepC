@@ -23,9 +23,7 @@ class DeepCMWrapper : public DeepCWrapper
         // can override in child classes to change the name of the aux channel knob
         const char* _auxChannelKnobName;
 
-        // ChannelSet _processChannelSet;
         ChannelSet _auxiliaryChannelSet;
-        bool _premultOutput;
         bool _unpremultPosition;
 
         int _operation;
@@ -35,7 +33,7 @@ class DeepCMWrapper : public DeepCWrapper
         DeepCMWrapper(Node* node) : DeepCWrapper(node)
             , _auxChannelKnobName("input_data")
             , _auxiliaryChannelSet(Chan_Black)
-            , _premultOutput(true)
+            // , _premultOutput(true)
             , _unpremultPosition(true)
             , _operation(0)
         {

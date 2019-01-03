@@ -85,7 +85,7 @@ void DeepCMWrapper::top_knobs(Knob_Callback f)
     "presumably store position data (and all other data) premultiplied, "
     "as required by the Deep spec.");
     Input_ChannelSet_knob(f, &_processChannelSet, 0, "output");
-    Bool_knob(f, &_premultOutput, "premult_output", "premult output");
+    Bool_knob(f, &_unpremult, "unpremult", "(un)premult by alpha");
     Tooltip(f, "If, for some reason, you want your mask stored without "
     "premultipling it, contrary to the Deep spec, uncheck this. "
     "Should probably always be checked.");
