@@ -137,18 +137,18 @@ bool DeepCShuffle::doDeepEngine(DD::Image::Box bbox, const DD::Image::ChannelSet
 
 void DeepCShuffle::knobs(Knob_Callback f)
 {
-    Input_Channel_knob(f, &_inChannel0, 1, 0, "in");
+    Input_Channel_knob(f, &_inChannel0, 1, 0, "in0");
     Text_knob(f, ">>"); ClearFlags(f, Knob::STARTLINE);
-    Channel_knob(f, &_outChannel0, 1, "out"); ClearFlags(f, Knob::STARTLINE);
-    Input_Channel_knob(f, &_inChannel1, 1, 0, "in");
+    Channel_knob(f, &_outChannel0, 1, "out0"); ClearFlags(f, Knob::STARTLINE);
+    Input_Channel_knob(f, &_inChannel1, 1, 0, "in1");
     Text_knob(f, ">>"); ClearFlags(f, Knob::STARTLINE);
-    Channel_knob(f, &_outChannel1, 1, "out"); ClearFlags(f, Knob::STARTLINE);
-    Input_Channel_knob(f, &_inChannel2, 1, 0, "in");
+    Channel_knob(f, &_outChannel1, 1, "out1"); ClearFlags(f, Knob::STARTLINE);
+    Input_Channel_knob(f, &_inChannel2, 1, 0, "in2");
     Text_knob(f, ">>"); ClearFlags(f, Knob::STARTLINE);
-    Channel_knob(f, &_outChannel2, 1, "out"); ClearFlags(f, Knob::STARTLINE);
-    Input_Channel_knob(f, &_inChannel3, 1, 0, "in");
+    Channel_knob(f, &_outChannel2, 1, "out2"); ClearFlags(f, Knob::STARTLINE);
+    Input_Channel_knob(f, &_inChannel3, 1, 0, "in3");
     Text_knob(f, ">>"); ClearFlags(f, Knob::STARTLINE);
-    Channel_knob(f, &_outChannel3, 1, "out"); ClearFlags(f, Knob::STARTLINE);
+    Channel_knob(f, &_outChannel3, 1, "out3"); ClearFlags(f, Knob::STARTLINE);
 }
 
 const char* DeepCShuffle::node_help() const
