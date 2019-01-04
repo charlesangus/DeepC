@@ -8,6 +8,7 @@ enum { SMOOTH, LINEAR };
 
 class DeepCID : public DeepCMWrapper
 {
+    // const char* _auxChannelKnobName;
     Channel _auxChannel;
 
     float _deepID;
@@ -87,14 +88,14 @@ void DeepCID::top_knobs(Knob_Callback f)
     // _auxiliaryChannelSet is actually a channel in this case, but they mostly
     // work similarly, afaict
     Input_Channel_knob(f, &_auxChannel, 1, 0, _auxChannelKnobName);
-    Bool_knob(f, &_unpremultPosition, "unpremult_position_data", "unpremult position");
+    Bool_knob(f, &_unpremultPosition, "unpremult_id", "unpremult id");
     Tooltip(f, "Uncheck for ScanlineRender Deep data, check for (probably) "
     "all other renderers. Nuke stores position data from the ScanlineRender "
     "node unpremultiplied, contrary to the Deep spec. Other renderers "
     "presumably store position data (and all other data) premultiplied, "
     "as required by the Deep spec.");
     Input_ChannelSet_knob(f, &_processChannelSet, 0, "output");
-    Bool_knob(f, &_premultOutput, "premult_output", "premult output");
+    Bool_knob(f, &_unpremult, "unpremult", "(un)premult");
     Tooltip(f, "If, for some reason, you want your mask stored without "
     "premultipling it, contrary to the Deep spec, uncheck this. "
     "Should probably always be checked.");
