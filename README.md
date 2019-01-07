@@ -139,7 +139,18 @@ Possible someday...
 
 ### Mac
 
-Unlikely...
+For Nuke 11, you must have Xcode 8.2 installed with clang (you may be able to use a slightly different version) - see [here for details from Foundry](https://learn.foundry.com/nuke/developers/113/ndkdevguide/appendixa/osx.html). Installing the smaller "Xcode Command Line" also appears to work well, using the command `xcode-select --install`
+
+For older versions of Nuke (10.5 and earlier) the plugins must be built with GCC, not Clang. [This page](https://learn.foundry.com/nuke/developers/105/ndkdevguide/appendixa/osx.html) recommends you use GCC 4.0, but GCC 4.2 appears to work perfectly. However acquiring either of these ancient versions can be a challenge (building the compiler from source is slow but may be the easiest way)
+
+With the appropriate compiler installed, to build:
+
+    mkdir build
+    cd build
+    cmake -D CMAKE_INSTALL_PREFIX=inst -D NUKE_INSTALL_PATH=/Applications/Nuke11.3v1/Nuke11.3v1.app/Contents/MacOS/ ..
+    make install
+
+The path must be changed to the installed version of Nuke. It should be the folder *which contains* the `include/` folder.
 
 ## Contributing
 
