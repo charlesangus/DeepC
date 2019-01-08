@@ -101,7 +101,7 @@ Much like how samples can be compressed in the renderer by merging samples close
 
 ## Build
 
-Build has been tested on Centos 6.8 with devtoolset-2 (as recommended in NDK dev guide). Compiles against 11.0-11.3, tested really only on 11.1. Let me know how it goes...
+Build has been tested on Centos 6.8 with devtoolset-2 (as recommended in NDK dev guide). Compiles against 11.2-11.3, tested really only on 11.2. Let me know how it goes...
 
 ### Linux
 
@@ -112,7 +112,11 @@ sudo wget http://people.centos.org/tru/devtools-2/devtools-2.repo -O /etc/yum.re
 sudo yum install devtoolset-2-gcc devtoolset-2-binutils devtoolset-2-gcc-c++ mesa-libGLU-devel
 ```
 
-You'll also need my fork of FastNoise to compile DeepCPNoise - instructions coming soon for that.
+You'll also need my fork of FastNoise compiled as a binary to compile DeepCPNoise - instructions coming soon for that. 
+
+```bash
+git clone https://github.com/charlesangus/FastNoise
+```
 
 Add to .bashrc on dev machine, or run before each build:
 
