@@ -112,10 +112,10 @@ sudo wget http://people.centos.org/tru/devtools-2/devtools-2.repo -O /etc/yum.re
 sudo yum install devtoolset-2-gcc devtoolset-2-binutils devtoolset-2-gcc-c++ mesa-libGLU-devel
 ```
 
-You'll also need my fork of FastNoise compiled as a binary to compile DeepCPNoise - instructions coming soon for that. 
+Clone:
 
 ```bash
-git clone https://github.com/charlesangus/FastNoise
+git clone --recurse-submodules https://github.com/charlesangus/FastNoise
 ```
 
 Add to .bashrc on dev machine, or run before each build:
@@ -124,6 +124,14 @@ Add to .bashrc on dev machine, or run before each build:
 # enable devtoolset-2
 source /opt/rh/devtoolset-2/enable
 ```
+
+Then, you should be able to run 
+
+```bash
+make release -jX
+```
+
+Where ```X``` is the number of cores you have available, so make can run parallelized.
 
 ### Windows
 
