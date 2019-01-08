@@ -1,7 +1,7 @@
 CXX = g++
 LINK = g++
 STD = -std=c++11
-FASTNOISEDIR = /media/sf_git/FastNoise/
+FASTNOISEDIR = FastNoise
 CXXFLAGS = -c \
            -I$(NDK_STUB)$(1)/include \
            -I$(FASTNOISEDIR) \
@@ -12,7 +12,7 @@ LINK_FLAGS = -shared \
              -L$(NDK_STUB)$(1)
 LIBS = -lDDImage
 
-DEBUG ?= 1
+DEBUG ?= 0
 ifeq (DEBUG, 1)
     CXXFLAGS += -g
 else
@@ -77,7 +77,7 @@ $(PLUGIN_DIR)/DeepCGrade.so: $(OBJ_DIR)/DeepCGrade.o $(OBJ_DIR)/DeepCWrapper.o |
 $(PLUGIN_DIR)/DeepCSaturation.so: $(OBJ_DIR)/DeepCSaturation.o $(OBJ_DIR)/DeepCWrapper.o | $(PLUGIN_DIR)
 	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$^ $(LIBS)
 $(PLUGIN_DIR)/DeepCPNoise.so: $(OBJ_DIR)/DeepCPNoise.o $(OBJ_DIR)/DeepCMWrapper.o $(OBJ_DIR)/DeepCWrapper.o | $(PLUGIN_DIR)
-	$(LINK) $(STD) $(LINK_FLAGS) -L$(FASTNOISEDIR) -o $$@ $$^ $(LIBS) -lFastNoise
+	$(LINK) $(STD) $(LINK_FLAGS) -L$(FASTNOISEDIR)/build -o $$@ $$^ $(LIBS) -lFastNoise
 $(PLUGIN_DIR):
 	mkdir -p $$@
 endef
@@ -113,3 +113,9 @@ clean:
 
 clean-release:
 	rm -rf $(RELEASE_DIR_STUB)/*
+
+test:
+	rm -rf /home/ndker/.nuke/DeepC-Linux-11.2v5
+	rm -rf /home/ndker/.nuke/DeepC-Linux-11.2v5.zip
+	cp $(RELEASE_DIR_STUB)/DeepC-Linux-11.2v5.zip /home/ndker/.nuke/DeepC-Linux-11.2v5.zip
+	unzip -d /home/ndker/.nuke/DeepC-Linux-11.2v5 /home/ndker/.nuke/DeepC-Linux-11.2v5.zip
