@@ -17,8 +17,6 @@ class DeepCShuffle : public DeepFilterOp
     Channel _outChannel2;
     Channel _outChannel3;
 
-    ChannelSet _inChannelSet;
-    ChannelSet _outChannelSet;
 public:
 
     DeepCShuffle(Node* node) : DeepFilterOp(node)
@@ -32,9 +30,6 @@ public:
         _outChannel1 = Chan_Green;
         _outChannel2 = Chan_Blue;
         _outChannel3 = Chan_Alpha;
-
-        _inChannelSet = Chan_Black;
-        _outChannelSet = Chan_Black;
     }
 
 
@@ -53,30 +48,24 @@ void DeepCShuffle::_validate(bool for_real)
 {
     DeepFilterOp::_validate(for_real);
 
-    _inChannelSet = Chan_Black;
-    _inChannelSet += _inChannel0;
-    _inChannelSet += _inChannel1;
-    _inChannelSet += _inChannel2;
-    _inChannelSet += _inChannel3;
-
-    _outChannelSet = Chan_Black;
-    _outChannelSet += _outChannel0;
-    _outChannelSet += _outChannel1;
-    _outChannelSet += _outChannel2;
-    _outChannelSet += _outChannel3;
-
     ChannelSet newChannelSet;
     newChannelSet = _deepInfo.channels();
-    newChannelSet += _outChannelSet;
+    newChannelSet += _outChannel0;
+    newChannelSet += _outChannel1;
+    newChannelSet += _outChannel2;
+    newChannelSet += _outChannel3;
     _deepInfo = DeepInfo(_deepInfo.formats(), _deepInfo.box(), newChannelSet);
 }
 
 void DeepCShuffle::getDeepRequests(Box bbox, const DD::Image::ChannelSet& requestedChannels, int count, std::vector<RequestData>& requests)
 {
-    ChannelSet modifiedRequestedChannels;
-    modifiedRequestedChannels = requestedChannels;
-    modifiedRequestedChannels += _inChannelSet;
-    requests.push_back(RequestData(input0(), bbox, modifiedRequestedChannels, count));
+    ChannelSet neededChannels;
+    neededChannels = requestedChannels;
+    neededChannels += _inChannel0;
+    neededChannels += _inChannel1;
+    neededChannels += _inChannel2;
+    neededChannels += _inChannel3;
+    requests.push_back(RequestData(input0(), bbox, neededChannels, count));
 }
 
 bool DeepCShuffle::doDeepEngine(DD::Image::Box bbox, const DD::Image::ChannelSet& requestedChannels, DeepOutputPlane& deepOutPlane)
@@ -85,7 +74,13 @@ bool DeepCShuffle::doDeepEngine(DD::Image::Box bbox, const DD::Image::ChannelSet
         return true;
 
     DeepPlane deepInPlane;
-    if (!input0()->deepEngine(bbox, requestedChannels, deepInPlane))
+    ChannelSet neededChannels;
+    neededChannels = requestedChannels;
+    neededChannels += _inChannel0;
+    neededChannels += _inChannel1;
+    neededChannels += _inChannel2;
+    neededChannels += _inChannel3;
+    if (!input0()->deepEngine(bbox, neededChannels, deepInPlane))
         return false;
 
     DeepInPlaceOutputPlane inPlaceOutPlane(requestedChannels, bbox);
