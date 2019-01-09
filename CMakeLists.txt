@@ -32,6 +32,7 @@ endif()
 # Include Nuke headers
 include_directories(
     ${Nuke_INCLUDE_DIR}
+    FastNoise
 )
 
 # Add plugins
@@ -43,6 +44,7 @@ add_library(DeepCBlink SHARED
 )
 add_library(DeepCGrade SHARED
     src/DeepCGrade.cpp
+    src/DeepCWrapper.cpp
 )
 add_library(DeepCID SHARED
     src/DeepCID.cpp
@@ -50,14 +52,15 @@ add_library(DeepCID SHARED
 add_library(DeepCPMatte SHARED
     src/DeepCPMatte.cpp
 )
-#add_library(DeepCPNoise SHARED
-#    src/DeepCPNoise.cpp
-#)
+add_library(DeepCPNoise SHARED
+   src/DeepCPNoise.cpp
+)
 add_library(DeepCRemoveChannels SHARED
     src/DeepCRemoveChannels.cpp
 )
 add_library(DeepCSaturation SHARED
     src/DeepCSaturation.cpp
+    src/DeepCWrapper.cpp
 )
 add_library(DeepCShuffle SHARED
     src/DeepCShuffle.cpp
@@ -73,7 +76,7 @@ set_target_properties(
     DeepCGrade
     DeepCID
     DeepCPMatte
-    #DeepCPNoise
+    DeepCPNoise
     DeepCRemoveChannels
     DeepCSaturation
     DeepCShuffle
@@ -91,7 +94,7 @@ install(TARGETS
     DeepCGrade
     DeepCID
     DeepCPMatte
-    #DeepCPNoise
+    DeepCPNoise
     DeepCRemoveChannels
     DeepCSaturation
     DeepCShuffle
