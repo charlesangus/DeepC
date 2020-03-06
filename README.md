@@ -132,7 +132,7 @@ Then, from the DeepC dir:
 
 ```bash
 mkdir build; cd build
-make -D CMAKE_INSTALL_PREFIX="`pwd`/../install" ..
+cmake -D CMAKE_INSTALL_PREFIX="`pwd`/../install" ..
 make -j X install
 ```
 
