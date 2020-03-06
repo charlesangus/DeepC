@@ -59,4 +59,4 @@ target_sources(DeepCPNoise PRIVATE
 # Link DeepCBlink with libRIPFramework
 target_link_libraries(DeepCBlink
     PRIVATE
-    RIPFramework)
+    ${NUKE_RIPFRAMEWORK_LIBRARY})
