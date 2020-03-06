@@ -101,37 +101,42 @@ Much like how samples can be compressed in the renderer by merging samples close
 
 ## Build
 
-Build has been tested on Centos 6.8 with devtoolset-2 (as recommended in NDK dev guide). Compiles against 11.2-11.3, tested really only on 11.2. Let me know how it goes...
+Build has been tested on Centos 7 with devtoolset-3 (not Centos 6 with devtoolset-2, as recommended by Foundry - presumably very few people are still using Centos 6 in production, and it seems to work fine). Let me know how it goes...
+
+Thanks to Nathan Rusch (https://github.com/nrusch?tab=repositories) for contributing the CMake build setup which will form the basis for building DeepC going forward. The old makefile is being left in place for the time being just in case.
 
 ### Linux
 
 Install prerequisites:
 
 ```bash
-sudo wget http://people.centos.org/tru/devtools-2/devtools-2.repo -O /etc/yum.repos.d/devtools-2.repo
-sudo yum install devtoolset-2-gcc devtoolset-2-binutils devtoolset-2-gcc-c++ mesa-libGLU-devel
+sudo yum install centos-release-scl
+sudo yum install devtoolset-3
+sudo yum install mesa-libGLU-devel
 ```
 
 Clone:
 
 ```bash
-git clone --recurse-submodules https://github.com/charlesangus/FastNoise
+git clone --recurse-submodules https://github.com/charlesangus/DeepC
 ```
 
 Add to .bashrc on dev machine, or run before each build:
 
 ```bash
-# enable devtoolset-2
-source /opt/rh/devtoolset-2/enable
+# enable devtoolset-3
+source /opt/rh/devtoolset-3/enable
 ```
 
-Then, you should be able to run 
+Then, from the DeepC dir:
 
 ```bash
-make release -jX
+mkdir build; cd build
+cmake -D CMAKE_INSTALL_PREFIX="`pwd`/../install" ..
+make -j X install
 ```
 
-Where ```X``` is the number of cores you have available, so make can run parallelized.
+Where ```X``` is the number of cores you have available, so make can run parallelized. And, of course, update CMAKE_INSTALL_PREFIX to your preferred install location.
 
 ### Windows
 
