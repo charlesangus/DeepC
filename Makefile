@@ -21,10 +21,13 @@ endif
 
 # plugins will be built against each of these nuke versions
 NVS = 13.0v4
+NVS = Nuke13.0v4
 
 # we assume that each Nuke version lives in a folder called NukeXX.XvX
 # in the same parent dir, so we can simply append to a stub
-NDK_STUB = /usr/local/Nuke
+
+# NDK_STUB = /usr/local/Nuke
+NDK_STUB = /mnt/data/Apps/nuke/
 
 SRC_DIR = src
 OBJ_DIR_STUB = obj
@@ -76,6 +79,8 @@ $(PLUGIN_DIR)/DeepCAdd.so: $(OBJ_DIR)/DeepCAdd.o $(OBJ_DIR)/DeepCWrapper.o | $(P
 	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$^ $(LIBS)
 $(PLUGIN_DIR)/DeepCGrade.so: $(OBJ_DIR)/DeepCGrade.o $(OBJ_DIR)/DeepCWrapper.o | $(PLUGIN_DIR)
 	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$^ $(LIBS)
+$(PLUGIN_DIR)/DeepCMultiply.so: $(OBJ_DIR)/DeepCMultiply.o $(OBJ_DIR)/DeepCWrapper.o | $(PLUGIN_DIR)
+	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$^ $(LIBS)
 $(PLUGIN_DIR)/DeepCSaturation.so: $(OBJ_DIR)/DeepCSaturation.o $(OBJ_DIR)/DeepCWrapper.o | $(PLUGIN_DIR)
 	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$^ $(LIBS)
 $(PLUGIN_DIR)/DeepCPNoise.so: $(OBJ_DIR)/DeepCPNoise.o $(OBJ_DIR)/DeepCMWrapper.o $(OBJ_DIR)/DeepCWrapper.o | $(PLUGIN_DIR)
@@ -121,3 +126,9 @@ test:
 	# rm -rf /home/ndker/.nuke/DeepC-Linux-11.2v5.zip
 	# cp $(RELEASE_DIR_STUB)/DeepC-Linux-11.2v5.zip /home/ndker/.nuke/DeepC-Linux-11.2v5.zip
 	# unzip -d /home/ndker/.nuke/DeepC-Linux-11.2v5 /home/ndker/.nuke/DeepC-Linux-11.2v5.zip
+
+test2:
+	rm -rf /home/falk/.nuke/plugins/13.0/DeepC-Linux-Nuke13.0v4
+	rm -rf /home/falk/.nuke/plugins/13.0/DeepC-Linux-Nuke13.0v4.zip
+	cp $(RELEASE_DIR_STUB)/DeepC-Linux-Nuke13.0v4.zip /home/falk/.nuke/plugins/13.0/DeepC-Linux-Nuke13.0v4.zip
+	unzip -d /home/falk/.nuke/plugins/13.0/DeepC-Linux-Nuke13.0v4 /home/falk/.nuke/plugins/13.0/DeepC-Linux-Nuke13.0v4.zip

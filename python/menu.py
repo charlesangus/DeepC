@@ -39,6 +39,10 @@ DeepCColor.addCommand(
     lambda: nuke.createNode("DeepCGrade"),
     icon="DeepCGrade.png")
 DeepCColor.addCommand(
+    "DeepCMultiply",
+    lambda: nuke.createNode("DeepCMultiply"),
+    icon="DeepCMultiply.png")
+DeepCColor.addCommand(
     "DeepCSaturation",
     lambda: nuke.createNode("DeepCSaturation"),
     icon="DeepCSaturation.png")
