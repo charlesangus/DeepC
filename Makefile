@@ -79,6 +79,8 @@ $(PLUGIN_DIR)/DeepCGamma.so: $(OBJ_DIR)/DeepCGamma.o $(OBJ_DIR)/DeepCWrapper.o |
 	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$^ $(LIBS)
 $(PLUGIN_DIR)/DeepCAdd.so: $(OBJ_DIR)/DeepCAdd.o $(OBJ_DIR)/DeepCWrapper.o | $(PLUGIN_DIR)
 	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$^ $(LIBS)
+$(PLUGIN_DIR)/DeepCClamp.so: $(OBJ_DIR)/DeepCClamp.o $(OBJ_DIR)/DeepCWrapper.o | $(PLUGIN_DIR)
+	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$^ $(LIBS)
 $(PLUGIN_DIR)/DeepCGrade.so: $(OBJ_DIR)/DeepCGrade.o $(OBJ_DIR)/DeepCWrapper.o | $(PLUGIN_DIR)
 	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$^ $(LIBS)
 $(PLUGIN_DIR)/DeepCMultiply.so: $(OBJ_DIR)/DeepCMultiply.o $(OBJ_DIR)/DeepCWrapper.o | $(PLUGIN_DIR)

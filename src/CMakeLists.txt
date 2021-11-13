@@ -1,11 +1,15 @@
 include_directories(${NUKE_INCLUDE_DIRS})
 
 set(PLUGINS
+    DeepCAdd
     DeepCAddChannels
     DeepCBlink
+    DeepCClamp
+    DeepCGamma
     DeepCGrade
     DeepCID
     DeepCPMatte
+    DeepCPMultiply
     DeepCPNoise
     DeepCRemoveChannels
     DeepCSaturation
