@@ -15,8 +15,6 @@ static const CurveDescription defaults[] = {
 class DeepCColorLookup : public DeepCWrapper
 {
     LookupCurves lut;
-    float range;
-    float range_knob;
     float source_value[3];
     float target_value[3];
 
