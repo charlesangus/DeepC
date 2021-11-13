@@ -20,7 +20,7 @@ else
 endif
 
 # plugins will be built against each of these nuke versions
-NVS = 11.2v5 11.3v1
+NVS = 13.0v4
 
 # we assume that each Nuke version lives in a folder called NukeXX.XvX
 # in the same parent dir, so we can simply append to a stub
@@ -72,6 +72,8 @@ $(PLUGIN_DIR)/DeepCID.so: $(OBJ_DIR)/DeepCID.o $(OBJ_DIR)/DeepCMWrapper.o $(OBJ_
 	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$^ $(LIBS)
 $(PLUGIN_DIR)/DeepCBlink.so: $(OBJ_DIR)/DeepCBlink.o | $(PLUGIN_DIR)
 	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$^ $(LIBS) -lRIPFramework
+$(PLUGIN_DIR)/DeepCAdd.so: $(OBJ_DIR)/DeepCAdd.o $(OBJ_DIR)/DeepCWrapper.o | $(PLUGIN_DIR)
+	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$^ $(LIBS)
 $(PLUGIN_DIR)/DeepCGrade.so: $(OBJ_DIR)/DeepCGrade.o $(OBJ_DIR)/DeepCWrapper.o | $(PLUGIN_DIR)
 	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$^ $(LIBS)
 $(PLUGIN_DIR)/DeepCSaturation.so: $(OBJ_DIR)/DeepCSaturation.o $(OBJ_DIR)/DeepCWrapper.o | $(PLUGIN_DIR)
@@ -115,7 +117,7 @@ clean-release:
 	rm -rf $(RELEASE_DIR_STUB)/*
 
 test:
-	rm -rf /home/ndker/.nuke/DeepC-Linux-11.2v5
-	rm -rf /home/ndker/.nuke/DeepC-Linux-11.2v5.zip
-	cp $(RELEASE_DIR_STUB)/DeepC-Linux-11.2v5.zip /home/ndker/.nuke/DeepC-Linux-11.2v5.zip
-	unzip -d /home/ndker/.nuke/DeepC-Linux-11.2v5 /home/ndker/.nuke/DeepC-Linux-11.2v5.zip
+	# rm -rf /home/ndker/.nuke/DeepC-Linux-11.2v5
+	# rm -rf /home/ndker/.nuke/DeepC-Linux-11.2v5.zip
+	# cp $(RELEASE_DIR_STUB)/DeepC-Linux-11.2v5.zip /home/ndker/.nuke/DeepC-Linux-11.2v5.zip
+	# unzip -d /home/ndker/.nuke/DeepC-Linux-11.2v5 /home/ndker/.nuke/DeepC-Linux-11.2v5.zip
