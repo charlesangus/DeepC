@@ -39,6 +39,10 @@ DeepCColor.addCommand(
     lambda: nuke.createNode("DeepCClamp"),
     icon="DeepCClamp.png")
 DeepCColor.addCommand(
+    "DeepCColorLookup",
+    lambda: nuke.createNode("DeepCColorLookup"),
+    icon="DeepCColorLookup.png")
+DeepCColor.addCommand(
     "DeepCGamma",
     lambda: nuke.createNode("DeepCGamma"),
     icon="DeepCGamma.png")
