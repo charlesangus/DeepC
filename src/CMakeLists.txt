@@ -5,6 +5,7 @@ set(PLUGINS
     DeepCAddChannels
     DeepCBlink
     DeepCClamp
+    DeepCColorLookup
     DeepCGamma
     DeepCGrade
     DeepCID
