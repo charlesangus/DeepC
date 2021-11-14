@@ -11,12 +11,16 @@ class DeepCRemoveChannels : public DeepFilterOp
     ChannelSet channels2;
     ChannelSet channels3;
     ChannelSet channels4;
+
+    int operation; // 0 = remove, 1 = keep
+
 public:
 
     DeepCRemoveChannels(Node* node) : DeepFilterOp(node)
     {
         channels = Mask_None;
         channels2 = channels3 = channels4 = Mask_None;
+        operation = 0;
     }
 
 
@@ -31,17 +35,33 @@ public:
     const char* node_help() const;
 };
 
+static const char* const enums[] = {
+  "remove", "keep", nullptr
+};
 
 void DeepCRemoveChannels::_validate(bool for_real)
 {
     DeepFilterOp::_validate(for_real);
 
     ChannelSet new_channelset;
-    new_channelset = _deepInfo.channels();
-    new_channelset -= channels;
-    new_channelset -= channels2;
-    new_channelset -= channels3;
-    new_channelset -= channels4;
+
+    // keep
+    if (operation) {
+        new_channelset += channels;
+        new_channelset += channels2;
+        new_channelset += channels3;
+        new_channelset += channels4;
+        new_channelset += Mask_Alpha | Mask_Deep | Mask_Z;
+    
+    // remove
+    }else{
+        new_channelset = _deepInfo.channels();
+        new_channelset -= channels;
+        new_channelset -= channels2;
+        new_channelset -= channels3;
+        new_channelset -= channels4;
+
+    }
     _deepInfo = DeepInfo(_deepInfo.formats(), _deepInfo.box(), new_channelset);
 }
 
@@ -103,6 +123,10 @@ bool DeepCRemoveChannels::doDeepEngine(DD::Image::Box bbox, const DD::Image::Cha
 
 void DeepCRemoveChannels::knobs(Knob_Callback f)
 {
+    Enumeration_knob(f, &operation, enums, "operation");
+    Tooltip(f, "Remove: the named channels are deleted\n"
+                "Keep: all but the named channels are deleted");
+    Obsolete_knob(f, "action", "knob operation $value");
     ChannelMask_knob(f, &channels, "channels");
     ChannelMask_knob(f, &channels2, "channels2", "and");
     ChannelMask_knob(f, &channels3, "channels3", "and");
