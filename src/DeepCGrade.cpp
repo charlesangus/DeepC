@@ -109,11 +109,16 @@ void DeepCGrade::wrappedPerChannel(
             outData = pow(inputVal, G[cIndex]);
         // then inverse linear ramp we have already precomputed
         outData = A[cIndex] * inputVal + B[cIndex];
+        if (_blackClamp && outData < 0.0){outData = 0.0;}
+        if (_whiteClamp && outData > 1.0){outData = 1.0;}
     } else
     {
         outData = A[cIndex] * inputVal + B[cIndex];
         if (G[cIndex] != 1.0f)
             outData = pow(outData, G[cIndex]);
+        
+        if (_blackClamp && outData < 0.0){outData = 0.0;}
+        if (_whiteClamp && outData > 1.0){outData = 1.0;}
     }
 }
 
