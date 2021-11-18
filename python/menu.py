@@ -6,6 +6,7 @@ DeepCDraw = DeepCMenu.addMenu("Draw", icon="ToolbarDraw.png")
 DeepCChannel = DeepCMenu.addMenu("Channel", icon="ToolbarChannel.png")
 DeepCColor = DeepCMenu.addMenu("Color", icon="ToolbarColor.png")
 DeepC3D = DeepCMenu.addMenu("3D", icon="Cube.png")
+DeepCUtil = DeepCMenu.addMenu("Util")
 DeepCDraw.addCommand(
     "DeepCPMatte",
     lambda: nuke.createNode("DeepCPMatte"),
@@ -62,3 +63,7 @@ DeepC3D.addCommand(
     "DeepCWorld",
     lambda: nuke.createNode("DeepCWorld"),
     icon="DeepCWorld.png")
+DeepCUtil.addCommand(
+    "DeepCCopyBbox",
+    lambda: nuke.createNode("DeepCCopyBbox"),
+    icon="DeepCCopyBbox.png")
