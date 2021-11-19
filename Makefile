@@ -85,6 +85,8 @@ $(PLUGIN_DIR)/DeepCColorLookup.so: $(OBJ_DIR)/DeepCColorLookup.o $(OBJ_DIR)/Deep
 	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$^ $(LIBS)
 $(PLUGIN_DIR)/DeepCGrade.so: $(OBJ_DIR)/DeepCGrade.o $(OBJ_DIR)/DeepCWrapper.o | $(PLUGIN_DIR)
 	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$^ $(LIBS)
+$(PLUGIN_DIR)/DeepCInvert.so: $(OBJ_DIR)/DeepCInvert.o $(OBJ_DIR)/DeepCWrapper.o | $(PLUGIN_DIR)
+	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$^ $(LIBS)
 $(PLUGIN_DIR)/DeepCMultiply.so: $(OBJ_DIR)/DeepCMultiply.o $(OBJ_DIR)/DeepCWrapper.o | $(PLUGIN_DIR)
 	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$^ $(LIBS)
 $(PLUGIN_DIR)/DeepCSaturation.so: $(OBJ_DIR)/DeepCSaturation.o $(OBJ_DIR)/DeepCWrapper.o | $(PLUGIN_DIR)
