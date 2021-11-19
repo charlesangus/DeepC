@@ -89,6 +89,8 @@ $(PLUGIN_DIR)/DeepCMultiply.so: $(OBJ_DIR)/DeepCMultiply.o $(OBJ_DIR)/DeepCWrapp
 	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$^ $(LIBS)
 $(PLUGIN_DIR)/DeepCSaturation.so: $(OBJ_DIR)/DeepCSaturation.o $(OBJ_DIR)/DeepCWrapper.o | $(PLUGIN_DIR)
 	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$^ $(LIBS)
+$(PLUGIN_DIR)/DeepCCopyBbox.so: $(OBJ_DIR)/DeepCCopyBbox.o $(OBJ_DIR)/DeepCWrapper.o | $(PLUGIN_DIR)
+	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$^ $(LIBS)
 $(PLUGIN_DIR)/DeepCPNoise.so: $(OBJ_DIR)/DeepCPNoise.o $(OBJ_DIR)/DeepCMWrapper.o $(OBJ_DIR)/DeepCWrapper.o | $(PLUGIN_DIR)
 	$(LINK) $(STD) $(LINK_FLAGS) -L$(FASTNOISEDIR)/build -o $$@ $$^ $(LIBS) -lFastNoise
 $(PLUGIN_DIR):
