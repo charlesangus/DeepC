@@ -10,6 +10,7 @@ set(PLUGINS
     DeepCGamma
     DeepCGrade
     DeepCID
+    DeepCInvert
     DeepCPMatte
     DeepCPMultiply
     DeepCPNoise

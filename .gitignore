@@ -41,3 +41,8 @@ install_and_run.bash
 obj
 plugin
 release
+
+
+# IDE related files
+.vscode
+*.code-*
