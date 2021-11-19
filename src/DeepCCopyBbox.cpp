@@ -1,5 +1,11 @@
+/* CopyBBox node for deep nodes.
+
+Based on DeepCrop node from the Foundry.
+Falk Hofmann, 11/2021
+
+*/
+
 #include "DDImage/DeepFilterOp.h"
-#include "DDImage/Knobs.h"
 
 static const char* CLASS = "DeepCCopyBbox";
 
@@ -18,14 +24,14 @@ public:
 
     _bbox[0] = 0;
     _bbox[1] = 0;
-
     _bbox[2] = input_format().width();
     _bbox[3] = input_format().height();
   }
 
   const char* node_help() const override
   {
-    return "Copy the bouinding box from one input into the stream.";
+    return "Copy the bounding box from one input into the stream.\n"
+           "Falk Hofmann 11/2021";
   }
 
   const char* input_label(int n, char*) const
@@ -59,7 +65,6 @@ public:
       _bbox[3] = d.t();
       _deepInfo.box().set(floor(_bbox[0] - 1), floor(_bbox[1] - 1), ceil(_bbox[2] + 1), ceil(_bbox[3] + 1));
     }else if (input0() && !input1()){
-      DeepFilterOp::_validate(for_real);
       _bbox[0] = _deepInfo.x();
       _bbox[1] = _deepInfo.y();
       _bbox[2] = _deepInfo.r();
@@ -84,7 +89,6 @@ public:
     DeepInPlaceOutputPlane outPlane(channels, box);
     outPlane.reserveSamples(inPlane.getTotalSampleCount());
 
-    //samples per pixel after croping
     std::vector<int> validSamples;
 
     for (DD::Image::Box::iterator it = box.begin(), itEnd = box.end(); it != itEnd; ++it) {
@@ -95,7 +99,6 @@ public:
       bool inXY = (x >= _bbox[0] && x < _bbox[2] && y >= _bbox[1] && y < _bbox[3]);
 
       if (!inXY) {
-        // pixel out of crop bounds
         outPlane.setSampleCount(y, x, 0);
         continue;
       }
@@ -106,16 +109,13 @@ public:
       validSamples.clear();
       validSamples.reserve(inPixelSamples);
 
-      // find valid samples
       for (size_t iSample = 0; iSample < inPixelSamples; ++iSample) {
         validSamples.push_back(iSample);
       }
 
       outPlane.setSampleCount(it, validSamples.size());
-
       DeepOutputPixel outPixel = outPlane.getPixel(it);
 
-      // copy valid samples to DeepOutputPlane
       size_t outSample = 0;
       for (size_t inSample : validSamples)
       {
