@@ -9,7 +9,7 @@ Falk Hofmann, 11/2021
 #include "DDImage/Knobs.h"
 
 static const char* CLASS = "DeepCConstant";
-
+static const char* const enumAlphaTypes[]  = { "unform", "additive", "multiplicative", 0 };
 using namespace DD::Image;
 
 class DeepCConstant : public DeepFilterOp
@@ -23,6 +23,8 @@ class DeepCConstant : public DeepFilterOp
     int _firstFrame, lastFrame;
     float _overallDepth;
     float _sampleDistance;
+    double _values[4];
+    int _alphaType;
 
 public:
 
@@ -43,10 +45,15 @@ public:
     channel[1] = Chan_Green;
     channel[2] = Chan_Blue;
     channel[3] = Chan_Alpha;
+    _alphaType = 0;
+    _values[0] = _values[1] = _values[2] = _values[3] = 0.5;
   }
     void _validate(bool);
     bool doDeepEngine(DD::Image::Box bbox, const DD::Image::ChannelSet& requestedChannels, DeepOutputPlane& deepOutPlane);
     void knobs(Knob_Callback);
+    int knob_changed(Knob* k);
+
+    void calcValues();
 
     static const Iop::Description d;
     const char* Class() const { return d.name;}
@@ -66,14 +73,42 @@ public:
         Obsolete_knob(f, "full_format", "knob format $value");
         Obsolete_knob(f, "proxy_format", nullptr);
         Divider(f, "");
-        Double_knob(f, &_front, "front", "back");
+        Enumeration_knob(f, &_alphaType, enumAlphaTypes, "alpha_mode", "split alpha mode");
+        Double_knob(f, &_front, "front", "front");
         Double_knob(f, &_back, "back", "back");
         Int_knob(f, &_samples, "samples", "samples");
-        SetRange(f, 2, 1000);/*  */
+        SetRange(f, 2, 1000);
         SetFlags(f, Knob::NO_ANIMATION);
 
     }
 
+void DeepCConstant::calcValues(){
+
+    float a = knob("color")->get_value(colourIndex(Chan_Alpha));
+
+    for (int c = 0; c < 4; c++){
+
+      float val = knob("color")->get_value(c);
+      switch (_alphaType)
+      {
+      case 0:
+        _values[c] = val;
+        break;
+      case 1:
+        _values[c] = val/_samples;
+        break;
+      case 2:
+        _values[c] = 1.0f - pow(1.0f - val, (1.0f/_samples));
+      }
+    }
+}
+
+
+    int DeepCConstant::knob_changed(Knob* k){
+      if (k->name() == "alpha_mode"){
+        DeepCConstant::calcValues();
+      }
+    }
     void DeepCConstant::_validate(bool for_real)
     {
 
@@ -89,7 +124,8 @@ public:
     Box box(0, 0, formats.format()->width(), formats.format()->height()) ;
     _deepInfo = DeepInfo(formats, box, new_channelset);
     _overallDepth = _back - _front;
-    _sampleDistance = _overallDepth/(_samples - 1);
+    _sampleDistance = _overallDepth/(_samples);
+    DeepCConstant::calcValues();
     }
 
 
@@ -99,7 +135,7 @@ public:
        _samples = 2;
      }
 
-    DeepInPlaceOutputPlane outPlane(channels, box, DeepPixel::eZAscending);
+    DeepInPlaceOutputPlane outPlane(channels, box, DeepPixel::eZDescending);
     outPlane.reserveSamples(box.area());
 
     for (Box::iterator it = box.begin();
@@ -112,12 +148,18 @@ public:
 
         foreach (z, channels) {
           float& output = out.getWritableOrderedSample(sampleNo, z);
-
-          if (z == Chan_DeepFront || z == Chan_DeepBack){
+          int cIndex = colourIndex(z);
+          
+          if (z == Chan_DeepFront){
             output = _front + (_sampleDistance * sampleNo);
-           }else{
-            int cIndex = colourIndex(z);
-            output = color[cIndex];           
+
+          }
+          else if (z == Chan_DeepBack){
+            output = _front + (_sampleDistance * sampleNo) + _sampleDistance;
+
+           }
+           else{
+            output = _values[cIndex];           
           }
 
         }
