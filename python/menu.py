@@ -3,7 +3,7 @@ import nuke
 def create_deepc_menu():
     menus = {
             "Draw": {"icon":"ToolbarDraw.png",
-                    "nodes": ["DeepCPMatte", "DeepCPNoise", "DeepCID"]},
+                    "nodes": ["DeepCPMatte", "DeepCPNoise", "DeepCID", "DeepCConstant"]},
             "Channel": {"icon":"ToolbarChannel.png",
                         "nodes": ["DeepCAddChannels", "DeepCRemoveChannels", "DeepCShuffle"]},
             "Color": {"icon":"ToolbarColor.png",
