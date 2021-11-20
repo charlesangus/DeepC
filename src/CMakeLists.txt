@@ -3,6 +3,7 @@ include_directories(${NUKE_INCLUDE_DIRS})
 set(PLUGINS
     DeepCAdd
     DeepCAddChannels
+    DeepCAdjustBBox
     DeepCBlink
     DeepCClamp
     DeepCColorLookup

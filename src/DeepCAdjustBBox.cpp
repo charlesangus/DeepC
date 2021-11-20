@@ -1,45 +1,31 @@
-/* CopyBBox node for deep nodes.
+/* AdjustBBox node for deep nodes.
 
 Based on DeepCrop node from the Foundry.
 Falk Hofmann, 11/2021
 
 */
-
 #include "DDImage/DeepFilterOp.h"
+#include "DDImage/Knobs.h"
 
-static const char* CLASS = "DeepCCopyBbox";
+static const char* CLASS = "DeepCAdjustBBox";
 
 using namespace DD::Image;
 
-class DeepCCopyBbox : public DeepFilterOp
+class DeepCAdjustBBox : public DeepFilterOp
 {
+
+  double numpixels[2];
   float _bbox[4];
 
 public:
-  
-  int minimum_inputs() const { return 2; }
-  int maximum_inputs() const { return 2; }
-
-  DeepCCopyBbox(Node* node) : DeepFilterOp(node) {
-
-    _bbox[0] = 0;
-    _bbox[1] = 0;
-    _bbox[2] = input_format().width();
-    _bbox[3] = input_format().height();
+  DeepCAdjustBBox(Node* node) : DeepFilterOp(node) {
+    _bbox[0] = _bbox[2] = _bbox[1] = _bbox[3] = 0;
   }
 
   const char* node_help() const override
   {
-    return "Copy the bounding box from one input into the stream.\n"
+    return "Increase or reduce the size of the bouding box.\n"
            "Falk Hofmann 11/2021";
-  }
-
-  const char* input_label(int n, char*) const
-  {
-    switch (n) {
-      case 0: return "";
-      case 1: return "bbox";
-    }
   }
 
   const char* Class() const override {
@@ -51,25 +37,22 @@ public:
     return this;
   }
 
+  void knobs(Knob_Callback f) override
+  {
+    WH_knob(f, numpixels, "numpixels", "Add Pixels");
+    SetRange(f, -1024, 1024);
+    Tooltip(f, "Add or remove pixels from the incoming bounding box.");
+  }
 
   void _validate(bool for_real) override
-    {
+  {
     DeepFilterOp::_validate(for_real);
-    DeepOp* second = dynamic_cast<DeepOp*>(Op::input1());
-    if (input0() && second) {
-      second->validate(for_real);
-      DeepInfo d = second->deepInfo();
-      _bbox[0] = d.x();
-      _bbox[1] = d.y();
-      _bbox[2] = d.r();
-      _bbox[3] = d.t();
-      _deepInfo.box().set(floor(_bbox[0] - 1), floor(_bbox[1] - 1), ceil(_bbox[2] + 1), ceil(_bbox[3] + 1));
-    }else if (input0() && !input1()){
-      _bbox[0] = _deepInfo.x();
-      _bbox[1] = _deepInfo.y();
-      _bbox[2] = _deepInfo.r();
-      _bbox[3] = _deepInfo.t();
-    }
+    _bbox[0] = _deepInfo.x() - numpixels[0];
+    _bbox[1] = _deepInfo.y() - numpixels[1];
+    _bbox[2] = _deepInfo.r() + numpixels[0];
+    _bbox[3] = _deepInfo.t() + numpixels[1];
+    _deepInfo.box().set(floor(_bbox[0] - 1), floor(_bbox[1] - 1), ceil(_bbox[2] + 1), ceil(_bbox[3] + 1));
+  
   }
 
   bool doDeepEngine(DD::Image::Box box, const ChannelSet& channels, DeepOutputPlane& plane) override
@@ -89,6 +72,7 @@ public:
     DeepInPlaceOutputPlane outPlane(channels, box);
     outPlane.reserveSamples(inPlane.getTotalSampleCount());
 
+    //samples per pixel after croping
     std::vector<int> validSamples;
 
     for (DD::Image::Box::iterator it = box.begin(), itEnd = box.end(); it != itEnd; ++it) {
@@ -99,6 +83,7 @@ public:
       bool inXY = (x >= _bbox[0] && x < _bbox[2] && y >= _bbox[1] && y < _bbox[3]);
 
       if (!inXY) {
+        // pixel out of crop bounds
         outPlane.setSampleCount(y, x, 0);
         continue;
       }
@@ -109,13 +94,17 @@ public:
       validSamples.clear();
       validSamples.reserve(inPixelSamples);
 
+      // find valid samples
       for (size_t iSample = 0; iSample < inPixelSamples; ++iSample) {
+
         validSamples.push_back(iSample);
       }
 
       outPlane.setSampleCount(it, validSamples.size());
+
       DeepOutputPixel outPixel = outPlane.getPixel(it);
 
+      // copy valid samples to DeepOutputPlane
       size_t outSample = 0;
       for (size_t inSample : validSamples)
       {
@@ -141,5 +130,5 @@ public:
   static const Description d;
 };
 
-static Op* build(Node* node) { return new DeepCCopyBbox(node); }
-const Op::Description DeepCCopyBbox::d(::CLASS, "Image/DeepCCopyBbox", build);
+static Op* build(Node* node) { return new DeepCAdjustBBox(node); }
+const Op::Description DeepCAdjustBBox::d(::CLASS, "Image/DeepCAdjustBBox", build);
