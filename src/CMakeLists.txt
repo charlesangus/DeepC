@@ -7,6 +7,7 @@ set(PLUGINS
     DeepCBlink
     DeepCClamp
     DeepCColorLookup
+    DeepCConstant
     DeepCCopyBbox
     DeepCGamma
     DeepCGrade
