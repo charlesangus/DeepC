@@ -8,13 +8,13 @@ set(PLUGINS
     DeepCClamp
     DeepCColorLookup
     DeepCConstant
-    DeepCCopyBbox
+    DeepCCopyBBox
     DeepCGamma
     DeepCGrade
     DeepCID
     DeepCInvert
     DeepCPMatte
-    DeepCPMultiply
+    DeepCMultiply
     DeepCPNoise
     DeepCRemoveChannels
     DeepCSaturation
