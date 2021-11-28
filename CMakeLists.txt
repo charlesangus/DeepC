@@ -17,12 +17,14 @@ if (NUKE_VERSION_MAJOR GREATER 10)
     set(CMAKE_CXX_EXTENSIONS OFF)
 endif()
 
-# NOTE: Compile options are currently Linux only
-set(CMAKE_CXX_FLAGS_RELEASE "-O3")
+if (UNIX)
+    # NOTE: Compile options are currently Linux only
+    set(CMAKE_CXX_FLAGS_RELEASE "-O3")
 
-add_compile_options(
-    -DUSE_GLEW -fPIC -msse -msse2 -msse3 -mssse3 -msse4 -msse4.1 -msse4.2 -mavx
-)
+    add_compile_options(
+        -DUSE_GLEW -fPIC -msse -msse2 -msse3 -mssse3 -msse4 -msse4.1 -msse4.2 -mavx
+    )
+endif(UNIX)
 
 set(FASTNOISE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/FastNoise)
 add_library(FastNoise OBJECT
@@ -36,5 +38,4 @@ install(FILES
     DESTINATION .)
 
 file(GLOB ICONS "icons/DeepC*.png")
-install(FILES ${ICONS}
-    DESTINATION icons)
+install(FILES ${ICONS} DESTINATION icons)

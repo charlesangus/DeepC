@@ -62,7 +62,7 @@ void DeepCMWrapper::wrappedPerChannel(
         case STENCIL:
             outData = inputVal * (1.0f - perSampleData);
             break;
-        case OUT:
+        case _OUT:
             outData = (1.0f - inputVal) * perSampleData;
             break;
         case MIN_OP:

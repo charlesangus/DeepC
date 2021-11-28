@@ -86,14 +86,14 @@ public:
 
   void DeepCConstant::calcValues(){
 
-      float a = knob("color")->get_value(colourIndex(Chan_Alpha));
+      float a = (float)knob("color")->get_value(colourIndex(Chan_Alpha));
       int saveSample = (_samples > 0)? _samples: 1;
       _modAlpha = 1.0f- pow(1.0f - a, (1.0f/saveSample));
 
 
       for (int c = 0; c < 4; c++){
 
-        float val = knob("color")->get_value(c);
+        float val = (float)knob("color")->get_value(c);
         switch (_alphaType)
         {
         case 0:
@@ -113,6 +113,7 @@ public:
     if (k->name() == "alpha_mode"){
       DeepCConstant::calcValues();
     }
+    return 1;
   }
 
   void DeepCConstant::_validate(bool for_real)
@@ -125,7 +126,7 @@ public:
 
   Box box(0, 0, formats.format()->width(), formats.format()->height()) ;
   _deepInfo = DeepInfo(formats, box, new_channelset);
-  _overallDepth = _back - _front;
+  _overallDepth = (float)(_back - _front);
   _sampleDistance = _overallDepth/(_samples);
   DeepCConstant::calcValues();
   }
@@ -150,15 +151,15 @@ public:
         int cIndex = colourIndex(z);
         
         if (z == Chan_DeepFront){
-          output = _front + (_sampleDistance * sampleNo);
+          output = (float)(_front + (_sampleDistance * sampleNo));
 
         }
         else if (z == Chan_DeepBack){
-          output = _front + (_sampleDistance * sampleNo) + _sampleDistance;
+          output = (float)(_front + (_sampleDistance * sampleNo) + _sampleDistance);
 
           }
           else{
-          output = _values[cIndex];           
+          output = (float)_values[cIndex];           
         }
       }
     }

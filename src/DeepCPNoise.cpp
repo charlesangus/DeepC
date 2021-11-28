@@ -328,7 +328,7 @@ void DeepCPNoise::wrappedPerChannel(
         case STENCIL:
             outData = inputVal * (1.0f - gradedPerSampleData);
             break;
-        case OUT:
+        case _OUT:
             outData = (1.0f - inputVal) * gradedPerSampleData;
             break;
         case MIN_OP:

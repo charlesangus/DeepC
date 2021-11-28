@@ -157,8 +157,8 @@ bool DeepCBlink::doDeepEngine(
     const DD::Image::ChannelSet inputChannels = input0()->deepInfo().channels();
     const int nOutputChans = requestedChannels.size();
 
-    float imageBuffer[totalSamples * 4];
-    float outImageBuffer[totalSamples * 4];
+    float* imageBuffer = (float*)calloc(totalSamples * 4, sizeof(float));
+    float* outImageBuffer = (float*)calloc(totalSamples * 4, sizeof(float));
     float* imageBufferData;
     float* outImageBufferData;
     imageBufferData = imageBuffer;
