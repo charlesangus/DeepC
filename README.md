@@ -105,7 +105,7 @@ Much like how samples can be compressed in the renderer by merging samples close
 
 ## Build
 
-Build has been tested on Centos 7 with devtoolset-3 (not Centos 6 with devtoolset-2, as recommended by Foundry - presumably very few people are still using Centos 6 in production, and it seems to work fine). Let me know how it goes...
+Build has been tested on ~Centos 7 with devtoolset-3 (not Centos 6 with devtoolset-2, as recommended by Foundry - presumably very few people are still using Centos 6 in production, and it seems to work fine).~ I *think* the most recent build I did was using Centos 7 and devtoolset-7, but I don't have that VM around anymore so I'm not 100%. Let me know how it goes...
 
 Thanks to Nathan Rusch (https://github.com/nrusch?tab=repositories) for contributing the CMake build setup which will form the basis for building DeepC going forward. The old makefile is being left in place for the time being just in case.
 
