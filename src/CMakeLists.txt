@@ -43,7 +43,7 @@ install(TARGETS ${PLUGINS}
 add_library(DeepCWrapper OBJECT
     DeepCWrapper.cpp)
 
-foreach(PLUGIN_NAME DeepCID DeepCPMatte DeepCPNoise DeepCGrade DeepCSaturation)
+foreach(PLUGIN_NAME DeepCAdd DeepCClamp DeepCColorLookup DeepCID DeepCPMatte DeepCPNoise DeepCGamma DeepCGrade DeepCInvert DeepCMultiply DeepCSaturation)
     target_sources(${PLUGIN_NAME} PRIVATE
         $<TARGET_OBJECTS:DeepCWrapper>)
 endforeach()
