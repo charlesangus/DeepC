@@ -31,7 +31,7 @@ if (UNIX)
     add_compile_options(
         -DUSE_GLEW -fPIC -msse -msse2 -msse3 -mssse3 -msse4 -msse4.1 -msse4.2 -mavx
     )
-endif(
+endif()
 
 # add sub directory
 add_subdirectory(src)
