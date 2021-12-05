@@ -63,7 +63,8 @@ void DeepCMultiply::custom_knobs(Knob_Callback f)
 const char* DeepCMultiply::node_help() const
 {
     return
-    "Multiply node for DeepC.";
+    "Multiply node for DeepC.\n\n"
+    "Falk Hofmann 11/2021";
 }
 
 

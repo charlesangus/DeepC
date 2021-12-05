@@ -60,7 +60,8 @@ void DeepCAdd::custom_knobs(Knob_Callback f)
 const char* DeepCAdd::node_help() const
 {
     return
-    "Add node for DeepC.";
+    "Add node for DeepC.\n\n"
+    "Falk Hofmann 11/2021";
 }
 
 

@@ -55,7 +55,7 @@ void DeepCInvert::custom_knobs(Knob_Callback f)
 
 const char* DeepCInvert::node_help() const
 {
-    return "Invert node for DeepC.\n"
+    return "Invert node for DeepC.\n\n"
            "Falk Hofmann 11/2021";
 }
 
