@@ -40,6 +40,7 @@ set(PLUGINS_WRAPPED
     DeepCInvert
     DeepCMatrix
     DeepCMultiply
+    DeepCPosterize
     DeepCSaturation
     )
 
