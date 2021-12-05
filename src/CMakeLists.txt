@@ -12,7 +12,7 @@ endfunction()
 set(PLUGINS
     DeepCAddChannels
     DeepCAdjustBBox
-    DeepCBlink
+#    DeepCBlink
     DeepCConstant
     DeepCCopyBBox
     DeepCRemoveChannels
@@ -24,10 +24,11 @@ foreach(PLUGIN_NAME ${PLUGINS})
     add_nuke_plugin(${PLUGIN_NAME} ${PLUGIN_NAME}.cpp)
 endforeach()
 
-target_link_libraries(DeepCBlink PRIVATE Nuke::RIPFRAMEWORK)
+#target_link_libraries(DeepCBlink PRIVATE Nuke::RIPFRAMEWORK)
 
 # DeepCWrapper
-add_nuke_plugin(DeepCWrapper DeepCWrapper.cpp)
+add_library(DeepCWrapper OBJECT DeepCWrapper.cpp)
+target_link_libraries(DeepCWrapper PRIVATE Nuke::NDK)
 
 set(PLUGINS_WRAPPED
     DeepCAdd
@@ -48,7 +49,8 @@ foreach(PLUGIN_NAME ${PLUGINS_WRAPPED})
 endforeach()
 
 # DeepCMWrapper
-add_nuke_plugin(DeepCMWrapper DeepCMWrapper.cpp)
+add_library(DeepCMWrapper OBJECT DeepCMWrapper.cpp)
+target_link_libraries(DeepCMWrapper PRIVATE Nuke::NDK)
 target_sources(DeepCMWrapper PRIVATE $<TARGET_OBJECTS:DeepCWrapper>)
 
 set(PLUGINS_MWRAPPED
