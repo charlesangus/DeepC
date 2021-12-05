@@ -21,51 +21,27 @@ Also, head over to the [Examples](https://github.com/charlesangus/DeepC/wiki/Exa
 You can read a quick description of some below.
 
 
-### ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCGrade.png) DeepCGrade
-
-The familiar Grade node, updated to work with Deep data. Grading without masking isn't much use, so DeepCGrade supports both Deep and flat masks working in tandem, for maximum flexibility. Use DeepCPMatte or DeepCPNoise to create Deep masks upstream of DeepCGrade, or pipe in a roto in the side, just like you're used to doing.
-
-### ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCSaturation.png) DeepCSaturation
-
-Simple rec709 saturation function on Deep data. Same masking options as DeepCGrade.
-
-### ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCWorld.png) DeepCWorld
-
-Generates world position data from straight Deep renders and a Camera node. Useful if your 3D render doesn't come with a Deep position pass. Just pipe in the Camera, choose the channels to stick the World Position data in, and there you are! Can output premultiplied position data (like most renderers), or unpremultiplied position data (like the ScanlineRender node).
-
-Because DeepCWorld uses the NDK, it can add channels freely to the Deep stream without using hacks (like the Constant->Shuffle->DeepToImage->DeepMerge trick), and it can easily grab the data it needs from the Camera node just by plugging it in.
-
-### ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCPMatte.png) DeepCPMatte
-
-Generates a spherical or cubic mask from Deep position data, for use in other DeepC nodes. Outputs the mask in the channel of your choice. Like DeepCWorld, can create channels on the fly.
-
-### ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCPNoise.png) DeepCPNoise
-
-Generates a 3D or 4D noise mask from Deep position data, for use in other DeepC nodes. Much better than the builtin Nuke noise options, this is based on the FastNoise library. Critically, it offers 4D fractal noise, so your 3D noise pass can evolve across a 4th dimension over time without sliding.
-
-Includes:
-
-- 4D simplex noise
-- 3D cellular noise (many varieties)
-- 3D value noise
-- 3D perlin noise
-- 3D cubic noise
-
-### ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCID.png) DeepCID
-
-Easily manipulate IDs in Deep data, combine with other masks, etc. Can take integer object IDs (better for Deep) or traditional colour mattes.
-
-### ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCAddChannels.png) DeepCAddChannels
-
-Ever wanted to add a channel or channelset to a Deep stream? Well, now you can! And without doing that gross DeepToImage->DeepMerge hack.
-
-### ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCRemoveChannels.png) DeepCRemoveChannels
-
-Ever had extra channels in a Deep stream, cluttering things up? Wish you could get rid of them? Look no further...
-
-### ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCShuffle.png) DeepCShuffle
-
-Very basic Shuffle node for copying/blanking channels.
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCAdd.png)  [DeepCAdd](https://github.com/charlesangus/DeepC/wiki/DeepCAdd)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCAddChannels.png)  [DeepCAddChannels](https://github.com/charlesangus/DeepC/wiki/DeepCAddChannels)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCAdjustBBox.png)  [DeepCAdjustBBox](https://github.com/charlesangus/DeepC/wiki/DeepCAdjustBBox)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCClamp.png)  [DeepCClamp](https://github.com/charlesangus/DeepC/wiki/DeepCClamp)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCColorLookup.png)  [DeepCColorlookup](https://github.com/charlesangus/DeepC/wiki/DeepCColorlookup)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCConstant.png)  [DeepCConstant](https://github.com/charlesangus/DeepC/wiki/DeepCConstant)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCCopyBBox.png)  [DeepCCopyBBox](https://github.com/charlesangus/DeepC/wiki/DeepCCopyBBox)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCGamma.png)  [DeepCGamma](https://github.com/charlesangus/DeepC/wiki/DeepCGamma)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCGrade.png)  [DeepCGrade](https://github.com/charlesangus/DeepC/wiki/DeepCGrade)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCID.png)  [DeepCID](https://github.com/charlesangus/DeepC/wiki/DeepCID)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCHueShift.png)  [DeepCHueShift](https://github.com/charlesangus/DeepC/wiki/DeepCHueShift)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCInvert.png)  [DeepCInvert](https://github.com/charlesangus/DeepC/wiki/DeepCInvert)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCMatrix.png)  [DeepCMatrix](https://github.com/charlesangus/DeepC/wiki/DeepCMatrix)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCMultiply.png)  [DeepCMultiply](https://github.com/charlesangus/DeepC/wiki/DeepCMultiply)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCPMatte.png)  [DeepCPMatte](https://github.com/charlesangus/DeepC/wiki/DeepCPMatte)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCPNoise.png)  [DeepCPNoise](https://github.com/charlesangus/DeepC/wiki/DeepCPNoise)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCPosterize.png)  [DeepCPosterize](https://github.com/charlesangus/DeepC/wiki/DeepCPosterize)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCRemoveChannels.png)  [DeepCRemoveChannels](https://github.com/charlesangus/DeepC/wiki/DeepCRemoveChannels)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCSaturation.png)  [DeepCSaturation](https://github.com/charlesangus/DeepC/wiki/DeepCSaturation)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCShuffle.png)  [DeepCShuffle](https://github.com/charlesangus/DeepC/wiki/DeepCShuffle)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCWorld.png)  [DeepCworld](https://github.com/charlesangus/DeepC/wiki/DeepCworld)
 
 ### DeepCBlink
 
@@ -152,7 +128,7 @@ Unlikely...
 
 ## Contributing
 
-Currently, DeepC is maintained by only me. I'd love your contributions, though!
+Currently, DeepC is maintained by [me](https://github.com/charlesangus) and [Falk Hofmann](https://github.com/falkhofmann). I'd love your contributions, though!
 
 If you'd like to contribute, please fork the project make a new feature branch for your contribution. Ideally, also let me know what you're up to so we don't duplicate efforts!
 
