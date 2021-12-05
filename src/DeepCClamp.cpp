@@ -38,7 +38,8 @@ class DeepCClamp : public DeepCWrapper
             const float inputVal,
             float perSampleData,
             Channel z,
-            float& outData
+            float& outData,
+            Vector3& sampleColor
             );
 
         virtual void custom_knobs(Knob_Callback f);
@@ -58,7 +59,8 @@ void DeepCClamp::wrappedPerChannel(
     const float inputVal,
     float perSampleData,
     Channel z,
-    float& outData
+    float& outData,
+    Vector3& sampleColor
     )
 {
     int cIndex = colourIndex(z);
@@ -100,7 +102,8 @@ void DeepCClamp::custom_knobs(Knob_Callback f)
 const char* DeepCClamp::node_help() const
 {
     return
-    "Clamp node for DeepC.";
+    "Clamp node for DeepC.\n\n"
+    "Falk Hofmann 11/2021";
 }
 
 

@@ -14,7 +14,7 @@ using namespace DD::Image;
 
 
 //Blink API includes
-// #include "DDImage/Blink.h"
+//#include "DDImage/Blink.h"
 #include "Blink/Blink.h"
 
 /*

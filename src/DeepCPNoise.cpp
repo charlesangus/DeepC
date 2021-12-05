@@ -158,13 +158,15 @@ class DeepCPNoise : public DeepCMWrapper
             size_t sampleNo,
             float alpha,
             DeepPixel deepInPixel,
-            float &perSampleData
+            float &perSampleData,
+            Vector3& sampleColor
             );
         virtual void wrappedPerChannel(
             const float inputVal,
             float perSampleData,
             Channel z,
-            float& outData
+            float& outData,
+            Vector3& sampleColor
             );
         virtual void custom_knobs(Knob_Callback f);
 
@@ -233,7 +235,8 @@ void DeepCPNoise::wrappedPerSample(
     size_t sampleNo,
     float alpha,
     DeepPixel deepInPixel,
-    float &perSampleData
+    float &perSampleData,
+    Vector3& sampleColor
     )
 {
 
@@ -285,7 +288,8 @@ void DeepCPNoise::wrappedPerChannel(
     const float inputVal,
     float perSampleData,
     Channel z,
-    float& outData
+    float& outData,
+    Vector3& sampleColor
     )
 {
     int cIndex;

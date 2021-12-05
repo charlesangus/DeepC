@@ -18,7 +18,8 @@ class DeepCInvert : public DeepCWrapper
             const float inputVal,
             float perSampleData,
             Channel z,
-            float& outData
+            float& outData,
+            Vector3& sampleColor
             );
 
         virtual void custom_knobs(Knob_Callback f);
@@ -33,7 +34,8 @@ void DeepCInvert::wrappedPerChannel(
     const float inputVal,
     float perSampleData,
     Channel z,
-    float& outData
+    float& outData,
+    Vector3& sampleColor
     )
 {
     int cIndex = colourIndex(z);
@@ -55,7 +57,7 @@ void DeepCInvert::custom_knobs(Knob_Callback f)
 
 const char* DeepCInvert::node_help() const
 {
-    return "Invert node for DeepC.\n"
+    return "Invert node for DeepC.\n\n"
            "Falk Hofmann 11/2021";
 }
 

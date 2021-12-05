@@ -21,7 +21,8 @@ class DeepCMultiply : public DeepCWrapper
             const float inputVal,
             float perSampleData,
             Channel z,
-            float& outData
+            float& outData,
+            Vector3& sampleColor
             );
 
         virtual void custom_knobs(Knob_Callback f);
@@ -41,7 +42,8 @@ void DeepCMultiply::wrappedPerChannel(
     const float inputVal,
     float perSampleData,
     Channel z,
-    float& outData
+    float& outData,
+    Vector3& sampleColor
     )
 {
     int cIndex = colourIndex(z);
@@ -63,7 +65,8 @@ void DeepCMultiply::custom_knobs(Knob_Callback f)
 const char* DeepCMultiply::node_help() const
 {
     return
-    "Multiply node for DeepC.";
+    "Multiply node for DeepC.\n\n"
+    "Falk Hofmann 11/2021";
 }
 
 

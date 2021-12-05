@@ -95,6 +95,10 @@ $(PLUGIN_DIR)/DeepCCopyBbox.so: $(OBJ_DIR)/DeepCCopyBbox.o $(OBJ_DIR)/DeepCWrapp
 	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$^ $(LIBS)
 $(PLUGIN_DIR)/DeepCConstant.so: $(OBJ_DIR)/DeepCConstant.o $(OBJ_DIR)/DeepCWrapper.o | $(PLUGIN_DIR)
 	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$^ $(LIBS)
+$(PLUGIN_DIR)/DeepCMatrix.so: $(OBJ_DIR)/DeepCMatrix.o $(OBJ_DIR)/DeepCWrapper.o | $(PLUGIN_DIR)
+	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$^ $(LIBS)
+$(PLUGIN_DIR)/DeepCHueShift.so: $(OBJ_DIR)/DeepCHueShift.o $(OBJ_DIR)/DeepCWrapper.o | $(PLUGIN_DIR)
+	$(LINK) $(STD) $(LINK_FLAGS) -o $$@ $$^ $(LIBS)
 $(PLUGIN_DIR)/DeepCPNoise.so: $(OBJ_DIR)/DeepCPNoise.o $(OBJ_DIR)/DeepCMWrapper.o $(OBJ_DIR)/DeepCWrapper.o | $(PLUGIN_DIR)
 	$(LINK) $(STD) $(LINK_FLAGS) -L$(FASTNOISEDIR)/build -o $$@ $$^ $(LIBS) -lFastNoise
 $(PLUGIN_DIR):

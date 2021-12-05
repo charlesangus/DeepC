@@ -30,7 +30,7 @@ public:
 
   const char* node_help() const override
   {
-    return "Copy the bounding box from the second input into the stream.\n"
+    return "Copy the bounding box from the second input into the stream.\n\n"
            "Falk Hofmann 11/2021";
   }
 

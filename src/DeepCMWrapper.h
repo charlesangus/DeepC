@@ -49,13 +49,15 @@ class DeepCMWrapper : public DeepCWrapper
             size_t sampleNo,
             float alpha,
             DeepPixel deepInPixel,
-            float &perSampleData
+            float &perSampleData,
+            Vector3& sampleColor
             );
         virtual void wrappedPerChannel(
             const float inputVal,
             float perSampleData,
             Channel z,
-            float& outData
+            float& outData,
+            Vector3& sampleColor
             );
 
         virtual void top_knobs(Knob_Callback f);

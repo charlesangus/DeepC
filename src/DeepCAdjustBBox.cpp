@@ -24,7 +24,7 @@ public:
 
   const char* node_help() const override
   {
-    return "Increase or reduce the size of the bouding box.\n"
+    return "Increase or reduce the size of the bouding box.\n\n"
            "Falk Hofmann 11/2021";
   }
 
