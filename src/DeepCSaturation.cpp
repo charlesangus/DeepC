@@ -38,13 +38,15 @@ class DeepCSaturation : public DeepCWrapper
             size_t sampleNo,
             float alpha,
             DeepPixel deepInPixel,
-            float &perSampleData
+            float &perSampleData,
+            Vector3& sampleColor
             );
         virtual void wrappedPerChannel(
             const float inputVal,
             float perSampleData,
             Channel z,
-            float& outData
+            float& outData,
+            Vector3& sampleColor
             );
 
         virtual void custom_knobs(Knob_Callback f);
@@ -90,7 +92,8 @@ void DeepCSaturation::wrappedPerSample(
     size_t sampleNo,
     float alpha,
     DeepPixel deepInPixel,
-    float &perSampleData
+    float &perSampleData,
+    Vector3& sampleColor
     )
 {
     ChannelSet available;
@@ -135,7 +138,8 @@ void DeepCSaturation::wrappedPerChannel(
     const float inputVal,
     float perSampleData,
     Channel z,
-    float& outData
+    float& outData,
+    Vector3& sampleColor
     )
 {
     outData = inputVal * _saturation + perSampleData * (1.0f - _saturation);
