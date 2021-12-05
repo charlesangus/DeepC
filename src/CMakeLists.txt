@@ -18,6 +18,7 @@ set(PLUGINS
     DeepCMatrix
     DeepCMultiply
     DeepCPNoise
+    DeepCPosterize
     DeepCRemoveChannels
     DeepCSaturation
     DeepCShuffle
@@ -45,7 +46,7 @@ install(TARGETS ${PLUGINS}
 add_library(DeepCWrapper OBJECT
     DeepCWrapper.cpp)
 
-foreach(PLUGIN_NAME DeepCAdd DeepCClamp DeepCColorLookup DeepCID DeepCPMatte DeepCPNoise DeepCGamma DeepCGrade DeepCHueShift DeepCInvert DeepCMatrix DeepCMultiply DeepCSaturation)
+foreach(PLUGIN_NAME DeepCAdd DeepCClamp DeepCColorLookup DeepCID DeepCPMatte DeepCPNoise DeepCGamma DeepCGrade DeepCHueShift DeepCInvert DeepCMatrix DeepCMultiply DeepCPosterize DeepCSaturation)
     target_sources(${PLUGIN_NAME} PRIVATE
         $<TARGET_OBJECTS:DeepCWrapper>)
 endforeach()
