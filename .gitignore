@@ -46,3 +46,6 @@ release
 # IDE related files
 .vscode
 *.code-*
+
+# build
+build

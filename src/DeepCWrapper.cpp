@@ -364,9 +364,9 @@ Op* DeepCWrapper::default_input(int input) const
     {
         case 0:
             return DeepFilterOp::default_input(input);
-         case 1:
-             Black* dummy;
-             return dynamic_cast<Op*>(dummy);
+        case 1:
+            Black* dummy = new Black();
+            return dynamic_cast<Op*>(dummy);
     }
 }
 
