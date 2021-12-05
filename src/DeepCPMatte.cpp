@@ -35,7 +35,8 @@ class DeepCPMatte : public DeepCMWrapper
             size_t sampleNo,
             float alpha,
             DeepPixel deepInPixel,
-            float &perSampleData
+            float &perSampleData,
+            Vector3& sampleColor
             );
 
         virtual void custom_knobs(Knob_Callback f);
@@ -57,7 +58,8 @@ void DeepCPMatte::wrappedPerSample(
     size_t sampleNo,
     float alpha,
     DeepPixel deepInPixel,
-    float &perSampleData
+    float &perSampleData,
+    Vector3& sampleColor
     )
 {
     // generate mask
