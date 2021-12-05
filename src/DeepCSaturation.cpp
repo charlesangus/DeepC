@@ -3,11 +3,22 @@
 
 using namespace DD::Image;
 
+
+enum {
+  REC709 = 0, CCIR601, AVERAGE, MAXIMUM
+};
+
+static const char* mode_names[] = {
+  "Rec 709", "Ccir 601", "Average", "Maximum", nullptr
+};
+
+
 class DeepCSaturation : public DeepCWrapper
 {
 
     // grading
     float _saturation;
+    int _mode;
 
     ChannelSet _brothers;
 
@@ -16,6 +27,7 @@ class DeepCSaturation : public DeepCWrapper
         DeepCSaturation(Node* node) : DeepCWrapper(node)
         {
             _saturation = 1.0f;
+            _mode = 0;
             _brothers = Chan_Black;
         }
 
@@ -53,6 +65,26 @@ void DeepCSaturation::findNeededDeepChannels(ChannelSet& neededDeepChannels)
     neededDeepChannels += _brothers;
 }
 
+static inline float y_convert_ccir601(float r, float g, float b)
+{
+  return r * 0.299f + g * 0.587f + b * 0.114f;
+}
+
+static inline float y_convert_avg(float r, float g, float b)
+{
+  return (r + g + b) / 3.0f;
+}
+
+static inline float y_convert_max(float r, float g, float b)
+{
+  if (g > r)
+    r = g;
+  if (b > r)
+    r = b;
+  return r;
+}
+
+
 void DeepCSaturation::wrappedPerSample(
     Box::iterator it,
     size_t sampleNo,
@@ -77,7 +109,25 @@ void DeepCSaturation::wrappedPerSample(
             rgb[colourIndex(z)] = deepInPixel.getUnorderedSample(sampleNo, z) / alpha;
         }
     }
-    perSampleData = y_convert_rec709(rgb[0], rgb[1], rgb[2]);
+
+    switch (_mode) {
+        case REC709:
+            perSampleData = y_convert_rec709(rgb[0], rgb[1], rgb[2]);
+            break;
+        case CCIR601:
+            perSampleData = y_convert_ccir601(rgb[0], rgb[1], rgb[2]);
+            break;
+        case AVERAGE:
+            perSampleData = y_convert_avg(rgb[0], rgb[1], rgb[2]);
+            break;
+        case MAXIMUM:
+            perSampleData = y_convert_max(rgb[0], rgb[1], rgb[2]);
+            break;
+        default:
+            perSampleData = y_convert_rec709(rgb[0], rgb[1], rgb[2]);
+            break;
+        }
+
 }
 
 
@@ -95,6 +145,8 @@ void DeepCSaturation::wrappedPerChannel(
 void DeepCSaturation::custom_knobs(Knob_Callback f)
 {
     Float_knob(f, &_saturation, IRange(0, 4), "saturation");
+    Enumeration_knob(f, &_mode, mode_names, "_mode", "luminance math");
+    Tooltip(f, "Choose a mode to apply the greyscale conversion.");
 }
 
 

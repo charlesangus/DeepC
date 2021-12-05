@@ -64,8 +64,8 @@ void DeepCGamma::custom_knobs(Knob_Callback f)
 
 const char* DeepCGamma::node_help() const
 {
-    return
-    "Multiply node for DeepC.";
+    return "Gamma node for DeepC.\n\n"
+           "Falk Hofmann 11/2021";
 }
 
 

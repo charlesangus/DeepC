@@ -100,7 +100,8 @@ void DeepCClamp::custom_knobs(Knob_Callback f)
 const char* DeepCClamp::node_help() const
 {
     return
-    "Clamp node for DeepC.";
+    "Clamp node for DeepC.\n\n"
+    "Falk Hofmann 11/2021";
 }
 
 
