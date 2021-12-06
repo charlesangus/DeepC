@@ -1,28 +1,8 @@
 cmake_minimum_required(VERSION 3.10 FATAL_ERROR)
 project(DeepC)
 
+set(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 find_package(Nuke REQUIRED)
-
-# add RIPFRAMEWORK link library
-add_library(Nuke::RIPFRAMEWORK SHARED IMPORTED)
-
-if (UNIX)
-    set_target_properties(Nuke::RIPFRAMEWORK
-        PROPERTIES
-            IMPORTED_LOCATION ${NUKE_ROOT}/libRIPFramework.so
-            INTERFACE_INCLUDE_DIRECTORIES ${NUKE_ROOT}/include
-            INTERFACE_LINK_LIBRARIES ${NUKE_ROOT}/libRIPFramework.so
-            INTERFACE_COMPILE_FEATURES cxx_std_14
-    )
-else()
-    set_target_properties(Nuke::RIPFRAMEWORK
-        PROPERTIES
-            IMPORTED_LOCATION ${NUKE_ROOT}/RIPFramework.dll
-            IMPORTED_IMPLIB ${NUKE_ROOT}/RIPFramework.lib
-            INTERFACE_INCLUDE_DIRECTORIES ${NUKE_ROOT}/include
-            INTERFACE_COMPILE_FEATURES cxx_std_14
-    )
-endif()
 
 set(FASTNOISE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/FastNoise)
 add_library(FastNoise OBJECT ${FASTNOISE_DIR}/FastNoise.cpp)

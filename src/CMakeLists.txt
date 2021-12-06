@@ -1,18 +1,32 @@
+# add nuke plugin linked to ddimage lib
 function(add_nuke_plugin PLUGIN_NAME)
     add_library(${PLUGIN_NAME} MODULE ${ARGN})
     add_library(NukePlugins::${PLUGIN_NAME} ALIAS ${PLUGIN_NAME})
-    target_link_libraries(${PLUGIN_NAME} PRIVATE Nuke::NDK)
-    target_compile_definitions(${PLUGIN_NAME} PRIVATE FN_EXAMPLE_PLUGIN)
+    target_link_libraries(${PLUGIN_NAME} PRIVATE ${NUKE_DDIMAGE_LIBRARY})
     set_target_properties(${PLUGIN_NAME} PROPERTIES PREFIX "")
     if (APPLE)
         set_target_properties(${PLUGIN_NAME} PROPERTIES SUFFIX ".dylib")
     endif()
 endfunction()
 
+include_directories(${NUKE_INCLUDE_DIRS})
+
+# WRAPPER LIBRARIES
+
+# DeepCMWrapper
+add_library(DeepCWrapper OBJECT DeepCWrapper.cpp)
+target_link_libraries(DeepCWrapper PRIVATE ${NUKE_DDIMAGE_LIBRARY})
+
+# DeepCMWrapper
+add_library(DeepCMWrapper OBJECT DeepCMWrapper.cpp)
+target_link_libraries(DeepCMWrapper PRIVATE ${NUKE_DDIMAGE_LIBRARY})
+target_sources(DeepCMWrapper PRIVATE $<TARGET_OBJECTS:DeepCWrapper>)
+
+# NON WRAPPED PLUGINS
 set(PLUGINS
     DeepCAddChannels
     DeepCAdjustBBox
-#    DeepCBlink
+    DeepCBlink
     DeepCConstant
     DeepCCopyBBox
     DeepCRemoveChannels
@@ -24,12 +38,7 @@ foreach(PLUGIN_NAME ${PLUGINS})
     add_nuke_plugin(${PLUGIN_NAME} ${PLUGIN_NAME}.cpp)
 endforeach()
 
-#target_link_libraries(DeepCBlink PRIVATE Nuke::RIPFRAMEWORK)
-
-# DeepCWrapper
-add_library(DeepCWrapper OBJECT DeepCWrapper.cpp)
-target_link_libraries(DeepCWrapper PRIVATE Nuke::NDK)
-
+# DeepCWrapper 
 set(PLUGINS_WRAPPED
     DeepCAdd
     DeepCClamp
@@ -50,10 +59,6 @@ foreach(PLUGIN_NAME ${PLUGINS_WRAPPED})
 endforeach()
 
 # DeepCMWrapper
-add_library(DeepCMWrapper OBJECT DeepCMWrapper.cpp)
-target_link_libraries(DeepCMWrapper PRIVATE Nuke::NDK)
-target_sources(DeepCMWrapper PRIVATE $<TARGET_OBJECTS:DeepCWrapper>)
-
 set(PLUGINS_MWRAPPED
     DeepCID
     DeepCPMatte
@@ -70,6 +75,12 @@ endforeach()
 target_include_directories(DeepCPNoise PRIVATE ${FASTNOISE_DIR})
 target_sources(DeepCPNoise PRIVATE $<TARGET_OBJECTS:FastNoise>)
 
-# install files
-install(TARGETS ${PLUGINS} ${PLUGINS_WRAPPED} ${PLUGINS_MWRAPPED} DESTINATION .)
+# link DeepCBlink with libRIPFramework
+target_link_libraries(DeepCBlink PRIVATE ${NUKE_RIPFRAMEWORK_LIBRARY})
 
+# install files
+install(TARGETS 
+        ${PLUGINS} 
+        ${PLUGINS_WRAPPED} 
+        ${PLUGINS_MWRAPPED} 
+        DESTINATION .)
