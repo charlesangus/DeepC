@@ -120,7 +120,9 @@ Where ```X``` is the number of cores you have available, so make can run paralle
 
 ### Windows
 
-Possible someday...
+On Windows you need Visual Studio (15) 2017 to compile the plugins.
+You can use cmake (gui application-recommended) to create the project files for Visual Studio.
+Note: make sure to use the x64 platform to compile the plugin. 
 
 ### Mac
 
