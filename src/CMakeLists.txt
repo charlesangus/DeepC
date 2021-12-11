@@ -1,3 +1,45 @@
+# NON WRAPPED PLUGINS
+set(PLUGINS
+    DeepCAddChannels
+    DeepCAdjustBBox
+    DeepCBlink
+    DeepCConstant
+    DeepCCopyBBox
+    DeepCRemoveChannels
+    DeepCShuffle
+    DeepCWorld
+    )
+
+# DeepCWrapper 
+set(PLUGINS_WRAPPED
+DeepCAdd
+DeepCClamp
+DeepCColorLookup
+DeepCGamma
+DeepCGrade
+DeepCHueShift
+DeepCInvert
+DeepCMatrix
+DeepCMultiply
+DeepCPosterize
+DeepCSaturation
+)
+
+# DeepCMWrapper
+set(PLUGINS_MWRAPPED
+    DeepCID
+    DeepCPMatte
+    DeepCPNoise
+    )
+
+# DeepC Python Menu
+set(DRAW_NODES DeepCConstant DeepCID DeepCPMatte DeepCPNoise)
+set(CHANNEL_NODES DeepCAddChannels DeepCRemoveChannels DeepCShuffle)
+set(COLOR_NODES DeepCAdd DeepCClamp DeepCColorLookup DeepCGamma DeepCGrade
+DeepCHueShift DeepCInvert DeepCMatrix DeepCMultiply DeepCPosterize DeepCSaturation)
+set(3D_NODES DeepCWorld)
+set(Util_NODES DeepCAdjustBBox DeepCCopyBBox)
+
 # add nuke plugin linked to ddimage lib
 function(add_nuke_plugin PLUGIN_NAME)
     add_library(${PLUGIN_NAME} MODULE ${ARGN})
@@ -9,6 +51,7 @@ function(add_nuke_plugin PLUGIN_NAME)
     endif()
 endfunction()
 
+# include directories
 include_directories(${NUKE_INCLUDE_DIRS})
 
 # WRAPPER LIBRARIES
@@ -22,48 +65,15 @@ add_library(DeepCMWrapper OBJECT DeepCMWrapper.cpp)
 target_link_libraries(DeepCMWrapper PRIVATE ${NUKE_DDIMAGE_LIBRARY})
 target_sources(DeepCMWrapper PRIVATE $<TARGET_OBJECTS:DeepCWrapper>)
 
-# NON WRAPPED PLUGINS
-set(PLUGINS
-    DeepCAddChannels
-    DeepCAdjustBBox
-    DeepCBlink
-    DeepCConstant
-    DeepCCopyBBox
-    DeepCRemoveChannels
-    DeepCShuffle
-    DeepCWorld
-    )
-
+# add configuration 
 foreach(PLUGIN_NAME ${PLUGINS})
     add_nuke_plugin(${PLUGIN_NAME} ${PLUGIN_NAME}.cpp)
 endforeach()
-
-# DeepCWrapper 
-set(PLUGINS_WRAPPED
-    DeepCAdd
-    DeepCClamp
-    DeepCColorLookup
-    DeepCGamma
-    DeepCGrade
-    DeepCHueShift
-    DeepCInvert
-    DeepCMatrix
-    DeepCMultiply
-    DeepCPosterize
-    DeepCSaturation
-    )
 
 foreach(PLUGIN_NAME ${PLUGINS_WRAPPED})
     add_nuke_plugin(${PLUGIN_NAME} ${PLUGIN_NAME}.cpp)
     target_sources(${PLUGIN_NAME} PRIVATE $<TARGET_OBJECTS:DeepCWrapper>)
 endforeach()
-
-# DeepCMWrapper
-set(PLUGINS_MWRAPPED
-    DeepCID
-    DeepCPMatte
-    DeepCPNoise
-    )
 
 foreach(PLUGIN_NAME ${PLUGINS_MWRAPPED})
     add_nuke_plugin(${PLUGIN_NAME} ${PLUGIN_NAME}.cpp)
@@ -77,6 +87,16 @@ target_sources(DeepCPNoise PRIVATE $<TARGET_OBJECTS:FastNoise>)
 
 # link DeepCBlink with libRIPFramework
 target_link_libraries(DeepCBlink PRIVATE ${NUKE_RIPFRAMEWORK_LIBRARY})
+
+# create menu file 
+string(REPLACE ";" "\", \"" DRAW_NODES "\"${DRAW_NODES}\"")
+string(REPLACE ";" "\", \"" CHANNEL_NODES "\"${CHANNEL_NODES}\"")
+string(REPLACE ";" "\", \"" COLOR_NODES "\"${COLOR_NODES}\"")
+string(REPLACE ";" "\", \"" 3D_NODES "\"${3D_NODES}\"")
+string(REPLACE ";" "\", \"" Util_NODES "\"${Util_NODES}\"")
+configure_file(../python/menu.py.in menu.py)
+
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/menu.py" DESTINATION .)
 
 # install files
 install(TARGETS 

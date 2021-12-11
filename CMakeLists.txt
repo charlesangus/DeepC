@@ -20,7 +20,7 @@ add_subdirectory(src)
 
 # install directory
 install(FILES
-    python/init.py python/menu.py
+    python/init.py
     DESTINATION .)
 
 file(GLOB ICONS "icons/DeepC*.png")
