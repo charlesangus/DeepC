@@ -3,17 +3,15 @@ import nuke
 def create_deepc_menu():
     menus = {
             "Draw": {"icon":"ToolbarDraw.png",
-                    "nodes": ["DeepCPMatte", "DeepCPNoise", "DeepCID", "DeepCConstant"]},
+                    "nodes": [@DRAW_NODES@]},
             "Channel": {"icon":"ToolbarChannel.png",
-                        "nodes": ["DeepCAddChannels", "DeepCRemoveChannels", "DeepCShuffle"]},
+                        "nodes": [@CHANNEL_NODES@]},
             "Color": {"icon":"ToolbarColor.png",
-                      "nodes": ["DeepCAdd", "DeepCClamp", "DeepCColorLookup", "DeepCGamma", "DeepCGrade",
-                                "DeepCHueShift", "DeepCInvert", "DeepCMatrix", "DeepCMultiply", "DeepCPosterize",
-                                "DeepCSaturation"]},
+                      "nodes": [@COLOR_NODES@]},
             "3D": {"icon":"ToolbarChannel.png",
-                    "nodes": ["DeepCWorld"]},
+                    "nodes": [@3D_NODES@]},
             "Util": {"icon":"ToolbarToolsets.png",
-                    "nodes": ["DeepCAdjustBBox", "DeepCCopyBBox"]},
+                    "nodes": [@Util_NODES@]},
     }
 
     toolbar = nuke.menu("Nodes")

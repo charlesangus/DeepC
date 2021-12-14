@@ -5,7 +5,7 @@ using namespace DD::Image;
 using namespace std;
 
 static const char* auxChannelName = "position_data";
-enum {REPLACE, UNION, MASK, STENCIL, OUT, MIN_OP, MAX_OP};
+enum {REPLACE, UNION, MASK, STENCIL, _OUT, MIN_OP, MAX_OP};
 static const char* const operationNames[] = {
     "replace",
     "union",

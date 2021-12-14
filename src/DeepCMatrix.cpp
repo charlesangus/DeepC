@@ -14,8 +14,8 @@ class DeepCMatrix : public DeepCWrapper
     bool _invert;
 
 public:
-    DeepCMatrix(Node *node) : DeepCWrapper(node),
-                              _arrayKnob()
+    DeepCMatrix(Node* node) : DeepCWrapper(node),
+                                 _arrayKnob()
     {
         array_mtx3.makeIdentity();
         _invert = false;

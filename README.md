@@ -120,8 +120,27 @@ Where ```X``` is the number of cores you have available, so make can run paralle
 
 ### Windows
 
-Possible someday...
+On Windows you need Visual Studio (15) 2017 to compile the plugins.
+You can use cmake (gui application-recommended) to create the project files for Visual Studio.
+Note: make sure to use the x64 platform to compile the plugin. 
 
+If you want to build the tool via command line (or us a batch script) use:
+```
+mkdir build
+cmake -G "Visual Studio 15 2017" -A x64 .. -DCMAKE_INSTALL_PREFIX=install -B build
+cmake --build build --config Release
+cmake --install build
+```
+
+Note additionally you can adjust the Nuke Version via -DNuke_ROOT="<PATH_TO_NUKE_ROOT_FOLDER>"
+
+e.g. 
+```
+mkdir build
+cmake -G "Visual Studio 15 2017" -A x64 .. -DCMAKE_INSTALL_PREFIX=install -DNuke_ROOT="C:/Program Files/Nuke13.1v1" -B build
+cmake --build build --config Release
+cmake --install build
+```
 ### Mac
 
 Unlikely...

@@ -14,7 +14,7 @@ using namespace DD::Image;
 
 
 //Blink API includes
-// #include "DDImage/Blink.h"
+//#include "DDImage/Blink.h"
 #include "Blink/Blink.h"
 
 /*
@@ -138,6 +138,7 @@ bool DeepCBlink::doDeepEngine(
     DeepOutputPlane& deepOutPlane
     )
 {
+
     if (!input0())
         return true;
 
@@ -157,8 +158,8 @@ bool DeepCBlink::doDeepEngine(
     const DD::Image::ChannelSet inputChannels = input0()->deepInfo().channels();
     const int nOutputChans = requestedChannels.size();
 
-    float imageBuffer[totalSamples * 4];
-    float outImageBuffer[totalSamples * 4];
+    float* imageBuffer = (float*)calloc(totalSamples * 4, sizeof(float));
+    float* outImageBuffer = (float*)calloc(totalSamples * 4, sizeof(float));
     float* imageBufferData;
     float* outImageBufferData;
     imageBufferData = imageBuffer;
@@ -182,6 +183,7 @@ bool DeepCBlink::doDeepEngine(
         // we could handle this somehow, but for now, just bail
         return false;
     }
+    
     std::vector<float*> outDatas; // vector of pointers to writable data for the channels we're Blink processing
     for (Box::iterator it = bbox.begin(); it != bbox.end(); ++it)
     {
@@ -224,7 +226,7 @@ bool DeepCBlink::doDeepEngine(
             }
         }
     }
-
+    
     if (_processChannelSet == Chan_Black)
     {
         // get out if we're not supposed to do anything
@@ -234,7 +236,7 @@ bool DeepCBlink::doDeepEngine(
         deepOutPlane = inPlaceOutPlane;
         return true;
     }
-
+    
     // Now we have the whole input plane in our output plane, and the ChannelSet
     // we want in imageBuffer
 
@@ -249,7 +251,7 @@ bool DeepCBlink::doDeepEngine(
     Blink::Rect falseRect = {0, 0, totalSamples + 1, 1}; // x1, y1, x2, y2
     Blink::PixelInfo aPixelInfo = {numChannels, kBlinkDataFloat}; // number of channels, afaict float is correct for second parameter
     Blink::ImageInfo imageInfo(falseRect, aPixelInfo);
-
+    
     Blink::Image blinkImage(imageInfo, computeDevice);
     // set up a BufferDesc so Blink knows what we're giving it
     // pixelStepBytes: length in bytes to step from one pixel to the next,
@@ -275,6 +277,7 @@ bool DeepCBlink::doDeepEngine(
     // kernel, we would add them to this vector
     std::vector<Blink::Image> images;
     images.push_back(blinkImageOnComputeDevice);
+   
 
     // Make a Blink::Kernel from the source in _gainProgram to do the gain.
     Blink::Kernel gainKernel(_gainProgram,
@@ -285,10 +288,10 @@ bool DeepCBlink::doDeepEngine(
 
     // Run the gain kernel over the output image.
     gainKernel.iterate();
-
+  
     blinkImageOnComputeDevice.copyToBuffer(outImageBuffer, bufferDesc);
     outImageBufferData = outImageBuffer;
-
+    
     // loop over pointers to writable data we processed in blink
     for (std::vector<float*>::iterator it = outDatas.begin(); it != outDatas.end(); ++it)
     {
@@ -300,6 +303,7 @@ bool DeepCBlink::doDeepEngine(
 
     // inPlaceOutPlane.reviseSamples();
     mFnAssert(inPlaceOutPlane.isComplete());
+    
     deepOutPlane = inPlaceOutPlane;
     return true;
 }
