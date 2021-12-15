@@ -132,7 +132,8 @@ cmake --build build --config Release
 cmake --install build
 ```
 
-Note additionally you can adjust the Nuke Version via -DNuke_ROOT="<PATH_TO_NUKE_ROOT_FOLDER>"
+Note: additionally you can adjust the Nuke Version via -DNuke_ROOT="<PATH_TO_NUKE_ROOT_FOLDER>"
+Where ```<PATH_TO_NUKE_ROOT_FOLDER>``` is the path to the prefered nuke root like C:/Programs/Nuke12.2v2 or /usr/local/Nuke12.2v2
 
 e.g. 
 ```
