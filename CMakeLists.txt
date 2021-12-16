@@ -6,7 +6,7 @@ cmake_policy(SET CMP0074 NEW)
 set(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 find_package(Nuke REQUIRED)
 
-message("Using Nuke${NUKE_VERSION_MAJOR}.${NUKE_VERSION_MINOR}v${NUKE_VERSION_RELEASE}")
+message("Using Nuke ${NUKE_VERSION_MAJOR}.${NUKE_VERSION_MINOR}v${NUKE_VERSION_RELEASE}")
 
 if (UNIX)
     add_compile_options(
