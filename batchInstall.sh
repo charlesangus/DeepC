@@ -53,6 +53,10 @@ if [ ! -d build ]; then
     mkdir build
 fi
 
+if [ ! -d release ]; then
+    mkdir release
+fi 
+
 echo "$FOLDER/Nuke*"
 for nukeFolder in "$FOLDER/Nuke"*; do
     if [ -d "$nukeFolder" ]; then
@@ -71,10 +75,10 @@ for nukeFolder in "$FOLDER/Nuke"*; do
         echo '-------'
 
         # Create zip archivs
-	mkdir release
+	
         if [ $SYSTEM = "windows" ]; then
-            tar.exe -c -a -f "./release/DeepC-Windows-$VERSION.tar" -C "$BASEDIR/$INSTALL/$VERSION" "./"
-        else
+		powershell Compress-Archive -LiteralPath "$BASEDIR/$INSTALL/$VERSION" -DestinationPath "./release/DeepC-Linux-$VERSION.zip" -Force
+	else
             zip -r ./release/DeepC-Linux-$VERSION.zip $BASEDIR/$INSTALL/$VERSION
         fi       
     fi
