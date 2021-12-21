@@ -62,20 +62,20 @@ for nukeFolder in "$FOLDER/Nuke"*; do
         if [ $SYSTEM = "windows" ]; then
             cmake -G "Visual Studio 15 2017" -A x64 -S $BASEDIR -DCMAKE_INSTALL_PREFIX="$INSTALL/$VERSION" -DNuke_ROOT="$nukeFolder" -B "build/$VERSION"
         else
-            cmake -S $BASEDIR -DCMAKE_INSTALL_PREFIX="$INSTALL/$VERSION" -DNuke_ROOT="$nukeFolder" -B build/$VERSION
+            cmake -S $BASEDIR -D CMAKE_INSTALL_PREFIX="$INSTALL/$VERSION" -D Nuke_ROOT="$nukeFolder" -B "build/$VERSION"
         fi
         
-        cmake --build build/$VERSION --config Release
-        cmake --install build/$VERSION
+        cmake --build "build/$VERSION" --config Release
+        cmake --install "build/$VERSION"
         echo '-------'
         echo '-------'
 
-        # TODO Create zip archivs
-        #if [ $SYSTEM = "windows" ]; then
-        #    mkdir $INSTALL/release
-        #    tar.exe -a -c -f "$INSTALL/release/$VERSION.zip" "$INSTALL/$VERSION/"
-        #else
-        #    echo "Linux Packing not included!"
-        #fi       
+        # Create zip archivs
+	mkdir release
+        if [ $SYSTEM = "windows" ]; then
+            tar.exe -c -a -f "./release/DeepC-Windows-$VERSION.tar" -C "$BASEDIR/$INSTALL/$VERSION" "./"
+        else
+            zip -r ./release/DeepC-Linux-$VERSION.zip $BASEDIR/$INSTALL/$VERSION
+        fi       
     fi
 done
