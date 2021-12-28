@@ -1,4 +1,6 @@
 #include "DeepCMWrapper.h"
+#include "DDImage/ViewerContext.h"
+#include "DDImage/gl.h"
 
 using namespace DD::Image;
 
@@ -11,7 +13,7 @@ class DeepCPMatte : public DeepCMWrapper
 
     float _positionPick[2];
     Matrix4 _axisKnob;
-
+    Vector2 _center;
     int _shape;
     int _falloffType;
     float _falloff;
@@ -27,6 +29,7 @@ class DeepCPMatte : public DeepCMWrapper
         {
             _auxChannelKnobName = "position_data";
             _positionPick[0] = _positionPick[1] = 0.0f;
+            _center.x = _center.y = 0.0;
             _axisKnob.makeIdentity();
         }
 
@@ -40,6 +43,9 @@ class DeepCPMatte : public DeepCMWrapper
             );
 
         virtual void custom_knobs(Knob_Callback f);
+        int knob_changed(Knob* k);
+        void build_handles(ViewerContext *ctx);
+        void draw_handle(ViewerContext *ctx);
 
         static const Iop::Description d;
         const char* Class() const { return d.name; }
@@ -102,10 +108,11 @@ void DeepCPMatte::wrappedPerSample(
     } else
     {
         // cube
-        distance =
+        distance = 1.0 - (
             clamp(1-fabs(position[0]))
             * clamp(1-fabs(position[1]))
-            * clamp(1-fabs(position[2]));
+            * clamp(1-fabs(position[2]))
+            );
     }
     distance = clamp((1 - distance) / _falloff, 0.0f, 1.0f);
     distance = pow(distance, 1.0f / _falloffGamma);
@@ -121,17 +128,76 @@ void DeepCPMatte::wrappedPerSample(
     perSampleData = m;
 }
 
+
+void DeepCPMatte::build_handles(ViewerContext* ctx)
+{
+    build_knob_handles(ctx);
+    if (ctx->transform_mode() != VIEWER_2D)
+        return;
+    add_draw_handle(ctx);
+}
+
+
+void DeepCPMatte::draw_handle(ViewerContext* ctx)
+{
+    if (!ctx->draw_lines())
+        return;
+
+    DeepCPMatte::_validate(false);
+    glBegin(GL_LINES);
+    glVertex2d(_center.x, _center.y);
+    glEnd();
+}
+
+
 void DeepCPMatte::custom_knobs(Knob_Callback f)
 {
+    XY_knob(f, &_center[0], "center", "center");
     BeginGroup(f, "Position");
     Axis_knob(f, &_axisKnob, "selection");
-    EndGroup(f); // Position
+    EndGroup(f);
 
     Divider(f, "");
     Enumeration_knob(f, &_shape, shapeNames, "shape");
     Enumeration_knob(f, &_falloffType, falloffTypeNames, "falloffType");
     Float_knob(f, &_falloff, "falloff");
     Float_knob(f, &_falloffGamma, "falloff_gamma");
+}
+
+
+int DeepCPMatte::knob_changed(Knob* k) {
+    if (k->is("center"))
+    {
+
+        input0()->validate(true);
+        Box box(_center.x, _center.y, _center.x + 1, _center.y + 1);
+
+        input0()->deepRequest(box, _auxiliaryChannelSet);
+        DeepPlane plane;
+
+        if (!input0()->deepEngine(box, _auxiliaryChannelSet, plane))
+        {
+            return 0;
+        }
+
+        DeepPixel inPixel = plane.getPixel(_center.y, _center.x);
+        int inPixelSamples = inPixel.getSampleCount();
+
+        if (inPixelSamples > 0);
+            ChannelSet inPixelChannels = inPixel.channels();
+
+            for (size_t sampleNo = 0; sampleNo < inPixelSamples; sampleNo++)
+            {
+                foreach (z, _auxiliaryChannelSet)
+                {
+                    const float &inData = inPixel.getUnorderedSample(sampleNo, z);
+                    knob("translate")->set_value(inData, colourIndex(z));
+                }
+            }
+        return 1;
+
+    }
+    return DeepFilterOp::knob_changed(k);
 }
 
 
