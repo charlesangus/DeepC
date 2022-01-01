@@ -22,7 +22,7 @@
 #  NUKE_VERSION_RELEASE
 #
 
-set(_nuke_KNOWN_VERSIONS 9.0 10.0 10.5 11.0 11.1 11.2 11.3 12.0)
+set(_nuke_KNOWN_VERSIONS 9.0 10.0 10.5 11.0 11.1 11.2 11.3 12.0 12.1 12.2 13.0 13.1)
 set(_nuke_TEST_VERSIONS) # List of Nuke-style strings (e.g. "7.0v4")
 
 
@@ -107,7 +107,6 @@ else()
     endforeach()
 endif()
 
-
 # Base search around DDImage, since its name is unversioned
 find_library(NUKE_DDIMAGE_LIBRARY DDImage
     PATHS ${_nuke_TEST_PATHS}
@@ -118,7 +117,6 @@ find_library(NUKE_RIPFRAMEWORK_LIBRARY RIPFramework
     PATHS ${_nuke_TEST_PATHS}
     DOC "Nuke RIPFramework library path"
     NO_SYSTEM_ENVIRONMENT_PATH)
-
     
 # Sanity-check to avoid a bunch of redundant errors.
 if(NUKE_DDIMAGE_LIBRARY)

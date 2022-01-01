@@ -33,6 +33,7 @@
 
 # ignore debug run file
 install_and_run.bash
+build_copy_test.sh
 
 # ignore temp files
 *~
@@ -46,3 +47,9 @@ release
 # IDE related files
 .vscode
 *.code-*
+
+# build
+build
+
+# install
+install

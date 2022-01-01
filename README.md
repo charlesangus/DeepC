@@ -14,54 +14,34 @@ Welcome to the DeepC, a suite of Deep compositing plugins for Foundry's Nuke. Wh
 
 ## Plugins
 
-What are the tools offered in the DeepC toolkit? You can read a quick description of each one below, and then head over to the [Examples](https://github.com/charlesangus/DeepC/wiki/Examples) page for some visuals.
+What are the tools offered in the DeepC toolkit? The [Wiki](https://github.com/charlesangus/DeepC/wiki) has a description for each and an overview of all available [plugins](https://github.com/charlesangus/DeepC/wiki#nodes). 
+
+Also, head over to the [Examples](https://github.com/charlesangus/DeepC/wiki/Examples) page for some visuals.
+
+You can read a quick description of some below.
 
 
-### ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCGrade.png) DeepCGrade
-
-The familiar Grade node, updated to work with Deep data. Grading without masking isn't much use, so DeepCGrade supports both Deep and flat masks working in tandem, for maximum flexibility. Use DeepCPMatte or DeepCPNoise to create Deep masks upstream of DeepCGrade, or pipe in a roto in the side, just like you're used to doing.
-
-### ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCSaturation.png) DeepCSaturation
-
-Simple rec709 saturation function on Deep data. Same masking options as DeepCGrade.
-
-### ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCWorld.png) DeepCWorld
-
-Generates world position data from straight Deep renders and a Camera node. Useful if your 3D render doesn't come with a Deep position pass. Just pipe in the Camera, choose the channels to stick the World Position data in, and there you are! Can output premultiplied position data (like most renderers), or unpremultiplied position data (like the ScanlineRender node).
-
-Because DeepCWorld uses the NDK, it can add channels freely to the Deep stream without using hacks (like the Constant->Shuffle->DeepToImage->DeepMerge trick), and it can easily grab the data it needs from the Camera node just by plugging it in.
-
-### ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCPMatte.png) DeepCPMatte
-
-Generates a spherical or cubic mask from Deep position data, for use in other DeepC nodes. Outputs the mask in the channel of your choice. Like DeepCWorld, can create channels on the fly.
-
-### ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCPNoise.png) DeepCPNoise
-
-Generates a 3D or 4D noise mask from Deep position data, for use in other DeepC nodes. Much better than the builtin Nuke noise options, this is based on the FastNoise library. Critically, it offers 4D fractal noise, so your 3D noise pass can evolve across a 4th dimension over time without sliding.
-
-Includes:
-
-- 4D simplex noise
-- 3D cellular noise (many varieties)
-- 3D value noise
-- 3D perlin noise
-- 3D cubic noise
-
-### ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCID.png) DeepCID
-
-Easily manipulate IDs in Deep data, combine with other masks, etc. Can take integer object IDs (better for Deep) or traditional colour mattes.
-
-### ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCAddChannels.png) DeepCAddChannels
-
-Ever wanted to add a channel or channelset to a Deep stream? Well, now you can! And without doing that gross DeepToImage->DeepMerge hack.
-
-### ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCRemoveChannels.png) DeepCRemoveChannels
-
-Ever had extra channels in a Deep stream, cluttering things up? Wish you could get rid of them? Look no further...
-
-### ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCShuffle.png) DeepCShuffle
-
-Very basic Shuffle node for copying/blanking channels.
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCAdd.png)  [DeepCAdd](https://github.com/charlesangus/DeepC/wiki/DeepCAdd)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCAddChannels.png)  [DeepCAddChannels](https://github.com/charlesangus/DeepC/wiki/DeepCAddChannels)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCAdjustBBox.png)  [DeepCAdjustBBox](https://github.com/charlesangus/DeepC/wiki/DeepCAdjustBBox)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCClamp.png)  [DeepCClamp](https://github.com/charlesangus/DeepC/wiki/DeepCClamp)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCColorLookup.png)  [DeepCColorlookup](https://github.com/charlesangus/DeepC/wiki/DeepCColorlookup)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCConstant.png)  [DeepCConstant](https://github.com/charlesangus/DeepC/wiki/DeepCConstant)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCCopyBBox.png)  [DeepCCopyBBox](https://github.com/charlesangus/DeepC/wiki/DeepCCopyBBox)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCGamma.png)  [DeepCGamma](https://github.com/charlesangus/DeepC/wiki/DeepCGamma)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCGrade.png)  [DeepCGrade](https://github.com/charlesangus/DeepC/wiki/DeepCGrade)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCID.png)  [DeepCID](https://github.com/charlesangus/DeepC/wiki/DeepCID)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCHueShift.png)  [DeepCHueShift](https://github.com/charlesangus/DeepC/wiki/DeepCHueShift)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCInvert.png)  [DeepCInvert](https://github.com/charlesangus/DeepC/wiki/DeepCInvert)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCMatrix.png)  [DeepCMatrix](https://github.com/charlesangus/DeepC/wiki/DeepCMatrix)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCMultiply.png)  [DeepCMultiply](https://github.com/charlesangus/DeepC/wiki/DeepCMultiply)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCPMatte.png)  [DeepCPMatte](https://github.com/charlesangus/DeepC/wiki/DeepCPMatte)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCPNoise.png)  [DeepCPNoise](https://github.com/charlesangus/DeepC/wiki/DeepCPNoise)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCPosterize.png)  [DeepCPosterize](https://github.com/charlesangus/DeepC/wiki/DeepCPosterize)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCRemoveChannels.png)  [DeepCRemoveChannels](https://github.com/charlesangus/DeepC/wiki/DeepCRemoveChannels)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCSaturation.png)  [DeepCSaturation](https://github.com/charlesangus/DeepC/wiki/DeepCSaturation)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCShuffle.png)  [DeepCShuffle](https://github.com/charlesangus/DeepC/wiki/DeepCShuffle)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCWorld.png)  [DeepCworld](https://github.com/charlesangus/DeepC/wiki/DeepCworld)
 
 ### DeepCBlink
 
@@ -101,9 +81,9 @@ Much like how samples can be compressed in the renderer by merging samples close
 
 ## Build
 
-Build has been tested on Centos 7 with devtoolset-3 (not Centos 6 with devtoolset-2, as recommended by Foundry - presumably very few people are still using Centos 6 in production, and it seems to work fine). Let me know how it goes...
+Build has been tested on ~Centos 7 with devtoolset-3 (not Centos 6 with devtoolset-2, as recommended by Foundry - presumably very few people are still using Centos 6 in production, and it seems to work fine).~ I *think* the most recent build I did was using Centos 7 and devtoolset-7, but I don't have that VM around anymore so I'm not 100%. Let me know how it goes...
 
-Thanks to Nathan Rusch (https://github.com/nrusch?tab=repositories) for contributing the CMake build setup which will form the basis for building DeepC going forward. The old makefile is being left in place for the time being just in case.
+Thanks to Nathan Rusch (https://github.com/nrusch?tab=repositories) for contributing the CMake build setup which will form the basis for building DeepC going forward.
 
 ### Linux
 
@@ -140,15 +120,40 @@ Where ```X``` is the number of cores you have available, so make can run paralle
 
 ### Windows
 
-Possible someday...
+On Windows you need Visual Studio (15) 2017 to compile the plugins.
+You can use cmake (gui application-recommended) to create the project files for Visual Studio.
+Note: make sure to use the x64 platform to compile the plugin. 
 
+If you want to build the tool via command line (or us a batch script) use:
+```
+mkdir build
+cmake -G "Visual Studio 15 2017" -A x64 .. -DCMAKE_INSTALL_PREFIX=install -B build
+cmake --build build --config Release
+cmake --install build
+```
+
+Note: additionally you can adjust the Nuke Version via -DNuke_ROOT="<PATH_TO_NUKE_ROOT_FOLDER>"
+Where ```<PATH_TO_NUKE_ROOT_FOLDER>``` is the path to the prefered nuke root like C:/Programs/Nuke12.2v2 or /usr/local/Nuke12.2v2
+
+e.g. 
+```
+mkdir build
+cmake -G "Visual Studio 15 2017" -A x64 .. -DCMAKE_INSTALL_PREFIX=install -DNuke_ROOT="C:/Program Files/Nuke13.1v1" -B build
+cmake --build build --config Release
+cmake --install build
+```
 ### Mac
 
 Unlikely...
 
+## Examples
+We created a repository which includes some example deep render scenes to try/test/use this plugin.<br>
+In futur we will add nuke project files to show how the plugins work.<br>
+https://github.com/charlesangus/DeepCExamples
+
 ## Contributing
 
-Currently, DeepC is maintained by only me. I'd love your contributions, though!
+Currently, DeepC is maintained by [me](https://github.com/charlesangus) and [Falk Hofmann](https://github.com/falkhofmann). I'd love your contributions, though!
 
 If you'd like to contribute, please fork the project make a new feature branch for your contribution. Ideally, also let me know what you're up to so we don't duplicate efforts!
 

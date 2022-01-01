@@ -30,7 +30,8 @@ void DeepCMWrapper::wrappedPerSample(
     size_t sampleNo,
     float alpha,
     DeepPixel deepInPixel,
-    float &perSampleData
+    float &perSampleData,
+    Vector3& sampleColor
     )
 {
     perSampleData = 1.0f;
@@ -45,7 +46,8 @@ void DeepCMWrapper::wrappedPerChannel(
     const float inputVal,
     float perSampleData,
     Channel z,
-    float& outData
+    float& outData,
+    Vector3& sampleColor
     )
 {
     switch (_operation)
@@ -62,7 +64,7 @@ void DeepCMWrapper::wrappedPerChannel(
         case STENCIL:
             outData = inputVal * (1.0f - perSampleData);
             break;
-        case OUT:
+        case _OUT:
             outData = (1.0f - inputVal) * perSampleData;
             break;
         case MIN_OP:

@@ -21,7 +21,8 @@ class DeepCGamma : public DeepCWrapper
             const float inputVal,
             float perSampleData,
             Channel z,
-            float& outData
+            float& outData,
+            Vector3& sampleColor
             );
 
         virtual void custom_knobs(Knob_Callback f);
@@ -41,7 +42,8 @@ void DeepCGamma::wrappedPerChannel(
     const float inputVal,
     float perSampleData,
     Channel z,
-    float& outData
+    float& outData,
+    Vector3& sampleColor
     )
 {
     int cIndex = colourIndex(z);
@@ -64,8 +66,8 @@ void DeepCGamma::custom_knobs(Knob_Callback f)
 
 const char* DeepCGamma::node_help() const
 {
-    return
-    "Multiply node for DeepC.";
+    return "Gamma node for DeepC.\n\n"
+           "Falk Hofmann 11/2021";
 }
 
 

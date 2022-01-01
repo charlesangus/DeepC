@@ -5,7 +5,7 @@ using namespace DD::Image;
 using namespace std;
 
 static const char* auxChannelName = "position_data";
-enum {REPLACE, UNION, MASK, STENCIL, OUT, MIN_OP, MAX_OP};
+enum {REPLACE, UNION, MASK, STENCIL, _OUT, MIN_OP, MAX_OP};
 static const char* const operationNames[] = {
     "replace",
     "union",
@@ -49,13 +49,15 @@ class DeepCMWrapper : public DeepCWrapper
             size_t sampleNo,
             float alpha,
             DeepPixel deepInPixel,
-            float &perSampleData
+            float &perSampleData,
+            Vector3& sampleColor
             );
         virtual void wrappedPerChannel(
             const float inputVal,
             float perSampleData,
             Channel z,
-            float& outData
+            float& outData,
+            Vector3& sampleColor
             );
 
         virtual void top_knobs(Knob_Callback f);

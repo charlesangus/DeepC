@@ -29,7 +29,8 @@ class DeepCID : public DeepCMWrapper
             size_t sampleNo,
             float alpha,
             DeepPixel deepInPixel,
-            float &perSampleData
+            float &perSampleData,
+            Vector3& sampleColor
             );
 
         virtual void _validate(bool for_real);
@@ -54,7 +55,8 @@ void DeepCID::wrappedPerSample(
     size_t sampleNo,
     float alpha,
     DeepPixel deepInPixel,
-    float &perSampleData
+    float &perSampleData,
+    Vector3& sampleColor
     )
 {
     // generate mask

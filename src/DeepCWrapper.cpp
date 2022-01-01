@@ -83,7 +83,8 @@ void DeepCWrapper::wrappedPerSample(
     size_t sampleNo,
     float alpha,
     DeepPixel deepInPixel,
-    float &perSampleData
+    float &perSampleData,
+    Vector3 &sampleColor
     )
 {
     perSampleData = 1.0f;
@@ -98,7 +99,8 @@ void DeepCWrapper::wrappedPerChannel(
     const float inputVal,
     float perSampleData,
     Channel z,
-    float& outData
+    float& outData,
+    Vector3 &sampleColor
     )
 {
     outData = inputVal * _gain;
@@ -216,7 +218,8 @@ bool DeepCWrapper::doDeepEngine(
             }
 
             float perSampleData;
-            wrappedPerSample(it, sampleNo, alpha, deepInPixel, perSampleData);
+            Vector3 sampleColor;
+            wrappedPerSample(it, sampleNo, alpha, deepInPixel, perSampleData, sampleColor);
 
             // process the sample
             float inputVal;
@@ -256,7 +259,7 @@ bool DeepCWrapper::doDeepEngine(
                 if (_unpremult)
                     inputVal /= alpha;
 
-                wrappedPerChannel(inputVal, perSampleData, z, outData);
+                wrappedPerChannel(inputVal, perSampleData, z, outData, sampleColor);
 
                 float mask = _mix;
                 mask *= sideMaskVal;
@@ -302,12 +305,19 @@ void DeepCWrapper::bottom_knobs(Knob_Callback f)
     Divider(f, "");
 
     Input_Channel_knob(f, &_deepMaskChannel, 1, 0, "deep_mask", "deep input mask");
+    Tooltip(f, "Use an existing channel in your deep stream based on each sample.");
     Bool_knob(f, &_invertDeepMask, "invert_deep_mask", "invert");
+    Tooltip(f, "Invert the use of the deep mask channel.");
     Bool_knob(f, &_unpremultDeepMask, "unpremult_deep_mask", "unpremult");
+    Tooltip(f, "Unpremult the deep mask prior to applying it.");
 
-    Input_Channel_knob(f, &_sideMaskChannel, 1, 1, "side_mask");
+    Input_Channel_knob(f, &_sideMaskChannel, 1, 1, "side_mask", "side mask");
+    Tooltip(f, "Use a 2d mask connected as 2d nodes on the right.");
     Bool_knob(f, &_invertSideMask, "invert_mask", "invert");
+    Tooltip(f, "Invert the use of the side mask channel.");
     Float_knob(f, &_mix, "mix");
+    Tooltip(f, "Dissolve between the original Image at 0 and the fulll effect at 1.");
+
 }
 
 
@@ -364,9 +374,8 @@ Op* DeepCWrapper::default_input(int input) const
     {
         case 0:
             return DeepFilterOp::default_input(input);
-         case 1:
-             Black* dummy;
-             return dynamic_cast<Op*>(dummy);
+        case 1:
+            return 0;
     }
 }
 
