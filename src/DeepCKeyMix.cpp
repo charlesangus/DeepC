@@ -107,8 +107,24 @@ public:
 
                 DeepInfo infoA = _aOp->deepInfo();
                 DeepInfo infoB = _bOp->deepInfo();
-                infoB.merge(infoA);
-                _deepInfo = infoB;
+
+                switch (bbox_type)
+                {
+                case UNION:
+                    infoB.merge(infoA);
+                    _deepInfo = infoB;
+                    break;
+                case ABOX:
+                    _deepInfo = infoA;
+                    break;
+
+                case BBOX:
+                    _deepInfo = infoB;
+                    break;
+                default:
+                    _deepInfo = infoB;
+                    break;
+                }
             }
             else
             {
@@ -177,7 +193,6 @@ public:
         {
             if (currentYRow != it.y)
             {
-                // we have not already gotten this row, get it now
                 _maskOp->get(it.y, box.x(), box.r(), maskChannel, maskRow);
                 maskVal = maskRow[maskChannel][it.x];
                 maskVal = clamp(maskVal);
@@ -185,7 +200,6 @@ public:
             }
             else
             {
-                // we've already got this row, just get the value
                 maskVal = maskRow[maskChannel][it.x];
                 maskVal = clamp(maskVal);
             }
