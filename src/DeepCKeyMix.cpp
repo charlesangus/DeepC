@@ -4,8 +4,6 @@
 #include "DDImage/Knobs.h"
 #include "DDImage/Row.h"
 
-#include <stdio.h>
-
 static const char *CLASS = "DeepCKeyMix";
 static const char *HELP = "DeepCKeyMix";
 
@@ -20,7 +18,7 @@ class DeepCKeyMix : public DeepFilterOp
     Channel maskChannel;
     bool invertMask;
     float mix;
-    // what to do with bbox:
+
     enum
     {
         UNION,
@@ -28,7 +26,6 @@ class DeepCKeyMix : public DeepFilterOp
         ABOX
     };
     int bbox_type;
-    // Iop *_maskOp;
 
 protected:
     Iop *_maskOp;
@@ -204,11 +201,13 @@ public:
                 maskVal = clamp(maskVal);
             }
 
+            if (invertMask)
+            {
+                maskVal = 1.0f - maskVal;
+            }
+
             DeepPixel aPixel = aPlane.getPixel(it);
             DeepPixel bPixel = bPlane.getPixel(it);
-
-            int aSampleCount = aPixel.getSampleCount();
-            int bSampleCount = bPixel.getSampleCount();
 
             size_t inPixelSamples;
 
@@ -219,13 +218,20 @@ public:
             {
                 inPixelSamples = bSampleNo;
             }
-            else if (maskVal == 1.0f)
+            else if (maskVal * mix == 1.0f)
             {
                 inPixelSamples = aSampleNo;
             }
             else
             {
-                inPixelSamples = bSampleNo + aSampleNo;
+                if (mix > 0.0f)
+                {
+                    inPixelSamples = bSampleNo + aSampleNo;
+                }
+                else
+                {
+                    inPixelSamples = bSampleNo;
+                }
             }
 
             outPlane.setSampleCount(it, inPixelSamples);
@@ -235,6 +241,7 @@ public:
             ChannelSet bInPixelChannels = bPixel.channels();
 
             int subCounter = 0;
+            float mixing = maskVal * mix;
             for (size_t sampleNo = 0; sampleNo < inPixelSamples; sampleNo++)
             {
                 foreach (z, channels)
@@ -246,7 +253,7 @@ public:
                     {
                         outData = bPixel.getUnorderedSample(sampleNo, z);
                     }
-                    else if (maskVal == 1.0f)
+                    else if (mixing == 1.0f)
                     {
                         outData = aPixel.getUnorderedSample(sampleNo, z);
                     }
@@ -257,14 +264,16 @@ public:
                             const float &bInData = bInPixelChannels.contains(z)
                                                        ? bPixel.getUnorderedSample(sampleNo, z)
                                                        : 0.0f;
-                            outData = (1.0f - maskVal) * bInData;
+
+                            // float unpre = bAlpha < 0.0f ? bInData / bAlpha : 0.0f;
+                            outData = (1.0f - mixing) * bInData;
                         }
                         else
                         {
                             const float &aInData = aInPixelChannels.contains(z)
                                                        ? aPixel.getUnorderedSample(sampleNo - bSampleNo, z)
                                                        : 0.0f;
-                            outData = maskVal * aInData;
+                            outData = aInData * mixing;
                         }
                     }
                 }
