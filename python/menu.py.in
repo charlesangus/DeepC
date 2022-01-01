@@ -10,6 +10,9 @@ def create_deepc_menu():
                       "nodes": [@COLOR_NODES@]},
             "3D": {"icon":"ToolbarChannel.png",
                     "nodes": [@3D_NODES@]},
+            "Merge": {"icon":"ToolbarMerge.png",
+                      "nodes": [@MERGE_NODES@]},
+                
             "Util": {"icon":"ToolbarToolsets.png",
                     "nodes": [@Util_NODES@]},
     }
