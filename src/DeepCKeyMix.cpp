@@ -5,7 +5,8 @@
 #include "DDImage/Row.h"
 
 static const char *CLASS = "DeepCKeyMix";
-static const char *HELP = "DeepCKeyMix";
+static const char *HELP = "A KeyMix node to use withing a deep stream. Mimics the 2d KeyMix node in controls and behavior.\n\n"
+                          "Falk Hofmann 12/2021";
 
 using namespace DD::Image;
 
@@ -14,7 +15,7 @@ static const char *const bbox_names[] = {"union", "B\tB side", "A\tA side", null
 class DeepCKeyMix : public DeepFilterOp
 {
 
-    ChannelSet channels;
+    ChannelSet _processChannelSet;
     Channel maskChannel;
     bool invertMask;
     float mix;
@@ -37,7 +38,7 @@ public:
     {
         inputs(3);
 
-        channels = Mask_All;
+        _processChannelSet = Mask_All;
         maskChannel = Chan_Alpha;
         invertMask = false;
         mix = 1;
@@ -77,9 +78,9 @@ public:
 
     void knobs(Knob_Callback f) override
     {
-        Input_ChannelMask_knob(f, &channels, 1, "channels");
-        Tooltip(f, "Channels to copy from A. Other channels are copied unchanged from B");
-        Input_Channel_knob(f, &maskChannel, 1, 2, "maskChannel", "mask channel");
+        Input_ChannelMask_knob(f, &_processChannelSet, 1, "channels");
+        Tooltip(f, "Channels to include into the KeyMix.");
+        Input_Channel_knob(f, &maskChannel, 1, 2, "mask_channel", "mask channel");
         Tooltip(f, "Channel to use from mask input");
         Bool_knob(f, &invertMask, "invertMask", "invert");
         Tooltip(f, "Flip meaning of the the mask channel");
@@ -153,7 +154,7 @@ public:
         }
     }
 
-    bool doDeepEngine(DD::Image::Box box, const ChannelSet &channels, DeepOutputPlane &plane) override
+    bool doDeepEngine(DD::Image::Box box, const ChannelSet &requestedChannels, DeepOutputPlane &plane) override
     {
         DeepOp *bOp = input0();
         if (!bOp)
@@ -168,13 +169,13 @@ public:
         DeepPlane aPlane;
         DeepPlane bPlane;
 
-        if (!bOp->deepEngine(box, channels, bPlane))
+        if (!bOp->deepEngine(box, requestedChannels, bPlane))
             return false;
 
-        if (!_aOp->deepEngine(box, channels, aPlane))
+        if (!_aOp->deepEngine(box, requestedChannels, aPlane))
             return false;
 
-        DeepInPlaceOutputPlane outPlane(channels, box);
+        DeepInPlaceOutputPlane outPlane(requestedChannels, box);
         outPlane.reserveSamples(bPlane.getTotalSampleCount());
 
         std::vector<int> validSamples;
@@ -240,11 +241,10 @@ public:
             ChannelSet aInPixelChannels = bPixel.channels();
             ChannelSet bInPixelChannels = bPixel.channels();
 
-            int subCounter = 0;
             float mixing = maskVal * mix;
             for (size_t sampleNo = 0; sampleNo < inPixelSamples; sampleNo++)
             {
-                foreach (z, channels)
+                foreach (z, requestedChannels)
                 {
                     int cIndex = colourIndex(z);
 
@@ -265,7 +265,6 @@ public:
                                                        ? bPixel.getUnorderedSample(sampleNo, z)
                                                        : 0.0f;
 
-                            // float unpre = bAlpha < 0.0f ? bInData / bAlpha : 0.0f;
                             outData = (1.0f - mixing) * bInData;
                         }
                         else
