@@ -5,6 +5,7 @@ set(PLUGINS
     DeepCBlink
     DeepCConstant
     DeepCCopyBBox
+    DeepCKeymix
     DeepCRemoveChannels
     DeepCShuffle
     DeepCWorld
@@ -38,6 +39,7 @@ set(CHANNEL_NODES DeepCAddChannels DeepCRemoveChannels DeepCShuffle)
 set(COLOR_NODES DeepCAdd DeepCClamp DeepCColorLookup DeepCGamma DeepCGrade
 DeepCHueShift DeepCInvert DeepCMatrix DeepCMultiply DeepCPosterize DeepCSaturation)
 set(3D_NODES DeepCWorld)
+set(MERGE_NODES DeepCKeymix)
 set(Util_NODES DeepCAdjustBBox DeepCCopyBBox)
 
 # add nuke plugin linked to ddimage lib
@@ -93,6 +95,7 @@ string(REPLACE ";" "\", \"" DRAW_NODES "\"${DRAW_NODES}\"")
 string(REPLACE ";" "\", \"" CHANNEL_NODES "\"${CHANNEL_NODES}\"")
 string(REPLACE ";" "\", \"" COLOR_NODES "\"${COLOR_NODES}\"")
 string(REPLACE ";" "\", \"" 3D_NODES "\"${3D_NODES}\"")
+string(REPLACE ";" "\", \"" MERGE_NODES "\"${MERGE_NODES}\"")
 string(REPLACE ";" "\", \"" Util_NODES "\"${Util_NODES}\"")
 configure_file(../python/menu.py.in menu.py)
 
