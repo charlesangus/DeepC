@@ -4,6 +4,8 @@
 #include "DDImage/Knobs.h"
 #include "DDImage/Row.h"
 
+#include "stdio.h"
+
 static const char *CLASS = "DeepCKeyMix";
 static const char *HELP = "A KeyMix node to use withing a deep stream. Mimics the 2d KeyMix node in controls and behavior.\n\n"
                           "Falk Hofmann 12/2021";
@@ -32,6 +34,7 @@ protected:
     Iop *_maskOp;
     DeepOp *_aOp;
     DeepOp *_bOp;
+    bool _bypass;
 
 public:
     DeepCKeyMix(Node *node) : DeepFilterOp(node)
@@ -40,7 +43,7 @@ public:
 
         _processChannelSet = Mask_All;
         maskChannel = Chan_Alpha;
-        invertMask = false;
+        invertMask = _bypass = false;
         mix = 1;
         bbox_type = UNION;
     }
@@ -92,9 +95,15 @@ public:
 
     void _validate(bool for_real) override
     {
+        _bypass = _processChannelSet.size() == 0 ? true : false;
+
         _aOp = dynamic_cast<DeepOp *>(Op::input(1));
         _bOp = input0();
         _maskOp = dynamic_cast<Iop *>(Op::input(2));
+
+        if ((!_aOp) || (!_maskOp))
+            _bypass = true;
+
         if (_bOp != nullptr)
         {
             if (_aOp != nullptr && _maskOp != nullptr)
@@ -156,123 +165,141 @@ public:
 
     bool doDeepEngine(DD::Image::Box box, const ChannelSet &requestedChannels, DeepOutputPlane &plane) override
     {
-        DeepOp *bOp = input0();
-        if (!bOp)
+        DeepOp *_bOp = input0();
+        if (!_bOp)
             return true;
 
-        if (!_aOp)
-            return false;
-
-        if (!_maskOp)
-            return false;
-
-        DeepPlane aPlane;
         DeepPlane bPlane;
-
-        if (!bOp->deepEngine(box, requestedChannels, bPlane))
-            return false;
-
-        if (!_aOp->deepEngine(box, requestedChannels, aPlane))
+        if (!_bOp->deepEngine(box, requestedChannels, bPlane))
             return false;
 
         DeepInPlaceOutputPlane outPlane(requestedChannels, box);
         outPlane.reserveSamples(bPlane.getTotalSampleCount());
 
-        std::vector<int> validSamples;
-
-        float maskVal;
-        int currentYRow;
-        Row maskRow(box.x(), box.r());
-
-        _maskOp->get(box.y(), box.x(), box.r(), maskChannel, maskRow);
-        currentYRow = box.y();
-
-        for (Box::iterator it = box.begin(), itEnd = box.end(); it != itEnd; ++it)
+        if (_bypass)
         {
-            if (currentYRow != it.y)
+            for (Box::iterator it = box.begin(), itEnd = box.end(); it != itEnd; ++it)
             {
-                _maskOp->get(it.y, box.x(), box.r(), maskChannel, maskRow);
-                maskVal = maskRow[maskChannel][it.x];
-                maskVal = clamp(maskVal);
-                currentYRow = it.y;
-            }
-            else
-            {
-                maskVal = maskRow[maskChannel][it.x];
-                maskVal = clamp(maskVal);
-            }
-
-            if (invertMask)
-            {
-                maskVal = 1.0f - maskVal;
-            }
-
-            DeepPixel aPixel = aPlane.getPixel(it);
-            DeepPixel bPixel = bPlane.getPixel(it);
-
-            size_t inPixelSamples;
-
-            int aSampleNo = aPixel.getSampleCount();
-            int bSampleNo = bPixel.getSampleCount();
-
-            if (maskVal == 0.0f)
-            {
-                inPixelSamples = bSampleNo;
-            }
-            else if (maskVal * mix == 1.0f)
-            {
-                inPixelSamples = aSampleNo;
-            }
-            else
-            {
-                if (mix > 0.0f)
+                DeepPixel bPixel = bPlane.getPixel(it);
+                size_t inPixelSamples = bPixel.getSampleCount();
+                outPlane.setSampleCount(it, inPixelSamples);
+                DeepOutputPixel outPixel = outPlane.getPixel(it);
+                size_t outSample = 0;
+                for (size_t sampleNo = 0; sampleNo < inPixelSamples; sampleNo++)
                 {
-                    inPixelSamples = bSampleNo + aSampleNo;
+                    const float *inData = bPixel.getUnorderedSample(sampleNo);
+                    float *outData = outPixel.getWritableUnorderedSample(outSample);
+                    for (int iChannel = 0, nChannels = requestedChannels.size();
+                         iChannel < nChannels;
+                         ++iChannel, ++outData, ++inData)
+                    {
+                        *outData = *inData;
+                    }
+                    ++outSample;
+                }
+            }
+        }
+        else
+        {
+            DeepPlane aPlane;
+            if (!_aOp->deepEngine(box, requestedChannels, aPlane))
+                return false;
+
+            float maskVal;
+            int currentYRow;
+            Row maskRow(box.x(), box.r());
+
+            _maskOp->get(box.y(), box.x(), box.r(), maskChannel, maskRow);
+            currentYRow = box.y();
+
+            for (Box::iterator it = box.begin(), itEnd = box.end(); it != itEnd; ++it)
+            {
+
+                if (currentYRow != it.y)
+                {
+                    _maskOp->get(it.y, box.x(), box.r(), maskChannel, maskRow);
+                    maskVal = maskRow[maskChannel][it.x];
+                    maskVal = clamp(maskVal);
+                    currentYRow = it.y;
                 }
                 else
                 {
+                    maskVal = maskRow[maskChannel][it.x];
+                    maskVal = clamp(maskVal);
+                }
+
+                if (invertMask)
+                {
+                    maskVal = 1.0f - maskVal;
+                }
+
+                DeepPixel aPixel = aPlane.getPixel(it);
+                DeepPixel bPixel = bPlane.getPixel(it);
+
+                size_t inPixelSamples;
+
+                int aSampleNo = aPixel.getSampleCount();
+                int bSampleNo = bPixel.getSampleCount();
+
+                if (maskVal == 0.0f)
+                {
                     inPixelSamples = bSampleNo;
                 }
-            }
-
-            outPlane.setSampleCount(it, inPixelSamples);
-
-            DeepOutputPixel outPixel = outPlane.getPixel(it);
-            ChannelSet aInPixelChannels = bPixel.channels();
-            ChannelSet bInPixelChannels = bPixel.channels();
-
-            float mixing = maskVal * mix;
-            for (size_t sampleNo = 0; sampleNo < inPixelSamples; sampleNo++)
-            {
-                foreach (z, requestedChannels)
+                else if (maskVal * mix == 1.0f)
                 {
-                    int cIndex = colourIndex(z);
-
-                    float &outData = outPixel.getWritableUnorderedSample(sampleNo, z);
-                    if (maskVal == 0.0f)
+                    inPixelSamples = aSampleNo;
+                }
+                else
+                {
+                    if (mix > 0.0f)
                     {
-                        outData = bPixel.getUnorderedSample(sampleNo, z);
-                    }
-                    else if (mixing == 1.0f)
-                    {
-                        outData = aPixel.getUnorderedSample(sampleNo, z);
+                        inPixelSamples = bSampleNo + aSampleNo;
                     }
                     else
                     {
-                        if (sampleNo < bSampleNo)
-                        {
-                            const float &bInData = bInPixelChannels.contains(z)
-                                                       ? bPixel.getUnorderedSample(sampleNo, z)
-                                                       : 0.0f;
+                        inPixelSamples = bSampleNo;
+                    }
+                }
 
-                            outData = (1.0f - mixing) * bInData;
+                outPlane.setSampleCount(it, inPixelSamples);
+
+                DeepOutputPixel outPixel = outPlane.getPixel(it);
+                ChannelSet aInPixelChannels = bPixel.channels();
+                ChannelSet bInPixelChannels = bPixel.channels();
+
+                float mixing = maskVal * mix;
+                for (size_t sampleNo = 0; sampleNo < inPixelSamples; sampleNo++)
+                {
+                    foreach (z, requestedChannels)
+                    {
+                        int cIndex = colourIndex(z);
+
+                        float &outData = outPixel.getWritableUnorderedSample(sampleNo, z);
+                        if (maskVal == 0.0f)
+                        {
+                            outData = bPixel.getUnorderedSample(sampleNo, z);
+                        }
+                        else if (mixing == 1.0f)
+                        {
+                            outData = aPixel.getUnorderedSample(sampleNo, z);
                         }
                         else
                         {
-                            const float &aInData = aInPixelChannels.contains(z)
-                                                       ? aPixel.getUnorderedSample(sampleNo - bSampleNo, z)
-                                                       : 0.0f;
-                            outData = aInData * mixing;
+                            if (sampleNo < bSampleNo)
+                            {
+                                const float &bInData = bInPixelChannels.contains(z)
+                                                           ? bPixel.getUnorderedSample(sampleNo, z)
+                                                           : 0.0f;
+
+                                outData = (1.0f - mixing) * bInData;
+                            }
+                            else
+                            {
+                                const float &aInData = aInPixelChannels.contains(z)
+                                                           ? aPixel.getUnorderedSample(sampleNo - bSampleNo, z)
+                                                           : 0.0f;
+                                outData = aInData * mixing;
+                            }
                         }
                     }
                 }
