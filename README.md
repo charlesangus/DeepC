@@ -33,6 +33,7 @@ You can read a quick description of some below.
 - ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCID.png)  [DeepCID](https://github.com/charlesangus/DeepC/wiki/DeepCID)
 - ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCHueShift.png)  [DeepCHueShift](https://github.com/charlesangus/DeepC/wiki/DeepCHueShift)
 - ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCInvert.png)  [DeepCInvert](https://github.com/charlesangus/DeepC/wiki/DeepCInvert)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCKeymix.png)  [DeepCKeymix](https://github.com/charlesangus/DeepC/wiki/DeepCKeymix)
 - ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCMatrix.png)  [DeepCMatrix](https://github.com/charlesangus/DeepC/wiki/DeepCMatrix)
 - ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCMultiply.png)  [DeepCMultiply](https://github.com/charlesangus/DeepC/wiki/DeepCMultiply)
 - ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCPMatte.png)  [DeepCPMatte](https://github.com/charlesangus/DeepC/wiki/DeepCPMatte)
