@@ -5,7 +5,7 @@ set(PLUGINS
     DeepCBlink
     DeepCConstant
     DeepCCopyBBox
-    DeepCKeyMix
+    DeepCKeymix
     DeepCRemoveChannels
     DeepCShuffle
     DeepCWorld
@@ -39,7 +39,7 @@ set(CHANNEL_NODES DeepCAddChannels DeepCRemoveChannels DeepCShuffle)
 set(COLOR_NODES DeepCAdd DeepCClamp DeepCColorLookup DeepCGamma DeepCGrade
 DeepCHueShift DeepCInvert DeepCMatrix DeepCMultiply DeepCPosterize DeepCSaturation)
 set(3D_NODES DeepCWorld)
-set(MERGE_NODES DeepCKeyMix)
+set(MERGE_NODES DeepCKeymix)
 set(Util_NODES DeepCAdjustBBox DeepCCopyBBox)
 
 # add nuke plugin linked to ddimage lib

@@ -4,17 +4,15 @@
 #include "DDImage/Knobs.h"
 #include "DDImage/Row.h"
 
-#include "stdio.h"
-
-static const char *CLASS = "DeepCKeyMix";
-static const char *HELP = "A KeyMix node to use withing a deep stream. Mimics the 2d KeyMix node in controls and behavior.\n\n"
+static const char *CLASS = "DeepCKeymix";
+static const char *HELP = "A Keymix node to use withing a deep stream. Mimics the 2d KeyMix node in controls and behavior.\n\n"
                           "Falk Hofmann 12/2021";
 
 using namespace DD::Image;
 
 static const char *const bbox_names[] = {"union", "B\tB side", "A\tA side", nullptr};
 
-class DeepCKeyMix : public DeepFilterOp
+class DeepCKeymix : public DeepFilterOp
 {
 
     ChannelSet _processChannelSet;
@@ -37,7 +35,7 @@ protected:
     bool _bypass;
 
 public:
-    DeepCKeyMix(Node *node) : DeepFilterOp(node)
+    DeepCKeymix(Node *node) : DeepFilterOp(node)
     {
         inputs(3);
 
@@ -316,5 +314,5 @@ public:
     static const Description d;
 };
 
-static Op *build(Node *node) { return new DeepCKeyMix(node); }
-const Op::Description DeepCKeyMix::d(::CLASS, 0, build);
+static Op *build(Node *node) { return new DeepCKeymix(node); }
+const Op::Description DeepCKeymix::d(::CLASS, 0, build);
