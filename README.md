@@ -119,6 +119,15 @@ make -j X install
 
 Where ```X``` is the number of cores you have available, so make can run parallelized. And, of course, update CMAKE_INSTALL_PREFIX to your preferred install location.
 
+
+Note: additionally you can adjust the Nuke Version via -D Nuke_ROOT="<PATH_TO_NUKE_ROOT_FOLDER>"
+Where ```<PATH_TO_NUKE_ROOT_FOLDER>``` is the path to the prefered nuke root like C:/Programs/Nuke12.2v2 or /usr/local/Nuke12.2v2
+
+e.g.
+```
+cmake -D CMAKE_INSTALL_PREFIX="`pwd`/../install" -D Nuke_ROOT="/usr/local/Nuke13.1v1"
+```
+
 ### Windows
 
 On Windows you need Visual Studio (15) 2017 to compile the plugins.
@@ -128,24 +137,32 @@ Note: make sure to use the x64 platform to compile the plugin.
 If you want to build the tool via command line (or us a batch script) use:
 ```
 mkdir build
+cd build
 cmake -G "Visual Studio 15 2017" -A x64 .. -DCMAKE_INSTALL_PREFIX=install -B build
 cmake --build build --config Release
 cmake --install build
 ```
 
-Note: additionally you can adjust the Nuke Version via -DNuke_ROOT="<PATH_TO_NUKE_ROOT_FOLDER>"
+Note: additionally you can adjust the Nuke Version via -D Nuke_ROOT="<PATH_TO_NUKE_ROOT_FOLDER>"
 Where ```<PATH_TO_NUKE_ROOT_FOLDER>``` is the path to the prefered nuke root like C:/Programs/Nuke12.2v2 or /usr/local/Nuke12.2v2
 
-e.g. 
+e.g.
 ```
 mkdir build
-cmake -G "Visual Studio 15 2017" -A x64 .. -DCMAKE_INSTALL_PREFIX=install -DNuke_ROOT="C:/Program Files/Nuke13.1v1" -B build
+cd build
+cmake -G "Visual Studio 15 2017" -A x64 .. -D CMAKE_INSTALL_PREFIX=install -D Nuke_ROOT="C:/Program Files/Nuke13.1v1" -B build
 cmake --build build --config Release
 cmake --install build
 ```
 ### Mac
 
 Unlikely...
+
+## Batch Install
+We provide an install batch script to compile DeepC for multiple versions of Nuke which works on linux and windows and 
+creates the compiled plugins in the choosen install folder for every version. 
+The script can be executed running batchInstall.sh, you can then enter the Path to search for Nuke Versions e.g. /usr/local/ or C:/Program Files
+Optionally an install path can be entered aswell. The script then runs and compiles the plugins (as far as the dependencies like compilers can be found).
 
 ## Examples
 We created a repository which includes some example deep render scenes to try/test/use this plugin.<br>
