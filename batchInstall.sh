@@ -77,7 +77,7 @@ for nukeFolder in "$FOLDER/Nuke"*; do
         # Create zip archivs
 	
         if [ $SYSTEM = "windows" ]; then
-		powershell Compress-Archive -LiteralPath "$BASEDIR/$INSTALL/$VERSION" -DestinationPath "./release/DeepC-Linux-$VERSION.zip" -Force
+		powershell Compress-Archive -LiteralPath "$BASEDIR/$INSTALL/$VERSION" -DestinationPath "./release/DeepC-Windows-$VERSION.zip" -Force
 	else
             zip -r ./release/DeepC-Linux-$VERSION.zip $BASEDIR/$INSTALL/$VERSION
         fi       
