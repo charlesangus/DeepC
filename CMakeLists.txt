@@ -14,6 +14,11 @@ if (UNIX)
     )
 endif()
 
+find_package(OpenGL)
+if (NOT OpenGL_FOUND)
+    message(WARNING "Couldn't find OpenGL dev libraries, skipping DeepCPMatte Plugin")   
+endif()
+
 set(CMAKE_CXX_STANDARD 14)
 
 set(FASTNOISE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/FastNoise)

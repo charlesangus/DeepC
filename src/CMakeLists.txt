@@ -29,9 +29,13 @@ DeepCSaturation
 # DeepCMWrapper
 set(PLUGINS_MWRAPPED
     DeepCID
-    DeepCPMatte
     DeepCPNoise
     )
+
+# link DeepCPMatte with OpenGL
+if (OpenGL_FOUND)
+    list(APPEND PLUGINS_MWRAPPED DeepCPMatte)
+endif()
 
 # DeepC Python Menu
 set(DRAW_NODES DeepCConstant DeepCID DeepCPMatte DeepCPNoise)
@@ -89,6 +93,11 @@ target_sources(DeepCPNoise PRIVATE $<TARGET_OBJECTS:FastNoise>)
 
 # link DeepCBlink with libRIPFramework
 target_link_libraries(DeepCBlink PRIVATE ${NUKE_RIPFRAMEWORK_LIBRARY})
+
+# link DeepCPMatte with OpenGL
+if (OpenGL_FOUND)
+    target_link_libraries(DeepCPMatte PRIVATE OpenGL::GL)
+endif()
 
 # create menu file 
 string(REPLACE ";" "\", \"" DRAW_NODES "\"${DRAW_NODES}\"")
