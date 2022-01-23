@@ -147,17 +147,17 @@ public:
         if (!input0())
             return;
 
-        ChannelSet requestChannels = _processChannelSet; // user channels
+        ChannelSet requestChannels = _processChannelSet;
         requests.push_back(RequestData(input0(), box, requestChannels, count));
 
         if (_aOp != nullptr)
         {
             requests.push_back(RequestData(_aOp, box, requestChannels, count));
-    }
-    if (_maskOp != nullptr)
-    {
-        _maskOp->request(box, maskChannel, count);
-    }
+        }
+        if (_maskOp != nullptr)
+        {
+            _maskOp->request(box, maskChannel, count);
+        }
     }
 
     bool doDeepEngine(DD::Image::Box box, const ChannelSet &requestedChannels, DeepOutputPlane &plane) override
