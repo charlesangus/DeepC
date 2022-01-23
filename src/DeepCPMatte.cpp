@@ -2,12 +2,18 @@
 #include "DDImage/ViewerContext.h"
 #include "DDImage/gl.h"
 
-#include "stdio.h"
 using namespace DD::Image;
 
-static const char *const sampleId[] = {"front", "back", 0};
+static const char *const sampleId[] = {"closest", "furthest", 0};
 static const char *const shapeNames[] = {"sphere", "cube", 0};
 static const char *const falloffTypeNames[] = {"smooth", "linear", 0};
+
+enum
+{
+    CLOSEST,
+    FURTHEST
+};
+
 enum
 {
     SMOOTH,
@@ -164,7 +170,6 @@ int DeepCPMatte::knob_changed(Knob *k)
 {
     if (k->is("center"))
     {
-
         input0()->validate(true);
         Box box(_center.x, _center.y, _center.x + 1, _center.y + 1);
 
@@ -178,8 +183,7 @@ int DeepCPMatte::knob_changed(Knob *k)
 
         DeepPixel inPixel = plane.getPixel(_center.y, _center.x);
         int inPixelSamples = inPixel.getSampleCount();
-
-        int sampleIdx = _sampleId == 0 ? inPixelSamples - 1 : 0;
+        int sampleIdx = _sampleId == CLOSEST ? inPixelSamples - 1 : 0;
         if (inPixelSamples > 0)
         {
             foreach (z, _auxiliaryChannelSet)
