@@ -4,13 +4,26 @@
 
 using namespace DD::Image;
 
-static const char* const shapeNames[] = { "sphere", "cube", 0 };
-static const char* const falloffTypeNames[] = { "smooth", "linear", 0 };
-enum { SMOOTH, LINEAR };
+static const char *const sampleId[] = {"closest", "furthest", 0};
+static const char *const shapeNames[] = {"sphere", "cube", 0};
+static const char *const falloffTypeNames[] = {"smooth", "linear", 0};
+
+enum
+{
+    CLOSEST,
+    FURTHEST
+};
+
+enum
+{
+    SMOOTH,
+    LINEAR
+};
 
 class DeepCPMatte : public DeepCMWrapper
 {
 
+    int _sampleId;
     float _positionPick[2];
     Matrix4 _axisKnob;
     Vector2 _center;
@@ -19,38 +32,32 @@ class DeepCPMatte : public DeepCMWrapper
     float _falloff;
     float _falloffGamma;
 
-    public:
+public:
+    DeepCPMatte(Node *node) : DeepCMWrapper(node), _shape(0), _sampleId(0), _falloffType(0), _falloff(1.0f), _falloffGamma(1.0f)
+    {
+        _auxChannelKnobName = "position_data";
+        _positionPick[0] = _positionPick[1] = 0.0f;
+        _center.x = _center.y = 0.0;
+        _axisKnob.makeIdentity();
+    }
 
-        DeepCPMatte(Node* node) : DeepCMWrapper(node)
-            , _shape(0)
-            , _falloffType(0)
-            , _falloff(1.0f)
-            , _falloffGamma(1.0f)
-        {
-            _auxChannelKnobName = "position_data";
-            _positionPick[0] = _positionPick[1] = 0.0f;
-            _center.x = _center.y = 0.0;
-            _axisKnob.makeIdentity();
-        }
+    virtual void wrappedPerSample(
+        Box::iterator it,
+        size_t sampleNo,
+        float alpha,
+        DeepPixel deepInPixel,
+        float &perSampleData,
+        Vector3 &sampleColor);
 
-        virtual void wrappedPerSample(
-            Box::iterator it,
-            size_t sampleNo,
-            float alpha,
-            DeepPixel deepInPixel,
-            float &perSampleData,
-            Vector3& sampleColor
-            );
+    virtual void custom_knobs(Knob_Callback f);
+    int knob_changed(Knob *k);
+    void build_handles(ViewerContext *ctx);
+    void draw_handle(ViewerContext *ctx);
 
-        virtual void custom_knobs(Knob_Callback f);
-        int knob_changed(Knob* k);
-        void build_handles(ViewerContext *ctx);
-        void draw_handle(ViewerContext *ctx);
-
-        static const Iop::Description d;
-        const char* Class() const { return d.name; }
-        virtual Op* op() { return this; }
-        const char* node_help() const;
+    static const Iop::Description d;
+    const char *Class() const { return d.name; }
+    virtual Op *op() { return this; }
+    const char *node_help() const;
 };
 
 /*
@@ -65,8 +72,7 @@ void DeepCPMatte::wrappedPerSample(
     float alpha,
     DeepPixel deepInPixel,
     float &perSampleData,
-    Vector3& sampleColor
-    )
+    Vector3 &sampleColor)
 {
     // generate mask
     float m;
@@ -76,7 +82,8 @@ void DeepCPMatte::wrappedPerSample(
     ChannelSet available;
     available = deepInPixel.channels();
 
-    foreach(z, _auxiliaryChannelSet) {
+    foreach (z, _auxiliaryChannelSet)
+    {
         if (colourIndex(z) >= 3)
         {
             continue;
@@ -87,7 +94,9 @@ void DeepCPMatte::wrappedPerSample(
             if (_unpremultPosition)
             {
                 position[colourIndex(z)] = deepInPixel.getUnorderedSample(sampleNo, z) / alpha;
-            } else {
+            }
+            else
+            {
                 position[colourIndex(z)] = deepInPixel.getUnorderedSample(sampleNo, z);
             }
         }
@@ -101,18 +110,12 @@ void DeepCPMatte::wrappedPerSample(
     {
         // sphere
         distance = pow(
-            position[0] * position[0]
-            + position[1] * position[1]
-            + position[2] * position[2]
-            , .5);
-    } else
+            position[0] * position[0] + position[1] * position[1] + position[2] * position[2], .5);
+    }
+    else
     {
         // cube
-        distance = 1.0 - (
-            clamp(1-fabs(position[0]))
-            * clamp(1-fabs(position[1]))
-            * clamp(1-fabs(position[2]))
-            );
+        distance = 1.0 - (clamp(1 - fabs(position[0])) * clamp(1 - fabs(position[1])) * clamp(1 - fabs(position[2])));
     }
     distance = clamp((1 - distance) / _falloff, 0.0f, 1.0f);
     distance = pow(distance, 1.0f / _falloffGamma);
@@ -121,15 +124,15 @@ void DeepCPMatte::wrappedPerSample(
     if (_falloffType == SMOOTH)
     {
         m = smoothstep(0.0f, 1.0f, distance);
-    } else if (_falloffType == LINEAR)
+    }
+    else if (_falloffType == LINEAR)
     {
         m = clamp(distance, 0.0f, 1.0f);
     }
     perSampleData = m;
 }
 
-
-void DeepCPMatte::build_handles(ViewerContext* ctx)
+void DeepCPMatte::build_handles(ViewerContext *ctx)
 {
     build_knob_handles(ctx);
     if (ctx->transform_mode() != VIEWER_2D)
@@ -137,8 +140,7 @@ void DeepCPMatte::build_handles(ViewerContext* ctx)
     add_draw_handle(ctx);
 }
 
-
-void DeepCPMatte::draw_handle(ViewerContext* ctx)
+void DeepCPMatte::draw_handle(ViewerContext *ctx)
 {
     if (!ctx->draw_lines())
         return;
@@ -149,10 +151,10 @@ void DeepCPMatte::draw_handle(ViewerContext* ctx)
     glEnd();
 }
 
-
 void DeepCPMatte::custom_knobs(Knob_Callback f)
 {
     XY_knob(f, &_center[0], "center", "center");
+    Enumeration_knob(f, &_sampleId, sampleId, "sample_area", "sample area");
     BeginGroup(f, "Position");
     Axis_knob(f, &_axisKnob, "selection");
     EndGroup(f);
@@ -164,11 +166,10 @@ void DeepCPMatte::custom_knobs(Knob_Callback f)
     Float_knob(f, &_falloffGamma, "falloff_gamma");
 }
 
-
-int DeepCPMatte::knob_changed(Knob* k) {
+int DeepCPMatte::knob_changed(Knob *k)
+{
     if (k->is("center"))
     {
-
         input0()->validate(true);
         Box box(_center.x, _center.y, _center.x + 1, _center.y + 1);
 
@@ -182,31 +183,23 @@ int DeepCPMatte::knob_changed(Knob* k) {
 
         DeepPixel inPixel = plane.getPixel(_center.y, _center.x);
         int inPixelSamples = inPixel.getSampleCount();
-
-        if (inPixelSamples > 0);
-            ChannelSet inPixelChannels = inPixel.channels();
-
-            for (size_t sampleNo = 0; sampleNo < inPixelSamples; sampleNo++)
+        int sampleIdx = _sampleId == CLOSEST ? inPixelSamples - 1 : 0;
+        if (inPixelSamples > 0)
+        {
+            foreach (z, _auxiliaryChannelSet)
             {
-                foreach (z, _auxiliaryChannelSet)
-                {
-                    const float &inData = inPixel.getUnorderedSample(sampleNo, z);
-                    knob("translate")->set_value(inData, colourIndex(z));
-                }
+                knob("translate")->set_value(inPixel.getOrderedSample(sampleIdx, z), colourIndex(z));
             }
+        }
         return 1;
-
     }
     return DeepFilterOp::knob_changed(k);
 }
 
-
-const char* DeepCPMatte::node_help() const
+const char *DeepCPMatte::node_help() const
 {
-    return
-    "PMatte node for DeepC.";
+    return "PMatte node for DeepC.";
 }
 
-
-static Op* build(Node* node) { return new DeepCPMatte(node); }
+static Op *build(Node *node) { return new DeepCPMatte(node); }
 const Op::Description DeepCPMatte::d("DeepCPMatte", 0, build);
