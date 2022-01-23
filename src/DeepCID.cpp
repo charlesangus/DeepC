@@ -2,9 +2,19 @@
 
 using namespace DD::Image;
 
+static const char *const sampleId[] = {"closest", "furthest", 0};
 static const char* const shapeNames[] = { "sphere", "cube", 0 };
 static const char* const falloffTypeNames[] = { "smooth", "linear", 0 };
-enum { SMOOTH, LINEAR };
+enum
+{
+    CLOSEST,
+    FURTHEST
+};
+enum
+{
+    SMOOTH,
+    LINEAR
+};
 
 class DeepCID : public DeepCMWrapper
 {
@@ -13,16 +23,17 @@ class DeepCID : public DeepCMWrapper
 
     float _deepID;
     float _tolerance;
+    int _sampleId;
+    Vector2 _pick;
 
-    public:
-
-        DeepCID(Node* node) : DeepCMWrapper(node)
-            , _auxChannel(Chan_Black)
-            , _deepID(0.0f)
-            , _tolerance(0.5f)
-        {
-            _auxChannelKnobName = "id_channel";
-        }
+public:
+    DeepCID(Node *node) : DeepCMWrapper(node), _auxChannel(Chan_Black), _deepID(0.0f), _tolerance(0.5f)
+    {
+        _auxChannelKnobName = "id_channel";
+        _pick.x = _pick.y = 0.0;
+        _sampleId = 0;
+        _deepID = 0.0f;
+    }
 
         virtual void wrappedPerSample(
             Box::iterator it,
@@ -36,6 +47,7 @@ class DeepCID : public DeepCMWrapper
         virtual void _validate(bool for_real);
         virtual void top_knobs(Knob_Callback f);
         virtual void custom_knobs(Knob_Callback f);
+        int knob_changed(Knob *k);
 
         static const Iop::Description d;
         const char* Class() const { return d.name; }
@@ -102,22 +114,53 @@ void DeepCID::top_knobs(Knob_Callback f)
     "premultipling it, contrary to the Deep spec, uncheck this. "
     "Should probably always be checked.");
     Enumeration_knob(f, &_operation, operationNames, "operation");
+    Tooltip(f, "Operation to provide picked mask.");
     Divider(f, "");
 }
 
 void DeepCID::custom_knobs(Knob_Callback f)
 {
+    XY_knob(f, &_pick[0], "id_pick", "id picker");
+    Tooltip(f, "Knob to provied pick possibility.");
+    SetFlags(f, Knob::DISABLED);
+    Enumeration_knob(f, &_sampleId, sampleId, "sample_area", "sample area");
+    Tooltip(f, "Select if closest or furthest sample is used for picking.");
     Float_knob(f, &_deepID, "id");
+    Tooltip(f, "Actual Deep ID to use for mask creation.");
     Float_knob(f, &_tolerance, "tolerance");
+    Tooltip(f, "Tolerance to use for mask separation between values.");
 }
 
-
-const char* DeepCID::node_help() const
+int DeepCID::knob_changed(Knob *k)
 {
-    return
-    "Convert arbitrary IDs to mattes.";
+    if (k->is("id_pick"))
+    {
+        input0()->validate(true);
+        Box box(_pick.x, _pick.y, _pick.x + 1, _pick.y + 1);
+
+        input0()->deepRequest(box, _auxiliaryChannelSet);
+        DeepPlane plane;
+
+        if (!input0()->deepEngine(box, _auxiliaryChannelSet, plane))
+        {
+            return 0;
+        }
+
+        DeepPixel inPixel = plane.getPixel(_pick.y, _pick.x);
+        int inPixelSamples = inPixel.getSampleCount();
+        int sampleIdx = _sampleId == CLOSEST ? inPixelSamples - 1 : 0;
+        if (inPixelSamples > 0)
+        {
+            knob("id")->set_value(inPixel.getOrderedSample(sampleIdx, _auxiliaryChannelSet.first()));
+        }
+        return 1;
+    }
+    return DeepFilterOp::knob_changed(k);
+}
+const char *DeepCID::node_help() const
+{
+    return "Convert arbitrary IDs to mattes.";
 }
 
-
-static Op* build(Node* node) { return new DeepCID(node); }
+static Op *build(Node *node) { return new DeepCID(node); }
 const Op::Description DeepCID::d("DeepCID", 0, build);
