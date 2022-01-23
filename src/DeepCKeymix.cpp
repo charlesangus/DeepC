@@ -147,33 +147,35 @@ public:
         if (!input0())
             return;
 
-        ChannelSet requestChannels = channels;
-        requestChannels += Mask_Deep;
+        ChannelSet requestChannels = _processChannelSet; // user channels
         requests.push_back(RequestData(input0(), box, requestChannels, count));
 
         if (_aOp != nullptr)
         {
             requests.push_back(RequestData(_aOp, box, requestChannels, count));
-        }
-        if (_maskOp != nullptr)
-        {
-            _maskOp->request(box, maskChannel, count);
-        }
+    }
+    if (_maskOp != nullptr)
+    {
+        _maskOp->request(box, maskChannel, count);
+    }
     }
 
     bool doDeepEngine(DD::Image::Box box, const ChannelSet &requestedChannels, DeepOutputPlane &plane) override
     {
+
+        ChannelSet process = requestedChannels;
+        process += _processChannelSet;
+
         DeepOp *_bOp = input0();
         if (!_bOp)
             return true;
 
         DeepPlane bPlane;
-        if (!_bOp->deepEngine(box, requestedChannels, bPlane))
+        if (!_bOp->deepEngine(box, process, bPlane))
             return false;
 
-        DeepInPlaceOutputPlane outPlane(requestedChannels, box);
+        DeepInPlaceOutputPlane outPlane(process, box);
         outPlane.reserveSamples(bPlane.getTotalSampleCount());
-
         if (_bypass)
         {
             for (Box::iterator it = box.begin(), itEnd = box.end(); it != itEnd; ++it)
@@ -200,7 +202,7 @@ public:
         else
         {
             DeepPlane aPlane;
-            if (!_aOp->deepEngine(box, requestedChannels, aPlane))
+            if (!_aOp->deepEngine(box, process, aPlane))
                 return false;
 
             float maskVal;
@@ -217,13 +219,12 @@ public:
                 {
                     _maskOp->get(it.y, box.x(), box.r(), maskChannel, maskRow);
                     maskVal = maskRow[maskChannel][it.x];
-                    maskVal = clamp(maskVal);
+                    maskVal = clamp(maskVal, 0.0f, 1.0f);
                     currentYRow = it.y;
                 }
                 else
                 {
-                    maskVal = maskRow[maskChannel][it.x];
-                    maskVal = clamp(maskVal);
+                    maskVal = clamp(maskRow[maskChannel][it.x], 0.0f, 1.0f);
                 }
 
                 if (invertMask)
@@ -235,7 +236,6 @@ public:
                 DeepPixel bPixel = bPlane.getPixel(it);
 
                 size_t inPixelSamples;
-
                 int aSampleNo = aPixel.getSampleCount();
                 int bSampleNo = bPixel.getSampleCount();
 
@@ -243,7 +243,7 @@ public:
                 {
                     inPixelSamples = bSampleNo;
                 }
-                else if (maskVal * mix == 1.0f)
+                else if (maskVal * mix >= 1.0f)
                 {
                     inPixelSamples = aSampleNo;
                 }
@@ -268,26 +268,28 @@ public:
                 float mixing = maskVal * mix;
                 for (size_t sampleNo = 0; sampleNo < inPixelSamples; sampleNo++)
                 {
-                    foreach (z, requestedChannels)
+                    foreach (z, process)
                     {
+                        float &outData = outPixel.getWritableUnorderedSample(sampleNo, z);
+
                         int cIndex = colourIndex(z);
 
-                        float &outData = outPixel.getWritableUnorderedSample(sampleNo, z);
-                        if (maskVal == 0.0f)
+                        if ((mixing <= 0.0f))
                         {
                             outData = bPixel.getUnorderedSample(sampleNo, z);
                         }
-                        else if (mixing == 1.0f)
+                        if ((mixing > 0.0f) && (mixing < 1.0f))
                         {
-                            outData = aPixel.getUnorderedSample(sampleNo, z);
-                        }
-                        else
-                        {
+                            if ((z == Chan_DeepFront) || (z == Chan_DeepBack))
+                                continue;
+
+                            float bInData = 0.0f;
+
                             if (sampleNo < bSampleNo)
                             {
-                                const float &bInData = bInPixelChannels.contains(z)
-                                                           ? bPixel.getUnorderedSample(sampleNo, z)
-                                                           : 0.0f;
+                                bInData = bInPixelChannels.contains(z)
+                                              ? bPixel.getUnorderedSample(sampleNo, z)
+                                              : 0.0f;
 
                                 outData = (1.0f - mixing) * bInData;
                             }
@@ -296,8 +298,12 @@ public:
                                 const float &aInData = aInPixelChannels.contains(z)
                                                            ? aPixel.getUnorderedSample(sampleNo - bSampleNo, z)
                                                            : 0.0f;
-                                outData = aInData * mixing;
+                                outData = (aInData * mixing) + bInData;
                             }
+                        }
+                        if (mixing >= 1.0f)
+                        {
+                            outData = aPixel.getUnorderedSample(sampleNo, z);
                         }
                     }
                 }
