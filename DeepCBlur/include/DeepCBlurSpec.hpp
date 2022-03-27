@@ -4,12 +4,12 @@
 
 struct DeepCBlurSpec : public DeepCSpec
 {
-	float blurRadius;
-	int blurRadiusFloor;
-	std::vector<float> kernel;
+    float blurRadius;
+    int blurRadiusFloor;
+    std::vector<float> kernel;
 
-	DeepCBlurSpec();
-	~DeepCBlurSpec();
+    DeepCBlurSpec();
+    ~DeepCBlurSpec();
 
-	std::function<std::vector<float>(const float sd, const int blurRadius)> getKernelFunction() const;
+    std::function<std::vector<float>(const float sd, const int blurRadius)> getKernelFunction() const;
 };

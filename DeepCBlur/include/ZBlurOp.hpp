@@ -16,54 +16,54 @@ template<typename BlurModeStrategyT>
 class ZBlurOp : public SeperableBlurOp<BlurModeStrategyT>
 {
 public:
-	ZBlurOp(Node* node, const DeepCBlurSpec& blurSpec) : SeperableBlurOp<BlurModeStrategyT>(node, blurSpec) {}
-	~ZBlurOp() {};
-	const char* Class() const override { return Z_BLUR_OP_CLASS; }
-	Op* op() override { return this; }
+    ZBlurOp(Node* node, const DeepCBlurSpec& blurSpec) : SeperableBlurOp<BlurModeStrategyT>(node, blurSpec) {}
+    ~ZBlurOp() {};
+    const char* Class() const override { return Z_BLUR_OP_CLASS; }
+    Op* op() override { return this; }
 
-	void getDeepRequests(DD::Image::Box box, const DD::Image::ChannelSet& channels, int count, std::vector<DD::Image::RequestData>& requests) override
-	{
-		DeepOp* input0 = dynamic_cast<DeepOp*>(input(0));
-		if (input0)
-		{
-			requests.push_back(RequestData(input0, box, channels, 2 * _deepCSpec.blurRadiusFloor + 1));
-		}
-	}
+    void getDeepRequests(DD::Image::Box box, const DD::Image::ChannelSet& channels, int count, std::vector<DD::Image::RequestData>& requests) override
+    {
+        DeepOp* input0 = dynamic_cast<DeepOp*>(input(0));
+        if (input0)
+        {
+            requests.push_back(RequestData(input0, box, channels, 2 * _deepCSpec.blurRadiusFloor + 1));
+        }
+    }
 
-	bool doDeepEngine(DD::Image::Box box, const DD::Image::ChannelSet& channels, DD::Image::DeepOutputPlane& outPlane) override
-	{
-		DeepOp* input0 = dynamic_cast<DeepOp*>(input(0));
-		if (!input0)
-		{
-			return false;
-		}
+    bool doDeepEngine(DD::Image::Box box, const DD::Image::ChannelSet& channels, DD::Image::DeepOutputPlane& outPlane) override
+    {
+        DeepOp* input0 = dynamic_cast<DeepOp*>(input(0));
+        if (!input0)
+        {
+            return false;
+        }
 
-		DeepPlane inPlane;
-		if (!input0->deepEngine(box, channels, inPlane))
-		{
-			return true;
-		}
+        DeepPlane inPlane;
+        if (!input0->deepEngine(box, channels, inPlane))
+        {
+            return true;
+        }
 
-		outPlane = DeepOutputPlane(channels, box);
+        outPlane = DeepOutputPlane(channels, box);
 
-		for (Box::iterator it = box.begin(); it != box.end(); it++)
-		{
-			DeepOutPixel outPixel;
+        for (Box::iterator it = box.begin(); it != box.end(); it++)
+        {
+            DeepOutPixel outPixel;
 
-			zBlur(inPlane.getPixel(it), channels, 0, outPixel);
+            zBlur(inPlane.getPixel(it), channels, 0, outPixel);
 
-			outPlane.addPixel(outPixel);
-		}
+            outPlane.addPixel(outPixel);
+        }
 
-		return true;
-	}
+        return true;
+    }
 
-	static const Op::Description d;
+    static const Op::Description d;
 };
 
 static DD::Image::Op* buildZBlurOp(Node* node)
 {
-	return nullptr;
+    return nullptr;
 }
 
 template<typename BlurModeStrategyT>

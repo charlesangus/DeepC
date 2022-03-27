@@ -12,97 +12,97 @@ template<typename BlurModeStrategyT>
 class XBlurOp : public SeperableBlurOp<BlurModeStrategyT>
 {
 public:
-	XBlurOp(Node* node, const DeepCBlurSpec& blurSpec) : SeperableBlurOp<BlurModeStrategyT>(node,blurSpec){}
-	~XBlurOp() {};
-	const char* Class() const override{	return X_BLUR_OP_CLASS; }
-	Op* op() override { return this; }
+    XBlurOp(Node* node, const DeepCBlurSpec& blurSpec) : SeperableBlurOp<BlurModeStrategyT>(node,blurSpec){}
+    ~XBlurOp() {};
+    const char* Class() const override{ return X_BLUR_OP_CLASS; }
+    Op* op() override { return this; }
 
-	void getDeepRequests(DD::Image::Box box, const DD::Image::ChannelSet& channels, int count, std::vector<DD::Image::RequestData>& requests) override
-	{
-		DeepOp* input0 = dynamic_cast<DeepOp*>(input(0));
-		if (input0)
-		{
-			requests.push_back(RequestData(input0, { MAX(0, box.x() - _deepCSpec.blurRadiusFloor),
-													 box.y(),
-													 MIN(_deepInfo.format()->width(), box.r() + _deepCSpec.blurRadiusFloor),
-													 box.t() }, channels, 2 * _deepCSpec.blurRadiusFloor + 1));
-		}
-	}
-	bool doDeepEngine(DD::Image::Box box, const DD::Image::ChannelSet& channels, DD::Image::DeepOutputPlane& outPlane) override
-	{
-		DeepOp* input0 = dynamic_cast<DeepOp*>(input(0));
-		if (!input0)
-		{
-			return false;
-		}
+    void getDeepRequests(DD::Image::Box box, const DD::Image::ChannelSet& channels, int count, std::vector<DD::Image::RequestData>& requests) override
+    {
+        DeepOp* input0 = dynamic_cast<DeepOp*>(input(0));
+        if (input0)
+        {
+            requests.push_back(RequestData(input0, { MAX(0, box.x() - _deepCSpec.blurRadiusFloor),
+                                                     box.y(),
+                                                     MIN(_deepInfo.format()->width(), box.r() + _deepCSpec.blurRadiusFloor),
+                                                     box.t() }, channels, 2 * _deepCSpec.blurRadiusFloor + 1));
+        }
+    }
+    bool doDeepEngine(DD::Image::Box box, const DD::Image::ChannelSet& channels, DD::Image::DeepOutputPlane& outPlane) override
+    {
+        DeepOp* input0 = dynamic_cast<DeepOp*>(input(0));
+        if (!input0)
+        {
+            return false;
+        }
 
-		const int maxWidth = _deepInfo.format()->width();
-		const int maxX = maxWidth - 1;
+        const int maxWidth = _deepInfo.format()->width();
+        const int maxX = maxWidth - 1;
 
-		DeepPlane inPlane;
-		Box newBox = { MAX(0, box.x() - _deepCSpec.blurRadiusFloor),
-					   box.y(),
-					   MIN(maxWidth, box.r() + _deepCSpec.blurRadiusFloor),
-					   box.t() };
-		if (!input0->deepEngine(newBox, channels, inPlane))
-		{
-			return true;
-		}
+        DeepPlane inPlane;
+        Box newBox = { MAX(0, box.x() - _deepCSpec.blurRadiusFloor),
+                       box.y(),
+                       MIN(maxWidth, box.r() + _deepCSpec.blurRadiusFloor),
+                       box.t() };
+        if (!input0->deepEngine(newBox, channels, inPlane))
+        {
+            return true;
+        }
 
-		outPlane = DeepOutputPlane(channels, box);
+        outPlane = DeepOutputPlane(channels, box);
 
-		//current pixel is the pixel currently spreading it's intensity to the target pixel
-		//target pixel is the outPixel current being constructed
+        //current pixel is the pixel currently spreading it's intensity to the target pixel
+        //target pixel is the outPixel current being constructed
 
-		for (Box::iterator it = box.begin(); it != box.end(); it++)
-		{
-			DeepOutPixel outPixel;
+        for (Box::iterator it = box.begin(); it != box.end(); it++)
+        {
+            DeepOutPixel outPixel;
 
-			//reflects the image when trying to access pixels outside the image
-			//NOTE: algorithm does not support when radius of blur is greater than the image size, as the calculated reflected pixels would buffer overflow
+            //reflects the image when trying to access pixels outside the image
+            //NOTE: algorithm does not support when radius of blur is greater than the image size, as the calculated reflected pixels would buffer overflow
 
-			int lowerX = it.x - _deepCSpec.blurRadiusFloor;
-			int upperX = it.x + _deepCSpec.blurRadiusFloor;
+            int lowerX = it.x - _deepCSpec.blurRadiusFloor;
+            int upperX = it.x + _deepCSpec.blurRadiusFloor;
 
-			//if reflecting pixels to the left of the image
-			if (lowerX < 0)
-			{
-				//current pixels in the range [lowerX, 0)
-				for (int x = -1, reflectedX = 1; x >= lowerX; --x, ++reflectedX)
-				{
-					xBlur(inPlane.getPixel(it.y, reflectedX), channels, it.x - x, outPixel);
-				}
-				lowerX = 0;
-			}
+            //if reflecting pixels to the left of the image
+            if (lowerX < 0)
+            {
+                //current pixels in the range [lowerX, 0)
+                for (int x = -1, reflectedX = 1; x >= lowerX; --x, ++reflectedX)
+                {
+                    xBlur(inPlane.getPixel(it.y, reflectedX), channels, it.x - x, outPixel);
+                }
+                lowerX = 0;
+            }
 
-			//if reflecting pixels to the right of the image
-			if (upperX >= maxWidth)
-			{
-				//current pixels in the range (maxX, upperX]
-				for (int x = maxX + 1, reflectedX = maxX - 1; x <= upperX; ++x, --reflectedX)
-				{
-					xBlur(inPlane.getPixel(it.y, reflectedX), channels, x - it.x, outPixel);
-				}
-				upperX = maxX;
-			}
+            //if reflecting pixels to the right of the image
+            if (upperX >= maxWidth)
+            {
+                //current pixels in the range (maxX, upperX]
+                for (int x = maxX + 1, reflectedX = maxX - 1; x <= upperX; ++x, --reflectedX)
+                {
+                    xBlur(inPlane.getPixel(it.y, reflectedX), channels, x - it.x, outPixel);
+                }
+                upperX = maxX;
+            }
 
-			//current pixels in the range [lowerX, upperX]
-			for (int x = lowerX; x <= upperX; ++x)
-			{
-				xBlur(inPlane.getPixel(it.y, x), channels, abs(it.x - x), outPixel);
-			}
+            //current pixels in the range [lowerX, upperX]
+            for (int x = lowerX; x <= upperX; ++x)
+            {
+                xBlur(inPlane.getPixel(it.y, x), channels, abs(it.x - x), outPixel);
+            }
 
-			outPlane.addPixel(outPixel);
-		}
-		return true;
-	}
+            outPlane.addPixel(outPixel);
+        }
+        return true;
+    }
 
-	static const Op::Description d;
+    static const Op::Description d;
 };
 
 static DD::Image::Op* buildXBlurOp(Node* node)
 {
-	return nullptr;
+    return nullptr;
 }
 
 template<typename BlurModeStrategyT>
