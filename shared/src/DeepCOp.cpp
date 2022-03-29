@@ -1,7 +1,3 @@
-#include "DeepCOp.hpp"
-
-using namespace DD::Image;
-
 //knob name string literals
 static const char* const Z_DO_BLUR_TEXT = "do z blur";
 static const char* const Z_BLUR_RADIUS_TEXT = "z blur radius";
@@ -16,7 +12,7 @@ static const char* const MINIMUM_DISTANCE_THRESHOLD_TEXT = "minimum distance thr
 
 template<typename DeepSpecT>
 DeepCOp<DeepSpecT>::DeepCOp(Node* node) :
-    DeepOnlyOp(node),
+    DD::Image::DeepOnlyOp(node),
     _dropHiddenSamples(false),
     _dropRedundantSamples(false),
     _minimumColourThreshold(0.0001f),
@@ -32,8 +28,10 @@ DeepCOp<DeepSpecT>::~DeepCOp()
 }
 
 template<typename DeepSpecT>
-int DeepCOp<DeepSpecT>::knob_changed(Knob* k)
+int DeepCOp<DeepSpecT>::knob_changed(DD::Image::Knob* k)
 {
+    using namespace DD::Image;
+
     //advancedBlurParameters
     knob(Z_BLUR_RADIUS_TEXT)->enable(_deepCSpec.doZBlur);
     knob(Z_SCALE_TEXT)->enable(_deepCSpec.doZBlur);
@@ -47,8 +45,10 @@ int DeepCOp<DeepSpecT>::knob_changed(Knob* k)
 }
 
 template<typename DeepSpecT>
-void DeepCOp<DeepSpecT>::advancedBlurParameters(Knob_Callback f)
+void DeepCOp<DeepSpecT>::advancedBlurParameters(DD::Image::Knob_Callback f)
 {
+    using namespace DD::Image;
+
     Tab_knob(f, "Advanced blur parameters");
 
     Bool_knob(f, &_deepCSpec.doZBlur, Z_DO_BLUR_TEXT, Z_DO_BLUR_TEXT);
@@ -77,8 +77,10 @@ void DeepCOp<DeepSpecT>::advancedBlurParameters(Knob_Callback f)
 }
 
 template<typename DeepSpecT>
-void DeepCOp<DeepSpecT>::sampleOptimisationTab(Knob_Callback f)
+void DeepCOp<DeepSpecT>::sampleOptimisationTab(DD::Image::Knob_Callback f)
 {
+    using namespace DD::Image;
+
     Tab_knob(f, "Sample Optimisations");
 
     Bool_knob(f, &_dropHiddenSamples, DROP_HIDDEN_SAMPLES_TEXT, DROP_HIDDEN_SAMPLES_TEXT);
