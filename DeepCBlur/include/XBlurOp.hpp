@@ -8,11 +8,11 @@
 
 const char* const X_BLUR_OP_CLASS = "XBlurOp";
 
-template<typename BlurModeStrategyT>
-class XBlurOp : public SeperableBlurOp<BlurModeStrategyT>
+template<bool constrainBlur, bool volumetricBlur, template<bool, bool> typename BlurModeStrategyT>
+class XBlurOp : public SeperableBlurOp<BlurModeStrategyT<constrainBlur, volumetricBlur>>
 {
 public:
-    XBlurOp(Node* node, const DeepCBlurSpec& blurSpec) : SeperableBlurOp<BlurModeStrategyT>(node,blurSpec){}
+    XBlurOp(Node* node, const DeepCBlurSpec& blurSpec) : SeperableBlurOp<BlurModeStrategyT<constrainBlur, volumetricBlur>>(node,blurSpec){}
     ~XBlurOp() {};
     const char* Class() const override{ return X_BLUR_OP_CLASS; }
     Op* op() override { return this; }
@@ -92,6 +92,25 @@ public:
                 xBlur(inPlane.getPixel(it.y, x), channels, abs(it.x - x), outPixel);
             }
 
+            if (constrainBlur)
+            {
+                DeepPixel targetPixel = inPlane.getPixel(it.y, it.x);
+                const std::size_t targetSampleCount = targetPixel.getSampleCount();
+                for (std::size_t isample = 0; isample < targetSampleCount; ++isample)
+                {
+                    const float deepFront = targetPixel.getUnorderedSample(isample, Chan_DeepFront);
+                    //if this sample is not being blurred, then it should not be modified
+                    if ((deepFront < _deepCSpec.nearZ) || (deepFront > _deepCSpec.farZ))
+                    {
+                        foreach(z, channels)
+                        {
+                            outPixel.push_back(targetPixel.getUnorderedSample(isample, z));
+                        }
+                    }
+                }
+            }
+
+
             outPlane.addPixel(outPixel);
         }
         return true;
@@ -105,5 +124,5 @@ static DD::Image::Op* buildXBlurOp(Node* node)
     return nullptr;
 }
 
-template<typename BlurModeStrategyT>
-const DD::Image::Op::Description XBlurOp<BlurModeStrategyT>::d(X_BLUR_OP_CLASS, "Image/XBlurOp", buildXBlurOp);
+template<bool constrainBlur, bool volumetricBlur, template<bool, bool> typename BlurModeStrategyT>
+const DD::Image::Op::Description XBlurOp<constrainBlur, volumetricBlur, BlurModeStrategyT>::d(X_BLUR_OP_CLASS, "Image/XBlurOp", buildXBlurOp);

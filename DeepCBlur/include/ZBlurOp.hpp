@@ -7,20 +7,20 @@
 #include <algorithm>
 #include <vector>
 #include <array>
+#include <random>
 
 #include "SeperableBlurOp.hpp"
 
 const char* const Z_BLUR_OP_CLASS = "ZBlurOp";
 
-template<typename BlurModeStrategyT>
-class ZBlurOp : public SeperableBlurOp<BlurModeStrategyT>
+template<bool constrainBlur, bool volumetricBlur, template<bool, bool> typename BlurModeStrategyT>
+class ZBlurOp : public SeperableBlurOp<BlurModeStrategyT<constrainBlur, volumetricBlur>>
 {
 public:
-    ZBlurOp(Node* node, const DeepCBlurSpec& blurSpec) : SeperableBlurOp<BlurModeStrategyT>(node, blurSpec) {}
+    ZBlurOp(Node* node, const DeepCBlurSpec& blurSpec) : SeperableBlurOp<BlurModeStrategyT<constrainBlur, volumetricBlur>>(node, blurSpec) {}
     ~ZBlurOp() {};
     const char* Class() const override { return Z_BLUR_OP_CLASS; }
     Op* op() override { return this; }
-
     void getDeepRequests(DD::Image::Box box, const DD::Image::ChannelSet& channels, int count, std::vector<DD::Image::RequestData>& requests) override
     {
         DeepOp* input0 = dynamic_cast<DeepOp*>(input(0));
@@ -32,6 +32,7 @@ public:
 
     bool doDeepEngine(DD::Image::Box box, const DD::Image::ChannelSet& channels, DD::Image::DeepOutputPlane& outPlane) override
     {
+        int id = rand();
         DeepOp* input0 = dynamic_cast<DeepOp*>(input(0));
         if (!input0)
         {
@@ -48,13 +49,14 @@ public:
 
         for (Box::iterator it = box.begin(); it != box.end(); it++)
         {
+            //printf("random ID[%d] x[%d] y[%d] box(x:%d,r:%d,y:%d,t:%d)\n",id,it.x,it.y,box.x(),box.r(),box.y(),box.t());
             DeepOutPixel outPixel;
 
             zBlur(inPlane.getPixel(it), channels, 0, outPixel);
 
             outPlane.addPixel(outPixel);
         }
-
+        
         return true;
     }
 
@@ -66,5 +68,5 @@ static DD::Image::Op* buildZBlurOp(Node* node)
     return nullptr;
 }
 
-template<typename BlurModeStrategyT>
-const DD::Image::Op::Description ZBlurOp<BlurModeStrategyT>::d(Z_BLUR_OP_CLASS, "Image/ZBlurOp", buildZBlurOp);
+template<bool constrainBlur, bool volumetricBlur, template<bool, bool> typename BlurModeStrategyT>
+const DD::Image::Op::Description ZBlurOp<constrainBlur, volumetricBlur, BlurModeStrategyT>::d(Z_BLUR_OP_CLASS, "Image/ZBlurOp", buildZBlurOp);

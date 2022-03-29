@@ -19,6 +19,7 @@ public:
     bool set_input(DD::Image::Op*);
     bool set_parent(DD::Image::Op* op);
     void push_back(DD::Image::Op* op);
+    void open();
     DD::Image::Op* back();
 
     bool validate(bool for_real);
