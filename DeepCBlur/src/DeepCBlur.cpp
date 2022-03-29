@@ -18,6 +18,10 @@ static const char* const BLUR_FILTER_TEXT = "filter";
 static const char* const BLUR_QUALITY_TEXT = "quality";
 static const char* const BLUR_MODE_TEXT = "mode";
 static const char* const BLUR_SIZE_TEXT = "size";
+static const char* const CONSTRAIN_BLUR_TEXT = "constrain blur range";
+static const char* const NEAR_PLANE_TEXT = "near plane";
+static const char* const FAR_PLANE_TEXT = "far plane";
+
 
 static const char* const GAUSSIAN_BLUR_NAME = "gaussian";
 static const char* const BLUR_TYPE_NAMES[] = { GAUSSIAN_BLUR_NAME, 0 };
@@ -111,6 +115,24 @@ public:
                    "sets 'blur radius' = floor( 1.5 * 'blur size' )\n"
                    "sets 'standard deviation' = 'blur size' * 0.42466");
         
+        Bool_knob(f, &_deepCSpec.constrainBlur, CONSTRAIN_BLUR_TEXT, CONSTRAIN_BLUR_TEXT);
+        Tooltip(f, "Whether or not to blur the entire image, or only samples in specific bounds");
+        SetFlags(f, Knob::STARTLINE);
+
+        Float_knob(f, &_deepCSpec.nearZ, NEAR_PLANE_TEXT, NEAR_PLANE_TEXT);
+        Tooltip(f, "only samples with a DeepFront beyond this value will be blurred");
+        if(!_deepCSpec.constrainBlur)
+        {
+            SetFlags(f, Knob::DISABLED);
+        }
+
+        Float_knob(f, &_deepCSpec.farZ, FAR_PLANE_TEXT, FAR_PLANE_TEXT);
+        Tooltip(f, "only samples with a DeepFront before this value will be blurred");
+        if (!_deepCSpec.constrainBlur)
+        {
+            SetFlags(f, Knob::DISABLED);
+        }
+
         advancedBlurParameters(f);
         //sampleOptimisationTab(f);
     }
@@ -122,6 +144,10 @@ public:
         {
             return err;
         }
+
+        knob(NEAR_PLANE_TEXT)->enable(_deepCSpec.constrainBlur);
+        knob(FAR_PLANE_TEXT)->enable(_deepCSpec.constrainBlur);
+
         _recomputeOpTree = true;
         return 1;
     }
@@ -164,7 +190,7 @@ public:
     {
         if (_recomputeOpTree)
         {
-            _opTree = OpTreeFactory(_deepCSpec.doZBlur,_deepCSpec.blurMode, node(), _deepCSpec);
+            _opTree = OpTreeFactory(_deepCSpec.doZBlur, _deepCSpec.constrainBlur, _deepCSpec.blurMode, node(), _deepCSpec);
             if (!(_opTree.isValid() && _opTree.set_input(input(0)) && _opTree.set_parent(this)))
             {
                 Op::error("failed to create DeepCBlur internal op tree");

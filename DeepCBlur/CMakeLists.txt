@@ -11,7 +11,7 @@ if(NOT DDIMAGE_LIBRARY)
     message(FATAL_ERROR "DDImage library not found.")
 endif()
 
-add_library(DeepCBlur MODULE src/DeepCBlur.cpp ../shared/src/DeepCOpTree.cpp ../shared/src/DeepCSpec.cpp src/BlurKernels.cpp src/BlurStrategy.cpp src/DeepCBlurSpec.cpp)
+add_library(DeepCBlur MODULE src/DeepCBlur.cpp ../shared/src/DeepCOpTree.cpp ../shared/src/DeepCSpec.cpp src/BlurKernels.cpp src/DeepCBlurSpec.cpp)
 #add_library(NukePlugins::DeepBlur ALIAS DeepBlur)
 target_include_directories(DeepCBlur PRIVATE ${NUKE_PATH}/include)
 target_include_directories(DeepCBlur PRIVATE ../shared/include)

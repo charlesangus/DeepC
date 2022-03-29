@@ -27,32 +27,46 @@ DD::Image::Op* OpTreeFactory_BlurInstance(const BlurInstance blurInstance, Param
     }
 }
 
-template<typename... Params>
-DD::Image::Op* OpTreeFactory_BlurMode(const int blurMode, const BlurInstance blurInstance, Params&&... params)
+
+template<bool constrainBlur, typename... Params>
+DD::Image::Op* OpTreeFactory_BlurMode(const BlurInstance blurInstance, const int blurMode, Params&&... params)
 {
     switch (blurMode)
     {
-        case DEEPC_RAW_GAUSSIAN:                   return OpTreeFactory_BlurInstance<RawGaussianStrategy>(blurInstance, std::forward<Params>(params)...);
-        case DEEPC_TRANSPARENT_RAW_GAUSSIAN_MODE:  return OpTreeFactory_BlurInstance<TransparentModifiedGaussianStrategy>(blurInstance, std::forward<Params>(params)...);
-        case DEEPC_MODIFIED_GAUSSIAN_MODE:         return OpTreeFactory_BlurInstance<ModifiedGaussianStrategy>(blurInstance, std::forward<Params>(params)...);
+        case DEEPC_RAW_GAUSSIAN:                   return OpTreeFactory_BlurInstance<RawGaussianStrategy<constrainBlur>>(blurInstance, std::forward<Params>(params)...);
+        case DEEPC_TRANSPARENT_RAW_GAUSSIAN_MODE:  return OpTreeFactory_BlurInstance<TransparentModifiedGaussianStrategy<constrainBlur>>(blurInstance, std::forward<Params>(params)...);
+        case DEEPC_MODIFIED_GAUSSIAN_MODE:         return OpTreeFactory_BlurInstance<ModifiedGaussianStrategy<constrainBlur>>(blurInstance, std::forward<Params>(params)...);
         default: return nullptr;
     }
 }
 
 template<typename... Params>
-DeepCOpTree OpTreeFactory(const bool doZBlur, const int blurMode, Params&&... params)
+DD::Image::Op* OpTreeFactory_ConstrainBlur(const BlurInstance blurInstance, const bool constrainBlur, Params&&... params)
+{
+    if (constrainBlur)
+    {
+        return OpTreeFactory_BlurMode<true>(blurInstance, std::forward<Params>(params)...);
+    }
+    else
+    {
+        return OpTreeFactory_BlurMode<false>(blurInstance, std::forward<Params>(params)...);
+    }
+}
+
+template<typename... Params>
+DeepCOpTree OpTreeFactory(const bool doZBlur, Params&&... params)
 {
     DeepCOpTree opTree;
     if (!doZBlur)
     {
-        opTree.push_back(OpTreeFactory_BlurMode(blurMode, BlurInstance::X_BLUR, std::forward<Params>(params)...));
-        opTree.push_back(OpTreeFactory_BlurMode(blurMode, BlurInstance::Y_BLUR, std::forward<Params>(params)...));
+        opTree.push_back(OpTreeFactory_ConstrainBlur(BlurInstance::X_BLUR, std::forward<Params>(params)...));
+        opTree.push_back(OpTreeFactory_ConstrainBlur(BlurInstance::Y_BLUR, std::forward<Params>(params)...));
     }
     else
     {
-        opTree.push_back(OpTreeFactory_BlurMode(blurMode, BlurInstance::X_BLUR, std::forward<Params>(params)...));
-        opTree.push_back(OpTreeFactory_BlurMode(blurMode, BlurInstance::Y_BLUR, std::forward<Params>(params)...));
-        opTree.push_back(OpTreeFactory_BlurMode(blurMode, BlurInstance::Z_BLUR, std::forward<Params>(params)...));
+        opTree.push_back(OpTreeFactory_ConstrainBlur(BlurInstance::X_BLUR, std::forward<Params>(params)...));
+        opTree.push_back(OpTreeFactory_ConstrainBlur(BlurInstance::Y_BLUR, std::forward<Params>(params)...));
+        opTree.push_back(OpTreeFactory_ConstrainBlur(BlurInstance::Z_BLUR, std::forward<Params>(params)...));
     }
     return opTree;
 }

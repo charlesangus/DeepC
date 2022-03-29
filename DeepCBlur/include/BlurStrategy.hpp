@@ -18,6 +18,7 @@ public:
     virtual void zBlur(const DD::Image::DeepPixel& currentPixel, const DD::Image::ChannelSet& channels, const int pixelDistance, DD::Image::DeepOutPixel& outPixel) = 0;
 };
 
+template<bool constrainBlur>
 class RawGaussianStrategy : public BlurStrategy
 {
 public:
@@ -29,6 +30,7 @@ public:
     void zBlur(const DD::Image::DeepPixel& currentPixel, const DD::Image::ChannelSet& channels, const int pixelDistance, DD::Image::DeepOutPixel& outPixel) override;
 };
 
+template<bool constrainBlur>
 class TransparentModifiedGaussianStrategy : public BlurStrategy
 {
 public:
@@ -40,6 +42,7 @@ public:
     void zBlur(const DD::Image::DeepPixel& currentPixel, const DD::Image::ChannelSet& channels, const int pixelDistance, DD::Image::DeepOutPixel& outPixel) override;
 };
 
+template<bool constrainBlur>
 class ModifiedGaussianStrategy : public BlurStrategy
 {
 public:
@@ -50,3 +53,5 @@ public:
     void yBlur(const DD::Image::DeepPixel& currentPixel, const DD::Image::ChannelSet& channels, const int pixelDistance, DD::Image::DeepOutPixel& outPixel) override;
     void zBlur(const DD::Image::DeepPixel& currentPixel, const DD::Image::ChannelSet& channels, const int pixelDistance, DD::Image::DeepOutPixel& outPixel) override;
 };
+
+#include "..\src\BlurStrategy.cpp"

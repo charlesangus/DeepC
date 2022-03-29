@@ -1,5 +1,3 @@
-#include "BlurStrategy.hpp"
-#include "DeepCBlurSpec.hpp"
 
 using namespace DD::Image;
 
@@ -13,19 +11,31 @@ BlurStrategy::~BlurStrategy()
 {
 }
 
-RawGaussianStrategy::RawGaussianStrategy(const DeepCBlurSpec& blurSpec) : BlurStrategy(blurSpec)
+template<bool constrainBlur>
+RawGaussianStrategy<constrainBlur>::RawGaussianStrategy(const DeepCBlurSpec& blurSpec) : BlurStrategy(blurSpec)
 {
 }
 
-RawGaussianStrategy::~RawGaussianStrategy()
+template<bool constrainBlur>
+RawGaussianStrategy<constrainBlur>::~RawGaussianStrategy()
 {
 }
 
-void RawGaussianStrategy::xBlur(const DeepPixel& currentPixel, const ChannelSet& channels, const int pixelDistance, DeepOutPixel& outPixel)
+template<bool constrainBlur>
+void RawGaussianStrategy<constrainBlur>::xBlur(const DD::Image::DeepPixel& currentPixel, const DD::Image::ChannelSet& channels, const int pixelDistance, DD::Image::DeepOutPixel& outPixel)
 {
     const std::size_t currentSampleCount = currentPixel.getSampleCount();
     for (std::size_t isample = 0; isample < currentSampleCount; ++isample)
     {
+        if (constrainBlur)
+        {
+            const float deepFront = currentPixel.getUnorderedSample(isample, Chan_DeepFront);
+            //if this sample is not being blurred, then it has no effect on the target pixel
+            if ((deepFront < _deepCSpec.nearZ) || (deepFront > _deepCSpec.farZ))
+            {
+                continue;
+            }
+        }
         foreach(z, channels)
         {
             if ((z == Chan_Red) || (z == Chan_Green) || (z == Chan_Blue) || (z == Chan_Alpha))
@@ -40,11 +50,21 @@ void RawGaussianStrategy::xBlur(const DeepPixel& currentPixel, const ChannelSet&
     }
 }
 
-void RawGaussianStrategy::yBlur(const DeepPixel& currentPixel, const ChannelSet& channels, const int pixelDistance, DeepOutPixel& outPixel)
+template<bool constrainBlur>
+void RawGaussianStrategy<constrainBlur>::yBlur(const DD::Image::DeepPixel& currentPixel, const DD::Image::ChannelSet& channels, const int pixelDistance, DD::Image::DeepOutPixel& outPixel)
 {
     const std::size_t currentSampleCount = currentPixel.getSampleCount();
     for (std::size_t isample = 0; isample < currentSampleCount; ++isample)
     {
+        if (constrainBlur)
+        {
+            const float deepFront = currentPixel.getUnorderedSample(isample, Chan_DeepFront);
+            //if this sample is not being blurred, then it has no effect on the target pixel
+            if ((deepFront < _deepCSpec.nearZ) || (deepFront > _deepCSpec.farZ))
+            {
+                continue;
+            }
+        }
         foreach(z, channels)
         {
             if ((z == Chan_Red) || (z == Chan_Green) || (z == Chan_Blue) || (z == Chan_Alpha))
@@ -59,55 +79,85 @@ void RawGaussianStrategy::yBlur(const DeepPixel& currentPixel, const ChannelSet&
     }
 }
 
-void RawGaussianStrategy::zBlur(const DeepPixel& currentPixel, const ChannelSet& channels, const int pixelDistance, DeepOutPixel& outPixel)
+template<bool constrainBlur>
+void RawGaussianStrategy<constrainBlur>::zBlur(const DD::Image::DeepPixel& currentPixel, const DD::Image::ChannelSet& channels, const int pixelDistance, DD::Image::DeepOutPixel& outPixel)
 {
     const std::size_t currentSampleCount = currentPixel.getSampleCount();
     for (std::size_t isample = 0; isample < currentSampleCount; ++isample)
     {
-        for (int ivolumetric = -_deepCSpec.zKernelRadius; ivolumetric <= _deepCSpec.zKernelRadius; ++ivolumetric)
+        if (constrainBlur)
         {
-            foreach(z, channels)
+            const float deepFront = currentPixel.getUnorderedSample(isample, Chan_DeepFront);
+            //if this sample is not being blurred, then it should not be modified
+            if ((deepFront < _deepCSpec.nearZ) || (deepFront > _deepCSpec.farZ))
             {
-                if ((z == Chan_Red) || (z == Chan_Green) || (z == Chan_Blue) || (z == Chan_Alpha))
-                {
-                    outPixel.push_back(currentPixel.getUnorderedSample(isample, z) * _deepCSpec.zKernel[abs(ivolumetric)]);
-                }
-                else if (z == Chan_DeepFront)
-                {
-                    outPixel.push_back(currentPixel.getUnorderedSample(isample, z) + _deepCSpec.volumetricOffsets[ivolumetric + _deepCSpec.zKernelRadius].first);
-                }
-                else if (z == Chan_DeepBack)
-                {
-                    outPixel.push_back(currentPixel.getUnorderedSample(isample, z) + _deepCSpec.volumetricOffsets[ivolumetric + _deepCSpec.zKernelRadius].second);
-                }
-                else
+                foreach(z, channels)
                 {
                     outPixel.push_back(currentPixel.getUnorderedSample(isample, z));
                 }
             }
         }
+        else
+        {
+            for (int ivolumetric = -_deepCSpec.zKernelRadius; ivolumetric <= _deepCSpec.zKernelRadius; ++ivolumetric)
+            {
+                foreach(z, channels)
+                {
+                    if ((z == Chan_Red) || (z == Chan_Green) || (z == Chan_Blue) || (z == Chan_Alpha))
+                    {
+                        outPixel.push_back(currentPixel.getUnorderedSample(isample, z) * _deepCSpec.zKernel[abs(ivolumetric)]);
+                    }
+                    else if (z == Chan_DeepFront)
+                    {
+                        outPixel.push_back(currentPixel.getUnorderedSample(isample, z) + _deepCSpec.volumetricOffsets[ivolumetric + _deepCSpec.zKernelRadius].first);
+                    }
+                    else if (z == Chan_DeepBack)
+                    {
+                        outPixel.push_back(currentPixel.getUnorderedSample(isample, z) + _deepCSpec.volumetricOffsets[ivolumetric + _deepCSpec.zKernelRadius].second);
+                    }
+                    else
+                    {
+                        outPixel.push_back(currentPixel.getUnorderedSample(isample, z));
+                    }
+                }
+            }
+        }
     }
 }
 
-TransparentModifiedGaussianStrategy::TransparentModifiedGaussianStrategy(const DeepCBlurSpec& blurSpec) : BlurStrategy(blurSpec) 
+template<bool constrainBlur>
+TransparentModifiedGaussianStrategy<constrainBlur>::TransparentModifiedGaussianStrategy(const DeepCBlurSpec& blurSpec) : BlurStrategy(blurSpec)
 {
 }
 
-TransparentModifiedGaussianStrategy::~TransparentModifiedGaussianStrategy()
+template<bool constrainBlur>
+TransparentModifiedGaussianStrategy<constrainBlur>::~TransparentModifiedGaussianStrategy()
 {
 }
 
-void TransparentModifiedGaussianStrategy::xBlur(const DeepPixel& currentPixel, const ChannelSet& channels, const int pixelDistance, DeepOutPixel& outPixel)
+template<bool constrainBlur>
+void TransparentModifiedGaussianStrategy<constrainBlur>::xBlur(const DD::Image::DeepPixel& currentPixel, const DD::Image::ChannelSet& channels, const int pixelDistance, DD::Image::DeepOutPixel& outPixel)
 {
     const std::size_t currentSampleCount = currentPixel.getSampleCount();
     float cumulativeTransparency = 1.0f;
     for (std::size_t isample = 0; isample < currentSampleCount; ++isample)
     {
+        if (constrainBlur)
+        {
+            const float deepFront = currentPixel.getUnorderedSample(isample, Chan_DeepFront);
+            //if this sample is not being blurred, then it has no effect on the target pixel
+            if ((deepFront < _deepCSpec.nearZ) || (deepFront > _deepCSpec.farZ))
+            {
+                cumulativeTransparency *= (1.0f - currentPixel.getUnorderedSample(isample, Chan_Alpha));
+                continue;
+            }
+        }
+        const float modificationValue = cumulativeTransparency * _deepCSpec.kernel[pixelDistance];
         foreach(z, channels)
         {
             if ((z == Chan_Red) || (z == Chan_Green) || (z == Chan_Blue))
             {
-                outPixel.push_back(currentPixel.getUnorderedSample(isample, z) * cumulativeTransparency * _deepCSpec.kernel[pixelDistance]);
+                outPixel.push_back(currentPixel.getUnorderedSample(isample, z) * modificationValue);
             }
             else if (z == Chan_Alpha)
             {
@@ -122,11 +172,21 @@ void TransparentModifiedGaussianStrategy::xBlur(const DeepPixel& currentPixel, c
     }
 }
 
-void TransparentModifiedGaussianStrategy::yBlur(const DeepPixel& currentPixel, const ChannelSet& channels, const int pixelDistance, DeepOutPixel& outPixel)
+template<bool constrainBlur>
+void TransparentModifiedGaussianStrategy<constrainBlur>::yBlur(const DD::Image::DeepPixel& currentPixel, const DD::Image::ChannelSet& channels, const int pixelDistance, DD::Image::DeepOutPixel& outPixel)
 {
     const std::size_t currentSampleCount = currentPixel.getSampleCount();
     for (std::size_t isample = 0; isample < currentSampleCount; ++isample)
     {
+        if (constrainBlur)
+        {
+            const float deepFront = currentPixel.getUnorderedSample(isample, Chan_DeepFront);
+            //if this sample is not being blurred, then it has no effect on the target pixel
+            if ((deepFront < _deepCSpec.nearZ) || (deepFront > _deepCSpec.farZ))
+            {
+                continue;
+            }
+        }
         foreach(z, channels)
         {
             if ((z == Chan_Red) || (z == Chan_Green) || (z == Chan_Blue))
@@ -145,54 +205,83 @@ void TransparentModifiedGaussianStrategy::yBlur(const DeepPixel& currentPixel, c
     }
 }
 
-void TransparentModifiedGaussianStrategy::zBlur(const DeepPixel& currentPixel, const ChannelSet& channels, const int pixelDistance, DeepOutPixel& outPixel)
+template<bool constrainBlur>
+void TransparentModifiedGaussianStrategy<constrainBlur>::zBlur(const DD::Image::DeepPixel& currentPixel, const DD::Image::ChannelSet& channels, const int pixelDistance, DD::Image::DeepOutPixel& outPixel)
 {
     const std::size_t currentSampleCount = currentPixel.getSampleCount();
     for (std::size_t isample = 0; isample < currentSampleCount; ++isample)
     {
-        for (int ivolumetric = -_deepCSpec.zKernelRadius; ivolumetric <= _deepCSpec.zKernelRadius; ++ivolumetric)
+        if (constrainBlur)
         {
-            foreach(z, channels)
+            const float deepFront = currentPixel.getUnorderedSample(isample, Chan_DeepFront);
+            //if this sample is not being blurred, then it should not be modified
+            if ((deepFront < _deepCSpec.nearZ) || (deepFront > _deepCSpec.farZ))
             {
-                if ((z == Chan_Red) || (z == Chan_Green) || (z == Chan_Blue))
-                {
-                    outPixel.push_back(currentPixel.getUnorderedSample(isample, z) * _deepCSpec.zKernel[abs(ivolumetric)]);
-                }
-                else if (z == Chan_Alpha)
-                {
-                    outPixel.push_back(APPROX_ZERO);
-                }
-                else if (z == Chan_DeepFront)
-                {
-                    outPixel.push_back(currentPixel.getUnorderedSample(isample, z) + _deepCSpec.volumetricOffsets[ivolumetric + _deepCSpec.zKernelRadius].first);
-                }
-                else if (z == Chan_DeepBack)
-                {
-                    outPixel.push_back(currentPixel.getUnorderedSample(isample, z) + _deepCSpec.volumetricOffsets[ivolumetric + _deepCSpec.zKernelRadius].second);
-                }
-                else
+                foreach(z, channels)
                 {
                     outPixel.push_back(currentPixel.getUnorderedSample(isample, z));
+                }
+            }
+        }
+        else
+        {
+            for (int ivolumetric = -_deepCSpec.zKernelRadius; ivolumetric <= _deepCSpec.zKernelRadius; ++ivolumetric)
+            {
+                foreach(z, channels)
+                {
+                    if ((z == Chan_Red) || (z == Chan_Green) || (z == Chan_Blue))
+                    {
+                        outPixel.push_back(currentPixel.getUnorderedSample(isample, z) * _deepCSpec.zKernel[abs(ivolumetric)]);
+                    }
+                    else if (z == Chan_Alpha)
+                    {
+                        outPixel.push_back(APPROX_ZERO);
+                    }
+                    else if (z == Chan_DeepFront)
+                    {
+                        outPixel.push_back(currentPixel.getUnorderedSample(isample, z) + _deepCSpec.volumetricOffsets[ivolumetric + _deepCSpec.zKernelRadius].first);
+                    }
+                    else if (z == Chan_DeepBack)
+                    {
+                        outPixel.push_back(currentPixel.getUnorderedSample(isample, z) + _deepCSpec.volumetricOffsets[ivolumetric + _deepCSpec.zKernelRadius].second);
+                    }
+                    else
+                    {
+                        outPixel.push_back(currentPixel.getUnorderedSample(isample, z));
+                    }
                 }
             }
         }
     }
 }
 
-ModifiedGaussianStrategy::ModifiedGaussianStrategy(const DeepCBlurSpec& blurSpec) : BlurStrategy(blurSpec)
+template<bool constrainBlur>
+ModifiedGaussianStrategy<constrainBlur>::ModifiedGaussianStrategy(const DeepCBlurSpec& blurSpec) : BlurStrategy(blurSpec)
 {
 }
 
-ModifiedGaussianStrategy::~ModifiedGaussianStrategy()
+template<bool constrainBlur>
+ModifiedGaussianStrategy<constrainBlur>::~ModifiedGaussianStrategy()
 {
 }
 
-void ModifiedGaussianStrategy::xBlur(const DeepPixel& currentPixel, const ChannelSet& channels, const int pixelDistance, DeepOutPixel& outPixel)
+template<bool constrainBlur>
+void ModifiedGaussianStrategy<constrainBlur>::xBlur(const DD::Image::DeepPixel& currentPixel, const DD::Image::ChannelSet& channels, const int pixelDistance, DD::Image::DeepOutPixel& outPixel)
 {
     const std::size_t currentSampleCount = currentPixel.getSampleCount();
     float cumulativeTransparency = 1.0f;
     for (std::size_t isample = currentSampleCount; isample-- > 0;)
     {
+        if (constrainBlur)
+        {
+            const float deepFront = currentPixel.getUnorderedSample(isample, Chan_DeepFront);
+            //if this sample is not being blurred, then it has no effect on the target pixel
+            if ((deepFront < _deepCSpec.nearZ) || (deepFront > _deepCSpec.farZ))
+            {
+                cumulativeTransparency *= (1.0f - currentPixel.getUnorderedSample(isample, Chan_Alpha));
+                continue;
+            }
+        }
         const float modificationValue = cumulativeTransparency * _deepCSpec.kernel[pixelDistance];
         foreach(z, channels)
         {
@@ -218,12 +307,21 @@ void ModifiedGaussianStrategy::xBlur(const DeepPixel& currentPixel, const Channe
     }
 }
 
-void ModifiedGaussianStrategy::yBlur(const DeepPixel& currentPixel, const ChannelSet& channels, const int pixelDistance, DeepOutPixel& outPixel)
-{ 
+template<bool constrainBlur>
+void ModifiedGaussianStrategy<constrainBlur>::yBlur(const DD::Image::DeepPixel& currentPixel, const DD::Image::ChannelSet& channels, const int pixelDistance, DD::Image::DeepOutPixel& outPixel)
+{
     const std::size_t currentSampleCount = currentPixel.getSampleCount();
     for (std::size_t isample = 0; isample < currentSampleCount; ++isample)
     {
-        foreach(z, channels) 
+        if (constrainBlur)
+        {
+            const float deepFront = currentPixel.getUnorderedSample(isample, Chan_DeepFront);
+            if ((deepFront < _deepCSpec.nearZ) || (deepFront > _deepCSpec.farZ))
+            {
+                continue;
+            }
+        }
+        foreach(z, channels)
         {
             if ((z == Chan_Red) || (z == Chan_Green) || (z == Chan_Blue) || (z == Chan_Alpha))
             {
@@ -237,30 +335,46 @@ void ModifiedGaussianStrategy::yBlur(const DeepPixel& currentPixel, const Channe
     }
 }
 
-void ModifiedGaussianStrategy::zBlur(const DeepPixel& currentPixel, const ChannelSet& channels, const int pixelDistance, DeepOutPixel& outPixel)
+template<bool constrainBlur>
+void ModifiedGaussianStrategy<constrainBlur>::zBlur(const DD::Image::DeepPixel& currentPixel, const DD::Image::ChannelSet& channels, const int pixelDistance, DD::Image::DeepOutPixel& outPixel)
 {
     const std::size_t currentSampleCount = currentPixel.getSampleCount();
     for (std::size_t isample = 0; isample < currentSampleCount; ++isample)
     {
-        for (int ivolumetric = -_deepCSpec.zKernelRadius; ivolumetric <= _deepCSpec.zKernelRadius; ++ivolumetric)
+        if (constrainBlur)
         {
-            foreach(z, channels)
+            const float deepFront = currentPixel.getUnorderedSample(isample, Chan_DeepFront);
+            //if this sample is not being blurred, then it should not be modified
+            if ((deepFront < _deepCSpec.nearZ) || (deepFront > _deepCSpec.farZ))
             {
-                if ((z == Chan_Red) || (z == Chan_Green) || (z == Chan_Blue) || (z == Chan_Alpha))
-                {
-                    outPixel.push_back(currentPixel.getUnorderedSample(isample, z) * _deepCSpec.zKernel[abs(ivolumetric)]);
-                }
-                else if (z == Chan_DeepFront)
-                {
-                    outPixel.push_back(currentPixel.getUnorderedSample(isample, z) + _deepCSpec.volumetricOffsets[ivolumetric + _deepCSpec.zKernelRadius].first);
-                }
-                else if (z == Chan_DeepBack)
-                {
-                    outPixel.push_back(currentPixel.getUnorderedSample(isample, z) + _deepCSpec.volumetricOffsets[ivolumetric + _deepCSpec.zKernelRadius].second);
-                }
-                else
+                foreach(z, channels)
                 {
                     outPixel.push_back(currentPixel.getUnorderedSample(isample, z));
+                }
+            }
+        }
+        else
+        {
+            for (int ivolumetric = -_deepCSpec.zKernelRadius; ivolumetric <= _deepCSpec.zKernelRadius; ++ivolumetric)
+            {
+                foreach(z, channels)
+                {
+                    if ((z == Chan_Red) || (z == Chan_Green) || (z == Chan_Blue) || (z == Chan_Alpha))
+                    {
+                        outPixel.push_back(currentPixel.getUnorderedSample(isample, z) * _deepCSpec.zKernel[abs(ivolumetric)]);
+                    }
+                    else if (z == Chan_DeepFront)
+                    {
+                        outPixel.push_back(currentPixel.getUnorderedSample(isample, z) + _deepCSpec.volumetricOffsets[ivolumetric + _deepCSpec.zKernelRadius].first);
+                    }
+                    else if (z == Chan_DeepBack)
+                    {
+                        outPixel.push_back(currentPixel.getUnorderedSample(isample, z) + _deepCSpec.volumetricOffsets[ivolumetric + _deepCSpec.zKernelRadius].second);
+                    }
+                    else
+                    {
+                        outPixel.push_back(currentPixel.getUnorderedSample(isample, z));
+                    }
                 }
             }
         }

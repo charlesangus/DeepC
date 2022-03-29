@@ -8,6 +8,10 @@ struct DeepCBlurSpec : public DeepCSpec
     int blurRadiusFloor;
     std::vector<float> kernel;
 
+    bool constrainBlur;
+    float nearZ;
+    float farZ;
+
     DeepCBlurSpec();
     ~DeepCBlurSpec();
 
