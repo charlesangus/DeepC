@@ -15,28 +15,41 @@ enum class BlurInstance
     UNKNOWN
 };
 
-template<typename BlurModeStrategyT, typename... Params>
+template<bool constrainBlur, bool volumetricBlur, template<bool, bool> typename BlurModeStrategyT, typename... Params>
 DD::Image::Op* OpTreeFactory_BlurInstance(const BlurInstance blurInstance, Params&&... params)
 {
     switch (blurInstance)
     {
-        case BlurInstance::X_BLUR: return new XBlurOp<BlurModeStrategyT>(std::forward<Params>(params)...);
-        case BlurInstance::Y_BLUR: return new YBlurOp<BlurModeStrategyT>(std::forward<Params>(params)...);
-        case BlurInstance::Z_BLUR: return new ZBlurOp<BlurModeStrategyT>(std::forward<Params>(params)...);
+        case BlurInstance::X_BLUR: return new XBlurOp<constrainBlur,volumetricBlur,BlurModeStrategyT>(std::forward<Params>(params)...);
+        case BlurInstance::Y_BLUR: return new YBlurOp<constrainBlur,volumetricBlur,BlurModeStrategyT>(std::forward<Params>(params)...);
+        case BlurInstance::Z_BLUR: return new ZBlurOp<constrainBlur,volumetricBlur,BlurModeStrategyT>(std::forward<Params>(params)...);
         default:return nullptr;
     }
 }
 
 
-template<bool constrainBlur, typename... Params>
+template<bool constrainBlur, bool volumetricBlur, typename... Params>
 DD::Image::Op* OpTreeFactory_BlurMode(const BlurInstance blurInstance, const int blurMode, Params&&... params)
 {
     switch (blurMode)
     {
-        case DEEPC_RAW_GAUSSIAN:                   return OpTreeFactory_BlurInstance<RawGaussianStrategy<constrainBlur>>(blurInstance, std::forward<Params>(params)...);
-        case DEEPC_TRANSPARENT_RAW_GAUSSIAN_MODE:  return OpTreeFactory_BlurInstance<TransparentModifiedGaussianStrategy<constrainBlur>>(blurInstance, std::forward<Params>(params)...);
-        case DEEPC_MODIFIED_GAUSSIAN_MODE:         return OpTreeFactory_BlurInstance<ModifiedGaussianStrategy<constrainBlur>>(blurInstance, std::forward<Params>(params)...);
+        case DEEPC_RAW_GAUSSIAN:                   return OpTreeFactory_BlurInstance<constrainBlur, volumetricBlur, RawGaussianStrategy>(blurInstance, std::forward<Params>(params)...);
+        case DEEPC_TRANSPARENT_RAW_GAUSSIAN_MODE:  return OpTreeFactory_BlurInstance<constrainBlur, volumetricBlur, TransparentModifiedGaussianStrategy>(blurInstance, std::forward<Params>(params)...);
+        case DEEPC_MODIFIED_GAUSSIAN_MODE:         return OpTreeFactory_BlurInstance<constrainBlur, volumetricBlur, ModifiedGaussianStrategy>(blurInstance, std::forward<Params>(params)...);
         default: return nullptr;
+    }
+}
+
+template<bool constrainBlur, typename... Params>
+DD::Image::Op* OpTreeFactory_VolumetricBlur(const BlurInstance blurInstance, const bool volumetricBlur, Params&&... params)
+{
+    if (volumetricBlur)
+    {
+        return OpTreeFactory_BlurMode<constrainBlur,true>(blurInstance, std::forward<Params>(params)...);
+    }
+    else
+    {
+        return OpTreeFactory_BlurMode<constrainBlur,false>(blurInstance, std::forward<Params>(params)...);
     }
 }
 
@@ -45,11 +58,11 @@ DD::Image::Op* OpTreeFactory_ConstrainBlur(const BlurInstance blurInstance, cons
 {
     if (constrainBlur)
     {
-        return OpTreeFactory_BlurMode<true>(blurInstance, std::forward<Params>(params)...);
+        return OpTreeFactory_VolumetricBlur<true>(blurInstance, std::forward<Params>(params)...);
     }
     else
     {
-        return OpTreeFactory_BlurMode<false>(blurInstance, std::forward<Params>(params)...);
+        return OpTreeFactory_VolumetricBlur<false>(blurInstance, std::forward<Params>(params)...);
     }
 }
 

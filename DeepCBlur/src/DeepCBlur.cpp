@@ -80,7 +80,8 @@ public:
 
     const char* node_help() const override
     {
-        return "Perfoms a blur on the deep image, with the option to blur in depth in addition to the normal deep 2D blur";
+        return "Perfoms a blur on the deep image and outputs deep data\n"
+               "NOTE: the amount of samples in the resulting image will be drastically increased";
     }
 
     const char* Class() const override
@@ -175,6 +176,7 @@ public:
             _deepCSpec.computeVolumetrics(_deepCSpec.blurRadius);
             _recomputeOpTree = false;
         }
+        _opTree.open();
     }
 
     bool test_input(int idx, Op* op) const
@@ -190,7 +192,7 @@ public:
     {
         if (_recomputeOpTree)
         {
-            _opTree = OpTreeFactory(_deepCSpec.doZBlur, _deepCSpec.constrainBlur, _deepCSpec.blurMode, node(), _deepCSpec);
+            _opTree = OpTreeFactory(_deepCSpec.doZBlur, _deepCSpec.constrainBlur, _deepCSpec.volumetricBlur, _deepCSpec.blurMode, node(), _deepCSpec);
             if (!(_opTree.isValid() && _opTree.set_input(input(0)) && _opTree.set_parent(this)))
             {
                 Op::error("failed to create DeepCBlur internal op tree");
@@ -240,58 +242,128 @@ public:
 
         outPlane = DeepOutputPlane(channels, box);
 
+        
         if (_deepCSpec.blurMode == DEEPC_MODIFIED_GAUSSIAN_MODE)
         {
-            for (Box::iterator it = box.begin(); it != box.end(); it++)
+            if (_deepCSpec.constrainBlur)
             {
-                const DeepPixel inPixel = inPlane.getPixel(it);
-                const std::size_t sampleCount = inPixel.getSampleCount();
-                DeepOutPixel outPixel;
-
-                float cumulativeTransparency = 1.0f;
-                for (std::size_t isample = sampleCount; isample-- > 0;)
+                for (Box::iterator it = box.begin(); it != box.end(); it++)
                 {
-                    float newAlpha = inPixel.getOrderedSample(isample, Chan_Alpha) / cumulativeTransparency;
-                    if (newAlpha > 1.0f)
+                    const DeepPixel inPixel = inPlane.getPixel(it);
+                    const std::size_t sampleCount = inPixel.getSampleCount();
+                    DeepOutPixel outPixel;
+
+                    float cumulativeTransparency = 1.0f;
+                    for (std::size_t isample = sampleCount; isample-- > 0;)
                     {
-                        newAlpha = 1.0f;
-                    }
-                    foreach(z, channels)
-                    {
-                        if ((z == Chan_Red) || (z == Chan_Green) || (z == Chan_Blue))
+                        float newAlpha = inPixel.getOrderedSample(isample, Chan_Alpha) / cumulativeTransparency;
+                        if (newAlpha > 1.0f)
                         {
-                            outPixel.push_back(inPixel.getOrderedSample(isample, z) / cumulativeTransparency);
+                            newAlpha = 1.0f;
                         }
-                        else if (z == Chan_Alpha)
+
+                        const float deepFront = inPixel.getOrderedSample(isample, Chan_DeepFront);
+                        if ((deepFront < _deepCSpec.nearZ) || (deepFront > _deepCSpec.farZ))
                         {
-                            outPixel.push_back(newAlpha);
+                            foreach(z, channels)
+                            {
+                                outPixel.push_back(inPixel.getOrderedSample(isample, z));
+                            }
+                            continue;
                         }
-                        else
+                        
+                        foreach(z, channels)
                         {
-                            outPixel.push_back(inPixel.getOrderedSample(isample, z));
+                            if ((z == Chan_Red) || (z == Chan_Green) || (z == Chan_Blue))
+                            {
+                                outPixel.push_back(inPixel.getOrderedSample(isample, z) / cumulativeTransparency);
+                            }
+                            else if (z == Chan_Alpha)
+                            {
+                                outPixel.push_back(newAlpha);
+                            }
+                            else
+                            {
+                                outPixel.push_back(inPixel.getOrderedSample(isample, z));
+                            }
+                        }
+
+                        //this in a sense brightens the colour of the sample
+                        //done to counteract the effect of the'over operation' reducing the sample's apparent intensity
+                        //increases the sample alpha to balance out the increase in RGB so that the un-premultiplied colour remains the same
+                        //compound the brightening effect for samples that have even more samples in front of them
+                        //the final result mimics the behaviour that the samples are now added together rather than being composited together
+                        //this is the desired beahviour as a flat gaussian adds up neighbours values without doing compoisiting 
+                        //T(n) = T(n-1) * ( 1 - ( alpha(n-1) / T(n-1) ) ) === T(n-1) - alpha(n-1) 
+                        //cumulativeTransparency *= (1.0f - (inPixel.getOrderedSample(isample, Chan_Alpha) / cumulativeTransparency));
+                        cumulativeTransparency -= inPixel.getOrderedSample(isample, Chan_Alpha);
+
+                        //NOTE: if these conditions occur then there will be undefined behaviour for the program
+                        //1 method of dealing with negative values is to not consider any pixels past this point as they cannot be seen anyway
+                        //however have not tested to make sure that final colour value is exactly right when this occurs
+                        if ((cumulativeTransparency < 0.0f) || (newAlpha == 1.0f))
+                        {
+                            break;
                         }
                     }
 
-                    //this in a sense brightens the colour of the sample
-                    //done to counteract the effect of the'over operation' reducing the sample's apparent intensity
-                    //increases the sample alpha to balance out the increase in RGB so that the un-premultiplied colour remains the same
-                    //compound the brightening effect for samples that have even more samples in front of them
-                    //the final result mimics the behaviour that the samples are now added together rather than being composited together
-                    //this is the desired beahviour as a flat gaussian adds up neighbours values without doing compoisiting 
-                    //T(n) = T(n-1) * ( 1 - ( alpha(n-1) / T(n-1) ) ) === T(n-1) - alpha(n-1) 
-                    //cumulativeTransparency *= (1.0f - (inPixel.getOrderedSample(isample, Chan_Alpha) / cumulativeTransparency));
-                    cumulativeTransparency -= inPixel.getOrderedSample(isample, Chan_Alpha);
-                    
-                    //NOTE: if targetPixelCumulativeTransparency < 0 that this will be undefined behaviour for the program
-                    //1 method of dealing with negative values is to not consider any pixels past this point as they cannot be seen anyway
-                    //however have not tested to make sure that final colour value is exactly right when this occurs
-                    if ((cumulativeTransparency < 0.0f) || (newAlpha == 1.0f))
-                    {
-                        break;
-                    }
+                    outPlane.addPixel(outPixel);
                 }
+            }
+            else
+            {
+                for (Box::iterator it = box.begin(); it != box.end(); it++)
+                {
+                    const DeepPixel inPixel = inPlane.getPixel(it);
+                    const std::size_t sampleCount = inPixel.getSampleCount();
+                    DeepOutPixel outPixel;
 
-                outPlane.addPixel(outPixel);
+                    float cumulativeTransparency = 1.0f;
+                    for (std::size_t isample = sampleCount; isample-- > 0;)
+                    {
+                        float newAlpha = inPixel.getOrderedSample(isample, Chan_Alpha) / cumulativeTransparency;
+                        if (newAlpha > 1.0f)
+                        {
+                            newAlpha = 1.0f;
+                        }
+
+                        foreach(z, channels)
+                        {
+                            if ((z == Chan_Red) || (z == Chan_Green) || (z == Chan_Blue))
+                            {
+                                outPixel.push_back(inPixel.getOrderedSample(isample, z) / cumulativeTransparency);
+                            }
+                            else if (z == Chan_Alpha)
+                            {
+                                outPixel.push_back(newAlpha);
+                            }
+                            else
+                            {
+                                outPixel.push_back(inPixel.getOrderedSample(isample, z));
+                            }
+                        }
+
+                        //this in a sense brightens the colour of the sample
+                        //done to counteract the effect of the'over operation' reducing the sample's apparent intensity
+                        //increases the sample alpha to balance out the increase in RGB so that the un-premultiplied colour remains the same
+                        //compound the brightening effect for samples that have even more samples in front of them
+                        //the final result mimics the behaviour that the samples are now added together rather than being composited together
+                        //this is the desired beahviour as a flat gaussian adds up neighbours values without doing compoisiting 
+                        //T(n) = T(n-1) * ( 1 - ( alpha(n-1) / T(n-1) ) ) === T(n-1) - alpha(n-1) 
+                        //cumulativeTransparency *= (1.0f - (inPixel.getOrderedSample(isample, Chan_Alpha) / cumulativeTransparency));
+                        cumulativeTransparency -= inPixel.getOrderedSample(isample, Chan_Alpha);
+
+                        //NOTE: if these conditions occur then there will be undefined behaviour for the program
+                        //1 method of dealing with negative values is to not consider any pixels past this point as they cannot be seen anyway
+                        //however have not tested to make sure that final colour value is exactly right when this occurs
+                        if ((cumulativeTransparency < 0.0f) || (newAlpha == 1.0f))
+                        {
+                            break;
+                        }
+                    }
+
+                    outPlane.addPixel(outPixel);
+                }
             }
         }
         else
@@ -313,7 +385,6 @@ public:
                 outPlane.addPixel(outPixel);
             }
         }
-
 
 
         return true;

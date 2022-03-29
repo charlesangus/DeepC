@@ -1,7 +1,8 @@
 //knob name string literals
-static const char* const Z_DO_BLUR_TEXT = "do z blur";
-static const char* const Z_BLUR_RADIUS_TEXT = "z blur radius";
-static const char* const Z_SCALE_TEXT = "z scale";
+static const char* const Z_DO_BLUR_TEXT = "do Z blur";
+static const char* const Z_BLUR_RADIUS_TEXT = "Z blur radius";
+static const char* const Z_SCALE_TEXT = "Z scale";
+static const char* const VOLUMETRIC_BLUR_TEXT = "do volumetric Z blur";
 
 static const char* const DROP_HIDDEN_SAMPLES_TEXT = "drop hidden samples";
 static const char* const DROP_REDUNDANT_SAMPLES_TEXT = "drop redundant samples";
@@ -32,10 +33,6 @@ int DeepCOp<DeepSpecT>::knob_changed(DD::Image::Knob* k)
 {
     using namespace DD::Image;
 
-    //advancedBlurParameters
-    knob(Z_BLUR_RADIUS_TEXT)->enable(_deepCSpec.doZBlur);
-    knob(Z_SCALE_TEXT)->enable(_deepCSpec.doZBlur);
-
     //sampleOptimisationTab
     //knob(MINIMUM_COLOUR_THRESHOLD_TEXT)->enable(_dropHiddenSamples);
     //knob(MINIMUM_ALPHA_THRESHOLD_TEXT)->enable(_dropHiddenSamples);
@@ -53,27 +50,20 @@ void DeepCOp<DeepSpecT>::advancedBlurParameters(DD::Image::Knob_Callback f)
 
     Bool_knob(f, &_deepCSpec.doZBlur, Z_DO_BLUR_TEXT, Z_DO_BLUR_TEXT);
     SetFlags(f, Knob::STARTLINE);
-    Tooltip(f, "Whether all samples should be transformed into volumetric samples that represents a 3D blur rather than a normal 2D blur");
+    Tooltip(f, "Whether all samples should be individual blurred, in depth, into a further distribution of samples");
 
     Int_knob(f, &_deepCSpec.zKernelRadius, Z_BLUR_RADIUS_TEXT, Z_BLUR_RADIUS_TEXT);
     SetRange(f, 1.0f, 10.0f);
-    Tooltip(f, "The radius of the z blur kernel");
-    if (!_deepCSpec.doZBlur)
-    {
-        SetFlags(f, Knob::DISABLED);
-    }
+    Tooltip(f, "The radius of the Z blur kernel");
 
     Float_knob(f, &_deepCSpec.zScale, Z_SCALE_TEXT, Z_SCALE_TEXT);
     Tooltip(f, "The scale of the Z axis such that this value corresponds to 1 unit in depth, analogous to the width/height of a pixel being 1 unit in the X and Y axis");
-    if (!_deepCSpec.doZBlur)
-    {
-        SetFlags(f, Knob::DISABLED | Knob::LOG_SLIDER);
-    }
-    else
-    {
-        SetFlags(f, Knob::LOG_SLIDER);
-    }
+    SetFlags(f, Knob::LOG_SLIDER);
     SetRange(f, 0.0001f, 1000.0f);
+
+    Bool_knob(f, &_deepCSpec.volumetricBlur, VOLUMETRIC_BLUR_TEXT, VOLUMETRIC_BLUR_TEXT);
+    Tooltip(f, "Whether or not to generate volumetric samples in depth, or to generate flat/point samples");
+    SetFlags(f, Knob::STARTLINE);
 }
 
 template<typename DeepSpecT>

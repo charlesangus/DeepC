@@ -65,7 +65,7 @@ struct DeepCSpec
     std::vector<float> zKernel;
 
     int volumetricsAmount;
-    std::vector<std::pair<float,float>> volumetricOffsets;
+    std::vector<float> volumetricOffsets;
 
     void computeVolumetrics(const float blurRadius);
 };

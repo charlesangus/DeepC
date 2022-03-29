@@ -4,6 +4,7 @@
 
 #include "DeepCBlurSpec.hpp"
 
+template<bool constrainBlur, bool volumetricBlur>
 class BlurStrategy
 {
 protected:
@@ -15,11 +16,11 @@ public:
 
     virtual void xBlur(const DD::Image::DeepPixel& currentPixel, const DD::Image::ChannelSet& channels, const int pixelDistance, DD::Image::DeepOutPixel& outPixel) = 0;
     virtual void yBlur(const DD::Image::DeepPixel& currentPixel, const DD::Image::ChannelSet& channels, const int pixelDistance, DD::Image::DeepOutPixel& outPixel) = 0;
-    virtual void zBlur(const DD::Image::DeepPixel& currentPixel, const DD::Image::ChannelSet& channels, const int pixelDistance, DD::Image::DeepOutPixel& outPixel) = 0;
+    virtual void zBlur(const DD::Image::DeepPixel& currentPixel, const DD::Image::ChannelSet& channels, const int pixelDistance, DD::Image::DeepOutPixel& outPixel);
 };
 
-template<bool constrainBlur>
-class RawGaussianStrategy : public BlurStrategy
+template<bool constrainBlur, bool volumetricBlur>
+class RawGaussianStrategy : public BlurStrategy<constrainBlur, volumetricBlur>
 {
 public:
     RawGaussianStrategy(const DeepCBlurSpec& blurSpec);
@@ -27,11 +28,10 @@ public:
 
     void xBlur(const DD::Image::DeepPixel& currentPixel, const DD::Image::ChannelSet& channels, const int pixelDistance, DD::Image::DeepOutPixel& outPixel) override;
     void yBlur(const DD::Image::DeepPixel& currentPixel, const DD::Image::ChannelSet& channels, const int pixelDistance, DD::Image::DeepOutPixel& outPixel) override;
-    void zBlur(const DD::Image::DeepPixel& currentPixel, const DD::Image::ChannelSet& channels, const int pixelDistance, DD::Image::DeepOutPixel& outPixel) override;
 };
 
-template<bool constrainBlur>
-class TransparentModifiedGaussianStrategy : public BlurStrategy
+template<bool constrainBlur, bool volumetricBlur>
+class TransparentModifiedGaussianStrategy : public BlurStrategy<constrainBlur, volumetricBlur>
 {
 public:
     TransparentModifiedGaussianStrategy(const DeepCBlurSpec& blurSpec);
@@ -42,8 +42,8 @@ public:
     void zBlur(const DD::Image::DeepPixel& currentPixel, const DD::Image::ChannelSet& channels, const int pixelDistance, DD::Image::DeepOutPixel& outPixel) override;
 };
 
-template<bool constrainBlur>
-class ModifiedGaussianStrategy : public BlurStrategy
+template<bool constrainBlur, bool volumetricBlur>
+class ModifiedGaussianStrategy : public BlurStrategy<constrainBlur, volumetricBlur>
 {
 public:
     ModifiedGaussianStrategy(const DeepCBlurSpec& blurSpec);
@@ -51,7 +51,6 @@ public:
 
     void xBlur(const DD::Image::DeepPixel& currentPixel, const DD::Image::ChannelSet& channels, const int pixelDistance, DD::Image::DeepOutPixel& outPixel) override;
     void yBlur(const DD::Image::DeepPixel& currentPixel, const DD::Image::ChannelSet& channels, const int pixelDistance, DD::Image::DeepOutPixel& outPixel) override;
-    void zBlur(const DD::Image::DeepPixel& currentPixel, const DD::Image::ChannelSet& channels, const int pixelDistance, DD::Image::DeepOutPixel& outPixel) override;
 };
 
 #include "..\src\BlurStrategy.cpp"

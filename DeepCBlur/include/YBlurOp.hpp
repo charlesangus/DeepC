@@ -11,11 +11,11 @@
 
 const char* const Y_BLUR_OP_CLASS = "YBlurOp";
 
-template<typename BlurModeStrategyT>
-class YBlurOp : public SeperableBlurOp<BlurModeStrategyT>
+template<bool constrainBlur, bool volumetricBlur, template<bool, bool> class BlurModeStrategyT>
+class YBlurOp : public SeperableBlurOp<BlurModeStrategyT<constrainBlur, volumetricBlur>>
 {
 public:
-    YBlurOp(Node* node, const DeepCBlurSpec& blurSpec) : SeperableBlurOp<BlurModeStrategyT>(node, blurSpec) {}
+    YBlurOp(Node* node, const DeepCBlurSpec& blurSpec) : SeperableBlurOp<BlurModeStrategyT<constrainBlur, volumetricBlur>>(node, blurSpec) {}
     ~YBlurOp() {};
     const char* Class() const override { return Y_BLUR_OP_CLASS; }
     Op* op() override { return this; }
@@ -41,6 +41,8 @@ public:
         const int maxHeight = _deepInfo.format()->height();
         const int maxY = maxHeight - 1;
 
+        Box newBox = { box.x(), box.y(), box.r(), box.t() };
+
         for (Box::iterator it = box.begin(); it != box.end(); it++)
         {
             DeepOutPixel outPixel;
@@ -55,7 +57,9 @@ public:
                 for (int y = -1, reflectedY = 1; y >= lowerY; --y, ++reflectedY)
                 {
                     DeepPlane inPlane;
-                    if (!input0->deepEngine({ box.x(), reflectedY, box.r(), reflectedY + 1 }, channels, inPlane))
+                    newBox.y(reflectedY);
+                    newBox.t(reflectedY + 1);
+                    if (!input0->deepEngine(newBox, channels, inPlane))
                     {
                         return true;
                     }
@@ -71,7 +75,9 @@ public:
                 for (int y = maxY + 1, reflectedY = maxY - 1; y <= upperY; ++y, --reflectedY)
                 {
                     DeepPlane inPlane;
-                    if (!input0->deepEngine({ box.x(), reflectedY, box.r(), reflectedY + 1 }, channels, inPlane))
+                    newBox.y(reflectedY);
+                    newBox.t(reflectedY + 1);
+                    if (!input0->deepEngine(newBox, channels, inPlane))
                     {
                         return true;
                     }
@@ -84,11 +90,38 @@ public:
             for (int y = lowerY; y <= upperY; ++y)
             {
                 DeepPlane inPlane;
-                if (!input0->deepEngine({ box.x(), y, box.r(), y + 1 }, channels, inPlane))
+                newBox.y(y);
+                newBox.t(y + 1);
+                if (!input0->deepEngine(newBox, channels, inPlane))
                 {
                     return true;
                 }
                 yBlur(inPlane.getPixel(y, it.x), channels, abs(it.y - y), outPixel);
+            }
+
+            if (constrainBlur)
+            {
+                DeepPlane inPlane;
+                newBox.y(it.y);
+                newBox.t(it.y + 1);
+                if (!input0->deepEngine(newBox, channels, inPlane))
+                {
+                    return true;
+                }
+                DeepPixel targetPixel = inPlane.getPixel(it.y, it.x);
+                const std::size_t targetSampleCount = targetPixel.getSampleCount();
+                for (std::size_t isample = 0; isample < targetSampleCount; ++isample)
+                {
+                    const float deepFront = targetPixel.getUnorderedSample(isample, Chan_DeepFront);
+                    //if this sample is not being blurred, then it should not be modified
+                    if ((deepFront < _deepCSpec.nearZ) || (deepFront > _deepCSpec.farZ))
+                    {
+                        foreach(z, channels)
+                        {
+                            outPixel.push_back(targetPixel.getUnorderedSample(isample, z));
+                        }
+                    }
+                }
             }
 
             outPlane.addPixel(outPixel);
@@ -105,5 +138,5 @@ static DD::Image::Op* buildYBlurOp(Node* node)
     return nullptr;
 }
 
-template<typename BlurModeStrategyT>
-const DD::Image::Op::Description YBlurOp<BlurModeStrategyT>::d(Y_BLUR_OP_CLASS, "Image/YBlurOp", buildYBlurOp);
+template<bool constrainBlur, bool volumetricBlur, template<bool, bool> typename BlurModeStrategyT>
+const DD::Image::Op::Description YBlurOp<constrainBlur, volumetricBlur, BlurModeStrategyT>::d(Y_BLUR_OP_CLASS, "Image/YBlurOp", buildYBlurOp);

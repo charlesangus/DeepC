@@ -9,6 +9,7 @@ struct DeepCBlurSpec : public DeepCSpec
     std::vector<float> kernel;
 
     bool constrainBlur;
+    bool volumetricBlur;
     float nearZ;
     float farZ;
 

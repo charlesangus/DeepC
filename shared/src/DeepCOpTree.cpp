@@ -42,6 +42,14 @@ void DeepCOpTree::push_back(Op* op)
     }
 }
 
+void DeepCOpTree::open()
+{
+    for (auto op : _opTree)
+    {
+        op->open();
+    }
+}
+
 bool DeepCOpTree::validate(bool for_real)
 {
     if (_opTree.empty())
