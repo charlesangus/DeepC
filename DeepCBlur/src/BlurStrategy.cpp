@@ -34,8 +34,7 @@ void BlurStrategy<constrainBlur, blurFalloff, volumetricBlur>::xBlur(const DD::I
                     //if the calculated blur radius is valid and the sample is still in it's blur radius
                     if ((blurRadius >= 1) && (pixelDistance < (blurRadius + 1)))
                     {
-                        const float blurFactor = cumulativeTransparency * _deepCSpec.falloffKernels[blurRadius - 1][pixelDistance];
-                        pushXSample(currentPixel, isample, channels, blurFactor, outPixel, cumulativeTransparency);
+                        pushXSample(currentPixel, isample, channels, _deepCSpec.falloffKernels[blurRadius - 1][pixelDistance], outPixel, cumulativeTransparency);
                     }
                 }
                 //else the sample is not blurred
@@ -49,8 +48,7 @@ void BlurStrategy<constrainBlur, blurFalloff, volumetricBlur>::xBlur(const DD::I
                     const int blurRadius = MIN(_deepCSpec.blurRadiusFloor - 1, _deepCSpec.blurRadiusFloor - static_cast<int>((deepFront - _deepCSpec.farZ) / _deepCSpec.farFalloffRate));
                     if ((blurRadius >= 1) && (pixelDistance < (blurRadius + 1)))
                     {
-                        const float blurFactor = cumulativeTransparency * _deepCSpec.falloffKernels[blurRadius - 1][pixelDistance];
-                        pushXSample(currentPixel, isample, channels, blurFactor, outPixel, cumulativeTransparency);
+                        pushXSample(currentPixel, isample, channels, _deepCSpec.falloffKernels[blurRadius - 1][pixelDistance], outPixel, cumulativeTransparency);
                     }
                 }
                 //else the sample is not blurred
@@ -58,8 +56,7 @@ void BlurStrategy<constrainBlur, blurFalloff, volumetricBlur>::xBlur(const DD::I
             }
         }
 
-        const float blurFactor = cumulativeTransparency * _deepCSpec.kernel[pixelDistance];
-        pushXSample(currentPixel, isample, channels, blurFactor, outPixel, cumulativeTransparency);
+        pushXSample(currentPixel, isample, channels, _deepCSpec.kernel[pixelDistance], outPixel, cumulativeTransparency);
     }
 }
 
