@@ -1,5 +1,5 @@
 //knob name string literals
-static const char* const Z_DO_BLUR_TEXT = "do Z blur";
+static const char* const Z_DO_BLUR_TEXT = "Z blur";
 static const char* const Z_BLUR_RADIUS_TEXT = "Z blur radius";
 static const char* const Z_SCALE_TEXT = "Z scale";
 static const char* const VOLUMETRIC_BLUR_TEXT = "do volumetric Z blur";

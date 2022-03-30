@@ -9,9 +9,13 @@ struct DeepCBlurSpec : public DeepCSpec
     std::vector<float> kernel;
 
     bool constrainBlur;
-    bool volumetricBlur;
     float nearZ;
     float farZ;
+    bool blurFalloff;
+    float nearFalloffRate;
+    float farFalloffRate;
+    float fallofScale;
+    std::vector<std::vector<float>> falloffKernels;
 
     DeepCBlurSpec();
     ~DeepCBlurSpec();

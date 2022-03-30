@@ -20,8 +20,11 @@ static const char* const BLUR_MODE_TEXT = "mode";
 static const char* const BLUR_SIZE_TEXT = "size";
 static const char* const CONSTRAIN_BLUR_TEXT = "constrain blur range";
 static const char* const NEAR_PLANE_TEXT = "near plane";
+static const char* const NEAR_FALLOFF_RATE_TEXT = "near falloff rate";
+static const char* const CONSTRAIN_BLUR_TEXT = "constrain blur range";
+static const char* const BLUR_FALLOFF_TEXT = "blur falloff";
 static const char* const FAR_PLANE_TEXT = "far plane";
-
+static const char* const FAR_FALLOFF_RATE_TEXT = "far falloff rate";
 
 static const char* const GAUSSIAN_BLUR_NAME = "gaussian";
 static const char* const BLUR_TYPE_NAMES[] = { GAUSSIAN_BLUR_NAME, 0 };
@@ -116,6 +119,8 @@ public:
                    "sets 'blur radius' = floor( 1.5 * 'blur size' )\n"
                    "sets 'standard deviation' = 'blur size' * 0.42466");
         
+        Divider(f, "Blur Constraints");
+
         Bool_knob(f, &_deepCSpec.constrainBlur, CONSTRAIN_BLUR_TEXT, CONSTRAIN_BLUR_TEXT);
         Tooltip(f, "Whether or not to blur the entire image, or only samples in specific bounds");
         SetFlags(f, Knob::STARTLINE);
@@ -134,6 +139,31 @@ public:
             SetFlags(f, Knob::DISABLED);
         }
 
+        Bool_knob(f, &_deepCSpec.blurFalloff, CONSTRAIN_BLUR_TEXT, CONSTRAIN_BLUR_TEXT);
+        Tooltip(f, "Whether to change the size of the blur kernel, to smooth the transition between pixels that are blurred and not");
+        if (!_deepCSpec.constrainBlur)
+        {
+            SetFlags(f, Knob::DISABLED | Knob::STARTLINE);
+        }
+        else
+        {
+            SetFlags(f, Knob::STARTLINE);
+        }
+
+        Float_knob(f, &_deepCSpec.nearFalloffRate, NEAR_FALLOFF_RATE_TEXT, NEAR_FALLOFF_RATE_TEXT);
+        Tooltip(f, "the rate at which the blur kernel decreases in blur size around the near plane");
+        if (!(_deepCSpec.blurFalloff && _deepCSpec.constrainBlur))
+        {
+            SetFlags(f, Knob::DISABLED);
+        }
+
+        Float_knob(f, &_deepCSpec.farFalloffRate, FAR_FALLOFF_RATE_TEXT, FAR_FALLOFF_RATE_TEXT);
+        Tooltip(f, "the rate at which the blur kernel decreases in blur size around the far plane");
+        if (!(_deepCSpec.blurFalloff && _deepCSpec.constrainBlur))
+        {
+            SetFlags(f, Knob::DISABLED);
+        }
+
         advancedBlurParameters(f);
         //sampleOptimisationTab(f);
     }
@@ -148,6 +178,9 @@ public:
 
         knob(NEAR_PLANE_TEXT)->enable(_deepCSpec.constrainBlur);
         knob(FAR_PLANE_TEXT)->enable(_deepCSpec.constrainBlur);
+
+        knob(NEAR_FALLOFF_RATE_TEXT)->enable(_deepCSpec.blurFalloff && _deepCSpec.constrainBlur);
+        knob(FAR_FALLOFF_RATE_TEXT)->enable(_deepCSpec.blurFalloff && _deepCSpec.constrainBlur);
 
         _recomputeOpTree = true;
         return 1;
