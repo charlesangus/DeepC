@@ -48,6 +48,9 @@ class DeepCBlur : public DeepCOp<DeepCBlurSpec>
 private:
     
     float _blurSize;
+    float _nearFalloffRate;
+    float _farFalloffRate;
+    float _fallofScale;
 
     DeepCOpTree _opTree;
     bool _recomputeOpTree;
@@ -62,8 +65,8 @@ public:
 #endif
         inputs(1);
 
-        bool computedKernels = _deepCSpec.init(_blurSize);
-        if (!computedKernels)
+        bool hasComputedKernels = _deepCSpec.init(_blurSize, _nearFalloffRate, _farFalloffRate, _fallofScale);
+        if (!hasComputedKernels)
         {
             Op::error("failed to create DeepCBlur blur kernels");
             return;
@@ -135,13 +138,13 @@ public:
             SetFlags(f, Knob::STARTLINE);
         }
 
-        Float_knob(f, &_deepCSpec.nearFalloffRate, NEAR_FALLOFF_RATE_TEXT, NEAR_FALLOFF_RATE_TEXT);
+        Float_knob(f, &_nearFalloffRate, NEAR_FALLOFF_RATE_TEXT, NEAR_FALLOFF_RATE_TEXT);
         Tooltip(f, "the rate at which the blur kernel decreases in blur size around the near plane");
 
-        Float_knob(f, &_deepCSpec.farFalloffRate, FAR_FALLOFF_RATE_TEXT, FAR_FALLOFF_RATE_TEXT);
+        Float_knob(f, &_farFalloffRate, FAR_FALLOFF_RATE_TEXT, FAR_FALLOFF_RATE_TEXT);
         Tooltip(f, "the rate at which the blur kernel decreases in blur size around the far plane");
 
-        Float_knob(f, &_deepCSpec.fallofScale,FALLOFF_SCALE_TEXT, FALLOFF_SCALE_TEXT);
+        Float_knob(f, &_fallofScale,FALLOFF_SCALE_TEXT, FALLOFF_SCALE_TEXT);
         Tooltip(f, "a multiplication factor to the falloff rates, to further control the extent of the falloff region\n"
                    "this is purely for usabiity and the same functionaility can be observed by scale the falloff rates manually");
 
@@ -170,8 +173,8 @@ public:
 #endif
         if (_recomputeOpTree)
         {           
-            bool computedKernels = _deepCSpec.init(_blurSize);
-            if (!computedKernels)
+            bool hasComputedKernels = _deepCSpec.init(_blurSize, _nearFalloffRate, _farFalloffRate, _fallofScale);
+            if (!hasComputedKernels)
             {
                 Op::error("failed to create DeepCBlur blur kernels");
                 return;
@@ -250,6 +253,14 @@ public:
         {
             if (_deepCSpec.constrainBlur)
             {
+                float nearZ = _deepCSpec.nearZ;
+                float farZ = _deepCSpec.farZ;
+                //ensure that samples that where blurred in the 2 falloff regions are also corrected
+                if (_deepCSpec.blurFalloff)
+                {
+                    nearZ = _deepCSpec.nearZ - (static_cast<float>(_deepCSpec.blurRadiusFloor) - 1.0f) * _deepCSpec.nearFalloffRate;
+                    farZ = _deepCSpec.farZ + (static_cast<float>(_deepCSpec.blurRadiusFloor) - 1.0f) * _deepCSpec.farFalloffRate;
+                }
                 for (Box::iterator it = box.begin(); it != box.end(); it++)
                 {
                     const DeepPixel inPixel = inPlane.getPixel(it);
@@ -257,20 +268,27 @@ public:
                     DeepOutPixel outPixel;
 
                     float cumulativeTransparency = 1.0f;
-                    for (std::size_t isample = sampleCount; isample-- > 0;)
+                    for (std::size_t isample = sampleCount; isample-- > 0; )
                     {
-                        float newAlpha = inPixel.getOrderedSample(isample, Chan_Alpha) / cumulativeTransparency;
+                        const float oldAlpha = inPixel.getOrderedSample(isample, Chan_Alpha);
+                        float newAlpha = oldAlpha / cumulativeTransparency;
                         if (newAlpha > 1.0f)
                         {
                             newAlpha = 1.0f;
+                            cumulativeTransparency = 1.0f / oldAlpha;
                         }
 
                         const float deepFront = inPixel.getOrderedSample(isample, Chan_DeepFront);
-                        if ((deepFront < _deepCSpec.nearZ) || (deepFront > _deepCSpec.farZ))
+                        if ((deepFront < nearZ) || (deepFront > farZ))
                         {
                             foreach(z, channels)
                             {
                                 outPixel.push_back(inPixel.getOrderedSample(isample, z));
+                            }
+                            cumulativeTransparency -= inPixel.getOrderedSample(isample, Chan_Alpha);
+                            if ((cumulativeTransparency < 0.0f) || (newAlpha == 1.0f))
+                            {
+                                break;
                             }
                             continue;
                         }

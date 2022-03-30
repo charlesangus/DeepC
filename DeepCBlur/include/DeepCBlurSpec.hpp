@@ -14,13 +14,13 @@ struct DeepCBlurSpec : public DeepCSpec
     bool blurFalloff;
     float nearFalloffRate;
     float farFalloffRate;
-    float fallofScale;
+    
     std::vector<std::vector<float>> falloffKernels;
 
     DeepCBlurSpec();
     ~DeepCBlurSpec();
 
-    bool init(const float blurSize);
+    bool init(const float blurSize, const float nearFalloffRate_, const float farFalloffRate_, const float falloffScale);
 
     std::function<std::vector<float>(const float sd, const int blurRadius)> getKernelFunction() const;
 };

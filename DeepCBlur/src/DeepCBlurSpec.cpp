@@ -13,14 +13,13 @@ DeepCBlurSpec::DeepCBlurSpec()
     blurFalloff = false;
     nearFalloffRate = 1.0f;
     farFalloffRate = 1.0f;
-    fallofScale = 1.0f;
 }
 
 DeepCBlurSpec::~DeepCBlurSpec()
 {
 }
 
-bool DeepCBlurSpec::init(const float blurSize)
+bool DeepCBlurSpec::init(const float blurSize, const float nearFalloffRate_, const float farFalloffRate_, const float falloffScale)
 {
     blurRadius = blurSize * 1.5f;
     blurRadiusFloor = static_cast<int>(blurRadius);
@@ -44,6 +43,9 @@ bool DeepCBlurSpec::init(const float blurSize)
             falloffKernels[radius - 1] = std::move(kernelFunction(getSD(static_cast<float>(radius) * 1.5f), radius));
             volumetricFalloffOffsets[radius - 1] = std::move(computeVolumetrics(radius));
         }
+
+        nearFalloffRate = nearFalloffRate_ * falloffScale;
+        farFalloffRate = farFalloffRate_ * falloffScale;
     }
 
     return true;

@@ -30,7 +30,7 @@ void BlurStrategy<constrainBlur, blurFalloff, volumetricBlur>::xBlur(const DD::I
                 //if the sample might need blurring to smooth the blurring transition
                 if (blurFalloff)
                 {
-                    const int blurRadius = MIN(_deepCSpec.blurRadiusFloor - 1, _deepCSpec.blurRadiusFloor - static_cast<int>((_deepCSpec.nearZ - deepFront) * _deepCSpec.nearFalloffRate * _deepCSpec.fallofScale));
+                    const int blurRadius = MIN(_deepCSpec.blurRadiusFloor - 1, _deepCSpec.blurRadiusFloor - static_cast<int>((_deepCSpec.nearZ - deepFront) / _deepCSpec.nearFalloffRate));
                     //if the calculated blur radius is valid and the sample is still in it's blur radius
                     if ((blurRadius >= 1) && (pixelDistance < (blurRadius + 1)))
                     {
@@ -46,7 +46,7 @@ void BlurStrategy<constrainBlur, blurFalloff, volumetricBlur>::xBlur(const DD::I
                 //if the sample might need blurring to smooth the blurring transition
                 if (blurFalloff)
                 {
-                    const int blurRadius = MIN(_deepCSpec.blurRadiusFloor - 1, _deepCSpec.blurRadiusFloor - static_cast<int>((deepFront - _deepCSpec.farZ) * _deepCSpec.nearFalloffRate * _deepCSpec.fallofScale));
+                    const int blurRadius = MIN(_deepCSpec.blurRadiusFloor - 1, _deepCSpec.blurRadiusFloor - static_cast<int>((deepFront - _deepCSpec.farZ) / _deepCSpec.farFalloffRate));
                     if ((blurRadius >= 1) && (pixelDistance < (blurRadius + 1)))
                     {
                         const float blurFactor = cumulativeTransparency * _deepCSpec.falloffKernels[blurRadius - 1][pixelDistance];
@@ -78,7 +78,7 @@ void BlurStrategy<constrainBlur, blurFalloff, volumetricBlur>::yBlur(const DD::I
                 //if the sample might need blurring to smooth the blurring transition
                 if (blurFalloff)
                 {
-                    const int blurRadius = MIN(_deepCSpec.blurRadiusFloor - 1, _deepCSpec.blurRadiusFloor - static_cast<int>((_deepCSpec.nearZ - deepFront) * _deepCSpec.nearFalloffRate * _deepCSpec.fallofScale));
+                    const int blurRadius = MIN(_deepCSpec.blurRadiusFloor - 1, _deepCSpec.blurRadiusFloor - static_cast<int>((_deepCSpec.nearZ - deepFront) / _deepCSpec.nearFalloffRate));
                     //if the calculated blur radius is valid and the sample is still in it's blur radius
                     if ((blurRadius >= 1) && (pixelDistance < (blurRadius + 1)))
                     {
@@ -93,7 +93,7 @@ void BlurStrategy<constrainBlur, blurFalloff, volumetricBlur>::yBlur(const DD::I
                 //if the sample might need blurring to smooth the blurring transition
                 if (blurFalloff)
                 {
-                    const int blurRadius = MIN(_deepCSpec.blurRadiusFloor-1,_deepCSpec.blurRadiusFloor - static_cast<int>((deepFront - _deepCSpec.farZ) * _deepCSpec.nearFalloffRate * _deepCSpec.fallofScale));
+                    const int blurRadius = MIN(_deepCSpec.blurRadiusFloor-1,_deepCSpec.blurRadiusFloor - static_cast<int>((deepFront - _deepCSpec.farZ) / _deepCSpec.farFalloffRate));
                     if ((blurRadius >= 1) && (pixelDistance < (blurRadius + 1)))
                     {
                         pushYSample(currentPixel, isample, channels, _deepCSpec.falloffKernels[blurRadius - 1][pixelDistance], outPixel);
@@ -123,7 +123,7 @@ void BlurStrategy<constrainBlur, blurFalloff, volumetricBlur>::zBlur(const DD::I
                 //if the sample might need blurring to smooth the blurring transition
                 if (blurFalloff)
                 {
-                    const int blurRadius = _deepCSpec.blurRadiusFloor - static_cast<int>(((_deepCSpec.nearZ - deepFront) * _deepCSpec.nearFalloffRate * _deepCSpec.fallofScale));
+                    const int blurRadius = _deepCSpec.blurRadiusFloor - static_cast<int>(((_deepCSpec.nearZ - deepFront) / _deepCSpec.nearFalloffRate));
                     pushZSamples(currentPixel, isample, channels, _deepCSpec.volumetricFalloffOffsets[blurRadius - 1], outPixel);
                 }
                 //else the sample is not blurred
@@ -134,7 +134,7 @@ void BlurStrategy<constrainBlur, blurFalloff, volumetricBlur>::zBlur(const DD::I
                 //if the sample might need blurring to smooth the blurring transition
                 if (blurFalloff)
                 {
-                    const int blurRadius = _deepCSpec.blurRadiusFloor - static_cast<int>(((deepFront - _deepCSpec.farZ) * _deepCSpec.nearFalloffRate * _deepCSpec.fallofScale));
+                    const int blurRadius = _deepCSpec.blurRadiusFloor - static_cast<int>(((deepFront - _deepCSpec.farZ) / _deepCSpec.farFalloffRate));
                     pushZSamples(currentPixel, isample, channels, _deepCSpec.volumetricFalloffOffsets[blurRadius - 1], outPixel);
                 }
                 //else the sample is not blurred
