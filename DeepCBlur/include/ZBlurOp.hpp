@@ -13,11 +13,11 @@
 
 const char* const Z_BLUR_OP_CLASS = "ZBlurOp";
 
-template<bool constrainBlur, bool volumetricBlur, template<bool, bool> typename BlurModeStrategyT>
-class ZBlurOp : public SeperableBlurOp<BlurModeStrategyT<constrainBlur, volumetricBlur>>
+template<bool constrainBlur, bool blurFalloff, bool volumetricBlur, template<bool, bool, bool> typename BlurModeStrategyT>
+class ZBlurOp : public SeperableBlurOp<BlurModeStrategyT<constrainBlur, blurFalloff, volumetricBlur>>
 {
 public:
-    ZBlurOp(Node* node, const DeepCBlurSpec& blurSpec) : SeperableBlurOp<BlurModeStrategyT<constrainBlur, volumetricBlur>>(node, blurSpec) {}
+    ZBlurOp(Node* node, const DeepCBlurSpec& blurSpec) : SeperableBlurOp<BlurModeStrategyT<constrainBlur, blurFalloff, volumetricBlur>>(node, blurSpec) {}
     ~ZBlurOp() {};
     const char* Class() const override { return Z_BLUR_OP_CLASS; }
     Op* op() override { return this; }
@@ -68,5 +68,5 @@ static DD::Image::Op* buildZBlurOp(Node* node)
     return nullptr;
 }
 
-template<bool constrainBlur, bool volumetricBlur, template<bool, bool> typename BlurModeStrategyT>
-const DD::Image::Op::Description ZBlurOp<constrainBlur, volumetricBlur, BlurModeStrategyT>::d(Z_BLUR_OP_CLASS, "Image/ZBlurOp", buildZBlurOp);
+template<bool constrainBlur, bool blurFalloff, bool volumetricBlur, template<bool, bool, bool> typename BlurModeStrategyT>
+const DD::Image::Op::Description ZBlurOp<constrainBlur, blurFalloff, volumetricBlur, BlurModeStrategyT>::d(Z_BLUR_OP_CLASS, "Image/ZBlurOp", buildZBlurOp);

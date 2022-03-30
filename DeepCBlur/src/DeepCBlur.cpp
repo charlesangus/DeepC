@@ -18,13 +18,14 @@ static const char* const BLUR_FILTER_TEXT = "filter";
 static const char* const BLUR_QUALITY_TEXT = "quality";
 static const char* const BLUR_MODE_TEXT = "mode";
 static const char* const BLUR_SIZE_TEXT = "size";
+
 static const char* const CONSTRAIN_BLUR_TEXT = "constrain blur range";
 static const char* const NEAR_PLANE_TEXT = "near plane";
 static const char* const NEAR_FALLOFF_RATE_TEXT = "near falloff rate";
-static const char* const CONSTRAIN_BLUR_TEXT = "constrain blur range";
 static const char* const BLUR_FALLOFF_TEXT = "blur falloff";
 static const char* const FAR_PLANE_TEXT = "far plane";
 static const char* const FAR_FALLOFF_RATE_TEXT = "far falloff rate";
+static const char* const FALLOFF_SCALE_TEXT = "falloff scale";
 
 static const char* const GAUSSIAN_BLUR_NAME = "gaussian";
 static const char* const BLUR_TYPE_NAMES[] = { GAUSSIAN_BLUR_NAME, 0 };
@@ -61,19 +62,11 @@ public:
 #endif
         inputs(1);
 
-        _deepCSpec.blurRadius = 4.5f; // 3.0 * 1.5
-        _deepCSpec.blurRadiusFloor = 4;
-
-        auto kernelFunction = _deepCSpec.getKernelFunction();
-        if (kernelFunction == nullptr)
+        bool computedKernels = _deepCSpec.init(_blurSize);
+        if (!computedKernels)
         {
-            Op::error("failed to create DeepCBlur blur kernel");
-        }
-        else
-        {
-            _deepCSpec.kernel = kernelFunction(getSD(_blurSize), _deepCSpec.blurRadiusFloor);
-            _deepCSpec.zKernel = kernelFunction(getSD(_blurSize), _deepCSpec.zKernelRadius);
-            _deepCSpec.computeVolumetrics(_deepCSpec.blurRadius);
+            Op::error("failed to create DeepCBlur blur kernels");
+            return;
         }
 
         _recomputeOpTree = true;
@@ -84,7 +77,7 @@ public:
     const char* node_help() const override
     {
         return "Perfoms a blur on the deep image and outputs deep data\n"
-               "NOTE: the amount of samples in the resulting image will be drastically increased";
+               "NOTE: the amount of samples in the resulting image will be drastically increased in proportion to the blur size";
     }
 
     const char* Class() const override
@@ -119,7 +112,7 @@ public:
                    "sets 'blur radius' = floor( 1.5 * 'blur size' )\n"
                    "sets 'standard deviation' = 'blur size' * 0.42466");
         
-        Divider(f, "Blur Constraints");
+        Divider(f, "");
 
         Bool_knob(f, &_deepCSpec.constrainBlur, CONSTRAIN_BLUR_TEXT, CONSTRAIN_BLUR_TEXT);
         Tooltip(f, "Whether or not to blur the entire image, or only samples in specific bounds");
@@ -127,19 +120,11 @@ public:
 
         Float_knob(f, &_deepCSpec.nearZ, NEAR_PLANE_TEXT, NEAR_PLANE_TEXT);
         Tooltip(f, "only samples with a DeepFront beyond this value will be blurred");
-        if(!_deepCSpec.constrainBlur)
-        {
-            SetFlags(f, Knob::DISABLED);
-        }
 
         Float_knob(f, &_deepCSpec.farZ, FAR_PLANE_TEXT, FAR_PLANE_TEXT);
         Tooltip(f, "only samples with a DeepFront before this value will be blurred");
-        if (!_deepCSpec.constrainBlur)
-        {
-            SetFlags(f, Knob::DISABLED);
-        }
 
-        Bool_knob(f, &_deepCSpec.blurFalloff, CONSTRAIN_BLUR_TEXT, CONSTRAIN_BLUR_TEXT);
+        Bool_knob(f, &_deepCSpec.blurFalloff, BLUR_FALLOFF_TEXT, BLUR_FALLOFF_TEXT);
         Tooltip(f, "Whether to change the size of the blur kernel, to smooth the transition between pixels that are blurred and not");
         if (!_deepCSpec.constrainBlur)
         {
@@ -152,17 +137,13 @@ public:
 
         Float_knob(f, &_deepCSpec.nearFalloffRate, NEAR_FALLOFF_RATE_TEXT, NEAR_FALLOFF_RATE_TEXT);
         Tooltip(f, "the rate at which the blur kernel decreases in blur size around the near plane");
-        if (!(_deepCSpec.blurFalloff && _deepCSpec.constrainBlur))
-        {
-            SetFlags(f, Knob::DISABLED);
-        }
 
         Float_knob(f, &_deepCSpec.farFalloffRate, FAR_FALLOFF_RATE_TEXT, FAR_FALLOFF_RATE_TEXT);
         Tooltip(f, "the rate at which the blur kernel decreases in blur size around the far plane");
-        if (!(_deepCSpec.blurFalloff && _deepCSpec.constrainBlur))
-        {
-            SetFlags(f, Knob::DISABLED);
-        }
+
+        Float_knob(f, &_deepCSpec.fallofScale,FALLOFF_SCALE_TEXT, FALLOFF_SCALE_TEXT);
+        Tooltip(f, "a multiplication factor to the falloff rates, to further control the extent of the falloff region\n"
+                   "this is purely for usabiity and the same functionaility can be observed by scale the falloff rates manually");
 
         advancedBlurParameters(f);
         //sampleOptimisationTab(f);
@@ -176,11 +157,7 @@ public:
             return err;
         }
 
-        knob(NEAR_PLANE_TEXT)->enable(_deepCSpec.constrainBlur);
-        knob(FAR_PLANE_TEXT)->enable(_deepCSpec.constrainBlur);
-
-        knob(NEAR_FALLOFF_RATE_TEXT)->enable(_deepCSpec.blurFalloff && _deepCSpec.constrainBlur);
-        knob(FAR_FALLOFF_RATE_TEXT)->enable(_deepCSpec.blurFalloff && _deepCSpec.constrainBlur);
+        knob(BLUR_FALLOFF_TEXT)->enable(_deepCSpec.constrainBlur);
 
         _recomputeOpTree = true;
         return 1;
@@ -192,21 +169,14 @@ public:
         printf("NOTE: DEEPC_DEBUG is enabled, to disable it comment out the define in DeepCDebugging.hpp\n");
 #endif
         if (_recomputeOpTree)
-        {
-            _deepCSpec.blurRadius = 1.5f * _blurSize;
-            _deepCSpec.blurRadiusFloor = static_cast<int>(_deepCSpec.blurRadius);
-            
-            auto kernelFunction = _deepCSpec.getKernelFunction();
-            if (kernelFunction == nullptr)
+        {           
+            bool computedKernels = _deepCSpec.init(_blurSize);
+            if (!computedKernels)
             {
-                Op::error("failed to create DeepCBlur blur kernel");
+                Op::error("failed to create DeepCBlur blur kernels");
                 return;
             }
 
-            _deepCSpec.kernel = kernelFunction(getSD(_blurSize), _deepCSpec.blurRadiusFloor);
-            _deepCSpec.zKernel = kernelFunction(getSD(_blurSize), _deepCSpec.zKernelRadius);
-
-            _deepCSpec.computeVolumetrics(_deepCSpec.blurRadius);
             _recomputeOpTree = false;
         }
         _opTree.open();
@@ -225,7 +195,7 @@ public:
     {
         if (_recomputeOpTree)
         {
-            _opTree = OpTreeFactory(_deepCSpec.doZBlur, _deepCSpec.constrainBlur, _deepCSpec.volumetricBlur, _deepCSpec.blurMode, node(), _deepCSpec);
+            _opTree = OpTreeFactory(_deepCSpec.doZBlur, _deepCSpec.constrainBlur, _deepCSpec.blurFalloff, _deepCSpec.volumetricBlur, _deepCSpec.blurMode, node(), _deepCSpec);
             if (!(_opTree.isValid() && _opTree.set_input(input(0)) && _opTree.set_parent(this)))
             {
                 Op::error("failed to create DeepCBlur internal op tree");
@@ -234,7 +204,7 @@ public:
             }
         }
 
-        if ((_deepCSpec.blurRadiusFloor > _deepInfo.format()->width()) || (_deepCSpec.blurRadiusFloor > _deepInfo.format()->height()))
+        if ((_deepCSpec.blurRadiusFloor >= _deepInfo.format()->width()) || (_deepCSpec.blurRadiusFloor >= _deepInfo.format()->height()))
         {
             Op::error("blur radius is too large, it cannot be larger than the image");
             _deepInfo = DeepInfo();

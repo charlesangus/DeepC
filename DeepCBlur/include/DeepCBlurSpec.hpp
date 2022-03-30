@@ -20,5 +20,7 @@ struct DeepCBlurSpec : public DeepCSpec
     DeepCBlurSpec();
     ~DeepCBlurSpec();
 
+    bool init(const float blurSize);
+
     std::function<std::vector<float>(const float sd, const int blurRadius)> getKernelFunction() const;
 };

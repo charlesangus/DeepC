@@ -1,6 +1,6 @@
 #pragma once
 
-//#define DEEPC_DEBUG
+#define DEEPC_DEBUG
 //#define DEEPC_DEBUG_PRINT
 
 #ifdef DEEPC_DEBUG
