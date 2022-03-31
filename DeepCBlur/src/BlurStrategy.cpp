@@ -38,7 +38,7 @@ void BlurStrategy<constrainBlur, blurFalloff, volumetricBlur>::xBlur(const DD::I
                     }
                 }
                 //else the sample is not blurred
-                cumulativeTransparency *= (1.0f - currentPixel.getOrderedSample(isample, z);
+                cumulativeTransparency *= (1.0f - currentPixel.getOrderedSample(isample, Chan_Alpha));
                 continue;
             }
             if (deepFront > _deepCSpec.farZ)
@@ -53,7 +53,7 @@ void BlurStrategy<constrainBlur, blurFalloff, volumetricBlur>::xBlur(const DD::I
                     }
                 }
                 //else the sample is not blurred
-                cumulativeTransparency *= (1.0f - currentPixel.getOrderedSample(isample, z);
+                cumulativeTransparency *= (1.0f - currentPixel.getOrderedSample(isample, Chan_Alpha));
                 continue;
             }
         }
