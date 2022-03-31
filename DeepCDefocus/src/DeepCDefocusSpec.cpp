@@ -1,30 +1,52 @@
 #include "DeepCDefocusSpec.hpp"
-
 #include "DefocusKernels.hpp"
 
-DeepCDefocusSpec::DeepCDefocusSpec() : CMGDeepSpec()
+DeepCDefocusSpec::DeepCDefocusSpec() : DeepCSpec()
 {
-	blurType = CMG_CIRCLE;
-	blurQuality = CMG_FULL_CIRCLE;
-	blurMode = CMG_DEEP_DEFOCUS_BLUR_MODE_UNKNOWN;
+	blurType = DEEPC_CIRCLE;
+	blurQuality = DEEPC_FULL_CIRCLE;
+	blurMode = DEEPC_DEFOCUS_MODE_UNKNOWN;
+
+	distribution_probability = 0.5f;
 }
 
 DeepCDefocusSpec::~DeepCDefocusSpec()
 {
 }
 
-std::function<std::vector<float>(const int blurRadius, const float distribution_percentage, const CircleMetadataKernel& metadataKernel)> DeepCDefocusSpec::getKernelFunction() const
+bool DeepCDefocusSpec::init(const float maxBlurSize)
+{
+	maxBlurRadius = maxBlurSize * 1.5f;
+	maxBlurRadiusCeil = static_cast<int>(ceil(maxBlurRadius));
+
+	metadataKernel = std::move(getCircleMetadataKernel(maxBlurRadiusCeil));
+
+	auto kernelFunction = getKernelFunction();
+	if (kernelFunction == nullptr)
+	{
+		return false;
+	}
+
+	kernels.resize(maxBlurRadiusCeil);
+	for (int radius = 1; radius <= maxBlurRadiusCeil; ++radius)
+	{
+		kernels[radius - 1] = std::move(kernelFunction(radius, distribution_probability, metadataKernel));
+	}
+
+	return true;
+}
+
+std::function<DOFKernel(const int blurRadius, const float distribution_percentage, const CircleMetadataKernel& metadataKernel)> DeepCDefocusSpec::getKernelFunction() const
 {
 	switch (blurType)
 	{
-		case CMG_CIRCLE:
-			return getRawCircleKernel;
-			/*switch (blurQuality)
+		case DEEPC_CIRCLE:
+			switch (blurQuality)
 			{
-				case CMG_FULL_CIRCLE:         return getCircleKernel;
-				case CMG_APPROXIMATED_CIRCLE: return getSpiralKernel;
+				case DEEPC_FULL_CIRCLE:         return getCircleKernel;
+				case DEEPC_APPROXIMATED_CIRCLE: return getSpiralKernel;
 				default:                      return nullptr;
-			}*/
+			}
 		default:                              return nullptr;
 	}
 }

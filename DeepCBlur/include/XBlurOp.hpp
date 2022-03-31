@@ -52,7 +52,7 @@ public:
         outPlane = DeepOutputPlane(channels, box);
 
         //current pixel is the pixel currently spreading it's intensity to the target pixel
-        //target pixel is the outPixel current being constructed
+        //target pixel is the outPixel currently being constructed
 
         for (Box::iterator it = box.begin(); it != box.end(); it++)
         {

@@ -4,7 +4,7 @@
 
 struct CircleMetadataKernel
 {
-    std::size_t blurRadius;
+    int blurRadius;
     std::size_t dimension;
     std::vector<int> distances;
     std::vector<std::size_t> pixelCounts;
