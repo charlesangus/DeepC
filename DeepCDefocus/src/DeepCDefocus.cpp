@@ -32,7 +32,7 @@ static const char* const BLUR_TYPE_NAMES[] = { CIRCLE_DOF_BLUR_NAME, 0 };
 
 static const char* const EXACT_CIRCLE_NAME = "exact circle";
 static const char* const APPROXIMATED_NAME = "approximated circle";
-static const char* const BLUR_QUALITY_NAMES[] = { EXACT_CIRCLE_NAME, APPROXIMATED_NAME, 0 };
+static const char* const BLUR_QUALITY_NAMES[] = { EXACT_CIRCLE_NAME, 0 };
 
 using namespace DD::Image;
 
@@ -292,7 +292,7 @@ public:
 							getInnerIntensity(currentBlurRadius, _deepCSpec.metadataKernel);
 
 						//in case the same pixel is in the kernel more than once, the blur factor is multiplied by the kernel count
-						const float blurFactor = cumulativeTransparency * intensity * _deepCSpec.kernels[kernelIndex].count({ x - it.x, yOff });
+						const float blurFactor = cumulativeTransparency * intensity * static_cast<float>(_deepCSpec.kernels[kernelIndex].count({x - it.x, yOff}));
 
 						foreach(z, channels)
 						{
