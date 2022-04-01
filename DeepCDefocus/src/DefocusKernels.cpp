@@ -36,9 +36,37 @@ CircleMetadataKernel getCircleMetadataKernel(int blurRadius)
 	return metadataKernel;
 }
 
+float getInnerIntensity(const float blurRadius, const CircleMetadataKernel& metadataKernel)
+{
+	const float ceilBlurRadius = ceil(blurRadius);
+	const float floorBlurRadius = ceilBlurRadius - 1.0f;
+
+	const float ceilPixelCount = static_cast<float>(metadataKernel.getPixelCount(static_cast<int>(ceilBlurRadius)));
+	const float floorPixelCount = static_cast<float>(metadataKernel.getPixelCount(static_cast<int>(blurRadius)));
+
+	//linerally interpolate between floorPixelCount and ceilPixelCount, by how close the blurRadius is to the ceilBlurRadius
+	//this allows for a smooth transition between kernels for any floating point blur radius
+	//a + (b-a) * x
+	//ceilPixelCount + (ceilPixelCount - floorPixelCount) * (1 - (ceilBlurRadius - blurRadius))
+	return 1.0f / (ceilPixelCount - (ceilPixelCount - floorPixelCount) * (ceilBlurRadius - blurRadius));
+}
+
+float getEdgeIntensity(const float blurRadius, const CircleMetadataKernel& metadataKernel)
+{
+	const float ceilBlurRadius = ceil(blurRadius);
+	const float floorBlurRadius = ceilBlurRadius - 1.0f;
+
+	const float ceilPixelCount = static_cast<float>(metadataKernel.getPixelCount(static_cast<int>(ceilBlurRadius)));
+	const float floorPixelCount = static_cast<float>(metadataKernel.getPixelCount(static_cast<int>(blurRadius)));
+
+	//the intensity of edge pixels are decreased as only a percentage of these pixels should have the assigned 'intensity'
+	//to compensate for this the 'itensity' is equally spread over the whole edge pixel
+	return  (1.0f / (ceilPixelCount - (ceilPixelCount - floorPixelCount) * (ceilBlurRadius - blurRadius))) * (blurRadius - floorBlurRadius);
+}
+
 DOFKernel getCircleKernel(const int blurRadius, const float, const CircleMetadataKernel& metadataKernel)
 {
-	DOFKernel kernelData;
+	DOFKernel kernel;
 
 	for (int yOff = -blurRadius; yOff <= blurRadius; ++yOff)
 	{
@@ -47,19 +75,17 @@ DOFKernel getCircleKernel(const int blurRadius, const float, const CircleMetadat
 			const int currentRadius = static_cast<int>(sqrtf(static_cast<float>(xOff * xOff + yOff * yOff)) + 0.5f);
 			if (currentRadius <= blurRadius)
 			{
-				kernelData.kernel.emplace(xOff,yOff);
+				kernel.emplace(xOff,yOff, metadataKernel.isEdgePixel(xOff, yOff, blurRadius));
 			}
 		}
 	}
 
-	kernelData.intensity = 1.0f / metadataKernel.getPixelCount(blurRadius);
-
-	return kernelData;
+	return kernel;
 }
 
 DOFKernel getSpiralKernel(const int blurRadius, const float distribution_percentage, const CircleMetadataKernel& metadataKernel)
 {
-	DOFKernel kernelData;
+	DOFKernel kernel;
 
 	const std::size_t pixelCount = metadataKernel.getPixelCount(blurRadius);
 	const float actualPixelAmountFloat = static_cast<float>(pixelCount);
@@ -77,37 +103,13 @@ DOFKernel getSpiralKernel(const int blurRadius, const float distribution_percent
 		const int xOff = static_cast<int>((currentRadius * cosf(currentAngle)) + 0.5f);
 		const int yOff = static_cast<int>((currentRadius * sinf(currentAngle)) + 0.5f);
 
-		kernelData.kernel.emplace(xOff, yOff);
+		kernel.emplace(xOff, yOff, metadataKernel.isEdgePixel(xOff, yOff, blurRadius));
 	}
 
-	kernelData.intensity = 1.0f / static_cast<float>(approximatedPixelCount);
-
-	return kernelData;
+	return kernel;
 }
 
 #if 0
-DOFIntensities getDOFIntensities(const float blurRadius, const CircleMetadataKernel& metadataKernel)
-{
-	DOFIntensities intensities;
-
-	const float ceilBlurRadius = ceil(blurRadius);
-	const float floorBlurRadius = ceilBlurRadius - 1.0f;
-
-	const float ceilPixelCount = static_cast<float>(metadataKernel.getPixelCount(static_cast<int>(ceilBlurRadius)));
-	const float floorPixelCount = static_cast<float>(metadataKernel.getPixelCount(static_cast<int>(blurRadius)));
-
-	//linerally interpolate between floorPixelCount and ceilPixelCount, by how close the blurRadius is to the ceilBlurRadius
-	//this allows for a smooth transition between kernels for any floating point blur radius
-	//a + (b-a) * x
-	//ceilPixelCount + (ceilPixelCount - floorPixelCount) * (1 - (ceilBlurRadius - blurRadius))
-	intensities.innerPixelIntensity = 1.0f / (ceilPixelCount - (ceilPixelCount - floorPixelCount) * (ceilBlurRadius - blurRadius));
-
-	//the intensity of edge pixels are decreased as only a percentage of these pixels should have the assigned 'intensity'
-	//to compensate for this the 'itensity' is equally spread over the whole edge pixel
-	intensities.edgePixelIntensity = intensities.innerPixelIntensity * (blurRadius - floorBlurRadius);
-
-	return intensities;
-}
 
 //the intensity and then an inline vector of rows, a row consists of 
 // 1) the amount of x offsets in the row

@@ -262,7 +262,7 @@ public:
 					const std::size_t currentSampleCount = currentPixel.getSampleCount();
 					float cumulativeTransparency = 1.0f;
 
-					for (std::size_t currentSample = 0; currentSample < currentSampleCount; ++currentSample)
+					for (std::size_t currentSample = currentSampleCount; currentSample-- > 0;)
 					{
 						const float currentBlurRadius = getBlurRadius(currentPixel.getOrderedSample(currentSample, Chan_DeepFront));
 						const int currentBlurRadiusCeil = static_cast<int>(ceilf(currentBlurRadius));
@@ -276,17 +276,23 @@ public:
 							continue;
 						}
 
-						const std::size_t kernelCount = _deepCSpec.kernels[currentBlurRadiusCeil-1].kernel.count({ x - it.x,yOff});
+						std::size_t kernelIndex = static_cast<std::size_t>(currentBlurRadiusCeil - 1);
+						auto kernelOffsetItr = _deepCSpec.kernels[kernelIndex].find({ x - it.x, yOff });
+
 						//if the current sample's pixel is not in the kernel
-						if (kernelCount == 0)
+						if (kernelOffsetItr == _deepCSpec.kernels[kernelIndex].end())
 						{
 							//do not blur it
 							cumulativeTransparency *= (1.0f - alpha);
 							continue;
-						}	
+						}
+
+						const float intensity = kernelOffsetItr->isEdgePixel ? 
+							getEdgeIntensity(currentBlurRadius, _deepCSpec.metadataKernel) :
+							getInnerIntensity(currentBlurRadius, _deepCSpec.metadataKernel);
 
 						//in case the same pixel is in the kernel more than once, the blur factor is multiplied by the kernel count
-						const float blurFactor = cumulativeTransparency * _deepCSpec.kernels[currentBlurRadiusCeil-1].intensity * kernelCount;
+						const float blurFactor = cumulativeTransparency * intensity * _deepCSpec.kernels[kernelIndex].count({ x - it.x, yOff });
 
 						foreach(z, channels)
 						{

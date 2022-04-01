@@ -9,8 +9,10 @@ struct DOFKernelOffset
 {
 	int xOff;
 	int yOff;
+	bool isEdgePixel;
 	
-	DOFKernelOffset(int xOff, int yOff) : xOff(xOff), yOff(yOff){}
+	DOFKernelOffset(int xOff, int yOff) : xOff(xOff), yOff(yOff), isEdgePixel(false) {}
+	DOFKernelOffset(int xOff, int yOff, int isEdgePixel) : xOff(xOff), yOff(yOff), isEdgePixel(isEdgePixel) {}
 
 	bool operator==(const DOFKernelOffset& other) const
 	{
@@ -29,11 +31,7 @@ struct std::hash<DOFKernelOffset>
 	}
 };
 
-struct DOFKernel
-{
-	float intensity;
-	std::unordered_multiset<DOFKernelOffset> kernel;
-};
+using DOFKernel = std::unordered_multiset<DOFKernelOffset>;
 
 struct DeepCDefocusSpec : public DeepCSpec
 {

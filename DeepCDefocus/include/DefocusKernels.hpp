@@ -9,17 +9,9 @@
 
 #include "DeepCDefocusSpec.hpp"
 
-#if 0
-struct DOFIntensities
-{
-    float innerPixelIntensity;
-    float edgePixelIntensity;
-};
+float getEdgeIntensity(const float blurRadius, const CircleMetadataKernel& metadataKernel);
 
-using DOFKernel = std::map<int, <std::multiset<int>>;
-
-DOFIntensities getDOFIntensities(const float blurRadius, const CircleMetadataKernel& metadataKernel);
-#endif 
+float getInnerIntensity(const float blurRadius, const CircleMetadataKernel& metadataKernel);
 
 CircleMetadataKernel getCircleMetadataKernel(int blurRadius);
 
