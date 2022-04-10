@@ -57,4 +57,4 @@ private:
     inline void pushXSample(const DD::Image::DeepPixel& currentPixel, const std::size_t isample, const DD::Image::ChannelSet& channels, const float kernelValue, DD::Image::DeepOutPixel& outPixel, float& cumulativeTransparency) override;
 };
 
-#include "..\src\BlurStrategy.cpp"
+#include "../src/BlurStrategy.cpp"

@@ -25,7 +25,9 @@ public:
             requests.push_back(RequestData(input0, { MAX(0, box.x() - _deepCSpec.blurRadiusFloor),
                                                      box.y(),
                                                      MIN(_deepInfo.format()->width(), box.r() + _deepCSpec.blurRadiusFloor),
-                                                     box.t() }, channels, 2 * _deepCSpec.blurRadiusFloor + 1));
+                                                     box.t() }, 
+                                                     channels, 
+                                                     2 * _deepCSpec.blurRadiusFloor + 1));
         }
     }
     bool doDeepEngine(DD::Image::Box box, const DD::Image::ChannelSet& channels, DD::Image::DeepOutputPlane& outPlane) override
@@ -70,7 +72,7 @@ public:
                 //current pixels in the range [lowerX, 0)
                 for (int x = -1, reflectedX = 1; x >= lowerX; --x, ++reflectedX)
                 {
-                    xBlur(inPlane.getPixel(it.y, reflectedX), channels, it.x - x, outPixel);
+                    this->xBlur(inPlane.getPixel(it.y, reflectedX), channels, it.x - x, outPixel);
                 }
                 lowerX = 0;
             }
@@ -81,7 +83,7 @@ public:
                 //current pixels in the range (maxX, upperX]
                 for (int x = maxX + 1, reflectedX = maxX - 1; x <= upperX; ++x, --reflectedX)
                 {
-                    xBlur(inPlane.getPixel(it.y, reflectedX), channels, x - it.x, outPixel);
+                    this->xBlur(inPlane.getPixel(it.y, reflectedX), channels, x - it.x, outPixel);
                 }
                 upperX = maxX;
             }
@@ -89,7 +91,7 @@ public:
             //current pixels in the range [lowerX, upperX]
             for (int x = lowerX; x <= upperX; ++x)
             {
-                xBlur(inPlane.getPixel(it.y, x), channels, abs(it.x - x), outPixel);
+                this->xBlur(inPlane.getPixel(it.y, x), channels, abs(it.x - x), outPixel);
             }
 
             if (constrainBlur)

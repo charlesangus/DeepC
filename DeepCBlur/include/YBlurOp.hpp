@@ -63,7 +63,7 @@ public:
                     {
                         return true;
                     }
-                    yBlur(inPlane.getPixel(reflectedY, it.x), channels, it.y - y, outPixel);
+                    this->yBlur(inPlane.getPixel(reflectedY, it.x), channels, it.y - y, outPixel);
                 }
                 lowerY = 0;
             }
@@ -81,7 +81,7 @@ public:
                     {
                         return true;
                     }
-                    yBlur(inPlane.getPixel(reflectedY, it.x), channels, y - it.y, outPixel);
+                    this->yBlur(inPlane.getPixel(reflectedY, it.x), channels, y - it.y, outPixel);
                 }
                 upperY = maxY;
             }
@@ -96,7 +96,7 @@ public:
                 {
                     return true;
                 }
-                yBlur(inPlane.getPixel(y, it.x), channels, abs(it.y - y), outPixel);
+                this->yBlur(inPlane.getPixel(y, it.x), channels, abs(it.y - y), outPixel);
             }
 
             if (constrainBlur)

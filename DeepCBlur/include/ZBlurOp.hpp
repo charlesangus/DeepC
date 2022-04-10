@@ -52,7 +52,7 @@ public:
             //printf("random ID[%d] x[%d] y[%d] box(x:%d,r:%d,y:%d,t:%d)\n",id,it.x,it.y,box.x(),box.r(),box.y(),box.t());
             DeepOutPixel outPixel;
 
-            zBlur(inPlane.getPixel(it), channels, 0, outPixel);
+            this->zBlur(inPlane.getPixel(it), channels, 0, outPixel);
 
             outPlane.addPixel(outPixel);
         }
