@@ -7,6 +7,11 @@ DeepCDefocusSpec::DeepCDefocusSpec() : DeepCSpec()
 	blurQuality = DEEPC_FULL_CIRCLE;
 	blurMode = DEEPC_DEFOCUS_MODE_UNKNOWN;
 
+	nearDOF = 0.0f;
+	nearDOFRate = 1.0f;
+	farDOF = 1.0f;
+	farDOFRate = 1.0f;
+
 	distribution_probability = 0.5f;
 }
 

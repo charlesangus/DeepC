@@ -210,16 +210,46 @@ public:
 		}
 	}
 
-	bool doDeepEngine(DD::Image::Box box, const ChannelSet& channels, DeepOutputPlane& outPlane) override
+	inline void pushSample(const DeepPixel& currentPixel, const std::size_t isample, const ChannelSet& channels, const float blurFactor, const float oldAlpha, const float newAlpha, DD::Image::DeepOutPixel& outPixel)
 	{
-		DeepOp* input0 = dynamic_cast<DeepOp*>(input(0));
-		if (!input0)
+		foreach(z, channels)
 		{
-			return true;
+			if ((z == Chan_Red) || (z == Chan_Green) || (z == Chan_Blue))
+			{
+				outPixel.push_back(currentPixel.getOrderedSample(isample, z) * blurFactor);
+			}
+			else if (z == Chan_Alpha)
+			{
+				outPixel.push_back(newAlpha);
+			}
+			else
+			{
+				outPixel.push_back(currentPixel.getOrderedSample(isample, z));
+			}
 		}
+	}
 
-		DeepOutputPlane intermediateOutPlane = DeepOutputPlane(channels, box);
+	inline void pushSample(const DeepPixel& currentPixel, const std::size_t isample, const ChannelSet& channels, const float blurFactor, const float oldAlpha, DD::Image::DeepOutPixel& outPixel)
+	{
+		foreach(z, channels)
+		{
+			if ((z == Chan_Red) || (z == Chan_Green) || (z == Chan_Blue))
+			{
+				outPixel.push_back(currentPixel.getOrderedSample(isample, z) * blurFactor);
+			}
+			else if (z == Chan_Alpha)
+			{
+				outPixel.push_back(oldAlpha * blurFactor);
+			}
+			else
+			{
+				outPixel.push_back(currentPixel.getOrderedSample(isample, z));
+			}
+		}
+	}
 
+	inline bool blurSamples(DD::Image::Box box, const ChannelSet& channels, DeepOp* input0, DeepOutputPlane& outPlane)
+	{
 		const int maxWidth = _deepInfo.format()->width();
 		const int maxX = maxWidth - 1;
 		const int maxHeight = _deepInfo.format()->height();
@@ -231,7 +261,7 @@ public:
 			MIN(_deepInfo.format()->width(), box.r() + _deepCSpec.maxBlurRadiusCeil),
 			box.t()
 		};
-		
+
 		DeepPlane currentBoxPlane;
 		int currentBoxY = -1;
 
@@ -243,7 +273,7 @@ public:
 			int lowerX = MAX(0, it.x - _deepCSpec.maxBlurRadiusCeil);
 			int upperY = MIN(maxY, it.y + _deepCSpec.maxBlurRadiusCeil);
 			int lowerY = MAX(0, it.y - _deepCSpec.maxBlurRadiusCeil);
-			
+
 			for (int y = lowerY; y <= upperY; ++y)
 			{
 				DeepPlane currentPlane;
@@ -268,7 +298,7 @@ public:
 						const int currentBlurRadiusCeil = static_cast<int>(ceilf(currentBlurRadius));
 						const float alpha = currentPixel.getOrderedSample(currentSample, Chan_Alpha);
 
-						//if the current sample is within the DOF, or it isn't but its blur does not reach the target pixel
+						//if the current sample is within the DOF, or it is blurred but does not reach the target pixel
 						if ((currentBlurRadius == INVALID_BLUR_RADIUS) || (yDistance > currentBlurRadiusCeil))
 						{
 							//do not blur it
@@ -287,29 +317,14 @@ public:
 							continue;
 						}
 
-						const float intensity = kernelOffsetItr->isEdgePixel ? 
+						const float intensity = kernelOffsetItr->isEdgePixel ?
 							getEdgeIntensity(currentBlurRadius, _deepCSpec.metadataKernel) :
 							getInnerIntensity(currentBlurRadius, _deepCSpec.metadataKernel);
 
 						//in case the same pixel is in the kernel more than once, the blur factor is multiplied by the kernel count
-						const float blurFactor = cumulativeTransparency * intensity * static_cast<float>(_deepCSpec.kernels[kernelIndex].count({x - it.x, yOff}));
-
-						foreach(z, channels)
-						{
-							if ((z == Chan_Red) || (z == Chan_Green) || (z == Chan_Blue))
-							{
-								outPixel.push_back((currentPixel.getOrderedSample(currentSample, z)) * blurFactor);
-							}
-							else if (z == Chan_Alpha)
-							{
-								outPixel.push_back(alpha * blurFactor);
-								cumulativeTransparency *= (1.0f - alpha);
-							}
-							else
-							{
-								outPixel.push_back(currentPixel.getOrderedSample(currentSample, z));
-							}
-						}
+						//std::size_t count = _deepCSpec.kernels[kernelIndex].count({ x - it.x, yOff });
+						pushSample(currentPixel, currentSample, channels, cumulativeTransparency * intensity, alpha, outPixel);
+						cumulativeTransparency *= (1.0f - alpha);
 					}
 				}
 			}
@@ -340,10 +355,15 @@ public:
 				}
 			}
 
-			intermediateOutPlane.addPixel(outPixel);
+			outPlane.addPixel(outPixel);
 		}
+		return true;
+	}
 
-		outPlane = DeepOutputPlane(channels, box);
+	inline bool adjustSamples(DD::Image::Box box, const ChannelSet& channels, DeepOp* input0, const DeepOutputPlane& inPlane, DeepOutputPlane& outPlane)
+	{
+		DeepPlane currentBoxPlane;
+		int currentBoxY = -1;
 
 		for (Box::iterator it = box.begin(); it != box.end(); it++)
 		{
@@ -351,18 +371,23 @@ public:
 			if (it.y != currentBoxY)
 			{
 				currentBoxPlane = DeepPlane();
-				if (!input0->deepEngine({ box.x(),it.y,box.r(),it.y + 1}, channels, currentBoxPlane))
+				if (!input0->deepEngine({ box.x(),it.y,box.r(),it.y + 1 }, channels, currentBoxPlane))
 				{
 					return true;
 				}
 				currentBoxY = it.y;
 			}
 
-			const DeepPixel inPixel = intermediateOutPlane.getPixel(it);
+			const DeepPixel inPixel = inPlane.getPixel(it);
 			const std::size_t sampleCount = inPixel.getSampleCount();
 			DeepOutPixel outPixel;
 
 			float cumulativeTransparency = 1.0f;
+			float cumulativeNewSamplesTransparency = 1.0f;
+			if (aborted())
+			{
+				return true;
+			}
 			for (std::size_t isample = sampleCount; isample-- > 0; )
 			{
 				const float oldAlpha = inPixel.getOrderedSample(isample, Chan_Alpha);
@@ -370,41 +395,32 @@ public:
 				if (newAlpha > 1.0f)
 				{
 					newAlpha = 1.0f;
-					cumulativeTransparency = 1.0f / oldAlpha;
+					//cumulativeTransparency = 1.0f / oldAlpha;
 				}
 
 				const float deepFront = inPixel.getOrderedSample(isample, Chan_DeepFront);
+				//if sample in DOF
 				if ((deepFront >= _deepCSpec.nearDOF) && (deepFront <= _deepCSpec.farDOF))
 				{
-					foreach(z, channels)
-					{
-						outPixel.push_back(inPixel.getOrderedSample(isample, z));
-					}
+					//the sample should not be blurred, this is the same as saying it should contribute the same intensity to the final pixel
+					//however if new samples have been added in front of it then it's light will be attenuated, so needs to be adjusted to compensate this
+					pushSample(inPixel, isample, channels, 1.0f / cumulativeNewSamplesTransparency, oldAlpha, outPixel);
 					cumulativeTransparency -= inPixel.getOrderedSample(isample, Chan_Alpha);
 					if ((cumulativeTransparency < 0.0f) || (newAlpha == 1.0f))
 					{
 						break;
 					}
 					continue;
+					//cumulativeTransparency = 1.0f / oldAlpha;
 				}
 
-				foreach(z, channels)
-				{
-					if ((z == Chan_Red) || (z == Chan_Green) || (z == Chan_Blue))
-					{
-						outPixel.push_back(inPixel.getOrderedSample(isample, z) / cumulativeTransparency);
-					}
-					else if (z == Chan_Alpha)
-					{
-						outPixel.push_back(newAlpha);
-					}
-					else
-					{
-						outPixel.push_back(inPixel.getOrderedSample(isample, z));
-					}
-				}
+				//the sample should be blurred, and have the same apparent intensity as it's current intensity without occlusion
+				//therefore the sample data should be divided by the transparency to cancel out the flattening process
+				pushSample(inPixel, isample, channels, 1.0f / cumulativeTransparency, oldAlpha, newAlpha, outPixel);
 
-				cumulativeTransparency -= inPixel.getOrderedSample(isample, Chan_Alpha);
+				//for every sample in the deep pixel, light from samples behind it will be occluded more and more
+				cumulativeTransparency -= oldAlpha;
+				cumulativeNewSamplesTransparency -= oldAlpha;
 
 				//NOTE: if these conditions occur then there will be undefined behaviour for the program
 				//1 method of dealing with negative values is to not consider any pixels past this point as they cannot be seen anyway
@@ -417,6 +433,29 @@ public:
 
 			outPlane.addPixel(outPixel);
 		}
+		return true;
+	}
+
+	bool doDeepEngine(DD::Image::Box box, const ChannelSet& channels, DeepOutputPlane& outPlane) override
+	{
+		DeepOp* input0 = dynamic_cast<DeepOp*>(input(0));
+		if (!input0)
+		{
+			return true;
+		}
+
+		DeepOutputPlane intermediateOutPlane = DeepOutputPlane(channels, box);
+		if (!blurSamples(box, channels, input0, intermediateOutPlane))
+		{
+			return true;
+		}
+
+		outPlane = DeepOutputPlane(channels, box);
+		if(!adjustSamples(box, channels, input0, intermediateOutPlane, outPlane))
+		{
+			return true;
+		}
+		
 		return true;
 	}
 
