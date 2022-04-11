@@ -294,15 +294,20 @@ public:
 
 					for (std::size_t currentSample = currentSampleCount; currentSample-- > 0;)
 					{
+						//if the current sample is not visible in the original image, then it should not be blurred
+						if (cumulativeTransparency == 0.0f)
+						{
+							break;
+						}
+
 						const float currentBlurRadius = getBlurRadius(currentPixel.getOrderedSample(currentSample, Chan_DeepFront));
 						const int currentBlurRadiusCeil = static_cast<int>(ceilf(currentBlurRadius));
 						const float alpha = currentPixel.getOrderedSample(currentSample, Chan_Alpha);
-
 						//if the current sample is within the DOF, or it is blurred but does not reach the target pixel
 						if ((currentBlurRadius == INVALID_BLUR_RADIUS) || (yDistance > currentBlurRadiusCeil))
 						{
 							//do not blur it
-							cumulativeTransparency *= (1.0f - alpha);
+							//cumulativeTransparency *= (1.0f - alpha);
 							continue;
 						}
 
@@ -313,7 +318,7 @@ public:
 						if (kernelOffsetItr == _deepCSpec.kernels[kernelIndex].end())
 						{
 							//do not blur it
-							cumulativeTransparency *= (1.0f - alpha);
+							//cumulativeTransparency *= (1.0f - alpha);
 							continue;
 						}
 
@@ -324,7 +329,7 @@ public:
 						//in case the same pixel is in the kernel more than once, the blur factor is multiplied by the kernel count
 						//std::size_t count = _deepCSpec.kernels[kernelIndex].count({ x - it.x, yOff });
 						pushSample(currentPixel, currentSample, channels, cumulativeTransparency * intensity, alpha, outPixel);
-						cumulativeTransparency *= (1.0f - alpha);
+						//cumulativeTransparency *= (1.0f - alpha);
 					}
 				}
 			}
@@ -367,6 +372,11 @@ public:
 
 		for (Box::iterator it = box.begin(); it != box.end(); it++)
 		{
+			if (aborted())
+			{
+				return true;
+			}
+
 			//for every new row of the box get the deep plane of the new row
 			if (it.y != currentBoxY)
 			{
@@ -384,18 +394,25 @@ public:
 
 			float cumulativeTransparency = 1.0f;
 			float cumulativeNewSamplesTransparency = 1.0f;
-			if (aborted())
-			{
-				return true;
-			}
+
 			for (std::size_t isample = sampleCount; isample-- > 0; )
 			{
+				//oldAlpha is used frequently so is being cached essentially
 				const float oldAlpha = inPixel.getOrderedSample(isample, Chan_Alpha);
+
 				float newAlpha = oldAlpha / cumulativeTransparency;
 				if (newAlpha > 1.0f)
 				{
 					newAlpha = 1.0f;
-					//cumulativeTransparency = 1.0f / oldAlpha;
+					//newAlpha used to be > 1.0f but is capped to 1.0f
+					//this means the RGB colours must be changed to ensure the un-premultiplied colour remains the same
+					//newRGB * newAlpha = oldRGb * oldAlpha
+					//newRGB = oldRGb * oldAlpha / newAlpha
+					//as 1.0f / cumulativeTransparency is the blur factor, and the blur factor needs to oldAlpha / newAlpha
+					//cumulativeTransparency needs to be newAlpha / oldAlpha
+					//NOTE: this is not the cumulativeTransparency, we are just reusing the variable to meet the current requirement
+					//      and checks later on we break on newAlpha == 1.0f, so the real cumulativeTransparency will not be used afterwards
+					cumulativeTransparency = 1.0f / oldAlpha;
 				}
 
 				const float deepFront = inPixel.getOrderedSample(isample, Chan_DeepFront);
@@ -403,31 +420,35 @@ public:
 				if ((deepFront >= _deepCSpec.nearDOF) && (deepFront <= _deepCSpec.farDOF))
 				{
 					//the sample should not be blurred, this is the same as saying it should contribute the same intensity to the final pixel
-					//however if new samples have been added in front of it then it's light will be attenuated, so needs to be adjusted to compensate this
+					//however if new samples have been added in front of it then it's light will be occluded, so needs to be adjusted to compensate this
 					pushSample(inPixel, isample, channels, 1.0f / cumulativeNewSamplesTransparency, oldAlpha, outPixel);
-					cumulativeTransparency -= inPixel.getOrderedSample(isample, Chan_Alpha);
+					cumulativeTransparency -= oldAlpha;
+					//this is not a new sample so cumulativeNewSamplesTransparency is not updated
 					if ((cumulativeTransparency < 0.0f) || (newAlpha == 1.0f))
 					{
+						//if any new sample being added cannot be seen then there is no point adding it
 						break;
 					}
-					continue;
-					//cumulativeTransparency = 1.0f / oldAlpha;
 				}
-
-				//the sample should be blurred, and have the same apparent intensity as it's current intensity without occlusion
-				//therefore the sample data should be divided by the transparency to cancel out the flattening process
-				pushSample(inPixel, isample, channels, 1.0f / cumulativeTransparency, oldAlpha, newAlpha, outPixel);
-
-				//for every sample in the deep pixel, light from samples behind it will be occluded more and more
-				cumulativeTransparency -= oldAlpha;
-				cumulativeNewSamplesTransparency -= oldAlpha;
-
-				//NOTE: if these conditions occur then there will be undefined behaviour for the program
-				//1 method of dealing with negative values is to not consider any pixels past this point as they cannot be seen anyway
-				//however have not tested to make sure that final colour value is exactly right when this occurs
-				if ((cumulativeTransparency < 0.0f) || (newAlpha == 1.0f))
+				else
 				{
-					break;
+					//the sample should be blurred, and have the same apparent intensity as it's current intensity without occlusion
+					//therefore the sample data should be divided by the transparency to cancel out the loss of intensity via occlusion
+					pushSample(inPixel, isample, channels, 1.0f / cumulativeTransparency, oldAlpha, newAlpha, outPixel);
+
+					//keep track of the loss in transparency up to the current sample
+					cumulativeTransparency -= oldAlpha;
+					//keep track of the loss in transparency from samples in front of the DOF 
+					cumulativeNewSamplesTransparency -= oldAlpha;
+
+					//NOTE: if these conditions occur then there will be undefined behaviour for the program
+					//      1 method of dealing with negative values is to not consider any pixels past this point as they cannot be seen anyway
+					//      however have not tested to make sure that final colour value is exactly right when this occurs
+					if ((cumulativeTransparency < 0.0f) || (newAlpha == 1.0f))
+					{
+						//if any new sample being added cannot be seen then there is no point adding it
+						break;
+					}
 				}
 			}
 
@@ -444,6 +465,7 @@ public:
 			return true;
 		}
 
+#if 0
 		DeepOutputPlane intermediateOutPlane = DeepOutputPlane(channels, box);
 		if (!blurSamples(box, channels, input0, intermediateOutPlane))
 		{
@@ -455,6 +477,13 @@ public:
 		{
 			return true;
 		}
+#else
+		outPlane = DeepOutputPlane(channels, box);
+		if (!blurSamples(box, channels, input0, outPlane))
+		{
+			return true;
+		}
+#endif
 		
 		return true;
 	}
