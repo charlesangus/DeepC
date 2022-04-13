@@ -27,6 +27,12 @@ static const char* const BLUR_MODE_TEXT = "mode";
 static const char* const MAX_BLUR_SIZE_TEXT = "max blur size";
 static const char* const DISTRIBUTION_PROBABILITY_TEXT = "approximation";
 
+static const char* const RAW_DEFOCUS_MODE_NAME = "raw defocus";
+static const char* const MODIFIED_DEFOCUS_MODE_NAME = "modified defocus";
+static const char* const BLUR_MODE_NAMES[] = { RAW_DEFOCUS_MODE_NAME,
+											   MODIFIED_DEFOCUS_MODE_NAME,
+											   0 };
+
 static const char* const CIRCLE_DOF_BLUR_NAME = "circular bokeh";
 static const char* const BLUR_TYPE_NAMES[] = { CIRCLE_DOF_BLUR_NAME, 0 };
 
@@ -118,6 +124,11 @@ public:
 		Tooltip(f, "The quality of the bokeh kernel\n"
                    "'exact circle' = a circular bokeh kernel"
                    "'approximated circle' = a spiral bokeh kernel that can approximate a circle to varying degrees");
+
+		Enumeration_knob(f, &_deepCSpec.blurMode, BLUR_MODE_NAMES, BLUR_MODE_TEXT, BLUR_MODE_TEXT);
+		Tooltip(f, "The mode that should be used to calculate the RGBA values of the resulting image\n"
+			       "'raw defocus' = all samples are blurred, results in a darkened image when composited\n"
+			       "'modified defocus' = only visible samples are blurred, results in patches of very dark pixels");
 
 		Float_knob(f, &_maxBlurSize, MAX_BLUR_SIZE_TEXT, MAX_BLUR_SIZE_TEXT);
 		Tooltip(f, "The maximum blur size of a DOF kernel");
@@ -465,26 +476,29 @@ public:
 			return true;
 		}
 
-#if 0
-		DeepOutputPlane intermediateOutPlane = DeepOutputPlane(channels, box);
-		if (!blurSamples(box, channels, input0, intermediateOutPlane))
+		if (_deepCSpec.blurMode == DEEPC_MODIFIED_DEFOCUS_MODE)
 		{
-			return true;
-		}
+			DeepOutputPlane intermediateOutPlane = DeepOutputPlane(channels, box);
+			if (!blurSamples(box, channels, input0, intermediateOutPlane))
+			{
+				return true;
+			}
 
-		outPlane = DeepOutputPlane(channels, box);
-		if(!adjustSamples(box, channels, input0, intermediateOutPlane, outPlane))
-		{
-			return true;
+			outPlane = DeepOutputPlane(channels, box);
+			if (!adjustSamples(box, channels, input0, intermediateOutPlane, outPlane))
+			{
+				return true;
+			}
 		}
-#else
-		outPlane = DeepOutputPlane(channels, box);
-		if (!blurSamples(box, channels, input0, outPlane))
+		else
 		{
-			return true;
+			outPlane = DeepOutputPlane(channels, box);
+			if (!blurSamples(box, channels, input0, outPlane))
+			{
+				return true;
+			}
 		}
-#endif
-		
+	
 		return true;
 	}
 

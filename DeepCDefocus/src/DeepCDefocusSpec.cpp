@@ -5,7 +5,7 @@ DeepCDefocusSpec::DeepCDefocusSpec() : DeepCSpec()
 {
 	blurType = DEEPC_CIRCLE;
 	blurQuality = DEEPC_FULL_CIRCLE;
-	blurMode = DEEPC_DEFOCUS_MODE_UNKNOWN;
+	blurMode = DEEPC_RAW_DEFOCUS_MODE;
 
 	nearDOF = 0.0f;
 	nearDOFRate = 1.0f;
