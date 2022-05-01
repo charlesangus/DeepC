@@ -152,11 +152,11 @@ inline void BlurStrategy<constrainBlur, blurFalloff, volumetricBlur>::pushYSampl
     {
         if ((z == Chan_Red) || (z == Chan_Green) || (z == Chan_Blue) || (z == Chan_Alpha))
         {
-            outPixel.push_back(currentPixel.getUnorderedSample(isample, z) * kernelValue);
+            outPixel.push_back(currentPixel.getOrderedSample(isample, z) * kernelValue);
         }
         else
         {
-            outPixel.push_back(currentPixel.getUnorderedSample(isample, z));
+            outPixel.push_back(currentPixel.getOrderedSample(isample, z));
         }
     }
 }
@@ -272,7 +272,7 @@ inline void TransparentModifiedGaussianStrategy<constrainBlur, blurFalloff, volu
     {
         if ((z == Chan_Red) || (z == Chan_Green) || (z == Chan_Blue))
         {
-            outPixel.push_back(currentPixel.getUnorderedSample(isample, z) * blurFactor);
+            outPixel.push_back(currentPixel.getOrderedSample(isample, z) * blurFactor);
         }
         else if (z == Chan_Alpha)
         {
@@ -280,7 +280,7 @@ inline void TransparentModifiedGaussianStrategy<constrainBlur, blurFalloff, volu
         }
         else
         {
-            outPixel.push_back(currentPixel.getUnorderedSample(isample, z));
+            outPixel.push_back(currentPixel.getOrderedSample(isample, z));
         }
     }
 }
