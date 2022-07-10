@@ -18,37 +18,37 @@ public:
     YBlurOp(Node* node, const DeepCBlurSpec& blurSpec) : SeperableBlurOp<BlurModeStrategyT<constrainBlur, blurFalloff, volumetricBlur>>(node, blurSpec) {}
     ~YBlurOp() {};
     const char* Class() const override { return Y_BLUR_OP_CLASS; }
-    Op* op() override { return this; }
+    DD::Image::Op* op() override { return this; }
 
     void getDeepRequests(DD::Image::Box box, const DD::Image::ChannelSet& channels, int count, std::vector<DD::Image::RequestData>& requests) override
     {
-        DeepOp* input0 = dynamic_cast<DeepOp*>(input(0));
+        DD::Image::DeepOp* input0 = dynamic_cast<DD::Image::DeepOp*>(this->input(0));
         if (input0)
         {
-            requests.push_back(RequestData(input0, box, channels, 2 * _deepCSpec.blurRadiusFloor + 1));
+            requests.push_back(DD::Image::RequestData(input0, box, channels, 2 * this->_deepCSpec.blurRadiusFloor + 1));
         }
     }
     bool doDeepEngine(DD::Image::Box box, const DD::Image::ChannelSet& channels, DD::Image::DeepOutputPlane& outPlane) override
     {
-        DeepOp* input0 = dynamic_cast<DeepOp*>(input(0));
+        DD::Image::DeepOp* input0 = dynamic_cast<DD::Image::DeepOp*>(this->input(0));
         if (!input0)
         {
             return false;
         }
 
-        outPlane = DeepOutputPlane(channels, box);
+        outPlane = DD::Image::DeepOutputPlane(channels, box);
 
-        const int maxHeight = _deepInfo.format()->height();
+        const int maxHeight = this->_deepInfo.format()->height();
         const int maxY = maxHeight - 1;
 
-        Box newBox = { box.x(), box.y(), box.r(), box.t() };
+        DD::Image::Box newBox = { box.x(), box.y(), box.r(), box.t() };
 
-        for (Box::iterator it = box.begin(); it != box.end(); it++)
+        for (DD::Image::Box::iterator it = box.begin(); it != box.end(); it++)
         {
-            DeepOutPixel outPixel;
+            DD::Image::DeepOutPixel outPixel;
 
-            int lowerY = it.y - _deepCSpec.blurRadiusFloor;
-            int upperY = it.y + _deepCSpec.blurRadiusFloor;
+            int lowerY = it.y - this->_deepCSpec.blurRadiusFloor;
+            int upperY = it.y + this->_deepCSpec.blurRadiusFloor;
 
             //if reflecting pixels above of the image
             if (lowerY < 0)
@@ -56,7 +56,7 @@ public:
                 //current pixels in the range [lowerY, 0)
                 for (int y = -1, reflectedY = 1; y >= lowerY; --y, ++reflectedY)
                 {
-                    DeepPlane inPlane;
+                    DD::Image::DeepPlane inPlane;
                     newBox.y(reflectedY);
                     newBox.t(reflectedY + 1);
                     if (!input0->deepEngine(newBox, channels, inPlane))
@@ -74,7 +74,7 @@ public:
                 //current pixels in the range (maxY, upperY]
                 for (int y = maxY + 1, reflectedY = maxY - 1; y <= upperY; ++y, --reflectedY)
                 {
-                    DeepPlane inPlane;
+                    DD::Image::DeepPlane inPlane;
                     newBox.y(reflectedY);
                     newBox.t(reflectedY + 1);
                     if (!input0->deepEngine(newBox, channels, inPlane))
@@ -89,7 +89,7 @@ public:
             //current pixels in the range [lowerY, upperY]
             for (int y = lowerY; y <= upperY; ++y)
             {
-                DeepPlane inPlane;
+                DD::Image::DeepPlane inPlane;
                 newBox.y(y);
                 newBox.t(y + 1);
                 if (!input0->deepEngine(newBox, channels, inPlane))
@@ -101,20 +101,20 @@ public:
 
             if (constrainBlur)
             {
-                DeepPlane inPlane;
+                DD::Image::DeepPlane inPlane;
                 newBox.y(it.y);
                 newBox.t(it.y + 1);
                 if (!input0->deepEngine(newBox, channels, inPlane))
                 {
                     return true;
                 }
-                DeepPixel targetPixel = inPlane.getPixel(it.y, it.x);
+                DD::Image::DeepPixel targetPixel = inPlane.getPixel(it.y, it.x);
                 const std::size_t targetSampleCount = targetPixel.getSampleCount();
                 for (std::size_t isample = 0; isample < targetSampleCount; ++isample)
                 {
-                    const float deepFront = targetPixel.getUnorderedSample(isample, Chan_DeepFront);
+                    const float deepFront = targetPixel.getUnorderedSample(isample, DD::Image::Channel::Chan_DeepFront);
                     //if this sample is not being blurred, then it should not be modified
-                    if ((deepFront < _deepCSpec.nearZ) || (deepFront > _deepCSpec.farZ))
+                    if ((deepFront < this->_deepCSpec.nearZ) || (deepFront > this->_deepCSpec.farZ))
                     {
                         foreach(z, channels)
                         {
@@ -130,7 +130,7 @@ public:
         return true;
     }
 
-    static const Op::Description d;
+    static const DD::Image::Op::Description d;
 };
 
 static DD::Image::Op* buildYBlurOp(Node* node)
@@ -138,5 +138,5 @@ static DD::Image::Op* buildYBlurOp(Node* node)
     return nullptr;
 }
 
-template<bool constrainBlur, bool blurFalloff, bool volumetricBlur, template<bool, bool, bool> typename BlurModeStrategyT>
+template<bool constrainBlur, bool blurFalloff, bool volumetricBlur, template<bool, bool, bool> class BlurModeStrategyT>
 const DD::Image::Op::Description YBlurOp<constrainBlur, blurFalloff, volumetricBlur, BlurModeStrategyT>::d(Y_BLUR_OP_CLASS, "Image/YBlurOp", buildYBlurOp);

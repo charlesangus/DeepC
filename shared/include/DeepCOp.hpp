@@ -1,7 +1,7 @@
 #pragma once
 
 #include "DDImage/DeepOp.h"
-#include "DDImage/knobs.h"
+#include "DDImage/Knobs.h"
 
 #include "DeepCDebugging.hpp"
 

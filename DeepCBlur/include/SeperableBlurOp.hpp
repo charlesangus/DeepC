@@ -9,13 +9,13 @@
 #include "DDImage/DeepOp.h"
 #include "DDImage/Pixel.h"
 #include "DDImage/DDMath.h"
-#include "DDImage/knobs.h"
+#include "DDImage/Knobs.h"
 
 #include "DeepCBlurSpec.hpp"
 #include "DeepCDebugging.hpp"
 
 //'BlurModeStrategyT' must be a subclass of 'BlurStrategy'
-template<typename BlurModeStrategyT>
+template<class BlurModeStrategyT>
 class SeperableBlurOp : public DD::Image::DeepOnlyOp, public BlurModeStrategyT
 {
     protected:
@@ -32,20 +32,20 @@ class SeperableBlurOp : public DD::Image::DeepOnlyOp, public BlurModeStrategyT
         {
             switch (idx)
             {
-                case 0: return dynamic_cast<DeepOp*>(op);
+                case 0: return dynamic_cast<DD::Image::DeepOp*>(op);
                 default: return false;
             }
         }
         void _validate(bool for_real) override
         {
-            DeepOp* input0 = dynamic_cast<DeepOp*>(input(0));
+            DD::Image::DeepOp* input0 = dynamic_cast<DD::Image::DeepOp*>(input(0));
             if (!input0) {
-                _deepInfo = DeepInfo();
+                this->_deepInfo = DD::Image::DeepInfo();
                 return;
             }
 
             input0->validate(for_real);
-            _deepInfo = input0->deepInfo();
+            this->_deepInfo = input0->deepInfo();
         }
         const char* node_help() const override
         {

@@ -20,16 +20,19 @@ struct DOFKernelOffset
 	}
 };
 
-//NOTE: this assumes that xOff and yOff are never more than half the size of an int
-//      as yOff if the moved to the upper half of the int to make a unique hash
-template<>
-struct std::hash<DOFKernelOffset>
+namespace std
 {
-	std::size_t operator()(DOFKernelOffset const& kernelOffset) const noexcept
+	//NOTE: this assumes that xOff and yOff are never more than half the size of an int
+	//      as yOff if the moved to the upper half of the int to make a unique hash
+	template<>
+	struct hash<DOFKernelOffset>
 	{
-		return kernelOffset.xOff | (kernelOffset.yOff << ((sizeof(int) / 2) * 8));
-	}
-};
+		std::size_t operator()(DOFKernelOffset const& kernelOffset) const noexcept
+		{
+			return kernelOffset.xOff | (kernelOffset.yOff << ((sizeof(int) / 2) * 8));
+		}
+	};
+}
 
 using DOFKernel = std::unordered_multiset<DOFKernelOffset>;
 

@@ -15,7 +15,7 @@ enum class BlurInstance
     UNKNOWN
 };
 
-template<bool constrainBlur, bool blurFalloff, bool volumetricBlur, template<bool, bool, bool> typename BlurModeStrategyT, typename... Params>
+template<bool constrainBlur, bool blurFalloff, bool volumetricBlur, template<bool, bool, bool> class BlurModeStrategyT, typename... Params>
 DD::Image::Op* OpTreeFactory_BlurInstance(const BlurInstance blurInstance, Params&&... params)
 {
     switch (blurInstance)

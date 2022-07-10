@@ -31,7 +31,7 @@ public:
         {
             return false;
         }
-        DD::Image::DeepOnlyOp* lastOp = dynamic_cast<DeepOnlyOp*>(_opTree.back());
+        DD::Image::DeepOnlyOp* lastOp = dynamic_cast<DD::Image::DeepOnlyOp*>(_opTree.back());
         if (lastOp == nullptr)
         {
             return false;

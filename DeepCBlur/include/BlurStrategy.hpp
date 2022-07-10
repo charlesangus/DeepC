@@ -18,9 +18,9 @@ public:
     inline void yBlur(const DD::Image::DeepPixel& currentPixel, const DD::Image::ChannelSet& channels, const int pixelDistance, DD::Image::DeepOutPixel& outPixel);
     inline void zBlur(const DD::Image::DeepPixel& currentPixel, const DD::Image::ChannelSet& channels, const int pixelDistance, DD::Image::DeepOutPixel& outPixel);
 
-    virtual inline void pushXSample(const DD::Image::DeepPixel& currentPixel, const std::size_t isample, const DD::Image::ChannelSet& channels, const float kernelValue, DD::Image::DeepOutPixel& outPixel, float& cumulativeTransparency) = 0;
-    virtual inline void pushYSample(const DD::Image::DeepPixel& currentPixel, const std::size_t isample, const DD::Image::ChannelSet& channels, const float kernelValue, DD::Image::DeepOutPixel& outPixel);
-    virtual inline void pushZSamples(const DD::Image::DeepPixel& currentPixel, const std::size_t isample, const DD::Image::ChannelSet& channels, const std::vector<float>& volumetricOffsets, DD::Image::DeepOutPixel& outPixel);
+    virtual void pushXSample(const DD::Image::DeepPixel& currentPixel, const std::size_t isample, const DD::Image::ChannelSet& channels, const float kernelValue, DD::Image::DeepOutPixel& outPixel, float& cumulativeTransparency) = 0;
+    virtual void pushYSample(const DD::Image::DeepPixel& currentPixel, const std::size_t isample, const DD::Image::ChannelSet& channels, const float kernelValue, DD::Image::DeepOutPixel& outPixel);
+    virtual void pushZSamples(const DD::Image::DeepPixel& currentPixel, const std::size_t isample, const DD::Image::ChannelSet& channels, const std::vector<float>& volumetricOffsets, DD::Image::DeepOutPixel& outPixel);
 };
 
 template<bool constrainBlur, bool blurFalloff, bool volumetricBlur>
@@ -30,7 +30,7 @@ public:
     RawGaussianStrategy(const DeepCBlurSpec& blurSpec);
     ~RawGaussianStrategy();
 
-    inline void pushXSample(const DD::Image::DeepPixel& currentPixel, const std::size_t isample, const DD::Image::ChannelSet& channels, const float kernelValue, DD::Image::DeepOutPixel& outPixel, float& cumulativeTransparency) override;
+    void pushXSample(const DD::Image::DeepPixel& currentPixel, const std::size_t isample, const DD::Image::ChannelSet& channels, const float kernelValue, DD::Image::DeepOutPixel& outPixel, float& cumulativeTransparency) override;
 };
 
 template<bool constrainBlur, bool blurFalloff, bool volumetricBlur>
@@ -41,9 +41,9 @@ public:
     ~TransparentModifiedGaussianStrategy();
 
 private:
-    inline void pushXSample(const DD::Image::DeepPixel& currentPixel, const std::size_t isample, const DD::Image::ChannelSet& channels, const float kernelValue, DD::Image::DeepOutPixel& outPixel, float& cumulativeTransparency) override;
-    inline void pushYSample(const DD::Image::DeepPixel& currentPixel, const std::size_t isample, const DD::Image::ChannelSet& channels, const float kernelValue, DD::Image::DeepOutPixel& outPixel) override;
-    inline void pushZSamples(const DD::Image::DeepPixel& currentPixel, const std::size_t isample, const DD::Image::ChannelSet& channels, const std::vector<float>& volumetricOffsets, DD::Image::DeepOutPixel& outPixel) override;
+    void pushXSample(const DD::Image::DeepPixel& currentPixel, const std::size_t isample, const DD::Image::ChannelSet& channels, const float kernelValue, DD::Image::DeepOutPixel& outPixel, float& cumulativeTransparency) override;
+    void pushYSample(const DD::Image::DeepPixel& currentPixel, const std::size_t isample, const DD::Image::ChannelSet& channels, const float kernelValue, DD::Image::DeepOutPixel& outPixel) override;
+    void pushZSamples(const DD::Image::DeepPixel& currentPixel, const std::size_t isample, const DD::Image::ChannelSet& channels, const std::vector<float>& volumetricOffsets, DD::Image::DeepOutPixel& outPixel) override;
 };
 
 template<bool constrainBlur, bool blurFalloff, bool volumetricBlur>
@@ -54,7 +54,7 @@ public:
     ~ModifiedGaussianStrategy();
 
 private:
-    inline void pushXSample(const DD::Image::DeepPixel& currentPixel, const std::size_t isample, const DD::Image::ChannelSet& channels, const float kernelValue, DD::Image::DeepOutPixel& outPixel, float& cumulativeTransparency) override;
+    void pushXSample(const DD::Image::DeepPixel& currentPixel, const std::size_t isample, const DD::Image::ChannelSet& channels, const float kernelValue, DD::Image::DeepOutPixel& outPixel, float& cumulativeTransparency) override;
 };
 
 #include "../src/BlurStrategy.cpp"

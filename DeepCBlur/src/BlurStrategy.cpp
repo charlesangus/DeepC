@@ -288,13 +288,13 @@ inline void TransparentModifiedGaussianStrategy<constrainBlur, blurFalloff, volu
 template<bool constrainBlur, bool blurFalloff, bool volumetricBlur>
 inline void TransparentModifiedGaussianStrategy<constrainBlur, blurFalloff, volumetricBlur>::pushZSamples(const DD::Image::DeepPixel& currentPixel, const std::size_t isample, const DD::Image::ChannelSet& channels, const std::vector<float>& volumetricOffsets, DD::Image::DeepOutPixel& outPixel)
 {
-    for (int ivolumetric = -_deepCSpec.zKernelRadius, volumetricOffsetIndex = 0; ivolumetric <= _deepCSpec.zKernelRadius; ++ivolumetric, volumetricOffsetIndex += 2)
+    for (int ivolumetric = -this->_deepCSpec.zKernelRadius, volumetricOffsetIndex = 0; ivolumetric <= this->_deepCSpec.zKernelRadius; ++ivolumetric, volumetricOffsetIndex += 2)
     {
         foreach(z, channels)
         {
             if ((z == Chan_Red) || (z == Chan_Green) || (z == Chan_Blue))
             {
-                outPixel.push_back(currentPixel.getUnorderedSample(isample, z) * _deepCSpec.zKernel[abs(ivolumetric)]);
+                outPixel.push_back(currentPixel.getUnorderedSample(isample, z) * this->_deepCSpec.zKernel[abs(ivolumetric)]);
             }
             else if (z == Chan_Alpha)
             {
