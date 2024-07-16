@@ -114,10 +114,10 @@ Then, from the DeepC dir:
 ```bash
 mkdir build; cd build
 cmake -D CMAKE_INSTALL_PREFIX="`pwd`/../install" ..
-make -j X install
+make -j $(nproc --all) install
 ```
 
-Where ```X``` is the number of cores you have available, so make can run parallelized. And, of course, update CMAKE_INSTALL_PREFIX to your preferred install location.
+And, of course, update CMAKE_INSTALL_PREFIX to your preferred install location.
 
 
 Note: additionally you can adjust the Nuke Version via -D Nuke_ROOT="<PATH_TO_NUKE_ROOT_FOLDER>"
@@ -127,6 +127,23 @@ e.g.
 ```
 cmake -D CMAKE_INSTALL_PREFIX="`pwd`/../install" -D Nuke_ROOT="/usr/local/Nuke13.1v1"
 ```
+
+### Linux (Docker)
+
+#### Nuke 14
+
+```bash
+docker run -v /usr/local/Nuke14.1v1:/usr/local/Nuke14.1v1 -v $PWD:/opt/aswf -it --rm aswf/ci-base:2022.4 /bin/bash
+```
+
+#### Nuke 13
+
+```bash
+docker run -v /usr/local/Nuke13.2v9:/usr/local/Nuke13.2v9 -v $PWD:/opt/aswf -it --rm aswf/ci-base:2020.9 /bin/bash
+```
+
+
+Then follow [Linux](#linux) instructions to build and install.
 
 ### Windows
 
