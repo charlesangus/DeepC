@@ -130,16 +130,22 @@ cmake -D CMAKE_INSTALL_PREFIX="`pwd`/../install" -D Nuke_ROOT="/usr/local/Nuke13
 
 ### Linux (Docker)
 
+#### Nuke 15
+
+```bash
+docker run -v /usr/local/Nuke15.1v1:/usr/local/Nuke15.1v1:ro -v $PWD:/opt/aswf -it --rm aswf/ci-base:2024.1 /bin/bash
+```
+
 #### Nuke 14
 
 ```bash
-docker run -v /usr/local/Nuke14.1v1:/usr/local/Nuke14.1v1 -v $PWD:/opt/aswf -it --rm aswf/ci-base:2022.4 /bin/bash
+docker run -v /usr/local/Nuke14.1v1:/usr/local/Nuke14.1v1:ro -v $PWD:/opt/aswf -it --rm aswf/ci-base:2022.4 /bin/bash
 ```
 
 #### Nuke 13
 
 ```bash
-docker run -v /usr/local/Nuke13.2v9:/usr/local/Nuke13.2v9 -v $PWD:/opt/aswf -it --rm aswf/ci-base:2020.9 /bin/bash
+docker run -v /usr/local/Nuke13.2v9:/usr/local/Nuke13.2v9:ro -v $PWD:/opt/aswf -it --rm aswf/ci-base:2020.9 /bin/bash
 ```
 
 
