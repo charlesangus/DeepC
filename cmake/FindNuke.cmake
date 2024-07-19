@@ -22,7 +22,7 @@
 #  NUKE_VERSION_RELEASE
 #
 
-set(_nuke_KNOWN_VERSIONS 9.0 10.0 10.5 11.0 11.1 11.2 11.3 12.0 12.1 12.2 13.0 13.1 13.2 14.0 14.1)
+set(_nuke_KNOWN_VERSIONS 9.0 10.0 10.5 11.0 11.1 11.2 11.3 12.0 12.1 12.2 13.0 13.1 13.2 14.0 14.1 15.0 15.1)
 set(_nuke_TEST_VERSIONS) # List of Nuke-style strings (e.g. "7.0v4")
 
 
@@ -61,12 +61,12 @@ else()
                 foreach(_known_version ${_nuke_KNOWN_VERSIONS})
                     # To avoid the need to keep this module up to date with the full Nuke
                     # release list, we just build a list of possible releases for the
-                    # MAJOR.MINOR pair (currently using possible release versions v1-v14)
+                    # MAJOR.MINOR pair (currently using possible release versions v1-v15)
                     # We don't try and auto-locate beta versions.
                     string(REGEX MATCH ${_nuke_VERSION_PATTERN} _nuke_VERSION_PREFIX ${_known_version})
                     if(_nuke_VERSION_PREFIX)
                         if(NOT ${_known_version} VERSION_LESS ${_nuke_FIND_MAJORMINOR})
-                            foreach(_release_num RANGE 14 1 -1)
+                            foreach(_release_num RANGE 15 1 -1)
                                 list(APPEND _nuke_TEST_VERSIONS "${_known_version}v${_release_num}")
                             endforeach()
                         endif()
@@ -87,7 +87,7 @@ else()
         # we can find, so flip the known versions list.
         list(REVERSE _nuke_KNOWN_VERSIONS)
         foreach(_known_version ${_nuke_KNOWN_VERSIONS})
-            foreach(_release_num RANGE 14 1 -1)
+            foreach(_release_num RANGE 15 1 -1)
                 list(APPEND _nuke_TEST_VERSIONS "${_known_version}v${_release_num}")
             endforeach()
         endforeach()
