@@ -103,7 +103,9 @@ void DeepCHueShift::wrappedPerSample(
         }
         if (available.contains(z))
         {
-            sampleColor[cIndex] = deepInPixel.getUnorderedSample(sampleNo, z) / alpha;
+            if (alpha != 0.0f)
+                sampleColor[cIndex] = deepInPixel.getUnorderedSample(sampleNo, z) / alpha;
+            // else: sampleColor[cIndex] stays 0.0f (initialized by wrapper)
         }
      }
 

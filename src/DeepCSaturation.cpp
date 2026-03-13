@@ -109,7 +109,9 @@ void DeepCSaturation::wrappedPerSample(
         }
         if (available.contains(z))
         {
-            rgb[colourIndex(z)] = deepInPixel.getUnorderedSample(sampleNo, z) / alpha;
+            if (alpha != 0.0f)
+                rgb[colourIndex(z)] = deepInPixel.getUnorderedSample(sampleNo, z) / alpha;
+            // else: rgb[colourIndex(z)] stays 0.0f (initialized above)
         }
     }
 
