@@ -159,7 +159,7 @@ bool DeepCConstant::doDeepEngine(DD::Image::Box box, const DD::Image::ChannelSet
         for (int sampleNo = 0; sampleNo < saveSample; sampleNo++) {
 
             float depth = _sampleDistance * sampleNo;
-            float weight = (1.0f, 0.0f, depth / _overallDepth);
+            float weight = depth / _overallDepth;
 
             foreach(z, channels)
             {
