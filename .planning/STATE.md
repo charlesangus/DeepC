@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: planning
-stopped_at: Completed 01-codebase-sweep/01-02-PLAN.md
-last_updated: "2026-03-13T06:44:22.391Z"
+stopped_at: Completed 01-codebase-sweep/01-03-PLAN.md
+last_updated: "2026-03-13T06:46:50.758Z"
 last_activity: 2026-03-12 — Roadmap created; ready to plan Phase 1
 progress:
   total_phases: 5
   completed_phases: 0
   total_plans: 5
-  completed_plans: 2
+  completed_plans: 3
   percent: 0
 ---
 
@@ -52,6 +52,7 @@ Progress: [░░░░░░░░░░] 0%
 *Updated after each plan completion*
 | Phase 01-codebase-sweep P01 | 1 | 3 tasks | 4 files |
 | Phase 01-codebase-sweep P02 | 2 | 2 tasks | 2 files |
+| Phase 01-codebase-sweep P03 | 8 | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -67,6 +68,8 @@ Recent decisions affecting current work:
 - [Phase 01-codebase-sweep]: Zero-alpha guard pattern established: if (alpha != 0.0f) wrapping unpremult division with implicit else via zero-initialized storage
 - [Phase 01-codebase-sweep]: DeepCConstant weight fix: comma expression removed, behavior unchanged (was already yielding depth/_overallDepth)
 - [Phase 01-codebase-sweep]: DeepCID loop body fix: _auxChannel replaced with z inside foreach loop; no-op for single-member set but correct for multi-member sets
+- [Phase 01-codebase-sweep]: DeepCWrapper and DeepCMWrapper base class plugin registrations removed — only concrete plugin subclasses register themselves in Nuke node menu
+- [Phase 01-codebase-sweep]: Class() returning d.name removed from both base headers alongside their Op::Description definitions — inseparable pair to avoid dangling references
 
 ### Pending Todos
 
@@ -78,6 +81,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-13T06:44:22.388Z
-Stopped at: Completed 01-codebase-sweep/01-02-PLAN.md
+Last session: 2026-03-13T06:46:50.755Z
+Stopped at: Completed 01-codebase-sweep/01-03-PLAN.md
 Resume file: None

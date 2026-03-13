@@ -12,7 +12,7 @@
 - [x] **SWEEP-03**: DeepCSaturation and DeepCHueShift guard against divide-by-zero when alpha == 0 during unpremult
 - [x] **SWEEP-04**: DeepCConstant weight calculation uses correct lerp expression, not C++ comma operator
 - [x] **SWEEP-05**: DeepCID foreach loop over `_auxiliaryChannelSet` uses the loop variable `z`, not the cached `_auxChannel`
-- [ ] **SWEEP-06**: `Op::Description` and `build()` factory removed from DeepCWrapper and DeepCMWrapper so they do not appear in the Nuke node menu
+- [x] **SWEEP-06**: `Op::Description` and `build()` factory removed from DeepCWrapper and DeepCMWrapper so they do not appear in the Nuke node menu
 - [ ] **SWEEP-07**: `perSampleData` interface redesigned to pass a pointer + length instead of a single `float`, updating all subclasses
 - [ ] **SWEEP-08**: Grade coefficient arrays (`A[]`, `B[]`, `G[]`) and precompute logic extracted into a shared utility and reused by both DeepCGrade and DeepCPNoise
 - [ ] **SWEEP-09**: DeepCBlink either completed (functional GPU path, all channel counts handled, no silent bail-out) or removed from the build and toolbar
@@ -88,7 +88,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SWEEP-03 | Phase 1 | Complete |
 | SWEEP-04 | Phase 1 | Complete |
 | SWEEP-05 | Phase 1 | Complete |
-| SWEEP-06 | Phase 1 | Pending |
+| SWEEP-06 | Phase 1 | Complete |
 | SWEEP-07 | Phase 1 | Pending |
 | SWEEP-08 | Phase 1 | Pending |
 | SWEEP-09 | Phase 1 | Pending |
