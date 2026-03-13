@@ -38,6 +38,7 @@ class DeepCWorld : public DeepPixelOp
     Vector2 win_scale;
     Vector2 win_translate;
     Matrix4 window_matrix;
+    Matrix4 _inverse_window_matrix;
 
 public:
     DeepCWorld(Node* node) : DeepPixelOp(node),
@@ -114,6 +115,8 @@ public:
                 return DeepPixelOp::default_input(input);
             case 1:
                 return CameraOp::default_camera();
+            default:
+                return nullptr;
         }
     }
 
@@ -122,6 +125,7 @@ public:
         switch (input) {
         case 0: return "deep_data";
         case 1: return "cam";
+        default: return "";
         }
     }
 
@@ -157,6 +161,7 @@ void DeepCWorld::_validate(bool for_real)
         window_matrix.rotateZ(radians(win_roll));
         window_matrix.scale(1.0f / win_scale[0], 1.0f / win_scale[1.0f], 1.0f);
         window_matrix.translate(-win_translate[0], -win_translate[1], 0.0f);
+        _inverse_window_matrix = window_matrix.inverse();
 
     }
 
@@ -189,7 +194,6 @@ void DeepCWorld::processSample(
     float depth;
     Vector4 camera_space_position;
     Vector4 world_position;
-    Matrix4 inverse_window;
 
     // get pixel location normalized to 0-1 range, store in uvx and uvy
     convertibleFormat()->to_uv((float)x, (float)y, uvx, uvy);
@@ -218,7 +222,7 @@ void DeepCWorld::processSample(
     camera_space_position[3] = 1.0f;
 
     // takes into account window scale, window roll, window translate
-    inverse_window = window_matrix.inverse();
+    const Matrix4& inverse_window = _inverse_window_matrix;
     world_position = camera_world_matrix * inverse_window * camera_space_position;
     if (_premultOutput)
     {
