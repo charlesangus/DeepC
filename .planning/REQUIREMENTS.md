@@ -15,7 +15,7 @@
 - [x] **SWEEP-06**: `Op::Description` and `build()` factory removed from DeepCWrapper and DeepCMWrapper so they do not appear in the Nuke node menu
 - [ ] **SWEEP-07**: `perSampleData` interface redesigned to pass a pointer + length instead of a single `float`, updating all subclasses
 - [ ] **SWEEP-08**: Grade coefficient arrays (`A[]`, `B[]`, `G[]`) and precompute logic extracted into a shared utility and reused by both DeepCGrade and DeepCPNoise
-- [ ] **SWEEP-09**: DeepCBlink either completed (functional GPU path, all channel counts handled, no silent bail-out) or removed from the build and toolbar
+- [x] **SWEEP-09**: DeepCBlink either completed (functional GPU path, all channel counts handled, no silent bail-out) or removed from the build and toolbar
 - [x] **SWEEP-10**: All deprecated NDK APIs used in the codebase updated to their Nuke 16+ equivalents
 
 ### DeepShuffle UI
@@ -91,7 +91,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SWEEP-06 | Phase 1 | Complete |
 | SWEEP-07 | Phase 1 | Pending |
 | SWEEP-08 | Phase 1 | Pending |
-| SWEEP-09 | Phase 1 | Pending |
+| SWEEP-09 | Phase 1 | Complete |
 | SWEEP-10 | Phase 1 | Complete |
 | GLPM-01 | Phase 2 | Pending |
 | GLPM-02 | Phase 2 | Pending |
