@@ -2,7 +2,7 @@
 
 ## Overview
 
-The DeepC milestone adds interactive GL handles to DeepCPMatte, expands the DeepShuffle channel routing UI, exposes 4D noise in DeepCPNoise, vendors the DeepThinner optimizer plugin, and resolves all known codebase bugs and NDK API debt. Work begins with a mandatory codebase sweep that fixes confirmed bugs and redesigns the `perSampleData` virtual interface before any other files are touched. The remaining four feature tracks are architecturally independent of each other and execute in sequence after the sweep.
+The DeepC milestone adds interactive GL handles to DeepCPMatte, expands the DeepShuffle channel routing UI, exposes 4D noise in DeepCPNoise, vendors the DeepThinner optimizer plugin, and resolves all known codebase bugs and NDK API debt. Work begins with a mandatory codebase sweep that fixes confirmed bugs and resolves the DeepCBlink fate before any other files are touched. The remaining four feature tracks are architecturally independent of each other and execute in sequence after the sweep.
 
 ## Phases
 
@@ -12,7 +12,7 @@ The DeepC milestone adds interactive GL handles to DeepCPMatte, expands the Deep
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Codebase Sweep** - Fix all confirmed bugs, redesign perSampleData interface, modernize NDK APIs, resolve DeepCBlink fate
+- [ ] **Phase 1: Codebase Sweep** - Fix all confirmed bugs, modernize NDK APIs, resolve DeepCBlink fate
 - [ ] **Phase 2: DeepCPMatte GL Handles** - Interactive wireframe viewport overlay and drag-to-reposition handle for the selection volume
 - [ ] **Phase 3: DeepShuffle UI** - Expand channel routing from 4 to 8 channels with labeled ports and layer-level routing
 - [ ] **Phase 4: DeepCPNoise 4D** - Expose 4D noise option in the UI wired to existing FastNoise 4D methods
@@ -21,7 +21,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 ## Phase Details
 
 ### Phase 1: Codebase Sweep
-**Goal**: The codebase is free of all confirmed bugs, the `perSampleData` interface accepts pointer + length instead of a single float, all deprecated Nuke 16+ NDK APIs are updated, and the DeepCBlink decision is made and executed.
+**Goal**: The codebase is free of all confirmed bugs, DeepCWrapper/DeepCMWrapper are removed from the Nuke node menu, all deprecated Nuke 16+ NDK APIs are confirmed non-present and the one concrete modernization (DeepCWorld inverse matrix cache) is applied, and DeepCBlink is removed from the build. (Note: SWEEP-07 perSampleData redesign and SWEEP-08 grade coefficient extraction were dropped after analysis — see CONTEXT.md.)
 **Depends on**: Nothing (first phase)
 **Requirements**: SWEEP-01, SWEEP-02, SWEEP-03, SWEEP-04, SWEEP-05, SWEEP-06, SWEEP-07, SWEEP-08, SWEEP-09, SWEEP-10
 **Success Criteria** (what must be TRUE):
@@ -29,8 +29,15 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. DeepCKeymix correctly uses `aPixel.channels()` for the A-side containment check, not `bPixel.channels()`
   3. DeepCSaturation and DeepCHueShift produce zero output (not NaN) for fully transparent samples during unpremult
   4. Loading any DeepC plugin in Nuke does not expose DeepCWrapper or DeepCMWrapper as selectable nodes in the node menu
-  5. All existing DeepCWrapper subclasses compile and function correctly with the pointer+length `perSampleData` signature
-**Plans**: TBD
+  5. DeepCBlink is absent from the compiled build and toolbar menu
+**Plans**: 5 plans
+
+Plans:
+- [ ] 01-01-PLAN.md — Fix DeepCGrade gamma, DeepCKeymix channel set, DeepCSaturation/HueShift zero-alpha guard
+- [ ] 01-02-PLAN.md — Fix DeepCConstant comma expression, DeepCID loop variable
+- [ ] 01-03-PLAN.md — Remove DeepCWrapper/DeepCMWrapper node registrations and Class(); clean dead code
+- [ ] 01-04-PLAN.md — Delete DeepCBlink source and CMake references (with build verification checkpoint)
+- [ ] 01-05-PLAN.md — Cache DeepCWorld inverse matrix; fix switch UB; correct batchInstall.sh comment
 
 ### Phase 2: DeepCPMatte GL Handles
 **Goal**: DeepCPMatte displays a wireframe sphere or cube in the Nuke 3D viewport representing the current selection volume, the handle is draggable to reposition the volume, and the GL thread no longer calls `_validate()`.
@@ -78,7 +85,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Codebase Sweep | 0/TBD | Not started | - |
+| 1. Codebase Sweep | 0/5 | Not started | - |
 | 2. DeepCPMatte GL Handles | 0/TBD | Not started | - |
 | 3. DeepShuffle UI | 0/TBD | Not started | - |
 | 4. DeepCPNoise 4D | 0/TBD | Not started | - |
