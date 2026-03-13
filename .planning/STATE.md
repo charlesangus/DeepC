@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: planning
-stopped_at: "Checkpoint: 01-codebase-sweep/01-04-PLAN.md — awaiting human verification of DeepCBlink removal"
-last_updated: "2026-03-13T06:53:47.986Z"
+stopped_at: Completed 01-codebase-sweep/01-04-PLAN.md
+last_updated: "2026-03-13T11:59:26.075Z"
 last_activity: 2026-03-12 — Roadmap created; ready to plan Phase 1
 progress:
   total_phases: 5
@@ -55,6 +55,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 01-codebase-sweep P03 | 8 | 2 tasks | 4 files |
 | Phase 01-codebase-sweep P05 | 5 | 2 tasks | 2 files |
 | Phase 01-codebase-sweep P04 | 2 | 1 tasks | 2 files |
+| Phase 01-codebase-sweep P04 | 15 | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -76,6 +77,8 @@ Recent decisions affecting current work:
 - [Phase 01-codebase-sweep]: SWEEP-10 NDK API audit: DeepPixelOp and DeepFilterOp are not deprecated in Nuke 16; OutputContext two-arg constructor is deprecated but not used — no API migration required
 - [Phase 01-codebase-sweep]: DeepCBlink removed entirely: broken GPU knob (hardcoded CPU), >4 channel bail-out, calloc leaks — removal cleaner than retention
 - [Phase 01-codebase-sweep]: NUKE_RIPFRAMEWORK_LIBRARY in cmake/FindNuke.cmake retained — shared Nuke package detection infrastructure, not DeepCBlink-specific
+- [Phase 01-codebase-sweep]: DeepCBlink removed entirely: broken GPU knob (hardcoded CPU), >4 channel bail-out, calloc leaks — removal cleaner than retention
+- [Phase 01-codebase-sweep]: NUKE_RIPFRAMEWORK_LIBRARY in cmake/FindNuke.cmake retained — shared Nuke package detection infrastructure, not DeepCBlink-specific
 
 ### Pending Todos
 
@@ -87,6 +90,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-13T06:53:47.983Z
-Stopped at: Checkpoint: 01-codebase-sweep/01-04-PLAN.md — awaiting human verification of DeepCBlink removal
+Last session: 2026-03-13T11:59:26.072Z
+Stopped at: Completed 01-codebase-sweep/01-04-PLAN.md
 Resume file: None

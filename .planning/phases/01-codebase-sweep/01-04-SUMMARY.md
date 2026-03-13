@@ -41,10 +41,10 @@ completed: 2026-03-13
 
 ## Performance
 
-- **Duration:** 2 min
+- **Duration:** ~15 min code work + async build checkpoint
 - **Started:** 2026-03-13T06:51:00Z
-- **Completed:** 2026-03-13T06:52:32Z
-- **Tasks:** 1 of 2 (checkpoint pending human verification)
+- **Completed:** 2026-03-13T11:57:53Z
+- **Tasks:** 2 of 2 (build checkpoint verified and approved)
 - **Files modified:** 2 (src/DeepCBlink.cpp deleted, src/CMakeLists.txt edited)
 
 ## Accomplishments
@@ -54,14 +54,16 @@ completed: 2026-03-13
 - Removed standalone `target_link_libraries(DeepCBlink PRIVATE ${NUKE_RIPFRAMEWORK_LIBRARY})` line
 - Confirmed `python/menu.py.in` already had no DeepCBlink reference — no edit required
 - Confirmed `cmake/FindNuke.cmake` NUKE_RIPFRAMEWORK_LIBRARY is shared Nuke infrastructure — retained
+- Human build verification: CMake build against Nuke 16.0v6 completed with exit code 0, no errors, DeepCBlink absent from toolbar
 
 ## Task Commits
 
 Each task was committed atomically:
 
 1. **Task 1: Delete DeepCBlink.cpp and remove CMake references (SWEEP-09)** - `85cd040` (feat)
+2. **Task 2: Checkpoint — build verified against Nuke 16.0v6** - (human checkpoint, no code commit)
 
-**Plan metadata:** pending (docs commit after checkpoint approval)
+**Plan metadata:** pending (docs commit in progress)
 
 ## Files Created/Modified
 
@@ -87,9 +89,16 @@ None — no external service configuration required.
 
 ## Next Phase Readiness
 
-- DeepCBlink removal complete pending build verification at checkpoint
-- All other DeepC nodes remain in CMakeLists.txt unchanged
-- Build should succeed cleanly once CMake reconfigures without the DeepCBlink target
+- DeepCBlink removal complete and build-verified against Nuke 16.0v6
+- All other DeepC nodes remain in CMakeLists.txt unchanged and build cleanly
+- `src/DeepCBlink.cpp` no longer exists; no references remain in `src/` or `python/`
+- Phase 1 complete; ready to proceed to Phase 2
+
+## Self-Check: PASSED
+
+- FOUND: `/workspace/.planning/phases/01-codebase-sweep/01-04-SUMMARY.md`
+- FOUND: commit `85cd040` (Task 1 feat commit)
+- CONFIRMED: `/workspace/src/DeepCBlink.cpp` does not exist
 
 ---
 *Phase: 01-codebase-sweep*
