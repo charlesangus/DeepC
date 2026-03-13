@@ -107,6 +107,7 @@ void DeepCGrade::wrappedPerChannel(
     if (_reverse)
     {
         // opposite gamma, precomputed
+        outData = inputVal;
         if (G[cIndex] != 1.0f)
             outData = pow(inputVal, G[cIndex]);
         // then inverse linear ramp we have already precomputed
