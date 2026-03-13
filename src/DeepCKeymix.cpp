@@ -262,7 +262,7 @@ public:
                 outPlane.setSampleCount(it, inPixelSamples);
 
                 DeepOutputPixel outPixel = outPlane.getPixel(it);
-                ChannelSet aInPixelChannels = bPixel.channels();
+                ChannelSet aInPixelChannels = aPixel.channels();
                 ChannelSet bInPixelChannels = bPixel.channels();
 
                 float mixing = maskVal * mix;
