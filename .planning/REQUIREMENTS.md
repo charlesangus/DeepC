@@ -7,9 +7,9 @@
 
 ### Codebase Sweep
 
-- [ ] **SWEEP-01**: DeepCGrade reverse-mode gamma is applied to result of linear ramp, not discarded (fix `outData = A * inputVal + B` → `outData = A * outData + B` on reverse path)
-- [ ] **SWEEP-02**: DeepCKeymix A-side containment check queries `aPixel.channels()`, not `bPixel.channels()`
-- [ ] **SWEEP-03**: DeepCSaturation and DeepCHueShift guard against divide-by-zero when alpha == 0 during unpremult
+- [x] **SWEEP-01**: DeepCGrade reverse-mode gamma is applied to result of linear ramp, not discarded (fix `outData = A * inputVal + B` → `outData = A * outData + B` on reverse path)
+- [x] **SWEEP-02**: DeepCKeymix A-side containment check queries `aPixel.channels()`, not `bPixel.channels()`
+- [x] **SWEEP-03**: DeepCSaturation and DeepCHueShift guard against divide-by-zero when alpha == 0 during unpremult
 - [ ] **SWEEP-04**: DeepCConstant weight calculation uses correct lerp expression, not C++ comma operator
 - [ ] **SWEEP-05**: DeepCID foreach loop over `_auxiliaryChannelSet` uses the loop variable `z`, not the cached `_auxChannel`
 - [ ] **SWEEP-06**: `Op::Description` and `build()` factory removed from DeepCWrapper and DeepCMWrapper so they do not appear in the Nuke node menu
@@ -83,9 +83,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SWEEP-01 | Phase 1 | Pending |
-| SWEEP-02 | Phase 1 | Pending |
-| SWEEP-03 | Phase 1 | Pending |
+| SWEEP-01 | Phase 1 | Complete |
+| SWEEP-02 | Phase 1 | Complete |
+| SWEEP-03 | Phase 1 | Complete |
 | SWEEP-04 | Phase 1 | Pending |
 | SWEEP-05 | Phase 1 | Pending |
 | SWEEP-06 | Phase 1 | Pending |

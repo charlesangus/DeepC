@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: planning
-stopped_at: Phase 1 context gathered
-last_updated: "2026-03-13T06:13:34.805Z"
+stopped_at: Completed 01-codebase-sweep/01-01-PLAN.md
+last_updated: "2026-03-13T06:42:05.496Z"
 last_activity: 2026-03-12 — Roadmap created; ready to plan Phase 1
 progress:
   total_phases: 5
   completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
+  total_plans: 5
+  completed_plans: 1
   percent: 0
 ---
 
@@ -50,6 +50,7 @@ Progress: [░░░░░░░░░░] 0%
 - Trend: -
 
 *Updated after each plan completion*
+| Phase 01-codebase-sweep P01 | 1 | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -61,6 +62,8 @@ Recent decisions affecting current work:
 - Roadmap: SWEEP-07 (`perSampleData` redesign) must be executed before any new wrapper subclass is written — it is a breaking virtual interface change
 - Roadmap: GLPM-01 (deadlock fix in `draw_handle()`) must be the first action in Phase 2 before any handle drawing code is added
 - Roadmap: THIN-01 (license confirmation) must be completed before THIN-02 (CMake integration) — no source added to repo before GPL-3.0 compatibility is confirmed
+- [Phase 01-codebase-sweep]: Three confirmed deep-pixel math bugs fixed with minimal surgical one-line changes: DeepCGrade reverse gamma discard, DeepCKeymix A-side copy-paste error, zero-alpha NaN in DeepCSaturation and DeepCHueShift
+- [Phase 01-codebase-sweep]: Zero-alpha guard pattern established: if (alpha != 0.0f) wrapping unpremult division with implicit else via zero-initialized storage
 
 ### Pending Todos
 
@@ -72,6 +75,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-13T06:13:34.802Z
-Stopped at: Phase 1 context gathered
-Resume file: .planning/phases/01-codebase-sweep/01-CONTEXT.md
+Last session: 2026-03-13T06:42:05.494Z
+Stopped at: Completed 01-codebase-sweep/01-01-PLAN.md
+Resume file: None

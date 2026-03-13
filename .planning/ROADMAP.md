@@ -85,7 +85,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Codebase Sweep | 0/5 | Not started | - |
+| 1. Codebase Sweep | 1/5 | In Progress|  |
 | 2. DeepCPMatte GL Handles | 0/TBD | Not started | - |
 | 3. DeepShuffle UI | 0/TBD | Not started | - |
 | 4. DeepCPNoise 4D | 0/TBD | Not started | - |
