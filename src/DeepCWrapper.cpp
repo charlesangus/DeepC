@@ -250,8 +250,6 @@ bool DeepCWrapper::doDeepEngine(
                     )
                 {
                     outData = inData;
-                    // ++inData;
-                    // ++outData;
                     continue;
                 }
 
@@ -269,9 +267,6 @@ bool DeepCWrapper::doDeepEngine(
 
                 if (_unpremult)
                     outData *= alpha;
-
-                // ++inData;
-                // ++outData;
             }
         }
     }
@@ -364,6 +359,8 @@ bool DeepCWrapper::test_input(int input, Op *op)  const
             return DeepFilterOp::test_input(input, op);
         case 1:
             return dynamic_cast<Iop*>(op) != 0;
+        default:
+            return false;
     }
 }
 
@@ -398,5 +395,3 @@ const char* DeepCWrapper::node_help() const
     "to be inherited from.";
 }
 
-static Op* build(Node* node) { return new DeepCWrapper(node); }
-const Op::Description DeepCWrapper::d("DeepCWrapper", 0, build);

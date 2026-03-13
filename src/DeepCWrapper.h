@@ -99,8 +99,6 @@ class DeepCWrapper : public DeepFilterOp
         int minimum_inputs() const { return 2; }
         int maximum_inputs() const { return 2; }
         int optional_input() const { return 1; }
-        static const Iop::Description d;
-        const char* Class() const { return d.name; }
         Op* op() { return this; }
         const char* node_help() const;
 };
