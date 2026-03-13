@@ -64,8 +64,6 @@ class DeepCMWrapper : public DeepCWrapper
         virtual void custom_knobs(Knob_Callback f);
         // virtual void knobs(Knob_Callback f);
 
-        static const Iop::Description d;
-        const char* Class() const { return d.name; }
         virtual Op* op() { return this; }
         const char* node_help() const;
 };

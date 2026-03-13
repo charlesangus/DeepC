@@ -107,5 +107,3 @@ const char* DeepCMWrapper::node_help() const
     "Parent class for matte-generation nodes.";
 }
 
-static Op* build(Node* node) { return new DeepCMWrapper(node); }
-const Op::Description DeepCMWrapper::d("DeepCMWrapper", 0, build);
