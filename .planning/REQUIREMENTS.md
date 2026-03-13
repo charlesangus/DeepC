@@ -83,17 +83,33 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SWEEP-01 through SWEEP-10 | Phase TBD | Pending |
-| SHUF-01 through SHUF-04 | Phase TBD | Pending |
-| GLPM-01 through GLPM-03 | Phase TBD | Pending |
-| NOIS-01 | Phase TBD | Pending |
-| THIN-01 through THIN-03 | Phase TBD | Pending |
+| SWEEP-01 | Phase 1 | Pending |
+| SWEEP-02 | Phase 1 | Pending |
+| SWEEP-03 | Phase 1 | Pending |
+| SWEEP-04 | Phase 1 | Pending |
+| SWEEP-05 | Phase 1 | Pending |
+| SWEEP-06 | Phase 1 | Pending |
+| SWEEP-07 | Phase 1 | Pending |
+| SWEEP-08 | Phase 1 | Pending |
+| SWEEP-09 | Phase 1 | Pending |
+| SWEEP-10 | Phase 1 | Pending |
+| GLPM-01 | Phase 2 | Pending |
+| GLPM-02 | Phase 2 | Pending |
+| GLPM-03 | Phase 2 | Pending |
+| SHUF-01 | Phase 3 | Pending |
+| SHUF-02 | Phase 3 | Pending |
+| SHUF-03 | Phase 3 | Pending |
+| SHUF-04 | Phase 3 | Pending |
+| NOIS-01 | Phase 4 | Pending |
+| THIN-01 | Phase 5 | Pending |
+| THIN-02 | Phase 5 | Pending |
+| THIN-03 | Phase 5 | Pending |
 
 **Coverage:**
-- v1 requirements: 20 total
-- Mapped to phases: 0
-- Unmapped: 20 ⚠️
+- v1 requirements: 21 total (note: initial count of 20 in this file was off by one; actual count is 21)
+- Mapped to phases: 21
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-12*
-*Last updated: 2026-03-12 after initial definition*
+*Last updated: 2026-03-12 after roadmap creation — all requirements mapped*
