@@ -80,13 +80,13 @@ void DeepCID::wrappedPerSample(
     perSampleData = 0.0f;
     foreach(z, _auxiliaryChannelSet)
     {
-        if (available.contains(_auxChannel))
+        if (available.contains(z))
         {
             if (_unpremultPosition)
             {
-                idData = deepInPixel.getUnorderedSample(sampleNo, _auxChannel) / alpha;
+                idData = deepInPixel.getUnorderedSample(sampleNo, z) / alpha;
             } else {
-                idData = deepInPixel.getUnorderedSample(sampleNo, _auxChannel);
+                idData = deepInPixel.getUnorderedSample(sampleNo, z);
             }
 
             if (fabs(idData - _deepID) < _tolerance)
