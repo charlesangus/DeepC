@@ -23,7 +23,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 ### Phase 1: Codebase Sweep
 **Goal**: The codebase is free of all confirmed bugs, DeepCWrapper/DeepCMWrapper are removed from the Nuke node menu, all deprecated Nuke 16+ NDK APIs are confirmed non-present and the one concrete modernization (DeepCWorld inverse matrix cache) is applied, and DeepCBlink is removed from the build. (Note: SWEEP-07 perSampleData redesign and SWEEP-08 grade coefficient extraction were dropped after analysis — see CONTEXT.md.)
 **Depends on**: Nothing (first phase)
-**Requirements**: SWEEP-01, SWEEP-02, SWEEP-03, SWEEP-04, SWEEP-05, SWEEP-06, SWEEP-07, SWEEP-08, SWEEP-09, SWEEP-10
+**Requirements**: SWEEP-01, SWEEP-02, SWEEP-03, SWEEP-04, SWEEP-05, SWEEP-06, SWEEP-09, SWEEP-10
 **Success Criteria** (what must be TRUE):
   1. DeepCGrade in reverse mode produces correct output — gamma is applied to the remapped value, not discarded
   2. DeepCKeymix correctly uses `aPixel.channels()` for the A-side containment check, not `bPixel.channels()`

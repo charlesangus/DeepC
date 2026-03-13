@@ -2,8 +2,8 @@
 phase: 1
 slug: codebase-sweep
 status: draft
-nyquist_compliant: false
-wave_0_complete: false
+nyquist_compliant: true
+wave_0_complete: true
 created: 2026-03-12
 ---
 
@@ -43,9 +43,9 @@ created: 2026-03-12
 | 1-01-03 | 01 | 1 | SWEEP-03 | manual | `cmake --build build/VERSION --config Release` | N/A | ⬜ pending |
 | 1-01-04 | 01 | 1 | SWEEP-04 | manual | `cmake --build build/VERSION --config Release` | N/A | ⬜ pending |
 | 1-01-05 | 01 | 1 | SWEEP-05 | code-review | `cmake --build build/VERSION --config Release` | N/A | ⬜ pending |
-| 1-02-01 | 02 | 2 | SWEEP-06 | manual | `cmake --build build/VERSION --config Release` | N/A | ⬜ pending |
-| 1-02-02 | 02 | 2 | SWEEP-09 | build | `cmake --build build/VERSION --config Release` | N/A | ⬜ pending |
-| 1-02-03 | 02 | 2 | SWEEP-10 | code-review + build | `cmake --build build/VERSION --config Release` | N/A | ⬜ pending |
+| 1-02-01 | 02 | 1 | SWEEP-06 | manual | `cmake --build build/VERSION --config Release` | N/A | ⬜ pending |
+| 1-02-02 | 02 | 1 | SWEEP-09 | build | `cmake --build build/VERSION --config Release` | N/A | ⬜ pending |
+| 1-02-03 | 02 | 1 | SWEEP-10 | code-review + build | `cmake --build build/VERSION --config Release` | N/A | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -72,11 +72,11 @@ None — Existing infrastructure covers all phase requirements. All verification
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 30s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references
+- [x] No watch-mode flags
+- [x] Feedback latency < 30s
+- [x] `nyquist_compliant: true` set in frontmatter
 
 **Approval:** pending
