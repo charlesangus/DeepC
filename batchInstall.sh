@@ -1,6 +1,6 @@
 #!/bin/bash
 if [ "$(expr substr $(uname -s) 1 5)" == "Linux" ]; then
-    # Do something under Mac OS X platform        
+    # Do something under Linux platform
     SYSTEM="linux"
 elif [ "$(expr substr $(uname -s) 1 10)" == "MINGW64_NT" ]; then
     # Do something under 64 bits Windows NT platform
