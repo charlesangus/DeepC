@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: planning
-stopped_at: Completed 01-codebase-sweep/01-01-PLAN.md
-last_updated: "2026-03-13T06:42:05.496Z"
+stopped_at: Completed 01-codebase-sweep/01-02-PLAN.md
+last_updated: "2026-03-13T06:44:22.391Z"
 last_activity: 2026-03-12 — Roadmap created; ready to plan Phase 1
 progress:
   total_phases: 5
   completed_phases: 0
   total_plans: 5
-  completed_plans: 1
+  completed_plans: 2
   percent: 0
 ---
 
@@ -51,6 +51,7 @@ Progress: [░░░░░░░░░░] 0%
 
 *Updated after each plan completion*
 | Phase 01-codebase-sweep P01 | 1 | 3 tasks | 4 files |
+| Phase 01-codebase-sweep P02 | 2 | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -64,6 +65,8 @@ Recent decisions affecting current work:
 - Roadmap: THIN-01 (license confirmation) must be completed before THIN-02 (CMake integration) — no source added to repo before GPL-3.0 compatibility is confirmed
 - [Phase 01-codebase-sweep]: Three confirmed deep-pixel math bugs fixed with minimal surgical one-line changes: DeepCGrade reverse gamma discard, DeepCKeymix A-side copy-paste error, zero-alpha NaN in DeepCSaturation and DeepCHueShift
 - [Phase 01-codebase-sweep]: Zero-alpha guard pattern established: if (alpha != 0.0f) wrapping unpremult division with implicit else via zero-initialized storage
+- [Phase 01-codebase-sweep]: DeepCConstant weight fix: comma expression removed, behavior unchanged (was already yielding depth/_overallDepth)
+- [Phase 01-codebase-sweep]: DeepCID loop body fix: _auxChannel replaced with z inside foreach loop; no-op for single-member set but correct for multi-member sets
 
 ### Pending Todos
 
@@ -75,6 +78,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-13T06:42:05.494Z
-Stopped at: Completed 01-codebase-sweep/01-01-PLAN.md
+Last session: 2026-03-13T06:44:22.388Z
+Stopped at: Completed 01-codebase-sweep/01-02-PLAN.md
 Resume file: None
