@@ -2,7 +2,6 @@
 set(PLUGINS
     DeepCAddChannels
     DeepCAdjustBBox
-    DeepCBlink
     DeepCConstant
     DeepCCopyBBox
     DeepCKeymix
@@ -90,9 +89,6 @@ endforeach()
 # Link FastNoise into DeepCPNoise
 target_include_directories(DeepCPNoise PRIVATE ${FASTNOISE_DIR})
 target_sources(DeepCPNoise PRIVATE $<TARGET_OBJECTS:FastNoise>)
-
-# link DeepCBlink with libRIPFramework
-target_link_libraries(DeepCBlink PRIVATE ${NUKE_RIPFRAMEWORK_LIBRARY})
 
 # link DeepCPMatte with OpenGL
 if (OpenGL_FOUND)
