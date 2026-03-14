@@ -27,9 +27,9 @@
 
 ### DeepCPMatte GL Handles
 
-- [ ] **GLPM-01**: `draw_handle()` in DeepCPMatte no longer calls `_validate()` on the GL thread (deadlock fix)
-- [ ] **GLPM-02**: DeepCPMatte draws a wireframe sphere or cube in the 3D viewport representing the current selection volume
-- [ ] **GLPM-03**: The wireframe handle in DeepCPMatte is interactive — user can click and drag to reposition the selection volume
+- [x] **GLPM-01**: `draw_handle()` in DeepCPMatte no longer calls `_validate()` on the GL thread (deadlock fix)
+- [x] **GLPM-02**: DeepCPMatte draws a wireframe sphere or cube in the 3D viewport representing the current selection volume
+- [x] **GLPM-03**: The wireframe handle in DeepCPMatte is interactive — user can click and drag to reposition the selection volume
 
 ### DeepCPNoise 4D
 
@@ -93,9 +93,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SWEEP-08 | Phase 1 | Pending |
 | SWEEP-09 | Phase 1 | Complete |
 | SWEEP-10 | Phase 1 | Complete |
-| GLPM-01 | Phase 2 | Pending |
-| GLPM-02 | Phase 2 | Pending |
-| GLPM-03 | Phase 2 | Pending |
+| GLPM-01 | Phase 2 | Complete |
+| GLPM-02 | Phase 2 | Complete |
+| GLPM-03 | Phase 2 | Complete |
 | SHUF-01 | Phase 3 | Pending |
 | SHUF-02 | Phase 3 | Pending |
 | SHUF-03 | Phase 3 | Pending |
