@@ -145,10 +145,29 @@ void DeepCPMatte::draw_handle(ViewerContext *ctx)
     if (!ctx->draw_lines())
         return;
 
-    DeepCPMatte::_validate(false);
-    glBegin(GL_LINES);
-    glVertex2d(_center.x, _center.y);
-    glEnd();
+    glColor(ctx->node_color());
+
+    glPushMatrix();
+    glMultMatrixf(_axisKnob.array());
+
+    // Outer wireframe — unit scale in Axis local space (falloff-zero boundary)
+    if (_shape == 0)
+        gl_sphere(0.5f);
+    else
+        gl_cubef(0.0f, 0.0f, 0.0f, 1.0f);
+
+    // Inner wireframe — full-selection boundary, only draw when not degenerate
+    float innerScale = 1.0f - _falloff;
+    if (innerScale > 0.001f)
+    {
+        glScalef(innerScale, innerScale, innerScale);
+        if (_shape == 0)
+            gl_sphere(0.5f);
+        else
+            gl_cubef(0.0f, 0.0f, 0.0f, 1.0f);
+    }
+
+    glPopMatrix();
 }
 
 void DeepCPMatte::custom_knobs(Knob_Callback f)
