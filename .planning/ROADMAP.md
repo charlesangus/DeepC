@@ -47,7 +47,10 @@ Plans:
   1. Opening DeepCPMatte in Nuke with the 3D viewer active does not deadlock or hang
   2. A wireframe shape (sphere or cube) appears in the 3D viewport at the position and scale of the Axis knob transform
   3. Clicking and dragging the wireframe handle repositions the selection volume and the node reprocesses with the updated transform
-**Plans**: TBD
+**Plans**: 1 plan
+
+Plans:
+- [ ] 02-01-PLAN.md — Fix deadlock, add wireframe GL handles, expose Axis_knob at top level
 
 ### Phase 3: DeepShuffle UI
 **Goal**: DeepCShuffle exposes per-channel routing for up to 8 channels with labeled input and output ports, clean row layout, and layer-level routing via a ChannelSet knob.
@@ -86,7 +89,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Codebase Sweep | 5/5 | Complete   | 2026-03-13 |
-| 2. DeepCPMatte GL Handles | 0/TBD | Not started | - |
+| 2. DeepCPMatte GL Handles | 0/1 | Not started | - |
 | 3. DeepShuffle UI | 0/TBD | Not started | - |
 | 4. DeepCPNoise 4D | 0/TBD | Not started | - |
 | 5. DeepThinner Vendor | 0/TBD | Not started | - |
