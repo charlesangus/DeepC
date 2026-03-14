@@ -135,7 +135,7 @@ void DeepCPMatte::wrappedPerSample(
 void DeepCPMatte::build_handles(ViewerContext *ctx)
 {
     build_knob_handles(ctx);
-    if (ctx->transform_mode() != VIEWER_2D)
+    if (ctx->transform_mode() == VIEWER_2D)
         return;
     add_draw_handle(ctx);
 }
@@ -155,9 +155,7 @@ void DeepCPMatte::custom_knobs(Knob_Callback f)
 {
     XY_knob(f, &_center[0], "center", "center");
     Enumeration_knob(f, &_sampleId, sampleId, "sample_area", "sample area");
-    BeginGroup(f, "Position");
     Axis_knob(f, &_axisKnob, "selection");
-    EndGroup(f);
 
     Divider(f, "");
     Enumeration_knob(f, &_shape, shapeNames, "shape");
