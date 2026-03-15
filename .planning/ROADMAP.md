@@ -60,7 +60,13 @@ Plans:
   1. DeepCShuffle shows per-channel routing knobs in an in→out row layout matching the legacy Shuffle node, for up to 8 channel pairs
   2. Input and output ports in the node panel are labeled with the channel names assigned to them
   3. Users can route a complete layer at once using the layer-level ChannelSet knob without configuring individual channels
-**Plans**: TBD
+**Plans**: 4 plans
+
+Plans:
+- [ ] 03-01-PLAN.md — Install Qt6 dev headers; add find_package(Qt6) + AUTOMOC to CMakeLists.txt; verify baseline build
+- [ ] 03-02-PLAN.md — Write ShuffleMatrixKnob.h and ShuffleMatrixWidget.h interface contracts
+- [ ] 03-03-PLAN.md — Implement ShuffleMatrixKnob.cpp and ShuffleMatrixWidget.cpp
+- [ ] 03-04-PLAN.md — Rewrite DeepCShuffle.cpp with new data model and knob wiring; UAT checkpoint
 
 ### Phase 4: DeepCPNoise 4D
 **Goal**: DeepCPNoise exposes a 4D noise dimension option in the UI for all supported noise types, correctly enabling the evolution knob only for Simplex noise, with the noise type comparison replaced by a named constant.
@@ -90,6 +96,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 |-------|----------------|--------|-----------|
 | 1. Codebase Sweep | 5/5 | Complete   | 2026-03-13 |
 | 2. DeepCPMatte GL Handles | 1/1 | Complete   | 2026-03-14 |
-| 3. DeepShuffle UI | 0/TBD | Not started | - |
+| 3. DeepShuffle UI | 0/4 | Not started | - |
 | 4. DeepCPNoise 4D | 0/TBD | Not started | - |
 | 5. DeepThinner Vendor | 0/TBD | Not started | - |
