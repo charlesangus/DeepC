@@ -75,13 +75,17 @@ const std::string& ShuffleMatrixKnob::matrixState() const
 }
 
 void ShuffleMatrixKnob::setChannelSets(const DD::Image::ChannelSet& in1ChannelSet,
-                                        const DD::Image::ChannelSet& in2ChannelSet)
+                                        const DD::Image::ChannelSet& in2ChannelSet,
+                                        const DD::Image::ChannelSet& out1ChannelSet,
+                                        const DD::Image::ChannelSet& out2ChannelSet)
 {
-    // Store the channel sets so the widget can use them to build column headers.
-    // Do NOT call changed() here — this is a UI-only update and the caller is
-    // responsible for triggering updateWidgets() on the knob if needed.
-    _in1ChannelSet = in1ChannelSet;
-    _in2ChannelSet = in2ChannelSet;
+    // Store all four channel sets so the widget can use them to build column
+    // headers and row labels. Do NOT call changed() here — this is a UI-only
+    // update and the caller is responsible for triggering updateWidgets().
+    _in1ChannelSet  = in1ChannelSet;
+    _in2ChannelSet  = in2ChannelSet;
+    _out1ChannelSet = out1ChannelSet;
+    _out2ChannelSet = out2ChannelSet;
 }
 
 const DD::Image::ChannelSet& ShuffleMatrixKnob::in1ChannelSet() const
@@ -92,4 +96,14 @@ const DD::Image::ChannelSet& ShuffleMatrixKnob::in1ChannelSet() const
 const DD::Image::ChannelSet& ShuffleMatrixKnob::in2ChannelSet() const
 {
     return _in2ChannelSet;
+}
+
+const DD::Image::ChannelSet& ShuffleMatrixKnob::out1ChannelSet() const
+{
+    return _out1ChannelSet;
+}
+
+const DD::Image::ChannelSet& ShuffleMatrixKnob::out2ChannelSet() const
+{
+    return _out2ChannelSet;
 }

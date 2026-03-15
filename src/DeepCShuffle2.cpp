@@ -11,24 +11,34 @@ using namespace DD::Image;
 
 class DeepCShuffle2 : public DeepFilterOp
 {
-    ChannelSet  _in1ChannelSet;   // defaults to Mask_RGBA
-    ChannelSet  _in2ChannelSet;   // defaults to Chan_Black (none)
-    std::string _matrixState;     // serialized routing, owned by Op; mirrored by knob store()
+    ChannelSet  _in1ChannelSet;    // defaults to Mask_RGBA
+    ChannelSet  _in2ChannelSet;    // defaults to Chan_Black (none)
+    ChannelSet  _out1ChannelSet;   // defaults to Mask_RGBA
+    ChannelSet  _out2ChannelSet;   // defaults to Chan_Black (none)
+    std::string _matrixState;      // serialized routing, owned by Op; mirrored by knob store()
 
-    // Populated in _validate() by parsing _matrixState
-    std::array<Channel, 8> _outputChannels;  // active output channels
-    std::array<Channel, 8> _sourceChannels;  // source channel per output slot
-    int _activeSlots;                        // number of active routing slots
+    // Populated in _validate() by parsing _matrixState.
+    // Up to 8 active routing slots. Each slot specifies an output channel and
+    // either a source channel to copy from, or a constant 0.0 / 1.0 value.
+    std::array<Channel, 8> _outputChannels;      // active output channels
+    std::array<Channel, 8> _sourceChannels;      // source channel per output slot (Chan_Black if constant)
+    std::array<bool,    8> _sourceIsConstant;    // true if this slot outputs a constant value
+    std::array<float,   8> _sourceConstantValue; // constant value (0.0 or 1.0) when _sourceIsConstant
+    int _activeSlots;                            // number of active routing slots
 
 public:
 
     DeepCShuffle2(Node* node) : DeepFilterOp(node)
     {
-        _in1ChannelSet = Mask_RGBA;
-        _in2ChannelSet = Chan_Black;
-        _activeSlots   = 0;
+        _in1ChannelSet  = Mask_RGBA;
+        _in2ChannelSet  = Chan_Black;
+        _out1ChannelSet = Mask_RGBA;
+        _out2ChannelSet = Chan_Black;
+        _activeSlots    = 0;
         _outputChannels.fill(Chan_Black);
         _sourceChannels.fill(Chan_Black);
+        _sourceIsConstant.fill(false);
+        _sourceConstantValue.fill(0.0f);
     }
 
     void _validate(bool for_real) override;
@@ -59,15 +69,18 @@ void DeepCShuffle2::_validate(bool for_real)
     // Reset routing arrays
     _outputChannels.fill(Chan_Black);
     _sourceChannels.fill(Chan_Black);
+    _sourceIsConstant.fill(false);
+    _sourceConstantValue.fill(0.0f);
     _activeSlots = 0;
 
     if (_matrixState.empty())
     {
-        // No routing — output equals input; nothing to add to DeepInfo
+        // No routing — output equals input; nothing to add to DeepInfo.
         return;
     }
 
-    // Parse "outName:srcName,outName:srcName,..." up to 8 slots
+    // Parse "outName:srcName,outName:srcName,..." up to 8 slots.
+    // srcName may be "const:0" or "const:1" for constant column outputs.
     std::istringstream tokenStream(_matrixState);
     std::string token;
     while (_activeSlots < 8 && std::getline(tokenStream, token, ','))
@@ -75,26 +88,51 @@ void DeepCShuffle2::_validate(bool for_real)
         if (token.empty())
             continue;
 
-        std::string::size_type colonPos = token.find(':');
+        const std::string::size_type colonPos = token.find(':');
         if (colonPos == std::string::npos)
             continue;
 
-        std::string outName = token.substr(0, colonPos);
-        std::string srcName = token.substr(colonPos + 1);
+        const std::string outName = token.substr(0, colonPos);
+        const std::string srcName = token.substr(colonPos + 1);
 
-        Channel outputChannel = getChannel(outName.c_str());
-        Channel sourceChannel = getChannel(srcName.c_str());
-
-        if (outputChannel == Chan_Black || sourceChannel == Chan_Black)
+        // Resolve the output channel — must be a real channel name.
+        Channel outputChannel = findChannel(outName.c_str());
+        if (outputChannel == Chan_Black)
             continue;
 
-        _outputChannels[_activeSlots] = outputChannel;
-        _sourceChannels[_activeSlots] = sourceChannel;
-        ++_activeSlots;
+        if (srcName == "const:0")
+        {
+            _outputChannels[_activeSlots]      = outputChannel;
+            _sourceChannels[_activeSlots]      = Chan_Black;
+            _sourceIsConstant[_activeSlots]    = true;
+            _sourceConstantValue[_activeSlots] = 0.0f;
+            ++_activeSlots;
+        }
+        else if (srcName == "const:1")
+        {
+            _outputChannels[_activeSlots]      = outputChannel;
+            _sourceChannels[_activeSlots]      = Chan_Black;
+            _sourceIsConstant[_activeSlots]    = true;
+            _sourceConstantValue[_activeSlots] = 1.0f;
+            ++_activeSlots;
+        }
+        else
+        {
+            // Regular channel-to-channel routing.
+            Channel sourceChannel = findChannel(srcName.c_str());
+            if (sourceChannel == Chan_Black)
+                continue;
+
+            _outputChannels[_activeSlots]      = outputChannel;
+            _sourceChannels[_activeSlots]      = sourceChannel;
+            _sourceIsConstant[_activeSlots]    = false;
+            _sourceConstantValue[_activeSlots] = 0.0f;
+            ++_activeSlots;
+        }
     }
 
     // Build the output channel set: start from existing input channels and add
-    // any routed output channels so downstream ops can request them
+    // any routed output channels so downstream ops can request them.
     ChannelSet newChannelSet = _deepInfo.channels();
     for (int routeIndex = 0; routeIndex < _activeSlots; ++routeIndex)
     {
@@ -115,7 +153,8 @@ void DeepCShuffle2::getDeepRequests(Box bbox,
     ChannelSet neededChannels = requestedChannels;
     for (int routeIndex = 0; routeIndex < _activeSlots; ++routeIndex)
     {
-        if (_sourceChannels[routeIndex] != Chan_Black)
+        // Only request channels from input when the source is not a constant.
+        if (!_sourceIsConstant[routeIndex] && _sourceChannels[routeIndex] != Chan_Black)
             neededChannels += _sourceChannels[routeIndex];
     }
     requests.push_back(RequestData(input0(), bbox, neededChannels, count));
@@ -134,7 +173,7 @@ bool DeepCShuffle2::doDeepEngine(DD::Image::Box bbox,
     ChannelSet neededChannels = requestedChannels;
     for (int routeIndex = 0; routeIndex < _activeSlots; ++routeIndex)
     {
-        if (_sourceChannels[routeIndex] != Chan_Black)
+        if (!_sourceIsConstant[routeIndex] && _sourceChannels[routeIndex] != Chan_Black)
             neededChannels += _sourceChannels[routeIndex];
     }
 
@@ -161,26 +200,43 @@ bool DeepCShuffle2::doDeepEngine(DD::Image::Box bbox,
         {
             foreach (z, requestedChannels)
             {
-                // Default: passthrough — unrouted channels are never zeroed
-                Channel inChannel = z;
+                float outputValue = 0.0f;
 
-                // Check whether this output channel has a routing override
+                // Check whether this output channel has a routing override.
+                bool routeFound = false;
                 for (int routeIndex = 0; routeIndex < _activeSlots; ++routeIndex)
                 {
                     if (_outputChannels[routeIndex] != Chan_Black &&
                         z == _outputChannels[routeIndex])
                     {
-                        inChannel = _sourceChannels[routeIndex];
+                        if (_sourceIsConstant[routeIndex])
+                        {
+                            // Write the constant value (0.0 or 1.0).
+                            outputValue = _sourceConstantValue[routeIndex];
+                        }
+                        else
+                        {
+                            const Channel sourceChannel = _sourceChannels[routeIndex];
+                            outputValue =
+                                (inPixelChannels.contains(sourceChannel) && sourceChannel != Chan_Black)
+                                ? deepInPixel.getUnorderedSample(sampleNo, sourceChannel)
+                                : 0.0f;
+                        }
+                        routeFound = true;
                         break;
                     }
                 }
 
-                const float& inData =
-                    inPixelChannels.contains(inChannel) && inChannel != Chan_Black
-                    ? deepInPixel.getUnorderedSample(sampleNo, inChannel)
-                    : 0.0f;
+                if (!routeFound)
+                {
+                    // No routing override — passthrough: copy the input channel unchanged.
+                    outputValue =
+                        (inPixelChannels.contains(z) && z != Chan_Black)
+                        ? deepInPixel.getUnorderedSample(sampleNo, z)
+                        : 0.0f;
+                }
 
-                outPixel.getWritableUnorderedSample(sampleNo, z) = inData;
+                outPixel.getWritableUnorderedSample(sampleNo, z) = outputValue;
             }
         }
     }
@@ -195,10 +251,16 @@ bool DeepCShuffle2::doDeepEngine(DD::Image::Box bbox,
 // -----------------------------------------------------------------------------
 void DeepCShuffle2::knobs(Knob_Callback f)
 {
-    Input_ChannelSet_knob(f, &_in1ChannelSet, 0, "in1", "in1 channels");
+    Input_ChannelSet_knob(f, &_in1ChannelSet, 0, "in1", "in 1");
     SetFlags(f, Knob::KNOB_CHANGED_ALWAYS);
 
-    Input_ChannelSet_knob(f, &_in2ChannelSet, 0, "in2", "in2 channels");
+    Input_ChannelSet_knob(f, &_in2ChannelSet, 0, "in2", "in 2");
+    SetFlags(f, Knob::KNOB_CHANGED_ALWAYS);
+
+    Input_ChannelSet_knob(f, &_out1ChannelSet, 0, "out1", "out 1");
+    SetFlags(f, Knob::KNOB_CHANGED_ALWAYS);
+
+    Input_ChannelSet_knob(f, &_out2ChannelSet, 0, "out2", "out 2");
     SetFlags(f, Knob::KNOB_CHANGED_ALWAYS);
 
     CustomKnob2(ShuffleMatrixKnob, f, &_matrixState, "matrix", "routing");
@@ -209,16 +271,17 @@ void DeepCShuffle2::knobs(Knob_Callback f)
 // -----------------------------------------------------------------------------
 int DeepCShuffle2::knob_changed(Knob* k)
 {
-    if (k->is("in1") || k->is("in2") ||
+    if (k->is("in1") || k->is("in2") || k->is("out1") || k->is("out2") ||
         k == &Knob::inputChange || k == &Knob::showPanel)
     {
-        // Push current ChannelSets into the matrix knob so widget column
-        // headers update without the widget needing to call back into the Op
+        // Push all four ChannelSets into the matrix knob so the widget can build
+        // accurate column headers and row labels without calling back into the Op.
         if (Knob* matrixKnob = knob("matrix"))
         {
             auto* shuffleKnob = dynamic_cast<ShuffleMatrixKnob*>(matrixKnob);
             if (shuffleKnob)
-                shuffleKnob->setChannelSets(_in1ChannelSet, _in2ChannelSet);
+                shuffleKnob->setChannelSets(_in1ChannelSet, _in2ChannelSet,
+                                            _out1ChannelSet, _out2ChannelSet);
             matrixKnob->updateWidgets();
         }
         return 1;
@@ -232,8 +295,11 @@ int DeepCShuffle2::knob_changed(Knob* k)
 const char* DeepCShuffle2::node_help() const
 {
     return
-        "Shuffle channels in Deep. Use the in1/in2 pickers to select source layers. "
+        "Shuffle channels in Deep. Use the in1/in2 pickers to select source layers "
+        "and the out1/out2 pickers to select output layers. "
         "Toggle cells in the matrix to route source channels to output channels. "
+        "Columns are source channels (with constant 0 and 1 columns); "
+        "rows are output channels. "
         "Unrouted channels pass through unchanged.";
 }
 

@@ -17,24 +17,30 @@ class ShuffleMatrixKnob;
 /**
  * ShuffleMatrixWidget — Qt widget embedded in the DeepCShuffle node panel.
  *
- * Displays a toggle-button matrix where:
- *   - Rows  = output channels drawn from the in1 ChannelSet (up to 8)
- *   - Cols  = source channels from both in1 and in2 ChannelSets
+ * Displays a toggle-button matrix that matches the reference Shuffle node UI:
+ *   - Columns = source channels (in1 channels, then "0"/"1" constants, then in2 channels)
+ *   - Rows    = output channels drawn from out1 ChannelSet (first group) and
+ *               out2 ChannelSet (second group, if out2 != Chan_Black)
  *
- * Each toggle button at [row, col] routes the corresponding source channel
- * into the output slot. Clicking a button calls ShuffleMatrixKnob::setValue()
- * with the updated serialized routing string.
+ * Each toggle button at [row, col] routes the corresponding source column
+ * channel into that row's output channel. Clicking a button calls
+ * ShuffleMatrixKnob::setValue() with the updated serialized routing string.
+ *
+ * Special source columns:
+ *   "const:0" — constant 0.0 value
+ *   "const:1" — constant 1.0 value
+ *
+ * Grid layout structure (row indices are zero-based):
+ *   Row 0:  in-group header labels — blank, "in 1" (spanning in1 cols), "0", "1",
+ *             "in 2" (spanning in2 cols if active), blank for output label column
+ *   Row 1:  channel name labels (r, g, b, a …) + "0", "1" + in2 channel names
+ *   Row 2:  down-arrow labels under each source column
+ *   Row 3+: one toggle-button row per output channel; output channel name label on right
  *
  * Lifecycle is managed via Knob::addCallback / removeCallback. The static
  * WidgetCallback handles kUpdateWidgets (rebuilds layout from current knob
  * state), kDestroying (nullifies the _knob pointer so no UAF occurs), and
  * kIsVisible (returns visibility to Nuke's panel manager).
- *
- * Grid layout structure:
- *   Row 0: header labels — col 0 empty, col 1..N source channel names
- *   Row 1..8: output channel label (col 0) + toggle buttons (col 1..N)
- *   Rows = output channels from in1 ChannelSet (<=8 shown)
- *   Cols = source channels from in1 + in2 ChannelSets
  */
 class ShuffleMatrixWidget : public QWidget
 {
@@ -68,7 +74,8 @@ public slots:
      * Serialises the new routing state and forwards it to ShuffleMatrixKnob::setValue().
      *
      * @param outputChannelName  NDK channel name for the destination slot (e.g. "rgba.red")
-     * @param sourceChannelName  NDK channel name for the source (e.g. "depth.Z")
+     * @param sourceChannelName  NDK channel name for the source (e.g. "depth.Z"),
+     *                           or "const:0" / "const:1" for constant columns
      * @param checked            true = route source -> output; false = remove routing
      */
     void onCellToggled(const std::string& outputChannelName,
@@ -85,15 +92,13 @@ public slots:
 private:
     /**
      * Creates the QGridLayout with column header QLabels and toggle QPushButtons.
-     * Row 0: empty label + source channel name labels.
-     * Rows 1-8: output channel name label + one checkable QPushButton per source channel.
+     * See class documentation for the row/column structure.
      * Sets a minimum height hint based on row count to ensure Nuke's panel allocates space.
      */
     void buildLayout();
 
     /**
-     * Removes all child widgets from _gridLayout and clears the _toggleButtons,
-     * _outputChannelNames, and _sourceChannelNames tracking vectors.
+     * Removes all child widgets from _gridLayout and clears all tracking vectors.
      * Called at the start of syncFromKnob() before rebuilding.
      */
     void clearLayout();
@@ -109,21 +114,21 @@ private:
     QGridLayout* _gridLayout;
 
     /**
-     * Flat list of all toggle QPushButtons in row-major order
-     * (row0_col0, row0_col1, ..., row1_col0, ...).
-     * Used for efficient state synchronisation in syncFromKnob().
+     * Flat list of all toggle QPushButtons in row-major order.
+     * Object names use "outputChannelName|sourceChannelName" format for state sync.
      */
     std::vector<QPushButton*> _toggleButtons;
 
     /**
      * Ordered list of output channel names (NDK format: "layerName.channelName")
-     * for the rows currently shown (up to 8, from in1 ChannelSet).
+     * for the rows currently shown. Drawn from out1 then out2 ChannelSets.
      */
     std::vector<std::string> _outputChannelNames;
 
     /**
-     * Ordered list of source channel names (NDK format) for the columns
-     * currently shown (in1 channels first, then in2 channels).
+     * Ordered list of source column identifiers for the columns currently shown.
+     * Format: NDK channel name (e.g. "rgba.red") or "const:0" / "const:1".
+     * Order: in1 channels, then "const:0", "const:1", then in2 channels (if active).
      */
-    std::vector<std::string> _sourceChannelNames;
+    std::vector<std::string> _sourceColumnNames;
 };

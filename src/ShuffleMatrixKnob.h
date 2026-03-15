@@ -30,6 +30,7 @@ class ShuffleMatrixWidget;
 // Example: "rgba.red:rgba.red,rgba.green:depth.Z"
 // Channels absent from the string pass through unchanged (not zeroed).
 // Channel names use the NDK getName(Channel) format: "layerName.channelName".
+// Special source names "const:0" and "const:1" represent constant 0.0 and 1.0.
 
 class ShuffleMatrixKnob : public DD::Image::Knob
 {
@@ -112,15 +113,19 @@ public:
     const std::string& matrixState() const;
 
     /**
-     * Called by Op::knob_changed() to push the current in1 and in2 ChannelSet
-     * values into the knob so that make_widget() and syncFromKnob() can build
-     * accurate column headers without calling back into the Op.
+     * Called by Op::knob_changed() to push all four ChannelSets into the knob
+     * so that make_widget() and syncFromKnob() can build accurate headers and
+     * row labels without calling back into the Op.
      */
     void setChannelSets(const DD::Image::ChannelSet& in1ChannelSet,
-                        const DD::Image::ChannelSet& in2ChannelSet);
+                        const DD::Image::ChannelSet& in2ChannelSet,
+                        const DD::Image::ChannelSet& out1ChannelSet,
+                        const DD::Image::ChannelSet& out2ChannelSet);
 
     const DD::Image::ChannelSet& in1ChannelSet() const;
     const DD::Image::ChannelSet& in2ChannelSet() const;
+    const DD::Image::ChannelSet& out1ChannelSet() const;
+    const DD::Image::ChannelSet& out2ChannelSet() const;
 
 private:
     // Serialization format: comma-separated "outputChannelName:sourceChannelName" pairs.
@@ -131,4 +136,6 @@ private:
 
     DD::Image::ChannelSet _in1ChannelSet;
     DD::Image::ChannelSet _in2ChannelSet;
+    DD::Image::ChannelSet _out1ChannelSet;
+    DD::Image::ChannelSet _out2ChannelSet;
 };
