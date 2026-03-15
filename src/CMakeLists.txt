@@ -59,6 +59,14 @@ endfunction()
 # include directories
 include_directories(${NUKE_INCLUDE_DIRS})
 
+# Qt6 — required for ShuffleMatrixKnob embedded Qt widget (Phase 03)
+# Qt 6.5.3 is installed at /opt/Qt/6.5.3/gcc_64 (same version as Nuke 16 runtime)
+list(APPEND CMAKE_PREFIX_PATH "/opt/Qt/6.5.3/gcc_64")
+find_package(Qt6 COMPONENTS Core Gui Widgets)
+if (Qt6_FOUND)
+  set(CMAKE_AUTOMOC ON)
+endif()
+
 # WRAPPER LIBRARIES
 
 # DeepCMWrapper
@@ -93,6 +101,11 @@ target_sources(DeepCPNoise PRIVATE $<TARGET_OBJECTS:FastNoise>)
 # link DeepCPMatte with OpenGL
 if (OpenGL_FOUND)
     target_link_libraries(DeepCPMatte PRIVATE OpenGL::GL)
+endif()
+
+# Link Qt6 into DeepCShuffle for ShuffleMatrixKnob widget
+if (Qt6_FOUND)
+  target_link_libraries(DeepCShuffle PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets)
 endif()
 
 # create menu file 
