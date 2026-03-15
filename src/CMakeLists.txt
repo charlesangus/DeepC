@@ -106,6 +106,7 @@ endif()
 # Link Qt6 into DeepCShuffle for ShuffleMatrixKnob widget
 if (Qt6_FOUND)
   target_sources(DeepCShuffle PRIVATE ShuffleMatrixWidget.h)
+  target_sources(DeepCShuffle PRIVATE ShuffleMatrixKnob.cpp ShuffleMatrixWidget.cpp)
   target_link_libraries(DeepCShuffle PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets)
 endif()
 
