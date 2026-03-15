@@ -96,6 +96,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 |-------|----------------|--------|-----------|
 | 1. Codebase Sweep | 5/5 | Complete   | 2026-03-13 |
 | 2. DeepCPMatte GL Handles | 1/1 | Complete   | 2026-03-14 |
-| 3. DeepShuffle UI | 1/4 | In Progress|  |
+| 3. DeepShuffle UI | 2/4 | In Progress|  |
 | 4. DeepCPNoise 4D | 0/TBD | Not started | - |
 | 5. DeepThinner Vendor | 0/TBD | Not started | - |
