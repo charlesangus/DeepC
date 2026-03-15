@@ -14,7 +14,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Codebase Sweep** - Fix all confirmed bugs, modernize NDK APIs, resolve DeepCBlink fate (completed 2026-03-13)
 - [x] **Phase 2: DeepCPMatte GL Handles** - Interactive wireframe viewport overlay and drag-to-reposition handle for the selection volume (completed 2026-03-14)
-- [ ] **Phase 3: DeepShuffle UI** - Expand channel routing from 4 to 8 channels with labeled ports and layer-level routing
+- [x] **Phase 3: DeepShuffle UI** - Expand channel routing from 4 to 8 channels with labeled ports and layer-level routing (completed 2026-03-15)
 - [ ] **Phase 4: DeepCPNoise 4D** - Expose 4D noise option in the UI wired to existing FastNoise 4D methods
 - [ ] **Phase 5: DeepThinner Vendor** - Confirm license compatibility, integrate source into CMake build, register in toolbar menu
 
@@ -96,6 +96,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 |-------|----------------|--------|-----------|
 | 1. Codebase Sweep | 5/5 | Complete   | 2026-03-13 |
 | 2. DeepCPMatte GL Handles | 1/1 | Complete   | 2026-03-14 |
-| 3. DeepShuffle UI | 3/4 | In Progress|  |
+| 3. DeepShuffle UI | 4/4 | Complete   | 2026-03-15 |
 | 4. DeepCPNoise 4D | 0/TBD | Not started | - |
 | 5. DeepThinner Vendor | 0/TBD | Not started | - |
