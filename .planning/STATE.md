@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-12)
 
 **Core value:** Artists can use deep-compositing operations in Nuke that don't exist in the built-in toolset, with professional-quality UIs and reliable deep-pixel math.
-**Current focus:** Phase 2 — DeepCPMatte GL Handles
+**Current focus:** Phase 3 — DeepShuffle UI
 
 ## Current Position
 
-Phase: 2 of 5 (DeepCPMatte GL Handles)
-Plan: 1 of 1 in current phase
-Status: Phase 2 complete — UAT pending
-Last activity: 2026-03-14 — Phase 2 plan 01 executed; GL handles fixed and wireframe added
+Phase: 3 of 5 (DeepShuffle UI)
+Plan: 0 of TBD — context complete, ready to plan
+Status: Phase 3 context gathered — ready for /gsd:plan-phase 3
+Last activity: 2026-03-14 — Phase 3 discuss complete; 03-CONTEXT.md written
 
 Progress: [██████████] 100%
 
@@ -83,6 +83,9 @@ Recent decisions affecting current work:
 - [Phase 02-deepcpmatte-gl-handles]: Removed _validate() from draw_handle() entirely — cached members populated before GL draw fires, no re-validation needed on GL thread
 - [Phase 02-deepcpmatte-gl-handles]: gl_sphere(0.5f) + gl_cubef(0,0,0,1.0f) at unit scale in Axis local space — matching diameter for sphere and cube wireframe shapes
 - [Phase 02-deepcpmatte-gl-handles]: innerScale > 0.001f guard prevents degenerate zero-scale inner wireframe draw when _falloff == 1.0f (default)
+- [Phase 03-deepshuffle-ui]: Single Op input (not two); in1 + optional in2 ChannelSet pickers both read from same input stream
+- [Phase 03-deepshuffle-ui]: Routing UI is a C++ custom Knob with embedded Qt matrix widget — reproduces legacy Shuffle visual matrix, serialized to string knob
+- [Phase 03-deepshuffle-ui]: Unselected channels pass through unchanged; no DAG port label changes
 
 ### Pending Todos
 
@@ -94,6 +97,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-14T13:46:46.399Z
-Stopped at: Completed 02-01-PLAN.md
+Last session: 2026-03-14T20:00:00.000Z
+Stopped at: Phase 3 context gathered; .continue-here removed; ready to plan
 Resume file: None
