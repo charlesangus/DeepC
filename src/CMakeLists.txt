@@ -7,6 +7,7 @@ set(PLUGINS
     DeepCKeymix
     DeepCRemoveChannels
     DeepCShuffle
+    DeepCShuffle2
     DeepCWorld
     )
 
@@ -38,7 +39,7 @@ endif()
 
 # DeepC Python Menu
 set(DRAW_NODES DeepCConstant DeepCID DeepCPMatte DeepCPNoise)
-set(CHANNEL_NODES DeepCAddChannels DeepCRemoveChannels DeepCShuffle)
+set(CHANNEL_NODES DeepCAddChannels DeepCRemoveChannels DeepCShuffle DeepCShuffle2)
 set(COLOR_NODES DeepCAdd DeepCClamp DeepCColorLookup DeepCGamma DeepCGrade
 DeepCHueShift DeepCInvert DeepCMatrix DeepCMultiply DeepCPosterize DeepCSaturation)
 set(3D_NODES DeepCWorld)
@@ -103,11 +104,11 @@ if (OpenGL_FOUND)
     target_link_libraries(DeepCPMatte PRIVATE OpenGL::GL)
 endif()
 
-# Link Qt6 into DeepCShuffle for ShuffleMatrixKnob widget
+# Link Qt6 into DeepCShuffle2 for ShuffleMatrixKnob widget
 if (Qt6_FOUND)
-  target_sources(DeepCShuffle PRIVATE ShuffleMatrixWidget.h)
-  target_sources(DeepCShuffle PRIVATE ShuffleMatrixKnob.cpp ShuffleMatrixWidget.cpp)
-  target_link_libraries(DeepCShuffle PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets)
+  target_sources(DeepCShuffle2 PRIVATE ShuffleMatrixWidget.h)
+  target_sources(DeepCShuffle2 PRIVATE ShuffleMatrixKnob.cpp ShuffleMatrixWidget.cpp)
+  target_link_libraries(DeepCShuffle2 PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets)
 endif()
 
 # create menu file 
