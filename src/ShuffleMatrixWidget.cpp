@@ -105,8 +105,9 @@ void ShuffleMatrixWidget::buildLayout()
             in1Columns.push_back(DD::Image::getName(ch));
     }
 
-    const bool in2Active = (in2Set != DD::Image::ChannelSet(DD::Image::Chan_Black));
-    if (in2Active)
+    // When in2 is set to none (Chan_Black) we still want to render the in2 columns
+    // but with all buttons disabled, so the layout does not visually collapse.
+    const bool in2Disabled = (in2Set == DD::Image::ChannelSet(DD::Image::Chan_Black));
     {
         DD::Image::Channel ch;
         foreach(ch, in2Set)
@@ -127,8 +128,9 @@ void ShuffleMatrixWidget::buildLayout()
         }
     }
 
-    const bool out2Active = (out2Set != DD::Image::ChannelSet(DD::Image::Chan_Black));
-    if (out2Active)
+    // When out2 is set to none (Chan_Black) we still want to render the out2 rows
+    // but with all buttons disabled, so the layout does not visually collapse.
+    const bool out2Disabled = (out2Set == DD::Image::ChannelSet(DD::Image::Chan_Black));
     {
         DD::Image::Channel ch;
         foreach(ch, out2Set)
@@ -168,7 +170,8 @@ void ShuffleMatrixWidget::buildLayout()
 
     auto buildGroup = [&](int startRow,
                           const std::vector<std::string>& outRows,
-                          const std::string& groupLabel) -> int
+                          const std::string& groupLabel,
+                          bool buttonsDisabled) -> int
     {
         const int headerGroupRow   = startRow;
         const int headerChannelRow = startRow + 1;
@@ -248,6 +251,7 @@ void ShuffleMatrixWidget::buildLayout()
                 // out1 and out2 rows with matching channel names stay independent.
                 btn->setObjectName(
                     QString::fromStdString(capturedOutGroup + "|" + outputName + "|in1|" + sourceName));
+                btn->setEnabled(!buttonsDisabled);
                 const std::string capturedOutput = outputName;
                 const std::string capturedSource = sourceName;
                 connect(btn, &QPushButton::toggled,
@@ -265,6 +269,7 @@ void ShuffleMatrixWidget::buildLayout()
                 btn->setFixedWidth(22);
                 btn->setObjectName(
                     QString::fromStdString(capturedOutGroup + "|" + outputName + "|in1|const:0"));
+                btn->setEnabled(!buttonsDisabled);
                 const std::string capturedOutput = outputName;
                 connect(btn, &QPushButton::toggled,
                         [this, capturedOutGroup, capturedOutput](bool checked)
@@ -281,6 +286,7 @@ void ShuffleMatrixWidget::buildLayout()
                 btn->setFixedWidth(22);
                 btn->setObjectName(
                     QString::fromStdString(capturedOutGroup + "|" + outputName + "|in1|const:1"));
+                btn->setEnabled(!buttonsDisabled);
                 const std::string capturedOutput = outputName;
                 connect(btn, &QPushButton::toggled,
                         [this, capturedOutGroup, capturedOutput](bool checked)
@@ -299,6 +305,7 @@ void ShuffleMatrixWidget::buildLayout()
                 btn->setFixedWidth(22);
                 btn->setObjectName(
                     QString::fromStdString(capturedOutGroup + "|" + outputName + "|in2|" + sourceName));
+                btn->setEnabled(!in2Disabled);
                 const std::string capturedOutput = outputName;
                 const std::string capturedSource = sourceName;
                 connect(btn, &QPushButton::toggled,
@@ -312,6 +319,7 @@ void ShuffleMatrixWidget::buildLayout()
             QLabel* outLabel = new QLabel(
                 QString::fromStdString(shortChannelName(outputName)), this);
             outLabel->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
+            outLabel->setEnabled(!buttonsDisabled);
             _gridLayout->addWidget(outLabel, gridRow, outLabelCol);
         }
 
@@ -320,16 +328,18 @@ void ShuffleMatrixWidget::buildLayout()
 
     // ---- Build out1 group ----
     const std::string out1Label = layerNameFromChannelSet(out1Set);
-    int nextRow = buildGroup(0, out1Rows, out1Label.empty() ? "out 1" : out1Label);
+    int nextRow = buildGroup(0, out1Rows, out1Label.empty() ? "out 1" : out1Label, false);
 
     // ---- Build out2 group (with spacer above) ----
-    if (out2Active && !out2Rows.empty())
+    // Always render the out2 group — when out2 is none (Chan_Black) the group is
+    // shown but all buttons are disabled so the layout does not collapse.
+    if (!out2Rows.empty())
     {
         _gridLayout->setRowMinimumHeight(nextRow, 10);
         ++nextRow;
 
         const std::string out2Label = layerNameFromChannelSet(out2Set);
-        nextRow = buildGroup(nextRow, out2Rows, out2Label.empty() ? "out 2" : out2Label);
+        nextRow = buildGroup(nextRow, out2Rows, out2Label.empty() ? "out 2" : out2Label, out2Disabled);
     }
 
     // Ensure Nuke allocates enough vertical space in the panel.
