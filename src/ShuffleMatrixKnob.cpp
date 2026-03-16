@@ -55,7 +55,13 @@ void ShuffleMatrixKnob::store(DD::Image::StoreType /*storeType*/,
 
 WidgetPointer ShuffleMatrixKnob::make_widget(const DD::Image::WidgetContext& /*widgetContext*/)
 {
-    return new ShuffleMatrixWidget(this);
+    ShuffleMatrixWidget* widget = new ShuffleMatrixWidget(this);
+    // knob_changed(showPanel) fires BEFORE make_widget is called, so the widget
+    // is constructed with whatever ChannelSets are current. Force an immediate
+    // syncFromKnob() here to ensure column headers reflect live state from the
+    // moment the panel opens — compensates for the showPanel timing gap.
+    widget->syncFromKnob();
+    return widget;
 }
 
 // ---------------------------------------------------------------------------
