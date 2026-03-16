@@ -79,7 +79,11 @@ void ChannelButton::paintEvent(QPaintEvent* /*event*/)
 
     if (isChecked() && isEnabled())
     {
-        painter.setPen(QPen(Qt::white, 2));
+        // Choose X-mark color based on fill luminance to ensure visibility on
+        // both dark and light backgrounds. const:1 buttons have a near-white
+        // fill (lightnessF > 0.5) so the X must be drawn in black, not white.
+        const QColor xMarkColor = (fillColor.lightnessF() > 0.5) ? Qt::black : Qt::white;
+        painter.setPen(QPen(xMarkColor, 2));
         painter.drawLine(4, 4, 17, 17);
         painter.drawLine(17, 4, 4, 17);
     }
