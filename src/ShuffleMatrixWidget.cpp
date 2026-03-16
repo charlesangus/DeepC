@@ -244,6 +244,19 @@ void ShuffleMatrixWidget::buildLayout()
         _gridLayout->setColumnStretch(col, 0);
     _gridLayout->setColumnStretch(outLabelCol, 1);
 
+    // ---- Helper: create a down-arrow label with enlarged font ----
+    // ↓ (U+2193) rendered at a larger point size so the arrow is clearly visible
+    // even at the small column widths used for 22px toggle buttons.
+    auto makeArrowLabel = [&](const QString& arrowChar) -> QLabel*
+    {
+        QLabel* arrow = new QLabel(arrowChar, this);
+        arrow->setAlignment(Qt::AlignCenter);
+        QFont arrowFont = arrow->font();
+        arrowFont.setPointSize(arrowFont.pointSize() + 4);
+        arrow->setFont(arrowFont);
+        return arrow;
+    };
+
     // ---- Helper: create and populate a ChannelSet picker QComboBox ----
     //
     // Creates a QComboBox populated with all available layer names from the knob,
@@ -397,28 +410,14 @@ void ShuffleMatrixWidget::buildLayout()
         }
 
         // Row 2 of group: down-arrow labels under each source column
+        // Use the double-headed arrow (⇓, U+21D3) for a wider, more visible glyph.
+        const QString downArrow = QString::fromUtf8("\xe2\x87\x93");  // "⇓"
         for (int i = 0; i < in1Count; ++i)
-        {
-            QLabel* arrowLabel = new QLabel(QString::fromUtf8("\xe2\x86\x93"), this);  // "↓"
-            arrowLabel->setAlignment(Qt::AlignCenter);
-            _gridLayout->addWidget(arrowLabel, arrowRow, i);
-        }
-        {
-            QLabel* arrowLabel = new QLabel(QString::fromUtf8("\xe2\x86\x93"), this);
-            arrowLabel->setAlignment(Qt::AlignCenter);
-            _gridLayout->addWidget(arrowLabel, arrowRow, const0Col);
-        }
-        {
-            QLabel* arrowLabel = new QLabel(QString::fromUtf8("\xe2\x86\x93"), this);
-            arrowLabel->setAlignment(Qt::AlignCenter);
-            _gridLayout->addWidget(arrowLabel, arrowRow, const1Col);
-        }
+            _gridLayout->addWidget(makeArrowLabel(downArrow), arrowRow, i);
+        _gridLayout->addWidget(makeArrowLabel(downArrow), arrowRow, const0Col);
+        _gridLayout->addWidget(makeArrowLabel(downArrow), arrowRow, const1Col);
         for (int i = 0; i < in2Count; ++i)
-        {
-            QLabel* arrowLabel = new QLabel(QString::fromUtf8("\xe2\x86\x93"), this);
-            arrowLabel->setAlignment(Qt::AlignCenter);
-            _gridLayout->addWidget(arrowLabel, arrowRow, in2StartCol + i);
-        }
+            _gridLayout->addWidget(makeArrowLabel(downArrow), arrowRow, in2StartCol + i);
 
         // Data rows: one per output channel in this group
         for (int rowIdx = 0; rowIdx < static_cast<int>(outRows.size()); ++rowIdx)
@@ -498,12 +497,18 @@ void ShuffleMatrixWidget::buildLayout()
                 _toggleButtons.push_back(btn);
             }
 
-            // Output channel name label on the right — right-arrow prefix for visual clarity
+            // Output channel name label on the right — right-arrow prefix for visual clarity.
+            // Use ⇒ (U+21D2, double-headed right arrow) for a wider, more visible glyph.
             QLabel* outLabel = new QLabel(
-                QString::fromUtf8("\xe2\x86\x92 ") +       // "→ "
+                QString::fromUtf8("\xe2\x87\x92 ") +       // "⇒ "
                 QString::fromStdString(shortChannelName(outputName)), this);
             outLabel->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
             outLabel->setEnabled(!buttonsDisabled);
+            {
+                QFont labelFont = outLabel->font();
+                labelFont.setPointSize(labelFont.pointSize() + 2);
+                outLabel->setFont(labelFont);
+            }
             _gridLayout->addWidget(outLabel, gridRow, outLabelCol);
         }
 
