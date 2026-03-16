@@ -4,6 +4,7 @@
 #include "DDImage/ChannelSet.h"
 #include "DDImage/Op.h"
 #include <QTabWidget>
+#include <QTimer>
 #include <sstream>
 #include <map>
 
@@ -243,22 +244,77 @@ void ShuffleMatrixWidget::buildLayout()
         _gridLayout->setColumnStretch(col, 0);
     _gridLayout->setColumnStretch(outLabelCol, 1);
 
+    // ---- Helper: create and populate a ChannelSet picker QComboBox ----
+    //
+    // Creates a QComboBox populated with all available layer names from the knob,
+    // sets the current selection to currentLayerName, and connects currentTextChanged
+    // to a QTimer::singleShot(0) deferred handler that calls the supplied callback.
+    // The deferred callback breaks the re-entrant call stack that caused a segfault
+    // in the previous QComboBox attempt (commit 8785a83): the Nuke API calls that
+    // rebuild the widget are deferred to the next event loop tick, so the signal
+    // handler returns before the QComboBox that fired it can be deleted.
+
+    auto makePicker = [&](const std::string& currentLayerName,
+                          std::function<void(const QString&)> onChanged) -> QComboBox*
+    {
+        QComboBox* picker = new QComboBox(this);
+        picker->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+
+        const std::vector<std::string> layerNames = _knob->availableLayerNames();
+        int currentIndex = 0;
+        for (int idx = 0; idx < static_cast<int>(layerNames.size()); ++idx)
+        {
+            picker->addItem(QString::fromStdString(layerNames[idx]));
+            if (layerNames[idx] == currentLayerName)
+                currentIndex = idx;
+        }
+        // If currentLayerName was not in the list (e.g. a non-standard layer),
+        // add it so the current state is always visible in the picker.
+        if (currentIndex == 0 && !currentLayerName.empty() && currentLayerName != "none")
+        {
+            picker->addItem(QString::fromStdString(currentLayerName));
+            currentIndex = picker->count() - 1;
+        }
+        {
+            const QSignalBlocker blockWhileSetting(picker);
+            picker->setCurrentIndex(currentIndex);
+        }
+
+        connect(picker, &QComboBox::currentTextChanged,
+                [onChanged](const QString& selectedText)
+                {
+                    // Defer the Nuke API call to the next event loop tick via
+                    // QTimer::singleShot(0). This ensures the currentTextChanged
+                    // signal dispatch completes and the QComboBox remains alive
+                    // before syncFromKnob() rebuilds (and deletes) the widget.
+                    QTimer::singleShot(0, [onChanged, selectedText]()
+                    {
+                        onChanged(selectedText);
+                    });
+                });
+
+        return picker;
+    };
+
     // ---- Lambda: build one output group (two header rows + data rows) ----
     //
     // Each group gets its own "in 1" / "in 2" header and per-column channel
     // labels so it reads as a self-contained matrix, not part of a shared block.
     // Returns the next unused grid row.
     //
-    // groupId  — stable identity string used in button objectNames for radio
-    //            enforcement ("out1" or "out2"). Must be unique across groups.
+    // groupId    — stable identity string used in button objectNames for radio
+    //              enforcement ("out1" or "out2"). Must be unique across groups.
     // groupLabel — human-readable display name shown in the panel (layer name
     //              or "out 1"/"out 2" fallback). Independent of groupId.
+    // outPickerPtr — receives the created output picker QComboBox; used by
+    //                buildLayout() to store the pointer into _out1Picker/_out2Picker.
 
     auto buildGroup = [&](int startRow,
                           const std::vector<std::string>& outRows,
                           const std::string& groupId,
                           const std::string& groupLabel,
-                          bool buttonsDisabled) -> int
+                          bool buttonsDisabled,
+                          QComboBox** outPickerPtr) -> int
     {
         const int headerGroupRow   = startRow;
         const int headerChannelRow = startRow + 1;
@@ -284,11 +340,33 @@ void ShuffleMatrixWidget::buildLayout()
             in2Header->setAlignment(Qt::AlignCenter);
             _gridLayout->addWidget(in2Header, headerGroupRow, in2StartCol, 1, in2Count);
         }
-        if (!groupLabel.empty())
+        // Output picker: a QComboBox placed in the outLabelCol at the group header row.
+        // The picker spans all data rows of this group via rowspan so it stays
+        // visually aligned with the button rows on the left.
         {
-            QLabel* groupNameLabel = new QLabel(QString::fromStdString(groupLabel), this);
-            groupNameLabel->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
-            _gridLayout->addWidget(groupNameLabel, headerGroupRow, outLabelCol, 1, 1);
+            const int dataRowCount = static_cast<int>(outRows.size());
+            const int pickerRowSpan = 3 + (dataRowCount > 0 ? dataRowCount : 1);
+            QComboBox* outPicker = makePicker(groupLabel,
+                [this, groupId](const QString& selectedText)
+                {
+                    // Guard: widget might have been destroyed between timer post and fire.
+                    if (!_knob) return;
+                    const std::string layerText = selectedText.toStdString();
+                    // Look up the ChannelSet knob by its NDK name ("out1" or "out2").
+                    // set_text() stores the new layer name into the knob's value.
+                    // changed() notifies the Nuke event system which then calls
+                    // Op::knob_changed — this is the correct NDK trigger pattern.
+                    DD::Image::Knob* targetKnob = _knob->op()->knob(groupId.c_str());
+                    if (targetKnob)
+                    {
+                        targetKnob->set_text(layerText == "none" ? "none" : layerText.c_str());
+                        targetKnob->changed();
+                    }
+                });
+            outPicker->setEnabled(!buttonsDisabled);
+            _gridLayout->addWidget(outPicker, headerGroupRow, outLabelCol, pickerRowSpan, 1);
+            if (outPickerPtr)
+                *outPickerPtr = outPicker;
         }
 
         // Row 1 of group: per-column short channel name labels
@@ -432,12 +510,68 @@ void ShuffleMatrixWidget::buildLayout()
         return dataStartRow + static_cast<int>(outRows.size());
     };
 
+    // ---- Row 0: in1 and in2 ChannelSet pickers ----
+    //
+    // in1 picker spans the in1 toggle columns; in2 picker spans const + in2 columns.
+    // Both are placed in the same row (row 0) so they sit directly above their
+    // respective column groups, matching the target 2-column layout:
+    //
+    //   [in1 picker]           [in2 picker]
+    //   [in1→out1 matrix]      [in2→out1 matrix]   [out1 picker]
+    //   [in1→out2 matrix]      [in2→out2 matrix]   [out2 picker]
+
+    const int pickerRow = 0;
+
+    {
+        const std::string in1LayerName = layerNameFromChannelSet(in1Set);
+        _in1Picker = makePicker(
+            in1LayerName.empty() ? "none" : in1LayerName,
+            [this](const QString& selectedText)
+            {
+                if (!_knob) return;
+                DD::Image::Knob* targetKnob = _knob->op()->knob("in1");
+                if (targetKnob)
+                {
+                    targetKnob->set_text(selectedText.toStdString().c_str());
+                    targetKnob->changed();
+                }
+            });
+        // Span in1 columns; fall back to 1 column if in1 is empty.
+        const int in1Span = (in1Count > 0) ? in1Count : 1;
+        _gridLayout->addWidget(_in1Picker, pickerRow, 0, 1, in1Span);
+    }
+
+    {
+        const std::string in2LayerName = layerNameFromChannelSet(in2Set);
+        _in2Picker = makePicker(
+            (in2Disabled || in2LayerName.empty()) ? "none" : in2LayerName,
+            [this](const QString& selectedText)
+            {
+                if (!_knob) return;
+                DD::Image::Knob* targetKnob = _knob->op()->knob("in2");
+                if (targetKnob)
+                {
+                    targetKnob->set_text(selectedText.toStdString().c_str());
+                    targetKnob->changed();
+                }
+            });
+        // Span const columns (2) + in2 columns. If in2 has placeholder cols,
+        // in2Count is already 4 (placeholders), so this will span correctly.
+        const int in2Span = 2 + in2Count;
+        _gridLayout->addWidget(_in2Picker, pickerRow, const0Col, 1, in2Span);
+    }
+
+    // Groups start at row 1 (row 0 is occupied by the input pickers).
+    int nextRow = 1;
+
     // ---- Build out1 group ----
     // groupId "out1" is a stable identity token used in button objectNames for
     // radio-scope enforcement. groupLabel is the human-readable layer name shown
     // in the panel UI. These two values must be kept independent.
     const std::string out1Label = layerNameFromChannelSet(out1Set);
-    int nextRow = buildGroup(0, out1Rows, "out1", out1Label.empty() ? "out 1" : out1Label, false);
+    nextRow = buildGroup(nextRow, out1Rows, "out1",
+                         out1Label.empty() ? "none" : out1Label,
+                         false, &_out1Picker);
 
     // ---- Build out2 group (with spacer above) ----
     // Always render the out2 group — when out2 is none (Chan_Black) the group is
@@ -448,16 +582,26 @@ void ShuffleMatrixWidget::buildLayout()
         ++nextRow;
 
         const std::string out2Label = layerNameFromChannelSet(out2Set);
-        nextRow = buildGroup(nextRow, out2Rows, "out2", out2Label.empty() ? "out 2" : out2Label, out2Disabled);
+        nextRow = buildGroup(nextRow, out2Rows, "out2",
+                             (out2Disabled || out2Label.empty()) ? "none" : out2Label,
+                             out2Disabled, &_out2Picker);
     }
 
     // Ensure Nuke allocates enough vertical space in the panel.
     // Use 28px per row to account for the extra arrow row added per group.
-    setMinimumHeight(nextRow * 28);
+    setMinimumHeight((nextRow + 1) * 28);
 }
 
 void ShuffleMatrixWidget::clearLayout()
 {
+    // Null picker pointers before deleting — they will be deleted by the layout
+    // takeAt loop below as child widgets. Nulling here prevents any dangling
+    // dereference if a deferred QTimer fires between clearLayout and buildLayout.
+    _in1Picker  = nullptr;
+    _in2Picker  = nullptr;
+    _out1Picker = nullptr;
+    _out2Picker = nullptr;
+
     while (QLayoutItem* item = _gridLayout->takeAt(0))
     {
         delete item->widget();

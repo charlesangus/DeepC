@@ -261,24 +261,29 @@ bool DeepCShuffle2::doDeepEngine(DD::Image::Box bbox,
 // -----------------------------------------------------------------------------
 void DeepCShuffle2::knobs(Knob_Callback f)
 {
-    // in1/in2 appear above the matrix widget in the panel (registered first).
+    // The four ChannelSet knobs are marked INVISIBLE so they do not appear as
+    // separate rows in the node panel — the QComboBox pickers embedded inside
+    // ShuffleMatrixWidget are the user-facing controls for layer selection.
+    // KNOB_CHANGED_ALWAYS is retained so knob_changed() still fires on any
+    // value change (e.g. from the deferred set_text() + knob_changed() call in
+    // the picker signal handler) and the .nk script serialization works correctly.
     Input_ChannelSet_knob(f, &_in1ChannelSet, 0, "in1", "in 1");
-    SetFlags(f, Knob::KNOB_CHANGED_ALWAYS);
+    SetFlags(f, Knob::INVISIBLE | Knob::KNOB_CHANGED_ALWAYS);
 
     Input_ChannelSet_knob(f, &_in2ChannelSet, 0, "in2", "in 2");
-    SetFlags(f, Knob::KNOB_CHANGED_ALWAYS);
+    SetFlags(f, Knob::INVISIBLE | Knob::KNOB_CHANGED_ALWAYS);
 
-    // The routing matrix widget occupies the center of the panel.
+    // The routing matrix widget occupies the full panel — input pickers are
+    // embedded at the top, output pickers are embedded to the right of each
+    // output row group.
     CustomKnob2(ShuffleMatrixKnob, f, &_matrixState, "matrix", "routing");
 
-    // out1/out2 appear below the matrix widget in the panel (registered after).
-    // NDK panel layout flows top-to-bottom in registration order; inline horizontal
-    // placement beside the matrix is not achievable via standard NDK knob ordering.
+    // out1/out2 are also INVISIBLE — pickers inside the widget handle selection.
     Input_ChannelSet_knob(f, &_out1ChannelSet, 0, "out1", "out 1");
-    SetFlags(f, Knob::KNOB_CHANGED_ALWAYS);
+    SetFlags(f, Knob::INVISIBLE | Knob::KNOB_CHANGED_ALWAYS);
 
     Input_ChannelSet_knob(f, &_out2ChannelSet, 0, "out2", "out 2");
-    SetFlags(f, Knob::KNOB_CHANGED_ALWAYS);
+    SetFlags(f, Knob::INVISIBLE | Knob::KNOB_CHANGED_ALWAYS);
 }
 
 // -----------------------------------------------------------------------------

@@ -6,6 +6,7 @@
 #include <QGridLayout>
 #include <QPushButton>
 #include <QLabel>
+#include <QComboBox>
 #include <QPainter>
 #include <QPen>
 #include <vector>
@@ -143,8 +144,22 @@ private:
 
     /**
      * Flat list of all toggle ChannelButtons in row-major order.
-     * Object names use "outputChannelName|inputGroup|sourceChannelName" format for state sync.
+     * Object names use "groupId|outputChannelName|inputGroup|sourceChannelName" format.
      * ChannelButton inherits QPushButton — all QPushButton method calls remain valid.
      */
     std::vector<ChannelButton*> _toggleButtons;
+
+    /**
+     * ChannelSet picker QComboBoxes — one per input/output group.
+     * Created in buildLayout() and deleted in clearLayout() via the grid layout.
+     * Null between clearLayout() and the next buildLayout() call.
+     *
+     * Signal handlers use QTimer::singleShot(0, ...) to defer all Nuke API
+     * calls to the next event loop tick, preventing re-entrant destruction of
+     * the widget while it is still inside a currentTextChanged signal handler.
+     */
+    QComboBox* _in1Picker  = nullptr;
+    QComboBox* _in2Picker  = nullptr;
+    QComboBox* _out1Picker = nullptr;
+    QComboBox* _out2Picker = nullptr;
 };

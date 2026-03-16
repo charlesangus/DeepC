@@ -1,8 +1,12 @@
 #include "ShuffleMatrixKnob.h"
 #include "ShuffleMatrixWidget.h"
 #include "DDImage/Channel.h"
+#include "DDImage/Op.h"
 #include <ostream>
 #include <sstream>
+#include <set>
+#include <vector>
+#include <string>
 
 // ---------------------------------------------------------------------------
 // Knob identity
@@ -134,4 +138,36 @@ const DD::Image::ChannelSet& ShuffleMatrixKnob::out1ChannelSet() const
 const DD::Image::ChannelSet& ShuffleMatrixKnob::out2ChannelSet() const
 {
     return _out2ChannelSet;
+}
+
+std::vector<std::string> ShuffleMatrixKnob::availableLayerNames() const
+{
+    std::vector<std::string> layerNames;
+    layerNames.push_back("none");  // always first: Chan_Black / no channels
+
+    // Collect unique layer names from all channels known to the NDK.
+    // DD::Image::Chan_Last is the upper bound of defined channels.
+    // We iterate all defined channels and extract the layer (prefix before '.').
+    std::set<std::string> seen;
+    for (int channelIndex = 1; channelIndex < DD::Image::Chan_Last; ++channelIndex)
+    {
+        const DD::Image::Channel channel = static_cast<DD::Image::Channel>(channelIndex);
+        const char* fullName = DD::Image::getName(channel);
+        if (!fullName || fullName[0] == '\0')
+            continue;
+
+        const std::string fullNameStr(fullName);
+        const std::string::size_type dotPos = fullNameStr.rfind('.');
+        if (dotPos == std::string::npos)
+            continue;
+
+        const std::string layerName = fullNameStr.substr(0, dotPos);
+        if (layerName.empty() || layerName == "other")
+            continue;
+
+        if (seen.insert(layerName).second)
+            layerNames.push_back(layerName);
+    }
+
+    return layerNames;
 }

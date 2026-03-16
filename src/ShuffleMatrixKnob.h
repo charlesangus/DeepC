@@ -7,6 +7,7 @@
 #include <string>
 #include <sstream>
 #include <array>
+#include <vector>
 
 // Forward declare the Qt widget — do not include ShuffleMatrixWidget.h here
 // to avoid a circular dependency (widget header includes this header for knob pointer).
@@ -140,6 +141,14 @@ public:
     const DD::Image::ChannelSet& in2ChannelSet() const;
     const DD::Image::ChannelSet& out1ChannelSet() const;
     const DD::Image::ChannelSet& out2ChannelSet() const;
+
+    /**
+     * Returns a sorted list of unique layer names available from the Op's
+     * input node (e.g. {"depth", "rgba"}). Used to populate the ChannelSet
+     * picker QComboBoxes without calling back into the Op from the widget.
+     * Always includes "none" as the first entry for Chan_Black selection.
+     */
+    std::vector<std::string> availableLayerNames() const;
 
     /**
      * Called from ShuffleMatrixWidget's WidgetCallback (kDestroying reason) to
