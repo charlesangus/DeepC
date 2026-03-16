@@ -6,6 +6,8 @@
 #include <QGridLayout>
 #include <QPushButton>
 #include <QLabel>
+#include <QPainter>
+#include <QPen>
 #include <vector>
 #include <string>
 
@@ -13,6 +15,29 @@
 // declaration level to avoid a circular include dependency.
 // The .cpp implementation file includes both headers.
 class ShuffleMatrixKnob;
+
+// Returns the Nuke-standard display color for a short channel name (e.g. "red", "g", "alpha").
+QColor nukeChannelColor(const std::string& shortChannelName);
+
+/**
+ * ChannelButton — QPushButton subclass used in the ShuffleMatrixWidget.
+ *
+ * Renders a colored square that matches the Nuke channel color convention.
+ * When checked, draws a white X mark across the button face via paintEvent.
+ * When disabled, renders in a neutral dark grey regardless of channel color.
+ */
+class ChannelButton : public QPushButton
+{
+    Q_OBJECT
+public:
+    explicit ChannelButton(QColor baseColor, QWidget* parent = nullptr);
+
+protected:
+    void paintEvent(QPaintEvent* event) override;
+
+private:
+    QColor _baseColor;
+};
 
 /**
  * ShuffleMatrixWidget — Qt widget embedded in the DeepCShuffle node panel.
@@ -117,10 +142,11 @@ private:
     QGridLayout* _gridLayout;
 
     /**
-     * Flat list of all toggle QPushButtons in row-major order.
-     * Object names use "outputChannelName|sourceChannelName" format for state sync.
+     * Flat list of all toggle ChannelButtons in row-major order.
+     * Object names use "outputChannelName|inputGroup|sourceChannelName" format for state sync.
+     * ChannelButton inherits QPushButton — all QPushButton method calls remain valid.
      */
-    std::vector<QPushButton*> _toggleButtons;
+    std::vector<ChannelButton*> _toggleButtons;
 
     /**
      * Ordered list of all toggle QPushButtons in row-major order.
