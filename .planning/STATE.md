@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: "Phase 3 context gathered — ready for /gsd:plan-phase 3"
-stopped_at: Phase 03.1 context gathered
-last_updated: "2026-03-16T05:58:53.130Z"
+stopped_at: Completed 03.1-01-PLAN.md
+last_updated: "2026-03-16T06:22:55.968Z"
 last_activity: 2026-03-14 — Phase 3 discuss complete; 03-CONTEXT.md written
 progress:
   total_phases: 6
   completed_phases: 3
-  total_plans: 10
-  completed_plans: 10
+  total_plans: 14
+  completed_plans: 11
   percent: 100
 ---
 
@@ -61,6 +61,7 @@ Progress: [██████████] 100%
 | Phase 03-deepshuffle-ui P02 | 9 | 2 tasks | 3 files |
 | Phase 03-deepshuffle-ui P03 | 2 | 2 tasks | 3 files |
 | Phase 03-deepshuffle-ui P04 | 35 | 2 tasks | 3 files |
+| Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour P01 | 4 | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -104,6 +105,10 @@ Recent decisions affecting current work:
 - [Phase 03-deepshuffle-ui]: Button objectName stores outName|srcName as self-describing identity token, avoiding a separate metadata side table
 - [Phase 03-deepshuffle-ui]: New implementation registered as DeepCShuffle2; original DeepCShuffle preserved unchanged for backward compatibility
 - [Phase 03-deepshuffle-ui]: ShuffleMatrixWidget.cpp linker error fixed by creating separate DeepCShuffle2 CMake target that properly compiles widget sources
+- [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: Radio no-op guard in onCellToggled — if (!checked) return; prevents rows from being left with no source
+- [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: outputGroup scopes radio enforcement — out1 and out2 rows with identical channel names stay independent
+- [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: const buttons serialized with inputGroup 'in1' — const:0 and const:1 are virtual in1 sources
+- [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: initializeState() does not call changed() — avoids recursive rebuild when writing identity routing on first open
 
 ### Pending Todos
 
@@ -115,6 +120,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-16T05:58:53.127Z
-Stopped at: Phase 03.1 context gathered
-Resume file: .planning/phases/03.1-refine-and-fix-deepcshuffle-ui-behaviour/03.1-CONTEXT.md
+Last session: 2026-03-16T06:22:55.965Z
+Stopped at: Completed 03.1-01-PLAN.md
+Resume file: None
