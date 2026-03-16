@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: "Phase 3 context gathered — ready for /gsd:plan-phase 3"
-stopped_at: Completed 03.1-01-PLAN.md
-last_updated: "2026-03-16T06:22:55.968Z"
+stopped_at: Completed 03.1-02-PLAN.md
+last_updated: "2026-03-16T06:26:19.966Z"
 last_activity: 2026-03-14 — Phase 3 discuss complete; 03-CONTEXT.md written
 progress:
   total_phases: 6
   completed_phases: 3
   total_plans: 14
-  completed_plans: 11
+  completed_plans: 12
   percent: 100
 ---
 
@@ -62,6 +62,7 @@ Progress: [██████████] 100%
 | Phase 03-deepshuffle-ui P03 | 2 | 2 tasks | 3 files |
 | Phase 03-deepshuffle-ui P04 | 35 | 2 tasks | 3 files |
 | Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour P01 | 4 | 2 tasks | 4 files |
+| Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour P02 | 1 | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -109,6 +110,8 @@ Recent decisions affecting current work:
 - [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: outputGroup scopes radio enforcement — out1 and out2 rows with identical channel names stay independent
 - [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: const buttons serialized with inputGroup 'in1' — const:0 and const:1 are virtual in1 sources
 - [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: initializeState() does not call changed() — avoids recursive rebuild when writing identity routing on first open
+- [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: buildGroup accepts buttonsDisabled param — row-level disable propagates to in1/const/outLabel; in2 buttons use separate in2Disabled flag captured from outer scope
+- [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: make_widget calls syncFromKnob() after construction — compensates for showPanel timing gap that caused first-open stale headers
 
 ### Pending Todos
 
@@ -120,6 +123,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-16T06:22:55.965Z
-Stopped at: Completed 03.1-01-PLAN.md
+Last session: 2026-03-16T06:26:19.963Z
+Stopped at: Completed 03.1-02-PLAN.md
 Resume file: None

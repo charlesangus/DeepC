@@ -73,7 +73,7 @@ Plans:
 **Goal:** DeepCShuffle2 has full visual and behavioral parity with the reference Shuffle2 node: colored X-mark channel buttons, embedded ChannelSet pickers, radio enforcement scoped to each output group, const:0/1 source columns, identity routing on first open, and disabled-not-hidden behavior for none ChannelSets.
 **Requirements**: none (fix phase — all SHUF requirements already marked complete)
 **Depends on:** Phase 3
-**Plans:** 1/4 plans executed
+**Plans:** 2/4 plans executed
 
 Plans:
 - [ ] 03.1-01-PLAN.md — Fix radio no-op guard, outGroup radio scope, add const:0/1 columns, identity routing init
