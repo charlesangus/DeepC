@@ -69,13 +69,16 @@ void ChannelButton::paintEvent(QPaintEvent* /*event*/)
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
 
-    QColor fillColor = isEnabled() ? _baseColor : QColor(55, 55, 55);
+    // Disabled fill: QColor(85,85,85) is visibly distinct from Nuke's ~#2b2b2b panel
+    // background, whereas the previous QColor(55,55,55) was essentially invisible.
+    QColor fillColor = isEnabled() ? _baseColor : QColor(85, 85, 85);
     if (isChecked() && isEnabled())
         fillColor = fillColor.lighter(130);
 
     painter.fillRect(rect(), fillColor);
 
-    painter.setPen(QPen(QColor(25, 25, 25), 1));
+    const QColor borderColor = isEnabled() ? QColor(25, 25, 25) : QColor(110, 110, 110);
+    painter.setPen(QPen(borderColor, 1));
     painter.drawRect(rect().adjusted(0, 0, -1, -1));
 
     if (isChecked() && isEnabled())
@@ -88,6 +91,41 @@ void ChannelButton::paintEvent(QPaintEvent* /*event*/)
         painter.drawLine(4, 4, 17, 17);
         painter.drawLine(17, 4, 4, 17);
     }
+}
+
+// ---------------------------------------------------------------------------
+// ArrowLabel — constructor and paintEvent
+// ---------------------------------------------------------------------------
+
+ArrowLabel::ArrowLabel(Direction direction, QWidget* parent)
+    : QWidget(parent)
+    , _direction(direction)
+{
+    setFixedSize(22, 22);
+}
+
+void ArrowLabel::paintEvent(QPaintEvent* /*event*/)
+{
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+
+    // Solid filled triangle, centered in the 22x22 cell.
+    // Color is a muted light grey that reads clearly on Nuke's dark panel background.
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(160, 160, 160));
+
+    QPolygon arrowShape;
+    if (_direction == Down)
+    {
+        // Downward-pointing triangle: wide base at top, apex at bottom center.
+        arrowShape << QPoint(4, 7) << QPoint(18, 7) << QPoint(11, 16);
+    }
+    else // Right
+    {
+        // Rightward-pointing triangle: tall base on left, apex at right center.
+        arrowShape << QPoint(7, 4) << QPoint(7, 18) << QPoint(16, 11);
+    }
+    painter.drawPolygon(arrowShape);
 }
 
 // ---------------------------------------------------------------------------
@@ -261,21 +299,6 @@ void ShuffleMatrixWidget::buildLayout()
     _gridLayout->setColumnMinimumWidth(sepBeforeConstCol, 8);
     _gridLayout->setColumnMinimumWidth(sepAfterConstCol,  8);
 
-    // ---- Helper: create a down-arrow label with enlarged font ----
-    // ⇓ (U+21D3) rendered at a large, bold point size so the arrow has the same
-    // visual weight and height as a ChannelButton (22px fixed height).
-    auto makeArrowLabel = [&](const QString& arrowChar) -> QLabel*
-    {
-        QLabel* arrow = new QLabel(arrowChar, this);
-        arrow->setAlignment(Qt::AlignCenter);
-        arrow->setFixedHeight(22);  // match ChannelButton fixed height exactly
-        QFont arrowFont = arrow->font();
-        arrowFont.setPointSize(18);
-        arrowFont.setBold(true);
-        arrow->setFont(arrowFont);
-        return arrow;
-    };
-
     // ---- Helper: create and populate a ChannelSet picker QComboBox ----
     //
     // Creates a QComboBox populated with all available layer names from the knob,
@@ -429,15 +452,15 @@ void ShuffleMatrixWidget::buildLayout()
             _gridLayout->addWidget(label, headerChannelRow, in2StartCol + i);
         }
 
-        // Row 2 of group: down-arrow labels under each source column
-        // Use the double-headed arrow (⇓, U+21D3) for a wider, more visible glyph.
-        const QString downArrow = QString::fromUtf8("\xe2\x87\x93");  // "⇓"
+        // Row 2 of group: down-arrow indicators under each source column.
+        // ArrowLabel uses setFixedSize(22, 22) — matching ChannelButton exactly —
+        // so QGridLayout cannot widen any column due to an oversized glyph.
         for (int i = 0; i < in1Count; ++i)
-            _gridLayout->addWidget(makeArrowLabel(downArrow), arrowRow, i);
-        _gridLayout->addWidget(makeArrowLabel(downArrow), arrowRow, const0Col);
-        _gridLayout->addWidget(makeArrowLabel(downArrow), arrowRow, const1Col);
+            _gridLayout->addWidget(new ArrowLabel(ArrowLabel::Down, this), arrowRow, i);
+        _gridLayout->addWidget(new ArrowLabel(ArrowLabel::Down, this), arrowRow, const0Col);
+        _gridLayout->addWidget(new ArrowLabel(ArrowLabel::Down, this), arrowRow, const1Col);
         for (int i = 0; i < in2Count; ++i)
-            _gridLayout->addWidget(makeArrowLabel(downArrow), arrowRow, in2StartCol + i);
+            _gridLayout->addWidget(new ArrowLabel(ArrowLabel::Down, this), arrowRow, in2StartCol + i);
 
         // Data rows: one per output channel in this group
         for (int rowIdx = 0; rowIdx < static_cast<int>(outRows.size()); ++rowIdx)
@@ -586,10 +609,10 @@ void ShuffleMatrixWidget::buildLayout()
                     targetKnob->changed();
                 }
             });
-        // Span: separator before const (1) + const:0 (1) + const:1 (1) + separator after const (1) + in2 columns.
-        // Starts at sepBeforeConstCol so the picker visually covers the entire const+in2 column group.
-        const int in2Span = 1 + 2 + 1 + in2Count;  // sep + const:0 + const:1 + sep + in2 columns
-        _gridLayout->addWidget(_in2Picker, pickerRow, sepBeforeConstCol, 1, in2Span);
+        // Span only the in2 columns — do not absorb the separator columns so they
+        // remain visually present as gaps between the const group and the in2 group.
+        const int in2Span = (in2Count > 0) ? in2Count : 1;
+        _gridLayout->addWidget(_in2Picker, pickerRow, in2StartCol, 1, in2Span);
     }
 
     // Groups start at row 1 (row 0 is occupied by the input pickers).

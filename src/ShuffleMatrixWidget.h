@@ -41,6 +41,28 @@ private:
 };
 
 /**
+ * ArrowLabel — custom QPainter widget for directional arrow indicators.
+ *
+ * Renders a solid filled triangle arrow centered in a fixed 22x22 cell,
+ * matching ChannelButton dimensions exactly. Using a fixed-size custom widget
+ * instead of a QLabel with a font glyph prevents QGridLayout column-width
+ * inconsistencies caused by variable-width bold text at large point sizes.
+ */
+class ArrowLabel : public QWidget
+{
+    Q_OBJECT
+public:
+    enum Direction { Down, Right };
+    explicit ArrowLabel(Direction direction, QWidget* parent = nullptr);
+
+protected:
+    void paintEvent(QPaintEvent* event) override;
+
+private:
+    Direction _direction;
+};
+
+/**
  * ShuffleMatrixWidget — Qt widget embedded in the DeepCShuffle node panel.
  *
  * Displays a toggle-button matrix that matches the reference Shuffle node UI:
