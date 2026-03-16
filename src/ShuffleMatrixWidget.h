@@ -8,7 +8,6 @@
 #include <QLabel>
 #include <QPainter>
 #include <QPen>
-#include <QComboBox>
 #include <vector>
 #include <string>
 
@@ -57,7 +56,7 @@ private:
  *   "const:1" — constant 1.0 value
  *
  * Grid layout structure (row indices are zero-based):
- *   Row 0:  in-group header labels — blank, "in 1" (spanning in1 cols), "0", "1",
+ *   Row 0:  in-group header labels — "in 1" (spanning in1 cols), "const" (spanning 0/1 cols),
  *             "in 2" (spanning in2 cols if active), blank for output label column
  *   Row 1:  channel name labels (r, g, b, a …) + "0", "1" + in2 channel names
  *   Row 2:  down-arrow labels under each source column
@@ -148,38 +147,4 @@ private:
      * ChannelButton inherits QPushButton — all QPushButton method calls remain valid.
      */
     std::vector<ChannelButton*> _toggleButtons;
-
-    /**
-     * Embedded layer-picker QComboBoxes displayed inside the matrix widget header rows.
-     * in1/in2 pickers appear above their respective column groups; out1/out2 pickers
-     * appear to the right of their respective row groups.
-     *
-     * These pointers are set to nullptr by clearLayout() (the widgets are deleted by
-     * the layout cleanup) and recreated fresh in each buildLayout() call.
-     */
-    QComboBox* _in1Picker;
-    QComboBox* _in2Picker;
-    QComboBox* _out1Picker;
-    QComboBox* _out2Picker;
-
-    /**
-     * Populates a layer-picker QComboBox with known layer names and selects the
-     * layer currently shown by the given layer name string.
-     *
-     * @param picker            The QComboBox to populate.
-     * @param currentLayerName  The layer name to pre-select (e.g. "rgba", "depth").
-     *                          Pass an empty string to default to "none".
-     */
-    void populatePicker(QComboBox* picker, const std::string& currentLayerName);
-
-    /**
-     * Called when a picker's selection changes. Updates the corresponding NDK
-     * ChannelSet knob on the Op and triggers knob_changed so the matrix columns/rows
-     * rebuild immediately.
-     *
-     * @param knobName      NDK knob name: "in1", "in2", "out1", or "out2".
-     * @param selectedLayer Layer name chosen in the picker (e.g. "rgba", "depth").
-     *                      "none" maps to an empty string passed to set_text().
-     */
-    void onPickerChanged(const std::string& knobName, const std::string& selectedLayer);
 };

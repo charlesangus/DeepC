@@ -261,19 +261,24 @@ bool DeepCShuffle2::doDeepEngine(DD::Image::Box bbox,
 // -----------------------------------------------------------------------------
 void DeepCShuffle2::knobs(Knob_Callback f)
 {
+    // in1/in2 appear above the matrix widget in the panel (registered first).
     Input_ChannelSet_knob(f, &_in1ChannelSet, 0, "in1", "in 1");
-    SetFlags(f, Knob::KNOB_CHANGED_ALWAYS | Knob::INVISIBLE);
+    SetFlags(f, Knob::KNOB_CHANGED_ALWAYS);
 
     Input_ChannelSet_knob(f, &_in2ChannelSet, 0, "in2", "in 2");
-    SetFlags(f, Knob::KNOB_CHANGED_ALWAYS | Knob::INVISIBLE);
+    SetFlags(f, Knob::KNOB_CHANGED_ALWAYS);
 
+    // The routing matrix widget occupies the center of the panel.
+    CustomKnob2(ShuffleMatrixKnob, f, &_matrixState, "matrix", "routing");
+
+    // out1/out2 appear below the matrix widget in the panel (registered after).
+    // NDK panel layout flows top-to-bottom in registration order; inline horizontal
+    // placement beside the matrix is not achievable via standard NDK knob ordering.
     Input_ChannelSet_knob(f, &_out1ChannelSet, 0, "out1", "out 1");
-    SetFlags(f, Knob::KNOB_CHANGED_ALWAYS | Knob::INVISIBLE);
+    SetFlags(f, Knob::KNOB_CHANGED_ALWAYS);
 
     Input_ChannelSet_knob(f, &_out2ChannelSet, 0, "out2", "out 2");
-    SetFlags(f, Knob::KNOB_CHANGED_ALWAYS | Knob::INVISIBLE);
-
-    CustomKnob2(ShuffleMatrixKnob, f, &_matrixState, "matrix", "routing");
+    SetFlags(f, Knob::KNOB_CHANGED_ALWAYS);
 }
 
 // -----------------------------------------------------------------------------
