@@ -216,23 +216,37 @@ void ShuffleMatrixWidget::buildLayout()
             out2Rows.push_back(DD::Image::getName(ch));
         }
     }
+    if (out2Disabled && out2Rows.empty())
+    {
+        // Insert fixed placeholder row names so the out2 section always renders
+        // as a visible greyed-out group even when no layer is selected.
+        out2Rows.push_back("rgba.red");
+        out2Rows.push_back("rgba.green");
+        out2Rows.push_back("rgba.blue");
+        out2Rows.push_back("rgba.alpha");
+    }
 
     // ---- Shared column layout ----
     //
     //   Cols 0 .. in1Count-1           : in1 toggle columns
-    //   Col  in1Count                  : "0" const column (constant 0.0 source)
-    //   Col  in1Count+1                : "1" const column (constant 1.0 source)
-    //   Cols in1Count+2 .. +in2Count+1 : in2 toggle columns (always rendered; disabled if in2=none)
+    //   Col  in1Count                  : 8px separator between in1 and const:0
+    //   Col  in1Count+1                : "0" const column (constant 0.0 source)
+    //   Col  in1Count+2                : "1" const column (constant 1.0 source)
+    //   Col  in1Count+3                : 8px separator between const:1 and in2
+    //   Cols in1Count+4 .. +in2Count+3 : in2 toggle columns (always rendered; disabled if in2=none)
     //   Col  outLabelCol               : output channel name / group name label
     //
-    // No spacer column between const and in2 — column groups flow directly into each other.
+    // The two const columns have normal 2px inter-column spacing between them.
+    // An 8px separator column on each outer side gives visual separation from in1/in2 groups.
 
-    const int in1Count     = static_cast<int>(in1Columns.size());
-    const int in2Count     = static_cast<int>(in2Columns.size());
-    const int const0Col    = in1Count;
-    const int const1Col    = in1Count + 1;
-    const int in2StartCol  = in1Count + 2;
-    const int outLabelCol  = in2StartCol + in2Count;
+    const int in1Count          = static_cast<int>(in1Columns.size());
+    const int in2Count          = static_cast<int>(in2Columns.size());
+    const int sepBeforeConstCol = in1Count;        // 8px separator before const:0
+    const int const0Col         = in1Count + 1;
+    const int const1Col         = in1Count + 2;
+    const int sepAfterConstCol  = in1Count + 3;    // 8px separator after const:1
+    const int in2StartCol       = in1Count + 4;
+    const int outLabelCol       = in2StartCol + in2Count;
 
     _toggleButtons.clear();
 
@@ -240,19 +254,24 @@ void ShuffleMatrixWidget::buildLayout()
     // All button and label-header columns are fixed to their content width
     // (buttons are 22x22px). The output label column on the right gets all
     // remaining stretch so it expands without pushing the button columns apart.
+    // Separator columns get a fixed minimum width of 8px with zero stretch.
     for (int col = 0; col < outLabelCol; ++col)
         _gridLayout->setColumnStretch(col, 0);
     _gridLayout->setColumnStretch(outLabelCol, 1);
+    _gridLayout->setColumnMinimumWidth(sepBeforeConstCol, 8);
+    _gridLayout->setColumnMinimumWidth(sepAfterConstCol,  8);
 
     // ---- Helper: create a down-arrow label with enlarged font ----
-    // ↓ (U+2193) rendered at a larger point size so the arrow is clearly visible
-    // even at the small column widths used for 22px toggle buttons.
+    // ⇓ (U+21D3) rendered at a large, bold point size so the arrow has the same
+    // visual weight and height as a ChannelButton (22px fixed height).
     auto makeArrowLabel = [&](const QString& arrowChar) -> QLabel*
     {
         QLabel* arrow = new QLabel(arrowChar, this);
         arrow->setAlignment(Qt::AlignCenter);
+        arrow->setFixedHeight(22);  // match ChannelButton fixed height exactly
         QFont arrowFont = arrow->font();
-        arrowFont.setPointSize(arrowFont.pointSize() + 4);
+        arrowFont.setPointSize(18);
+        arrowFont.setBold(true);
         arrow->setFont(arrowFont);
         return arrow;
     };
@@ -367,12 +386,13 @@ void ShuffleMatrixWidget::buildLayout()
                     const std::string layerText = selectedText.toStdString();
                     // Look up the ChannelSet knob by its NDK name ("out1" or "out2").
                     // set_text() stores the new layer name into the knob's value.
-                    // changed() notifies the Nuke event system which then calls
-                    // Op::knob_changed — this is the correct NDK trigger pattern.
+                    // knob_changed() is called immediately so the Op resolves the new
+                    // ChannelSet and rebuilds the matrix synchronously via syncWidgetNow().
                     DD::Image::Knob* targetKnob = _knob->op()->knob(groupId.c_str());
                     if (targetKnob)
                     {
                         targetKnob->set_text(layerText == "none" ? "none" : layerText.c_str());
+                        _knob->op()->knob_changed(targetKnob);
                         targetKnob->changed();
                     }
                 });
@@ -538,6 +558,11 @@ void ShuffleMatrixWidget::buildLayout()
                 if (targetKnob)
                 {
                     targetKnob->set_text(selectedText.toStdString().c_str());
+                    // Call knob_changed() immediately so the Op resolves the new
+                    // ChannelSet and calls setChannelSets()+syncWidgetNow() before
+                    // the async kUpdateWidgets callback fires. Without this the matrix
+                    // shows stale channel names until the next interaction.
+                    _knob->op()->knob_changed(targetKnob);
                     targetKnob->changed();
                 }
             });
@@ -557,13 +582,14 @@ void ShuffleMatrixWidget::buildLayout()
                 if (targetKnob)
                 {
                     targetKnob->set_text(selectedText.toStdString().c_str());
+                    _knob->op()->knob_changed(targetKnob);
                     targetKnob->changed();
                 }
             });
-        // Span const columns (2) + in2 columns. If in2 has placeholder cols,
-        // in2Count is already 4 (placeholders), so this will span correctly.
-        const int in2Span = 2 + in2Count;
-        _gridLayout->addWidget(_in2Picker, pickerRow, const0Col, 1, in2Span);
+        // Span: separator before const (1) + const:0 (1) + const:1 (1) + separator after const (1) + in2 columns.
+        // Starts at sepBeforeConstCol so the picker visually covers the entire const+in2 column group.
+        const int in2Span = 1 + 2 + 1 + in2Count;  // sep + const:0 + const:1 + sep + in2 columns
+        _gridLayout->addWidget(_in2Picker, pickerRow, sepBeforeConstCol, 1, in2Span);
     }
 
     // Groups start at row 1 (row 0 is occupied by the input pickers).
@@ -580,8 +606,8 @@ void ShuffleMatrixWidget::buildLayout()
 
     // ---- Build out2 group (with spacer above) ----
     // Always render the out2 group — when out2 is none (Chan_Black) the group is
-    // shown but all buttons are disabled so the layout does not collapse.
-    if (!out2Rows.empty())
+    // shown with placeholder rows but all buttons are disabled so the layout stays
+    // consistent and the picker remains accessible.
     {
         _gridLayout->setRowMinimumHeight(nextRow, 10);
         ++nextRow;
