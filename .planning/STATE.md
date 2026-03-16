@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: "Phase 3 context gathered — ready for /gsd:plan-phase 3"
-stopped_at: Completed 03.1-04-PLAN.md — awaiting UAT checkpoint
-last_updated: "2026-03-16T06:35:57.583Z"
+stopped_at: Completed 03.1-04-PLAN.md — Phase 03.1 complete
+last_updated: "2026-03-16T08:42:56.764Z"
 last_activity: 2026-03-14 — Phase 3 discuss complete; 03-CONTEXT.md written
 progress:
   total_phases: 6
@@ -65,6 +65,7 @@ Progress: [██████████] 100%
 | Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour P02 | 1 | 2 tasks | 2 files |
 | Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour P03 | 2 | 2 tasks | 2 files |
 | Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour P04 | 3 | 1 tasks | 3 files |
+| Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour P04 | 25 | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -119,6 +120,9 @@ Recent decisions affecting current work:
 - [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: Knob::INVISIBLE + KNOB_CHANGED_ALWAYS: hides panel row while keeping knob_changed() firing and .nk serialization intact
 - [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: QComboBox pickers recreated each buildLayout() call (nulled in clearLayout) — simpler than re-parenting approach
 - [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: onPickerChanged calls set_text() then explicit knob_changed() to guarantee matrix rebuild fires on any NDK impl
+- [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: QComboBox pickers reverted: segfault at pick time and incorrect channel display; native NDK ChannelSet knobs used instead
+- [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: NDK knob ordering: in1/in2 before CustomKnob2 appear above matrix widget, out1/out2 after appear below — top-to-bottom NDK panel layout
+- [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: Removed spacerCol (12px gap column between const and in2 groups) — QGridLayout 2px spacing is sufficient, dedicated column created visible gap
 
 ### Pending Todos
 
@@ -130,6 +134,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-16T06:35:57.579Z
-Stopped at: Completed 03.1-04-PLAN.md — awaiting UAT checkpoint
+Last session: 2026-03-16T08:42:56.761Z
+Stopped at: Completed 03.1-04-PLAN.md — Phase 03.1 complete
 Resume file: None
