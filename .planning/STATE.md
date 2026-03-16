@@ -3,11 +3,11 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: "Phase 3 context gathered — ready for /gsd:plan-phase 3"
-stopped_at: Completed 03-04-PLAN.md
-last_updated: "2026-03-15T16:17:50.596Z"
+stopped_at: Phase 03.1 context gathered
+last_updated: "2026-03-16T05:58:53.130Z"
 last_activity: 2026-03-14 — Phase 3 discuss complete; 03-CONTEXT.md written
 progress:
-  total_phases: 5
+  total_phases: 6
   completed_phases: 3
   total_plans: 10
   completed_plans: 10
@@ -64,6 +64,10 @@ Progress: [██████████] 100%
 
 ## Accumulated Context
 
+### Roadmap Evolution
+
+- Phase 03.1 inserted after Phase 3: refine and fix deepcshuffle ui/behaviour (URGENT)
+
 ### Decisions
 
 Decisions are logged in PROJECT.md Key Decisions table.
@@ -111,6 +115,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-15T16:17:50.593Z
-Stopped at: Completed 03-04-PLAN.md
-Resume file: None
+Last session: 2026-03-16T05:58:53.127Z
+Stopped at: Phase 03.1 context gathered
+Resume file: .planning/phases/03.1-refine-and-fix-deepcshuffle-ui-behaviour/03.1-CONTEXT.md
