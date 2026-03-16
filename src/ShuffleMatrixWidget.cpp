@@ -167,11 +167,21 @@ void ShuffleMatrixWidget::buildLayout()
 
     // When in2 is set to none (Chan_Black) we still want to render the in2 columns
     // but with all buttons disabled, so the layout does not visually collapse.
+    // Populate placeholder channel names so the column group is always visible.
     const bool in2Disabled = (in2Set == DD::Image::ChannelSet(DD::Image::Chan_Black));
     {
         DD::Image::Channel ch;
         foreach(ch, in2Set)
             in2Columns.push_back(DD::Image::getName(ch));
+    }
+    if (in2Disabled && in2Columns.empty())
+    {
+        // Insert fixed placeholder column names so the in2 section always renders
+        // as a visible greyed-out group even when no layer is selected.
+        in2Columns.push_back("rgba.red");
+        in2Columns.push_back("rgba.green");
+        in2Columns.push_back("rgba.blue");
+        in2Columns.push_back("rgba.alpha");
     }
 
     // ---- Collect output rows per group ----
