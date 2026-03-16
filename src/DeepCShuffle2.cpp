@@ -92,8 +92,18 @@ void DeepCShuffle2::_validate(bool for_real)
         if (colonPos == std::string::npos)
             continue;
 
-        const std::string outName = token.substr(0, colonPos);
-        const std::string srcName = token.substr(colonPos + 1);
+        const std::string outName  = token.substr(0, colonPos);
+        const std::string rest     = token.substr(colonPos + 1);
+
+        // Strip optional group prefix ("in1:" or "in2:") added by the widget.
+        // Legacy format has no prefix; both are treated identically by the engine
+        // because in1 and in2 are drawn from the same upstream input.
+        std::string srcName = rest;
+        if (rest.size() > 4 &&
+            (rest.substr(0, 4) == "in1:" || rest.substr(0, 4) == "in2:"))
+        {
+            srcName = rest.substr(4);
+        }
 
         // Resolve the output channel — must be a real channel name.
         Channel outputChannel = findChannel(outName.c_str());
@@ -252,16 +262,16 @@ bool DeepCShuffle2::doDeepEngine(DD::Image::Box bbox,
 void DeepCShuffle2::knobs(Knob_Callback f)
 {
     Input_ChannelSet_knob(f, &_in1ChannelSet, 0, "in1", "in 1");
-    SetFlags(f, Knob::KNOB_CHANGED_ALWAYS);
+    SetFlags(f, Knob::KNOB_CHANGED_ALWAYS | Knob::INVISIBLE);
 
     Input_ChannelSet_knob(f, &_in2ChannelSet, 0, "in2", "in 2");
-    SetFlags(f, Knob::KNOB_CHANGED_ALWAYS);
+    SetFlags(f, Knob::KNOB_CHANGED_ALWAYS | Knob::INVISIBLE);
 
     Input_ChannelSet_knob(f, &_out1ChannelSet, 0, "out1", "out 1");
-    SetFlags(f, Knob::KNOB_CHANGED_ALWAYS);
+    SetFlags(f, Knob::KNOB_CHANGED_ALWAYS | Knob::INVISIBLE);
 
     Input_ChannelSet_knob(f, &_out2ChannelSet, 0, "out2", "out 2");
-    SetFlags(f, Knob::KNOB_CHANGED_ALWAYS);
+    SetFlags(f, Knob::KNOB_CHANGED_ALWAYS | Knob::INVISIBLE);
 
     CustomKnob2(ShuffleMatrixKnob, f, &_matrixState, "matrix", "routing");
 }

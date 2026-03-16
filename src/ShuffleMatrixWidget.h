@@ -8,6 +8,7 @@
 #include <QLabel>
 #include <QPainter>
 #include <QPen>
+#include <QComboBox>
 #include <vector>
 #include <string>
 
@@ -149,9 +150,36 @@ private:
     std::vector<ChannelButton*> _toggleButtons;
 
     /**
-     * Ordered list of all toggle QPushButtons in row-major order.
-     * Object names use "outputChannelName|in1|sourceChannelName" or
-     * "outputChannelName|in2|sourceChannelName" format to disambiguate
-     * identically-named channels that appear in both in1 and in2 groups.
+     * Embedded layer-picker QComboBoxes displayed inside the matrix widget header rows.
+     * in1/in2 pickers appear above their respective column groups; out1/out2 pickers
+     * appear to the right of their respective row groups.
+     *
+     * These pointers are set to nullptr by clearLayout() (the widgets are deleted by
+     * the layout cleanup) and recreated fresh in each buildLayout() call.
      */
+    QComboBox* _in1Picker;
+    QComboBox* _in2Picker;
+    QComboBox* _out1Picker;
+    QComboBox* _out2Picker;
+
+    /**
+     * Populates a layer-picker QComboBox with known layer names and selects the
+     * layer currently shown by the given layer name string.
+     *
+     * @param picker            The QComboBox to populate.
+     * @param currentLayerName  The layer name to pre-select (e.g. "rgba", "depth").
+     *                          Pass an empty string to default to "none".
+     */
+    void populatePicker(QComboBox* picker, const std::string& currentLayerName);
+
+    /**
+     * Called when a picker's selection changes. Updates the corresponding NDK
+     * ChannelSet knob on the Op and triggers knob_changed so the matrix columns/rows
+     * rebuild immediately.
+     *
+     * @param knobName      NDK knob name: "in1", "in2", "out1", or "out2".
+     * @param selectedLayer Layer name chosen in the picker (e.g. "rgba", "depth").
+     *                      "none" maps to an empty string passed to set_text().
+     */
+    void onPickerChanged(const std::string& knobName, const std::string& selectedLayer);
 };
