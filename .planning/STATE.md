@@ -150,3 +150,30 @@ None yet.
 Last session: 2026-03-16T10:45:00Z
 Stopped at: Completed 03.1-05-SUMMARY.md — UAT round 3 fixes applied
 Resume file: None
+
+
+---
+
+## UAT Round 4 — Open Bugs (implement next session)
+
+**Read before touching any code:** `.planning/phases/03.1-refine-and-fix-deepcshuffle-ui-behaviour/UAT-ROUND4-RESEARCH.md`
+
+Root causes identified from direct code review. User confirmed approaches. Not yet implemented.
+
+1. **Arrows (Bug 1):** Replace makeArrowLabel QLabel with ArrowLabel custom QPainter widget,
+   setFixedSize(22,22). Both down and right arrow variants. Will likely also fix Bug 4.
+
+2. **State redesign (Bug 2, largest):** USER DECISION: change state format from channel-name-based
+   to positional ("out1:0:in1:2,..."). Changes: ShuffleMatrixWidget (objectNames + restore),
+   ShuffleMatrixKnob (from_script migration), DeepCShuffle2::_validate (positional parsing).
+
+3. **ChannelSet update lag (Bug 3):** Build DeepCTest diagnostic node (ChannelSet knob + String
+   knob + Bool) to confirm whether set_text() updates backing C++ member synchronously. Fix after.
+
+4. **Green/blue gap (Bug 4):** Likely fixed by Bug 1. Also start in2Picker at in2StartCol
+   (not sepBeforeConstCol) so separator columns stay visible.
+
+5. **Disabled invisible (Bug 5):** Change disabled fill QColor(55,55,55) → QColor(85,85,85),
+   border to QColor(110,110,110) in ChannelButton::paintEvent.
+
+**Implement order: Bug1+4 → Bug5 → Bug3 diagnostic → Bug2 state redesign**
