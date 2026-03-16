@@ -113,6 +113,12 @@ public:
     const std::string& matrixState() const;
 
     /**
+     * Writes state directly without calling changed() — for identity initialisation only.
+     * Caller must re-sync button states manually after calling this.
+     */
+    void initializeState(const std::string& state);
+
+    /**
      * Called by Op::knob_changed() to push all four ChannelSets into the knob
      * so that make_widget() and syncFromKnob() can build accurate headers and
      * row labels without calling back into the Op.

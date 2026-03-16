@@ -73,12 +73,15 @@ public slots:
      * Called when the user toggles a routing cell button.
      * Serialises the new routing state and forwards it to ShuffleMatrixKnob::setValue().
      *
+     * @param outputGroup        Output group identifier (e.g. "out1", "out2", layer name)
      * @param outputChannelName  NDK channel name for the destination slot (e.g. "rgba.red")
-     * @param sourceChannelName  NDK channel name for the source (e.g. "depth.Z"),
-     *                           or "const:0" / "const:1" for constant columns
+     * @param inputGroup         "in1" or "in2" — which column group was toggled
+     * @param sourceChannelName  NDK channel name for the source (e.g. "depth.Z")
      * @param checked            true = route source -> output; false = remove routing
      */
-    void onCellToggled(const std::string& outputChannelName,
+    void onCellToggled(const std::string& outputGroup,
+                       const std::string& outputChannelName,
+                       const std::string& inputGroup,
                        const std::string& sourceChannelName,
                        bool checked);
 
@@ -120,15 +123,9 @@ private:
     std::vector<QPushButton*> _toggleButtons;
 
     /**
-     * Ordered list of output channel names (NDK format: "layerName.channelName")
-     * for the rows currently shown. Drawn from out1 then out2 ChannelSets.
+     * Ordered list of all toggle QPushButtons in row-major order.
+     * Object names use "outputChannelName|in1|sourceChannelName" or
+     * "outputChannelName|in2|sourceChannelName" format to disambiguate
+     * identically-named channels that appear in both in1 and in2 groups.
      */
-    std::vector<std::string> _outputChannelNames;
-
-    /**
-     * Ordered list of source column identifiers for the columns currently shown.
-     * Format: NDK channel name (e.g. "rgba.red") or "const:0" / "const:1".
-     * Order: in1 channels, then "const:0", "const:1", then in2 channels (if active).
-     */
-    std::vector<std::string> _sourceColumnNames;
 };

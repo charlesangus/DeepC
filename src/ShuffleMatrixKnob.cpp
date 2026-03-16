@@ -74,6 +74,13 @@ const std::string& ShuffleMatrixKnob::matrixState() const
     return _matrixState;
 }
 
+void ShuffleMatrixKnob::initializeState(const std::string& state)
+{
+    _matrixState = state;
+    // Intentionally does NOT call changed() — avoids recursive rebuild.
+    // Caller (syncFromKnob) re-syncs button states inline after calling this.
+}
+
 void ShuffleMatrixKnob::setChannelSets(const DD::Image::ChannelSet& in1ChannelSet,
                                         const DD::Image::ChannelSet& in2ChannelSet,
                                         const DD::Image::ChannelSet& out1ChannelSet,

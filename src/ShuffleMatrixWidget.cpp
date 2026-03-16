@@ -5,16 +5,29 @@
 #include <QTabWidget>
 #include <sstream>
 #include <map>
-#include <algorithm>
 
-// Short display names extracted from a full NDK channel name like "rgba.red".
-// Returns just the part after the last dot, or the full string if no dot found.
+// Returns the part of a full NDK channel name after the last dot ("rgba.red" -> "red").
 static std::string shortChannelName(const std::string& fullName)
 {
     const std::string::size_type dotPosition = fullName.rfind('.');
     if (dotPosition != std::string::npos)
         return fullName.substr(dotPosition + 1);
     return fullName;
+}
+
+// Returns the layer part of a full NDK channel name ("rgba.red" -> "rgba").
+static std::string layerNameFromChannelSet(const DD::Image::ChannelSet& channelSet)
+{
+    DD::Image::Channel ch;
+    foreach(ch, channelSet)
+    {
+        const std::string fullName = DD::Image::getName(ch);
+        const std::string::size_type dotPosition = fullName.rfind('.');
+        if (dotPosition != std::string::npos)
+            return fullName.substr(0, dotPosition);
+        return fullName;
+    }
+    return "";
 }
 
 // ---------------------------------------------------------------------------
@@ -48,7 +61,6 @@ int ShuffleMatrixWidget::WidgetCallback(void* closure, DD::Image::Knob::Callback
     switch (reason)
     {
         case DD::Image::Knob::kIsVisible:
-            // Walk up the parent chain; if inside a QTabWidget, use tab-aware visibility.
             for (QWidget* parentWidget = widget->parentWidget();
                  parentWidget;
                  parentWidget = parentWidget->parentWidget())
@@ -63,7 +75,6 @@ int ShuffleMatrixWidget::WidgetCallback(void* closure, DD::Image::Knob::Callback
             return 0;
 
         case DD::Image::Knob::kDestroying:
-            // Null the knob pointer to prevent use-after-free.
             widget->_knob = nullptr;
             return 0;
 
@@ -78,234 +89,214 @@ int ShuffleMatrixWidget::WidgetCallback(void* closure, DD::Image::Knob::Callback
 
 void ShuffleMatrixWidget::buildLayout()
 {
-    // -----------------------------------------------------------------------
-    // Build source column list:
-    //   in1 channels | const:0 | const:1 | in2 channels (if in2 active)
-    // -----------------------------------------------------------------------
-    _sourceColumnNames.clear();
+    const DD::Image::ChannelSet& in1Set  = _knob->in1ChannelSet();
+    const DD::Image::ChannelSet& in2Set  = _knob->in2ChannelSet();
+    const DD::Image::ChannelSet& out1Set = _knob->out1ChannelSet();
+    const DD::Image::ChannelSet& out2Set = _knob->out2ChannelSet();
 
-    const DD::Image::ChannelSet& in1Set = _knob->in1ChannelSet();
-    int in1ColumnCount = 0;
+    // ---- Collect input source columns ----
+
+    std::vector<std::string> in1Columns;
+    std::vector<std::string> in2Columns;
+
     {
-        DD::Image::Channel channelIterator;
-        foreach(channelIterator, in1Set)
-        {
-            _sourceColumnNames.push_back(DD::Image::getName(channelIterator));
-            ++in1ColumnCount;
-        }
+        DD::Image::Channel ch;
+        foreach(ch, in1Set)
+            in1Columns.push_back(DD::Image::getName(ch));
     }
 
-    // Always add constant 0 and 1 columns between the two input groups.
-    _sourceColumnNames.push_back("const:0");
-    _sourceColumnNames.push_back("const:1");
-
-    const DD::Image::ChannelSet& in2Set = _knob->in2ChannelSet();
-    int in2ColumnCount = 0;
     const bool in2Active = (in2Set != DD::Image::ChannelSet(DD::Image::Chan_Black));
     if (in2Active)
     {
-        DD::Image::Channel channelIterator;
-        foreach(channelIterator, in2Set)
-        {
-            _sourceColumnNames.push_back(DD::Image::getName(channelIterator));
-            ++in2ColumnCount;
-        }
+        DD::Image::Channel ch;
+        foreach(ch, in2Set)
+            in2Columns.push_back(DD::Image::getName(ch));
     }
 
-    const int totalSourceColumns = static_cast<int>(_sourceColumnNames.size());
-    // Column 0 in the grid is reserved for the output group label (rgba =, none =).
-    // Columns 1..totalSourceColumns are the source toggle columns.
-    // Column totalSourceColumns+1 is the output channel name label on the right.
-    const int firstSourceGridColumn  = 1;
-    const int outputLabelGridColumn  = totalSourceColumns + 1;
+    // ---- Collect output rows per group ----
 
-    // -----------------------------------------------------------------------
-    // Build output row list:
-    //   out1 channels first, then out2 channels (if out2 active)
-    // -----------------------------------------------------------------------
-    _outputChannelNames.clear();
+    std::vector<std::string> out1Rows;
+    std::vector<std::string> out2Rows;
 
-    const DD::Image::ChannelSet& out1Set = _knob->out1ChannelSet();
-    int out1RowCount = 0;
     {
-        DD::Image::Channel channelIterator;
-        foreach(channelIterator, out1Set)
+        DD::Image::Channel ch;
+        foreach(ch, out1Set)
         {
-            if (_outputChannelNames.size() >= 8)
-                break;
-            _outputChannelNames.push_back(DD::Image::getName(channelIterator));
-            ++out1RowCount;
+            if (out1Rows.size() >= 8) break;
+            out1Rows.push_back(DD::Image::getName(ch));
         }
     }
 
-    const DD::Image::ChannelSet& out2Set = _knob->out2ChannelSet();
-    int out2RowCount = 0;
     const bool out2Active = (out2Set != DD::Image::ChannelSet(DD::Image::Chan_Black));
     if (out2Active)
     {
-        DD::Image::Channel channelIterator;
-        foreach(channelIterator, out2Set)
+        DD::Image::Channel ch;
+        foreach(ch, out2Set)
         {
-            if (_outputChannelNames.size() >= 8)
-                break;
-            _outputChannelNames.push_back(DD::Image::getName(channelIterator));
-            ++out2RowCount;
+            if (out2Rows.size() >= 8) break;
+            out2Rows.push_back(DD::Image::getName(ch));
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Grid rows:
-    //   0 — in-group header labels ("in 1", "0", "1", "in 2")
-    //   1 — per-column channel name labels (r, g, b, a, 0, 1, r, g, b, a)
-    //   2 — down-arrow labels
-    //   3+ — output rows (one per output channel)
-    // -----------------------------------------------------------------------
+    // ---- Shared column layout ----
+    //
+    //   Cols 0 .. in1Count-1           : in1 toggle columns
+    //   Col  in1Count                  : visual spacer between in1 and in2
+    //   Cols in1Count+1 .. +in2Count   : in2 toggle columns (if in2 active)
+    //   Col  outLabelCol               : output channel name / group name label
 
-    // Row 0: in-group headers
-    // Col 0: blank (reserved for output-group label)
-    _gridLayout->addWidget(new QLabel("", this), 0, 0);
+    const int in1Count    = static_cast<int>(in1Columns.size());
+    const int in2Count    = static_cast<int>(in2Columns.size());
+    const int spacerCol   = in1Count;
+    const int in2StartCol = in2Active ? in1Count + 1 : in1Count;
+    const int outLabelCol = in2StartCol + in2Count;
 
-    if (in1ColumnCount > 0)
-    {
-        QLabel* in1Label = new QLabel("in 1", this);
-        in1Label->setAlignment(Qt::AlignCenter);
-        // Span all in1 source columns.
-        _gridLayout->addWidget(in1Label, 0, firstSourceGridColumn, 1, in1ColumnCount);
-    }
+    if (in2Active && in2Count > 0)
+        _gridLayout->setColumnMinimumWidth(spacerCol, 12);
 
-    // The "0" and "1" constant column headers (always present).
-    // They sit at columns firstSourceGridColumn+in1ColumnCount and +in1ColumnCount+1.
-    {
-        QLabel* const0Header = new QLabel("", this);
-        const0Header->setAlignment(Qt::AlignCenter);
-        _gridLayout->addWidget(const0Header, 0, firstSourceGridColumn + in1ColumnCount);
-
-        QLabel* const1Header = new QLabel("", this);
-        const1Header->setAlignment(Qt::AlignCenter);
-        _gridLayout->addWidget(const1Header, 0, firstSourceGridColumn + in1ColumnCount + 1);
-    }
-
-    if (in2Active && in2ColumnCount > 0)
-    {
-        QLabel* in2Label = new QLabel("in 2", this);
-        in2Label->setAlignment(Qt::AlignCenter);
-        // Span all in2 source columns.
-        const int in2StartCol = firstSourceGridColumn + in1ColumnCount + 2; // skip 0 and 1
-        _gridLayout->addWidget(in2Label, 0, in2StartCol, 1, in2ColumnCount);
-    }
-
-    // Col outputLabelGridColumn: blank in header rows
-    _gridLayout->addWidget(new QLabel("", this), 0, outputLabelGridColumn);
-
-    // Row 1: per-column short channel name labels
-    _gridLayout->addWidget(new QLabel("", this), 1, 0);
-    for (int sourceIndex = 0; sourceIndex < totalSourceColumns; ++sourceIndex)
-    {
-        const std::string& sourceName = _sourceColumnNames[sourceIndex];
-        QString labelText;
-        if (sourceName == "const:0")
-            labelText = "0";
-        else if (sourceName == "const:1")
-            labelText = "1";
-        else
-            labelText = QString::fromStdString(shortChannelName(sourceName));
-
-        QLabel* channelNameLabel = new QLabel(labelText, this);
-        channelNameLabel->setAlignment(Qt::AlignCenter);
-        _gridLayout->addWidget(channelNameLabel, 1, firstSourceGridColumn + sourceIndex);
-    }
-    _gridLayout->addWidget(new QLabel("", this), 1, outputLabelGridColumn);
-
-    // Row 2: down-arrow labels under each source column
-    _gridLayout->addWidget(new QLabel("", this), 2, 0);
-    for (int sourceIndex = 0; sourceIndex < totalSourceColumns; ++sourceIndex)
-    {
-        QLabel* arrowLabel = new QLabel("\342\206\223", this); // UTF-8 for U+2193 DOWNWARDS ARROW
-        arrowLabel->setAlignment(Qt::AlignCenter);
-        _gridLayout->addWidget(arrowLabel, 2, firstSourceGridColumn + sourceIndex);
-    }
-    _gridLayout->addWidget(new QLabel("", this), 2, outputLabelGridColumn);
-
-    // Rows 3+: output channel rows
     _toggleButtons.clear();
-    for (int outputIndex = 0; outputIndex < static_cast<int>(_outputChannelNames.size()); ++outputIndex)
+
+    // ---- Lambda: build one output group (two header rows + data rows) ----
+    //
+    // Each group gets its own "in 1" / "in 2" header and per-column channel
+    // labels so it reads as a self-contained matrix, not part of a shared block.
+    // Returns the next unused grid row.
+
+    auto buildGroup = [&](int startRow,
+                          const std::vector<std::string>& outRows,
+                          const std::string& groupLabel) -> int
     {
-        const std::string& outputName = _outputChannelNames[outputIndex];
-        const int gridRow = 3 + outputIndex;
+        const int headerGroupRow   = startRow;
+        const int headerChannelRow = startRow + 1;
+        const int dataStartRow     = startRow + 2;
 
-        // Col 0: output group label — show "rgba =" only on the first row of each group,
-        // using a text label. The actual ChannelSet picker is a separate NDK knob in the
-        // Op panel; this widget just provides a static text reminder.
-        if (outputIndex == 0)
+        // Row 0 of group: "in 1" / "in 2" span labels + group name on right
+        if (in1Count > 0)
         {
-            QLabel* out1GroupLabel = new QLabel("out1", this);
-            out1GroupLabel->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
-            _gridLayout->addWidget(out1GroupLabel, gridRow, 0);
+            QLabel* in1Header = new QLabel("in 1", this);
+            in1Header->setAlignment(Qt::AlignCenter);
+            _gridLayout->addWidget(in1Header, headerGroupRow, 0, 1, in1Count);
         }
-        else if (out2Active && outputIndex == out1RowCount)
+        if (in2Active && in2Count > 0)
         {
-            QLabel* out2GroupLabel = new QLabel("out2", this);
-            out2GroupLabel->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
-            _gridLayout->addWidget(out2GroupLabel, gridRow, 0);
+            QLabel* in2Header = new QLabel("in 2", this);
+            in2Header->setAlignment(Qt::AlignCenter);
+            _gridLayout->addWidget(in2Header, headerGroupRow, in2StartCol, 1, in2Count);
         }
-        else
+        if (!groupLabel.empty())
         {
-            _gridLayout->addWidget(new QLabel("", this), gridRow, 0);
-        }
-
-        // Source toggle buttons — one per source column
-        for (int sourceIndex = 0; sourceIndex < totalSourceColumns; ++sourceIndex)
-        {
-            const std::string& sourceName = _sourceColumnNames[sourceIndex];
-
-            QPushButton* toggleButton = new QPushButton(this);
-            toggleButton->setCheckable(true);
-            toggleButton->setFixedHeight(22);
-            toggleButton->setFixedWidth(22);
-
-            // Object name encodes the routing pair for efficient state lookup.
-            toggleButton->setObjectName(
-                QString::fromStdString(outputName + "|" + sourceName));
-
-            // Capture by value for use in lambda.
-            const std::string capturedOutputName = outputName;
-            const std::string capturedSourceName = sourceName;
-            connect(toggleButton, &QPushButton::toggled,
-                    [this, capturedOutputName, capturedSourceName](bool checked)
-                    {
-                        this->onCellToggled(capturedOutputName, capturedSourceName, checked);
-                    });
-
-            _gridLayout->addWidget(toggleButton,
-                                   gridRow,
-                                   firstSourceGridColumn + sourceIndex);
-            _toggleButtons.push_back(toggleButton);
+            QLabel* groupNameLabel = new QLabel(QString::fromStdString(groupLabel), this);
+            groupNameLabel->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
+            _gridLayout->addWidget(groupNameLabel, headerGroupRow, outLabelCol);
         }
 
-        // Right-most column: short output channel name label (e.g. "red", "green")
-        QLabel* outputNameLabel = new QLabel(
-            QString::fromStdString(shortChannelName(outputName)), this);
-        outputNameLabel->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
-        _gridLayout->addWidget(outputNameLabel, gridRow, outputLabelGridColumn);
+        // Row 1 of group: per-column short channel name labels
+        for (int i = 0; i < in1Count; ++i)
+        {
+            QLabel* label = new QLabel(
+                QString::fromStdString(shortChannelName(in1Columns[i])), this);
+            label->setAlignment(Qt::AlignCenter);
+            _gridLayout->addWidget(label, headerChannelRow, i);
+        }
+        for (int i = 0; i < in2Count; ++i)
+        {
+            QLabel* label = new QLabel(
+                QString::fromStdString(shortChannelName(in2Columns[i])), this);
+            label->setAlignment(Qt::AlignCenter);
+            _gridLayout->addWidget(label, headerChannelRow, in2StartCol + i);
+        }
+
+        // Data rows: one per output channel in this group
+        for (int rowIdx = 0; rowIdx < static_cast<int>(outRows.size()); ++rowIdx)
+        {
+            const std::string& outputName = outRows[rowIdx];
+            const int gridRow = dataStartRow + rowIdx;
+
+            const std::string capturedOutGroup = groupLabel;
+
+            // in1 toggle buttons
+            for (int si = 0; si < in1Count; ++si)
+            {
+                const std::string& sourceName = in1Columns[si];
+                QPushButton* btn = new QPushButton(this);
+                btn->setCheckable(true);
+                btn->setFixedHeight(22);
+                btn->setFixedWidth(22);
+                // objectName: "outGroup|outputChannel|in1|sourceChannel"
+                // Four-field format: outGroup prefix scopes radio enforcement so
+                // out1 and out2 rows with matching channel names stay independent.
+                btn->setObjectName(
+                    QString::fromStdString(capturedOutGroup + "|" + outputName + "|in1|" + sourceName));
+                const std::string capturedOutput = outputName;
+                const std::string capturedSource = sourceName;
+                connect(btn, &QPushButton::toggled,
+                        [this, capturedOutGroup, capturedOutput, capturedSource](bool checked)
+                        { this->onCellToggled(capturedOutGroup, capturedOutput, "in1", capturedSource, checked); });
+                _gridLayout->addWidget(btn, gridRow, si);
+                _toggleButtons.push_back(btn);
+            }
+
+            // in2 toggle buttons
+            for (int si = 0; si < in2Count; ++si)
+            {
+                const std::string& sourceName = in2Columns[si];
+                QPushButton* btn = new QPushButton(this);
+                btn->setCheckable(true);
+                btn->setFixedHeight(22);
+                btn->setFixedWidth(22);
+                btn->setObjectName(
+                    QString::fromStdString(capturedOutGroup + "|" + outputName + "|in2|" + sourceName));
+                const std::string capturedOutput = outputName;
+                const std::string capturedSource = sourceName;
+                connect(btn, &QPushButton::toggled,
+                        [this, capturedOutGroup, capturedOutput, capturedSource](bool checked)
+                        { this->onCellToggled(capturedOutGroup, capturedOutput, "in2", capturedSource, checked); });
+                _gridLayout->addWidget(btn, gridRow, in2StartCol + si);
+                _toggleButtons.push_back(btn);
+            }
+
+            // Output channel name label on the right
+            QLabel* outLabel = new QLabel(
+                QString::fromStdString(shortChannelName(outputName)), this);
+            outLabel->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
+            _gridLayout->addWidget(outLabel, gridRow, outLabelCol);
+        }
+
+        return dataStartRow + static_cast<int>(outRows.size());
+    };
+
+    // ---- Build out1 group ----
+    const std::string out1Label = layerNameFromChannelSet(out1Set);
+    int nextRow = buildGroup(0, out1Rows, out1Label.empty() ? "out 1" : out1Label);
+
+    // ---- Build out2 group (with spacer above) ----
+    if (out2Active && !out2Rows.empty())
+    {
+        _gridLayout->setRowMinimumHeight(nextRow, 10);
+        ++nextRow;
+
+        const std::string out2Label = layerNameFromChannelSet(out2Set);
+        nextRow = buildGroup(nextRow, out2Rows, out2Label.empty() ? "out 2" : out2Label);
     }
 
-    // Provide a sensible minimum height so Nuke's panel allocates enough space.
-    // 3 header rows + N output rows, each ~28 px.
-    const int totalRows = 3 + static_cast<int>(_outputChannelNames.size());
-    setMinimumHeight(totalRows * 28);
+    // Ensure Nuke allocates enough vertical space in the panel.
+    setMinimumHeight(nextRow * 26);
 }
 
 void ShuffleMatrixWidget::clearLayout()
 {
-    // Remove and delete all child widgets from the grid.
-    while (QLayoutItem* layoutItem = _gridLayout->takeAt(0))
+    while (QLayoutItem* item = _gridLayout->takeAt(0))
     {
-        delete layoutItem->widget();
-        delete layoutItem;
+        delete item->widget();
+        delete item;
     }
     _toggleButtons.clear();
-    _outputChannelNames.clear();
-    _sourceColumnNames.clear();
+
+    // Recreate the layout to reset column/row minimum sizes set by buildLayout().
+    delete _gridLayout;
+    _gridLayout = new QGridLayout(this);
+    _gridLayout->setSpacing(2);
+    setLayout(_gridLayout);
 }
 
 // ---------------------------------------------------------------------------
@@ -317,61 +308,15 @@ void ShuffleMatrixWidget::syncFromKnob()
     if (!_knob)
         return;
 
-    // Rebuild layout from the current ChannelSets stored in the knob.
     clearLayout();
     buildLayout();
 
-    // Parse the current matrix state string into a lookup map.
-    // Format: "outChanName:srcChanName,outChanName:srcChanName,..."
-    std::map<std::string, std::string> routingMap; // outputChannelName -> sourceColumnName
-    {
-        const std::string& stateString = _knob->matrixState();
-        std::istringstream stateStream(stateString);
-        std::string token;
-        while (std::getline(stateStream, token, ','))
-        {
-            if (token.empty())
-                continue;
-            const std::string::size_type colonPosition = token.find(':');
-            if (colonPosition == std::string::npos)
-                continue;
-            const std::string outputChannelName = token.substr(0, colonPosition);
-            const std::string sourceColumnName  = token.substr(colonPosition + 1);
-            routingMap[outputChannelName] = sourceColumnName;
-        }
-    }
-
-    // Sync each toggle button's checked state from the routing map.
-    for (QPushButton* toggleButton : _toggleButtons)
-    {
-        const QString objectName = toggleButton->objectName();
-        const int separatorPosition = objectName.indexOf('|');
-        if (separatorPosition < 0)
-            continue;
-        const std::string outputChannelName = objectName.left(separatorPosition).toStdString();
-        const std::string sourceColumnName  = objectName.mid(separatorPosition + 1).toStdString();
-
-        // Block signals to prevent onCellToggled from firing during sync.
-        const QSignalBlocker signalBlocker(toggleButton);
-        auto mapIterator = routingMap.find(outputChannelName);
-        const bool shouldBeChecked = (mapIterator != routingMap.end())
-                                     && (mapIterator->second == sourceColumnName);
-        toggleButton->setChecked(shouldBeChecked);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// User interaction slot
-// ---------------------------------------------------------------------------
-
-void ShuffleMatrixWidget::onCellToggled(const std::string& outputChannelName,
-                                         const std::string& sourceColumnName,
-                                         bool checked)
-{
-    if (!_knob)
-        return;
-
-    // Parse the current routing state into a mutable map.
+    // Parse routing state.
+    // New format:  "outName:in1:srcName,outName:in2:srcName,..."
+    // Legacy format (no group tag): "outName:srcName,..."  treated as "in1".
+    //
+    // routingMap key:   outputChannelName
+    // routingMap value: "groupId:srcName"  (e.g. "in1:rgba.red")
     std::map<std::string, std::string> routingMap;
     {
         const std::string& stateString = _knob->matrixState();
@@ -379,60 +324,145 @@ void ShuffleMatrixWidget::onCellToggled(const std::string& outputChannelName,
         std::string token;
         while (std::getline(stateStream, token, ','))
         {
-            if (token.empty())
-                continue;
-            const std::string::size_type colonPosition = token.find(':');
-            if (colonPosition == std::string::npos)
-                continue;
-            routingMap[token.substr(0, colonPosition)] = token.substr(colonPosition + 1);
+            if (token.empty()) continue;
+            const std::string::size_type firstColon = token.find(':');
+            if (firstColon == std::string::npos) continue;
+
+            const std::string outName = token.substr(0, firstColon);
+            const std::string rest    = token.substr(firstColon + 1);
+
+            // Determine if rest starts with a group tag ("in1:" or "in2:").
+            std::string groupedValue;
+            if (rest.size() > 4 &&
+                (rest.substr(0, 4) == "in1:" || rest.substr(0, 4) == "in2:"))
+            {
+                groupedValue = rest;  // already "groupId:srcName"
+            }
+            else
+            {
+                // Legacy format — assume in1.
+                groupedValue = "in1:" + rest;
+            }
+
+            routingMap[outName] = groupedValue;
         }
     }
 
-    if (checked)
+    // Set each button's checked state.
+    // objectName format: "outGroup|outputChannel|inputGroup|sourceChannel"
+    for (QPushButton* btn : _toggleButtons)
     {
-        // Route this source column to the output channel.
-        routingMap[outputChannelName] = sourceColumnName;
+        const QString qName   = btn->objectName();
+        const int firstPipe   = qName.indexOf('|');
+        const int secondPipe  = qName.indexOf('|', firstPipe + 1);
+        const int thirdPipe   = qName.indexOf('|', secondPipe + 1);
+        if (firstPipe < 0 || secondPipe < 0 || thirdPipe < 0) continue;
 
-        // Enforce single-source-per-output constraint: uncheck all other buttons in
-        // the same row (same output channel) so only one source column stays active.
-        for (QPushButton* otherButton : _toggleButtons)
+        // outGroupId is parsed but not used for routing lookup (routing map is keyed
+        // by outputName only); it exists for radio enforcement in onCellToggled.
+        const std::string outputName = qName.mid(firstPipe + 1, secondPipe - firstPipe - 1).toStdString();
+        const std::string groupId    = qName.mid(secondPipe + 1, thirdPipe - secondPipe - 1).toStdString();
+        const std::string sourceName = qName.mid(thirdPipe + 1).toStdString();
+
+        const QSignalBlocker blocker(btn);
+        auto it = routingMap.find(outputName);
+        if (it != routingMap.end())
         {
-            const QString otherName = otherButton->objectName();
-            const int separatorPosition = otherName.indexOf('|');
-            if (separatorPosition < 0)
-                continue;
-            const std::string otherOutputName = otherName.left(separatorPosition).toStdString();
-            const std::string otherSourceName  = otherName.mid(separatorPosition + 1).toStdString();
+            // routingMap value is "groupId:srcName"; match both.
+            const std::string expected = groupId + ":" + sourceName;
+            btn->setChecked(it->second == expected);
+        }
+        else
+        {
+            btn->setChecked(false);
+        }
+    }
+}
 
-            // Same row, different column: visually uncheck and remove from map.
-            if (otherOutputName == outputChannelName && otherSourceName != sourceColumnName)
+// ---------------------------------------------------------------------------
+// User interaction slot
+// ---------------------------------------------------------------------------
+
+void ShuffleMatrixWidget::onCellToggled(const std::string& outputGroup,
+                                         const std::string& outputChannelName,
+                                         const std::string& inputGroup,
+                                         const std::string& sourceColumnName,
+                                         bool checked)
+{
+    if (!_knob)
+        return;
+    if (!checked) return;  // no-op: rows must never be left with no source selected
+
+    // Parse current routing state into a mutable map.
+    // Map value format: "groupId:srcName"
+    std::map<std::string, std::string> routingMap;
+    {
+        const std::string& stateString = _knob->matrixState();
+        std::istringstream stateStream(stateString);
+        std::string token;
+        while (std::getline(stateStream, token, ','))
+        {
+            if (token.empty()) continue;
+            const std::string::size_type firstColon = token.find(':');
+            if (firstColon == std::string::npos) continue;
+
+            const std::string outName = token.substr(0, firstColon);
+            const std::string rest    = token.substr(firstColon + 1);
+
+            if (rest.size() > 4 &&
+                (rest.substr(0, 4) == "in1:" || rest.substr(0, 4) == "in2:"))
             {
-                const QSignalBlocker signalBlocker(otherButton);
-                otherButton->setChecked(false);
-                routingMap.erase(otherOutputName);
+                routingMap[outName] = rest;
+            }
+            else
+            {
+                routingMap[outName] = "in1:" + rest;
             }
         }
-        // Restore the current cell's mapping (it may have been erased above if
-        // another entry with the same output key was processed in the loop).
-        routingMap[outputChannelName] = sourceColumnName;
-    }
-    else
-    {
-        // Unchecked: remove routing for this output (reverts to passthrough).
-        routingMap.erase(outputChannelName);
     }
 
-    // Serialize the updated routing map back to the comma-separated string.
-    // Iterate in sorted key order for deterministic output.
-    std::ostringstream serializedStream;
-    bool firstEntry = true;
-    for (const auto& routingEntry : routingMap)
+    const std::string newValue = inputGroup + ":" + sourceColumnName;
+
+    // Radio-button enforcement: only one source per output channel within the same
+    // output group. The outputGroup scope prevents out1 and out2 rows from sharing
+    // radio state when they have identically-named channels.
+    for (QPushButton* otherBtn : _toggleButtons)
     {
-        if (!firstEntry)
-            serializedStream << ',';
-        serializedStream << routingEntry.first << ':' << routingEntry.second;
-        firstEntry = false;
+        const QString qName       = otherBtn->objectName();
+        const int firstPipe       = qName.indexOf('|');
+        const int secondPipe      = qName.indexOf('|', firstPipe + 1);
+        const int thirdPipe       = qName.indexOf('|', secondPipe + 1);
+        if (firstPipe < 0 || secondPipe < 0 || thirdPipe < 0) continue;
+
+        const std::string otherOutputGroup = qName.left(firstPipe).toStdString();
+        const std::string otherOutput      = qName.mid(firstPipe + 1, secondPipe - firstPipe - 1).toStdString();
+        const std::string otherGroup       = qName.mid(secondPipe + 1, thirdPipe - secondPipe - 1).toStdString();
+        const std::string otherSource      = qName.mid(thirdPipe + 1).toStdString();
+
+        // Same output row AND same output group; different button than the one just checked.
+        if (otherOutput == outputChannelName &&
+            otherOutputGroup == outputGroup &&
+            !(otherGroup == inputGroup && otherSource == sourceColumnName))
+        {
+            const QSignalBlocker blocker(otherBtn);
+            otherBtn->setChecked(false);
+        }
     }
 
-    _knob->setValue(serializedStream.str());
+    // Erase any previous routing for this output, then store the new one.
+    routingMap.erase(outputChannelName);
+    routingMap[outputChannelName] = newValue;
+
+    // Serialize back to comma-separated string.
+    // Format: "outName:groupId:srcName,..."
+    std::ostringstream out;
+    bool first = true;
+    for (const auto& entry : routingMap)
+    {
+        if (!first) out << ',';
+        out << entry.first << ':' << entry.second;
+        first = false;
+    }
+
+    _knob->setValue(out.str());
 }
