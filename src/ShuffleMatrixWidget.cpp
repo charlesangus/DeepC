@@ -96,7 +96,9 @@ ShuffleMatrixWidget::ShuffleMatrixWidget(ShuffleMatrixKnob* knob, QWidget* paren
 {
     _knob->addCallback(WidgetCallback, this);
     _gridLayout = new QGridLayout(this);
-    _gridLayout->setSpacing(2);
+    _gridLayout->setHorizontalSpacing(2);
+    _gridLayout->setVerticalSpacing(2);
+    _gridLayout->setContentsMargins(4, 4, 4, 4);
     buildLayout();
 }
 
@@ -228,6 +230,14 @@ void ShuffleMatrixWidget::buildLayout()
     const int outLabelCol  = in2StartCol + in2Count;
 
     _toggleButtons.clear();
+
+    // ---- Set column stretch so button columns stay fixed-width ----
+    // All button and label-header columns are fixed to their content width
+    // (buttons are 22x22px). The output label column on the right gets all
+    // remaining stretch so it expands without pushing the button columns apart.
+    for (int col = 0; col < outLabelCol; ++col)
+        _gridLayout->setColumnStretch(col, 0);
+    _gridLayout->setColumnStretch(outLabelCol, 1);
 
     // ---- Lambda: build one output group (two header rows + data rows) ----
     //
@@ -454,7 +464,9 @@ void ShuffleMatrixWidget::clearLayout()
     // Recreate the layout to reset column/row minimum sizes set by buildLayout().
     delete _gridLayout;
     _gridLayout = new QGridLayout(this);
-    _gridLayout->setSpacing(2);
+    _gridLayout->setHorizontalSpacing(2);
+    _gridLayout->setVerticalSpacing(2);
+    _gridLayout->setContentsMargins(4, 4, 4, 4);
     setLayout(_gridLayout);
 }
 
