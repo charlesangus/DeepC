@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: "Phase 3 context gathered — ready for /gsd:plan-phase 3"
-stopped_at: Completed 03.1-03-PLAN.md
-last_updated: "2026-03-16T06:30:36.849Z"
+stopped_at: Completed 03.1-04-PLAN.md — awaiting UAT checkpoint
+last_updated: "2026-03-16T06:35:57.583Z"
 last_activity: 2026-03-14 — Phase 3 discuss complete; 03-CONTEXT.md written
 progress:
   total_phases: 6
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 14
-  completed_plans: 13
+  completed_plans: 14
   percent: 100
 ---
 
@@ -64,6 +64,7 @@ Progress: [██████████] 100%
 | Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour P01 | 4 | 2 tasks | 4 files |
 | Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour P02 | 1 | 2 tasks | 2 files |
 | Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour P03 | 2 | 2 tasks | 2 files |
+| Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour P04 | 3 | 1 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -115,6 +116,9 @@ Recent decisions affecting current work:
 - [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: make_widget calls syncFromKnob() after construction — compensates for showPanel timing gap that caused first-open stale headers
 - [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: ChannelButton uses direct QPainter rendering in paintEvent — no Qt stylesheet — for precise colored fill, border, and X-mark overlay
 - [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: const:0 button near-black (30,30,30) and const:1 near-white (220,220,220) visually indicate 0.0 and 1.0 constant source values
+- [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: Knob::INVISIBLE + KNOB_CHANGED_ALWAYS: hides panel row while keeping knob_changed() firing and .nk serialization intact
+- [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: QComboBox pickers recreated each buildLayout() call (nulled in clearLayout) — simpler than re-parenting approach
+- [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: onPickerChanged calls set_text() then explicit knob_changed() to guarantee matrix rebuild fires on any NDK impl
 
 ### Pending Todos
 
@@ -126,6 +130,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-16T06:30:36.845Z
-Stopped at: Completed 03.1-03-PLAN.md
+Last session: 2026-03-16T06:35:57.579Z
+Stopped at: Completed 03.1-04-PLAN.md — awaiting UAT checkpoint
 Resume file: None
