@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: "Phase 3 context gathered — ready for /gsd:plan-phase 3"
-stopped_at: Completed 03.1-04-PLAN.md — Phase 03.1 complete
-last_updated: "2026-03-16T08:42:56.764Z"
+stopped_at: Completed 03.1-04 second UAT round — all 6 UAT failures + arrow size fixed
+last_updated: "2026-03-16T10:16:20Z"
 last_activity: 2026-03-14 — Phase 3 discuss complete; 03-CONTEXT.md written
 progress:
   total_phases: 6
@@ -66,6 +66,7 @@ Progress: [██████████] 100%
 | Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour P03 | 2 | 2 tasks | 2 files |
 | Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour P04 | 3 | 1 tasks | 3 files |
 | Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour P04 | 25 | 2 tasks | 3 files |
+| Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour P04 UAT2 | 11 | 7 fixes | 5 files |
 
 ## Accumulated Context
 
@@ -123,6 +124,13 @@ Recent decisions affecting current work:
 - [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: QComboBox pickers reverted: segfault at pick time and incorrect channel display; native NDK ChannelSet knobs used instead
 - [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: NDK knob ordering: in1/in2 before CustomKnob2 appear above matrix widget, out1/out2 after appear below — top-to-bottom NDK panel layout
 - [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: Removed spacerCol (12px gap column between const and in2 groups) — QGridLayout 2px spacing is sufficient, dedicated column created visible gap
+- [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: Radio scope must use stable groupId ("out1"/"out2") not the human-readable layer name — layer names can collide when out1 and out2 select the same layer
+- [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: syncWidgetNow() pattern: knob stores _widget pointer from make_widget(); knob_changed calls syncWidgetNow() synchronously after setChannelSets() to bypass async updateWidgets() lag
+- [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: QComboBox re-embedded with QTimer::singleShot(0) deferral — breaks re-entrant signal dispatch that caused segfault; NDK ChannelSet knobs marked INVISIBLE
+- [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: in2=Chan_Black placeholder columns: insert fixed rgba.red/green/blue/alpha names when in2Columns is empty after forEach iteration
+- [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: X-mark color: check fillColor.lightnessF() > 0.5 and use Qt::black on light backgrounds (const:1 near-white fill)
+- [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: Column stretch: set all button columns to stretch=0, only outLabelCol to stretch=1 — prevents QGridLayout from expanding button columns
+- [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: Arrow size: makeArrowLabel() with pointSize+4; use double-stroke glyphs ⇓/⇒ (U+21D3/U+21D2) for wider visual weight
 
 ### Pending Todos
 

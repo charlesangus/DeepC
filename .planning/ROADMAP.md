@@ -76,10 +76,10 @@ Plans:
 **Plans:** 4/4 plans complete
 
 Plans:
-- [ ] 03.1-01-PLAN.md — Fix radio no-op guard, outGroup radio scope, add const:0/1 columns, identity routing init
-- [ ] 03.1-02-PLAN.md — Disabled-not-hidden for none ChannelSets; fix make_widget timing for single-step ChannelSet update
-- [ ] 03.1-03-PLAN.md — ChannelButton subclass with colored X-mark paintEvent; down/right arrow decorators
-- [ ] 03.1-04-PLAN.md — Embed QComboBox pickers in widget; hide NDK knobs with INVISIBLE; UAT checkpoint
+- [x] 03.1-01-PLAN.md — Fix radio no-op guard, outGroup radio scope, add const:0/1 columns, identity routing init
+- [x] 03.1-02-PLAN.md — Disabled-not-hidden for none ChannelSets; fix make_widget timing for single-step ChannelSet update
+- [x] 03.1-03-PLAN.md — ChannelButton subclass with colored X-mark paintEvent; down/right arrow decorators
+- [x] 03.1-04-PLAN.md — Embed QComboBox pickers in widget (QTimer deferred); INVISIBLE NDK knobs; UAT all fixed
 
 ### Phase 4: DeepCPNoise 4D
 **Goal**: DeepCPNoise exposes a 4D noise dimension option in the UI for all supported noise types, correctly enabling the evolution knob only for Simplex noise, with the noise type comparison replaced by a named constant.
@@ -110,6 +110,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 3.1 → 4 → 5
 | 1. Codebase Sweep | 5/5 | Complete   | 2026-03-13 |
 | 2. DeepCPMatte GL Handles | 1/1 | Complete   | 2026-03-14 |
 | 3. DeepShuffle UI | 4/4 | Complete   | 2026-03-15 |
-| 3.1. Refine DeepCShuffle UI | 0/4 | Not started | - |
+| 3.1. Refine DeepCShuffle UI | 4/4 | Complete | 2026-03-16 |
 | 4. DeepCPNoise 4D | 0/TBD | Not started | - |
 | 5. DeepThinner Vendor | 0/TBD | Not started | - |
