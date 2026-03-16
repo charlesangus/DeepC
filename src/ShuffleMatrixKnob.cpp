@@ -56,6 +56,10 @@ void ShuffleMatrixKnob::store(DD::Image::StoreType /*storeType*/,
 WidgetPointer ShuffleMatrixKnob::make_widget(const DD::Image::WidgetContext& /*widgetContext*/)
 {
     ShuffleMatrixWidget* widget = new ShuffleMatrixWidget(this);
+    // Store a direct pointer to the widget so syncWidgetNow() can call
+    // syncFromKnob() synchronously without relying on the async updateWidgets()
+    // callback queue. The widget nulls this pointer in its kDestroying callback.
+    _widget = widget;
     // knob_changed(showPanel) fires BEFORE make_widget is called, so the widget
     // is constructed with whatever ChannelSets are current. Force an immediate
     // syncFromKnob() here to ensure column headers reflect live state from the
@@ -85,6 +89,17 @@ void ShuffleMatrixKnob::initializeState(const std::string& state)
     _matrixState = state;
     // Intentionally does NOT call changed() — avoids recursive rebuild.
     // Caller (syncFromKnob) re-syncs button states inline after calling this.
+}
+
+void ShuffleMatrixKnob::syncWidgetNow()
+{
+    if (_widget)
+        _widget->syncFromKnob();
+}
+
+void ShuffleMatrixKnob::clearWidgetPointer()
+{
+    _widget = nullptr;
 }
 
 void ShuffleMatrixKnob::setChannelSets(const DD::Image::ChannelSet& in1ChannelSet,

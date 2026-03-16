@@ -295,8 +295,16 @@ int DeepCShuffle2::knob_changed(Knob* k)
         {
             auto* shuffleKnob = dynamic_cast<ShuffleMatrixKnob*>(matrixKnob);
             if (shuffleKnob)
+            {
                 shuffleKnob->setChannelSets(_in1ChannelSet, _in2ChannelSet,
                                             _out1ChannelSet, _out2ChannelSet);
+                // Directly call syncFromKnob() on the live widget to rebuild
+                // the matrix layout synchronously. This eliminates the one-step
+                // lag caused by updateWidgets() posting an async kUpdateWidgets
+                // callback that fires after the NEXT knob_changed call, not the
+                // current one.
+                shuffleKnob->syncWidgetNow();
+            }
             matrixKnob->updateWidgets();
         }
         return 1;

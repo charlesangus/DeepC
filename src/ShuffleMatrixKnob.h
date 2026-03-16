@@ -128,10 +128,25 @@ public:
                         const DD::Image::ChannelSet& out1ChannelSet,
                         const DD::Image::ChannelSet& out2ChannelSet);
 
+    /**
+     * Directly invokes syncFromKnob() on the live widget (if one exists).
+     * Called by Op::knob_changed() immediately after setChannelSets() to
+     * rebuild the matrix layout without relying on the async updateWidgets()
+     * callback queue — eliminates the one-step lag on ChannelSet changes.
+     */
+    void syncWidgetNow();
+
     const DD::Image::ChannelSet& in1ChannelSet() const;
     const DD::Image::ChannelSet& in2ChannelSet() const;
     const DD::Image::ChannelSet& out1ChannelSet() const;
     const DD::Image::ChannelSet& out2ChannelSet() const;
+
+    /**
+     * Called from ShuffleMatrixWidget's WidgetCallback (kDestroying reason) to
+     * null the cached widget pointer before the widget is destroyed.
+     * Prevents use-after-free in syncWidgetNow().
+     */
+    void clearWidgetPointer();
 
 private:
     // Serialization format: comma-separated "outputChannelName:sourceChannelName" pairs.
@@ -144,4 +159,8 @@ private:
     DD::Image::ChannelSet _in2ChannelSet;
     DD::Image::ChannelSet _out1ChannelSet;
     DD::Image::ChannelSet _out2ChannelSet;
+
+    // Raw pointer to the live widget, if one exists. Null before make_widget()
+    // is called and after kDestroying fires. Not owned by the knob.
+    ShuffleMatrixWidget* _widget = nullptr;
 };

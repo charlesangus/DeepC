@@ -130,6 +130,11 @@ int ShuffleMatrixWidget::WidgetCallback(void* closure, DD::Image::Knob::Callback
             return 0;
 
         case DD::Image::Knob::kDestroying:
+            // Null the back-pointer in the knob so syncWidgetNow() cannot fire
+            // into a destroyed widget. Must come before nulling widget->_knob
+            // because clearWidgetPointer() dereferences the knob pointer.
+            if (widget->_knob)
+                widget->_knob->clearWidgetPointer();
             widget->_knob = nullptr;
             return 0;
 
