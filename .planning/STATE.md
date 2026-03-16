@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: "Phase 3 context gathered — ready for /gsd:plan-phase 3"
-stopped_at: Completed 03.1-04 second UAT round — all 6 UAT failures + arrow size fixed
-last_updated: "2026-03-16T10:16:20Z"
+stopped_at: Completed 03.1-05 third UAT round — all 6 UAT round 3 failures fixed
+last_updated: "2026-03-16T10:45:00Z"
 last_activity: 2026-03-14 — Phase 3 discuss complete; 03-CONTEXT.md written
 progress:
   total_phases: 6
@@ -67,6 +67,7 @@ Progress: [██████████] 100%
 | Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour P04 | 3 | 1 tasks | 3 files |
 | Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour P04 | 25 | 2 tasks | 3 files |
 | Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour P04 UAT2 | 11 | 7 fixes | 5 files |
+| Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour P05 UAT3 | 25 | 6 fixes | 1 file |
 
 ## Accumulated Context
 
@@ -131,6 +132,10 @@ Recent decisions affecting current work:
 - [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: X-mark color: check fillColor.lightnessF() > 0.5 and use Qt::black on light backgrounds (const:1 near-white fill)
 - [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: Column stretch: set all button columns to stretch=0, only outLabelCol to stretch=1 — prevents QGridLayout from expanding button columns
 - [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: Arrow size: makeArrowLabel() with pointSize+4; use double-stroke glyphs ⇓/⇒ (U+21D3/U+21D2) for wider visual weight
+- [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: UAT3 column layout: two 8px separator columns (sepBeforeConstCol, sepAfterConstCol) flank const:0/const:1 pair; in1 channels occupy consecutive cols 0..N-1 with no gaps
+- [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: UAT3 arrow height: makeArrowLabel uses setFixedHeight(22) + bold 18pt absolute font size to match ChannelButton height
+- [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: UAT3 single-pick rebuild: picker lambdas call op()->knob_changed(targetKnob) before targetKnob->changed() so Op resolves ChannelSet synchronously before async kUpdateWidgets fires
+- [Phase 03.1-refine-and-fix-deepcshuffle-ui-behaviour]: UAT3 out2 visibility: placeholder rgba rows inserted when out2Disabled and out2Rows empty; if(!out2Rows.empty()) guard removed so buildGroup always called for out2
 
 ### Pending Todos
 
@@ -142,6 +147,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-16T08:42:56.761Z
-Stopped at: Completed 03.1-04-PLAN.md — Phase 03.1 complete
+Last session: 2026-03-16T10:45:00Z
+Stopped at: Completed 03.1-05-SUMMARY.md — UAT round 3 fixes applied
 Resume file: None
