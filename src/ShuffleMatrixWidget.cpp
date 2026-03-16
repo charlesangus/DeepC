@@ -219,9 +219,15 @@ void ShuffleMatrixWidget::buildLayout()
     // Each group gets its own "in 1" / "in 2" header and per-column channel
     // labels so it reads as a self-contained matrix, not part of a shared block.
     // Returns the next unused grid row.
+    //
+    // groupId  — stable identity string used in button objectNames for radio
+    //            enforcement ("out1" or "out2"). Must be unique across groups.
+    // groupLabel — human-readable display name shown in the panel (layer name
+    //              or "out 1"/"out 2" fallback). Independent of groupId.
 
     auto buildGroup = [&](int startRow,
                           const std::vector<std::string>& outRows,
+                          const std::string& groupId,
                           const std::string& groupLabel,
                           bool buttonsDisabled) -> int
     {
@@ -253,7 +259,7 @@ void ShuffleMatrixWidget::buildLayout()
         {
             QLabel* groupNameLabel = new QLabel(QString::fromStdString(groupLabel), this);
             groupNameLabel->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
-            _gridLayout->addWidget(groupNameLabel, headerGroupRow, outLabelCol);
+            _gridLayout->addWidget(groupNameLabel, headerGroupRow, outLabelCol, 1, 1);
         }
 
         // Row 1 of group: per-column short channel name labels
@@ -313,7 +319,10 @@ void ShuffleMatrixWidget::buildLayout()
             const std::string& outputName = outRows[rowIdx];
             const int gridRow = dataStartRow + rowIdx;
 
-            const std::string capturedOutGroup = groupLabel;
+            // capturedGroupId scopes radio enforcement: "out1" or "out2".
+            // This ensures rows across the two output groups remain independent
+            // even when their channel names are identical (e.g. rgba.red in both).
+            const std::string capturedGroupId = groupId;
 
             // in1 toggle buttons
             for (int si = 0; si < in1Count; ++si)
@@ -321,17 +330,17 @@ void ShuffleMatrixWidget::buildLayout()
                 const std::string& sourceName = in1Columns[si];
                 ChannelButton* btn = new ChannelButton(
                     nukeChannelColor(shortChannelName(sourceName)), this);
-                // objectName: "outGroup|outputChannel|in1|sourceChannel"
-                // Four-field format: outGroup prefix scopes radio enforcement so
+                // objectName: "groupId|outputChannel|inputGroup|sourceChannel"
+                // groupId ("out1" or "out2") scopes radio enforcement so
                 // out1 and out2 rows with matching channel names stay independent.
                 btn->setObjectName(
-                    QString::fromStdString(capturedOutGroup + "|" + outputName + "|in1|" + sourceName));
+                    QString::fromStdString(capturedGroupId + "|" + outputName + "|in1|" + sourceName));
                 btn->setEnabled(!buttonsDisabled);
                 const std::string capturedOutput = outputName;
                 const std::string capturedSource = sourceName;
                 connect(btn, &QPushButton::toggled,
-                        [this, capturedOutGroup, capturedOutput, capturedSource](bool checked)
-                        { this->onCellToggled(capturedOutGroup, capturedOutput, "in1", capturedSource, checked); });
+                        [this, capturedGroupId, capturedOutput, capturedSource](bool checked)
+                        { this->onCellToggled(capturedGroupId, capturedOutput, "in1", capturedSource, checked); });
                 _gridLayout->addWidget(btn, gridRow, si);
                 _toggleButtons.push_back(btn);
             }
@@ -340,12 +349,12 @@ void ShuffleMatrixWidget::buildLayout()
             {
                 ChannelButton* btn = new ChannelButton(QColor(30, 30, 30), this);
                 btn->setObjectName(
-                    QString::fromStdString(capturedOutGroup + "|" + outputName + "|in1|const:0"));
+                    QString::fromStdString(capturedGroupId + "|" + outputName + "|in1|const:0"));
                 btn->setEnabled(!buttonsDisabled);
                 const std::string capturedOutput = outputName;
                 connect(btn, &QPushButton::toggled,
-                        [this, capturedOutGroup, capturedOutput](bool checked)
-                        { this->onCellToggled(capturedOutGroup, capturedOutput, "in1", "const:0", checked); });
+                        [this, capturedGroupId, capturedOutput](bool checked)
+                        { this->onCellToggled(capturedGroupId, capturedOutput, "in1", "const:0", checked); });
                 _gridLayout->addWidget(btn, gridRow, const0Col);
                 _toggleButtons.push_back(btn);
             }
@@ -354,30 +363,30 @@ void ShuffleMatrixWidget::buildLayout()
             {
                 ChannelButton* btn = new ChannelButton(QColor(220, 220, 220), this);
                 btn->setObjectName(
-                    QString::fromStdString(capturedOutGroup + "|" + outputName + "|in1|const:1"));
+                    QString::fromStdString(capturedGroupId + "|" + outputName + "|in1|const:1"));
                 btn->setEnabled(!buttonsDisabled);
                 const std::string capturedOutput = outputName;
                 connect(btn, &QPushButton::toggled,
-                        [this, capturedOutGroup, capturedOutput](bool checked)
-                        { this->onCellToggled(capturedOutGroup, capturedOutput, "in1", "const:1", checked); });
+                        [this, capturedGroupId, capturedOutput](bool checked)
+                        { this->onCellToggled(capturedGroupId, capturedOutput, "in1", "const:1", checked); });
                 _gridLayout->addWidget(btn, gridRow, const1Col);
                 _toggleButtons.push_back(btn);
             }
 
-            // in2 toggle buttons
+            // in2 toggle buttons — disabled when in2=Chan_Black (placeholder columns)
             for (int si = 0; si < in2Count; ++si)
             {
                 const std::string& sourceName = in2Columns[si];
                 ChannelButton* btn = new ChannelButton(
                     nukeChannelColor(shortChannelName(sourceName)), this);
                 btn->setObjectName(
-                    QString::fromStdString(capturedOutGroup + "|" + outputName + "|in2|" + sourceName));
+                    QString::fromStdString(capturedGroupId + "|" + outputName + "|in2|" + sourceName));
                 btn->setEnabled(!in2Disabled);
                 const std::string capturedOutput = outputName;
                 const std::string capturedSource = sourceName;
                 connect(btn, &QPushButton::toggled,
-                        [this, capturedOutGroup, capturedOutput, capturedSource](bool checked)
-                        { this->onCellToggled(capturedOutGroup, capturedOutput, "in2", capturedSource, checked); });
+                        [this, capturedGroupId, capturedOutput, capturedSource](bool checked)
+                        { this->onCellToggled(capturedGroupId, capturedOutput, "in2", capturedSource, checked); });
                 _gridLayout->addWidget(btn, gridRow, in2StartCol + si);
                 _toggleButtons.push_back(btn);
             }
@@ -395,8 +404,11 @@ void ShuffleMatrixWidget::buildLayout()
     };
 
     // ---- Build out1 group ----
+    // groupId "out1" is a stable identity token used in button objectNames for
+    // radio-scope enforcement. groupLabel is the human-readable layer name shown
+    // in the panel UI. These two values must be kept independent.
     const std::string out1Label = layerNameFromChannelSet(out1Set);
-    int nextRow = buildGroup(0, out1Rows, out1Label.empty() ? "out 1" : out1Label, false);
+    int nextRow = buildGroup(0, out1Rows, "out1", out1Label.empty() ? "out 1" : out1Label, false);
 
     // ---- Build out2 group (with spacer above) ----
     // Always render the out2 group — when out2 is none (Chan_Black) the group is
@@ -407,7 +419,7 @@ void ShuffleMatrixWidget::buildLayout()
         ++nextRow;
 
         const std::string out2Label = layerNameFromChannelSet(out2Set);
-        nextRow = buildGroup(nextRow, out2Rows, out2Label.empty() ? "out 2" : out2Label, out2Disabled);
+        nextRow = buildGroup(nextRow, out2Rows, "out2", out2Label.empty() ? "out 2" : out2Label, out2Disabled);
     }
 
     // Ensure Nuke allocates enough vertical space in the panel.
