@@ -141,18 +141,22 @@ void ShuffleMatrixWidget::buildLayout()
     // ---- Shared column layout ----
     //
     //   Cols 0 .. in1Count-1           : in1 toggle columns
-    //   Col  in1Count                  : visual spacer between in1 and in2
-    //   Cols in1Count+1 .. +in2Count   : in2 toggle columns (if in2 active)
+    //   Col  in1Count                  : "0" const column (constant 0.0 source)
+    //   Col  in1Count+1                : "1" const column (constant 1.0 source)
+    //   Col  in1Count+2                : visual spacer between const cols and in2
+    //   Cols in1Count+3 .. +in2Count   : in2 toggle columns (always rendered; disabled if in2=none)
     //   Col  outLabelCol               : output channel name / group name label
 
-    const int in1Count    = static_cast<int>(in1Columns.size());
-    const int in2Count    = static_cast<int>(in2Columns.size());
-    const int spacerCol   = in1Count;
-    const int in2StartCol = in2Active ? in1Count + 1 : in1Count;
-    const int outLabelCol = in2StartCol + in2Count;
+    const int in1Count     = static_cast<int>(in1Columns.size());
+    const int in2Count     = static_cast<int>(in2Columns.size());
+    const int const0Col    = in1Count;
+    const int const1Col    = in1Count + 1;
+    const int spacerCol    = in1Count + 2;
+    const int in2StartCol  = in1Count + 3;
+    const int outLabelCol  = in2StartCol + in2Count;
 
-    if (in2Active && in2Count > 0)
-        _gridLayout->setColumnMinimumWidth(spacerCol, 12);
+    // Spacer between const columns and in2 block.
+    _gridLayout->setColumnMinimumWidth(spacerCol, 12);
 
     _toggleButtons.clear();
 
@@ -170,14 +174,20 @@ void ShuffleMatrixWidget::buildLayout()
         const int headerChannelRow = startRow + 1;
         const int dataStartRow     = startRow + 2;
 
-        // Row 0 of group: "in 1" / "in 2" span labels + group name on right
+        // Row 0 of group: "in 1" / const header / "in 2" span labels + group name on right
         if (in1Count > 0)
         {
             QLabel* in1Header = new QLabel("in 1", this);
             in1Header->setAlignment(Qt::AlignCenter);
             _gridLayout->addWidget(in1Header, headerGroupRow, 0, 1, in1Count);
         }
-        if (in2Active && in2Count > 0)
+        // const column group header — spans both "0" and "1" columns
+        {
+            QLabel* constHeader = new QLabel("const", this);
+            constHeader->setAlignment(Qt::AlignCenter);
+            _gridLayout->addWidget(constHeader, headerGroupRow, const0Col, 1, 2);
+        }
+        if (in2Count > 0)
         {
             QLabel* in2Header = new QLabel("in 2", this);
             in2Header->setAlignment(Qt::AlignCenter);
@@ -197,6 +207,17 @@ void ShuffleMatrixWidget::buildLayout()
                 QString::fromStdString(shortChannelName(in1Columns[i])), this);
             label->setAlignment(Qt::AlignCenter);
             _gridLayout->addWidget(label, headerChannelRow, i);
+        }
+        // const column channel labels: "0" and "1"
+        {
+            QLabel* const0Label = new QLabel("0", this);
+            const0Label->setAlignment(Qt::AlignCenter);
+            _gridLayout->addWidget(const0Label, headerChannelRow, const0Col);
+        }
+        {
+            QLabel* const1Label = new QLabel("1", this);
+            const1Label->setAlignment(Qt::AlignCenter);
+            _gridLayout->addWidget(const1Label, headerChannelRow, const1Col);
         }
         for (int i = 0; i < in2Count; ++i)
         {
@@ -233,6 +254,38 @@ void ShuffleMatrixWidget::buildLayout()
                         [this, capturedOutGroup, capturedOutput, capturedSource](bool checked)
                         { this->onCellToggled(capturedOutGroup, capturedOutput, "in1", capturedSource, checked); });
                 _gridLayout->addWidget(btn, gridRow, si);
+                _toggleButtons.push_back(btn);
+            }
+
+            // const:0 toggle button
+            {
+                QPushButton* btn = new QPushButton(this);
+                btn->setCheckable(true);
+                btn->setFixedHeight(22);
+                btn->setFixedWidth(22);
+                btn->setObjectName(
+                    QString::fromStdString(capturedOutGroup + "|" + outputName + "|in1|const:0"));
+                const std::string capturedOutput = outputName;
+                connect(btn, &QPushButton::toggled,
+                        [this, capturedOutGroup, capturedOutput](bool checked)
+                        { this->onCellToggled(capturedOutGroup, capturedOutput, "in1", "const:0", checked); });
+                _gridLayout->addWidget(btn, gridRow, const0Col);
+                _toggleButtons.push_back(btn);
+            }
+
+            // const:1 toggle button
+            {
+                QPushButton* btn = new QPushButton(this);
+                btn->setCheckable(true);
+                btn->setFixedHeight(22);
+                btn->setFixedWidth(22);
+                btn->setObjectName(
+                    QString::fromStdString(capturedOutGroup + "|" + outputName + "|in1|const:1"));
+                const std::string capturedOutput = outputName;
+                connect(btn, &QPushButton::toggled,
+                        [this, capturedOutGroup, capturedOutput](bool checked)
+                        { this->onCellToggled(capturedOutGroup, capturedOutput, "in1", "const:1", checked); });
+                _gridLayout->addWidget(btn, gridRow, const1Col);
                 _toggleButtons.push_back(btn);
             }
 
@@ -307,6 +360,42 @@ void ShuffleMatrixWidget::syncFromKnob()
 {
     if (!_knob)
         return;
+
+    // Identity routing initialisation — runs once on first panel open when no
+    // state has been serialized yet. Uses initializeState() to write directly
+    // without calling changed(), avoiding a recursive rebuild.
+    if (_knob->matrixState().empty())
+    {
+        const DD::Image::ChannelSet& in1Set  = _knob->in1ChannelSet();
+        const DD::Image::ChannelSet& out1Set = _knob->out1ChannelSet();
+
+        if (in1Set  != DD::Image::ChannelSet(DD::Image::Chan_Black) &&
+            out1Set != DD::Image::ChannelSet(DD::Image::Chan_Black))
+        {
+            std::ostringstream identityStream;
+            bool firstEntry = true;
+            DD::Image::Channel outChannel;
+            foreach (outChannel, out1Set)
+            {
+                const std::string outName = DD::Image::getName(outChannel);
+                DD::Image::Channel inChannel;
+                foreach (inChannel, in1Set)
+                {
+                    const std::string inName = DD::Image::getName(inChannel);
+                    if (outName == inName)
+                    {
+                        if (!firstEntry) identityStream << ',';
+                        identityStream << outName << ":in1:" << inName;
+                        firstEntry = false;
+                        break;
+                    }
+                }
+            }
+            const std::string identityState = identityStream.str();
+            if (!identityState.empty())
+                _knob->initializeState(identityState);
+        }
+    }
 
     clearLayout();
     buildLayout();
