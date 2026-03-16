@@ -479,17 +479,14 @@ void ShuffleMatrixWidget::buildLayout()
                 const std::string& sourceName = in1Columns[si];
                 ChannelButton* btn = new ChannelButton(
                     nukeChannelColor(shortChannelName(sourceName)), this);
-                // objectName: "groupId|outputChannel|inputGroup|sourceChannel"
-                // groupId ("out1" or "out2") scopes radio enforcement so
-                // out1 and out2 rows with matching channel names stay independent.
+                // objectName: "outGroup|outRowIdx|sourceGroup|sourceColIdx"
+                // Positional format so routing survives layer name changes.
                 btn->setObjectName(
-                    QString::fromStdString(capturedGroupId + "|" + outputName + "|in1|" + sourceName));
+                    QString::fromStdString(capturedGroupId + "|" + std::to_string(rowIdx) + "|in1|" + std::to_string(si)));
                 btn->setEnabled(!buttonsDisabled);
-                const std::string capturedOutput = outputName;
-                const std::string capturedSource = sourceName;
                 connect(btn, &QPushButton::toggled,
-                        [this, capturedGroupId, capturedOutput, capturedSource](bool checked)
-                        { this->onCellToggled(capturedGroupId, capturedOutput, "in1", capturedSource, checked); });
+                        [this, capturedGroupId, rowIdx, si](bool checked)
+                        { this->onCellToggled(capturedGroupId, rowIdx, "in1", si, checked); });
                 _gridLayout->addWidget(btn, gridRow, si);
                 _toggleButtons.push_back(btn);
             }
@@ -498,12 +495,11 @@ void ShuffleMatrixWidget::buildLayout()
             {
                 ChannelButton* btn = new ChannelButton(QColor(30, 30, 30), this);
                 btn->setObjectName(
-                    QString::fromStdString(capturedGroupId + "|" + outputName + "|in1|const:0"));
+                    QString::fromStdString(capturedGroupId + "|" + std::to_string(rowIdx) + "|const|0"));
                 btn->setEnabled(!buttonsDisabled);
-                const std::string capturedOutput = outputName;
                 connect(btn, &QPushButton::toggled,
-                        [this, capturedGroupId, capturedOutput](bool checked)
-                        { this->onCellToggled(capturedGroupId, capturedOutput, "in1", "const:0", checked); });
+                        [this, capturedGroupId, rowIdx](bool checked)
+                        { this->onCellToggled(capturedGroupId, rowIdx, "const", 0, checked); });
                 _gridLayout->addWidget(btn, gridRow, const0Col);
                 _toggleButtons.push_back(btn);
             }
@@ -512,12 +508,11 @@ void ShuffleMatrixWidget::buildLayout()
             {
                 ChannelButton* btn = new ChannelButton(QColor(220, 220, 220), this);
                 btn->setObjectName(
-                    QString::fromStdString(capturedGroupId + "|" + outputName + "|in1|const:1"));
+                    QString::fromStdString(capturedGroupId + "|" + std::to_string(rowIdx) + "|const|1"));
                 btn->setEnabled(!buttonsDisabled);
-                const std::string capturedOutput = outputName;
                 connect(btn, &QPushButton::toggled,
-                        [this, capturedGroupId, capturedOutput](bool checked)
-                        { this->onCellToggled(capturedGroupId, capturedOutput, "in1", "const:1", checked); });
+                        [this, capturedGroupId, rowIdx](bool checked)
+                        { this->onCellToggled(capturedGroupId, rowIdx, "const", 1, checked); });
                 _gridLayout->addWidget(btn, gridRow, const1Col);
                 _toggleButtons.push_back(btn);
             }
@@ -529,13 +524,11 @@ void ShuffleMatrixWidget::buildLayout()
                 ChannelButton* btn = new ChannelButton(
                     nukeChannelColor(shortChannelName(sourceName)), this);
                 btn->setObjectName(
-                    QString::fromStdString(capturedGroupId + "|" + outputName + "|in2|" + sourceName));
+                    QString::fromStdString(capturedGroupId + "|" + std::to_string(rowIdx) + "|in2|" + std::to_string(si)));
                 btn->setEnabled(!in2Disabled);
-                const std::string capturedOutput = outputName;
-                const std::string capturedSource = sourceName;
                 connect(btn, &QPushButton::toggled,
-                        [this, capturedGroupId, capturedOutput, capturedSource](bool checked)
-                        { this->onCellToggled(capturedGroupId, capturedOutput, "in2", capturedSource, checked); });
+                        [this, capturedGroupId, rowIdx, si](bool checked)
+                        { this->onCellToggled(capturedGroupId, rowIdx, "in2", si, checked); });
                 _gridLayout->addWidget(btn, gridRow, in2StartCol + si);
                 _toggleButtons.push_back(btn);
             }
@@ -692,20 +685,30 @@ void ShuffleMatrixWidget::syncFromKnob()
         if (in1Set  != DD::Image::ChannelSet(DD::Image::Chan_Black) &&
             out1Set != DD::Image::ChannelSet(DD::Image::Chan_Black))
         {
+            // Build identity state in positional format: "out1:outRowIdx:in1:inColIdx"
+            // Match each out1 channel by name to the in1 channel at the same name,
+            // emitting their respective positional indices. Positional format ensures
+            // the identity routing survives layer picker changes.
+            std::vector<std::string> out1Names, in1Names;
+            {
+                DD::Image::Channel ch;
+                foreach(ch, out1Set) out1Names.push_back(DD::Image::getName(ch));
+            }
+            {
+                DD::Image::Channel ch;
+                foreach(ch, in1Set) in1Names.push_back(DD::Image::getName(ch));
+            }
+
             std::ostringstream identityStream;
             bool firstEntry = true;
-            DD::Image::Channel outChannel;
-            foreach (outChannel, out1Set)
+            for (int outIdx = 0; outIdx < static_cast<int>(out1Names.size()); ++outIdx)
             {
-                const std::string outName = DD::Image::getName(outChannel);
-                DD::Image::Channel inChannel;
-                foreach (inChannel, in1Set)
+                for (int inIdx = 0; inIdx < static_cast<int>(in1Names.size()); ++inIdx)
                 {
-                    const std::string inName = DD::Image::getName(inChannel);
-                    if (outName == inName)
+                    if (out1Names[outIdx] == in1Names[inIdx])
                     {
                         if (!firstEntry) identityStream << ',';
-                        identityStream << outName << ":in1:" << inName;
+                        identityStream << "out1:" << outIdx << ":in1:" << inIdx;
                         firstEntry = false;
                         break;
                     }
@@ -720,12 +723,13 @@ void ShuffleMatrixWidget::syncFromKnob()
     clearLayout();
     buildLayout();
 
-    // Parse routing state.
-    // New format:  "outName:in1:srcName,outName:in2:srcName,..."
-    // Legacy format (no group tag): "outName:srcName,..."  treated as "in1".
+    // Parse positional routing state: "out1:0:in1:2,out1:1:const:0,..."
+    // Key:   "out1|0" (outGroup|outRowIdx)
+    // Value: "in1|2" (sourceGroup|sourceColIdx)
     //
-    // routingMap key:   outputChannelName
-    // routingMap value: "groupId:srcName"  (e.g. "in1:rgba.red")
+    // Positional format survives layer name changes — routing is preserved
+    // by grid position, not by channel name, so changing in1 from rgba to
+    // diffuse keeps all checked boxes in place.
     std::map<std::string, std::string> routingMap;
     {
         const std::string& stateString = _knob->matrixState();
@@ -734,57 +738,37 @@ void ShuffleMatrixWidget::syncFromKnob()
         while (std::getline(stateStream, token, ','))
         {
             if (token.empty()) continue;
-            const std::string::size_type firstColon = token.find(':');
-            if (firstColon == std::string::npos) continue;
-
-            const std::string outName = token.substr(0, firstColon);
-            const std::string rest    = token.substr(firstColon + 1);
-
-            // Determine if rest starts with a group tag ("in1:" or "in2:").
-            std::string groupedValue;
-            if (rest.size() > 4 &&
-                (rest.substr(0, 4) == "in1:" || rest.substr(0, 4) == "in2:"))
-            {
-                groupedValue = rest;  // already "groupId:srcName"
-            }
-            else
-            {
-                // Legacy format — assume in1.
-                groupedValue = "in1:" + rest;
-            }
-
-            routingMap[outName] = groupedValue;
+            std::istringstream tokenParts(token);
+            std::string outGroup, outRowIdxStr, sourceGroup, sourceColIdxStr;
+            if (!std::getline(tokenParts, outGroup,       ':')) continue;
+            if (!std::getline(tokenParts, outRowIdxStr,   ':')) continue;
+            if (!std::getline(tokenParts, sourceGroup,    ':')) continue;
+            if (!std::getline(tokenParts, sourceColIdxStr,':')) continue;
+            routingMap[outGroup + "|" + outRowIdxStr] = sourceGroup + "|" + sourceColIdxStr;
         }
     }
 
-    // Set each button's checked state.
-    // objectName format: "outGroup|outputChannel|inputGroup|sourceChannel"
+    // Set each button's checked state by matching positional objectName against map.
+    // objectName format: "outGroup|outRowIdx|sourceGroup|sourceColIdx"
     for (ChannelButton* btn : _toggleButtons)
     {
-        const QString qName   = btn->objectName();
-        const int firstPipe   = qName.indexOf('|');
-        const int secondPipe  = qName.indexOf('|', firstPipe + 1);
-        const int thirdPipe   = qName.indexOf('|', secondPipe + 1);
+        const QString qName      = btn->objectName();
+        const int firstPipe      = qName.indexOf('|');
+        const int secondPipe     = qName.indexOf('|', firstPipe + 1);
+        const int thirdPipe      = qName.indexOf('|', secondPipe + 1);
         if (firstPipe < 0 || secondPipe < 0 || thirdPipe < 0) continue;
 
-        // outGroupId is parsed but not used for routing lookup (routing map is keyed
-        // by outputName only); it exists for radio enforcement in onCellToggled.
-        const std::string outputName = qName.mid(firstPipe + 1, secondPipe - firstPipe - 1).toStdString();
-        const std::string groupId    = qName.mid(secondPipe + 1, thirdPipe - secondPipe - 1).toStdString();
-        const std::string sourceName = qName.mid(thirdPipe + 1).toStdString();
+        const std::string outGroup        = qName.left(firstPipe).toStdString();
+        const std::string outRowIdxStr    = qName.mid(firstPipe + 1, secondPipe - firstPipe - 1).toStdString();
+        const std::string sourceGroup     = qName.mid(secondPipe + 1, thirdPipe - secondPipe - 1).toStdString();
+        const std::string sourceColIdxStr = qName.mid(thirdPipe + 1).toStdString();
+
+        const std::string key   = outGroup + "|" + outRowIdxStr;
+        const std::string value = sourceGroup + "|" + sourceColIdxStr;
 
         const QSignalBlocker blocker(btn);
-        auto it = routingMap.find(outputName);
-        if (it != routingMap.end())
-        {
-            // routingMap value is "groupId:srcName"; match both.
-            const std::string expected = groupId + ":" + sourceName;
-            btn->setChecked(it->second == expected);
-        }
-        else
-        {
-            btn->setChecked(false);
-        }
+        auto it = routingMap.find(key);
+        btn->setChecked(it != routingMap.end() && it->second == value);
     }
 }
 
@@ -793,17 +777,17 @@ void ShuffleMatrixWidget::syncFromKnob()
 // ---------------------------------------------------------------------------
 
 void ShuffleMatrixWidget::onCellToggled(const std::string& outputGroup,
-                                         const std::string& outputChannelName,
-                                         const std::string& inputGroup,
-                                         const std::string& sourceColumnName,
+                                         int outputRowIdx,
+                                         const std::string& sourceGroup,
+                                         int sourceColIdx,
                                          bool checked)
 {
     if (!_knob)
         return;
     if (!checked) return;  // no-op: rows must never be left with no source selected
 
-    // Parse current routing state into a mutable map.
-    // Map value format: "groupId:srcName"
+    // Parse current positional routing state into a mutable map.
+    // Key: "out1|0" (outGroup|outRowIdx), Value: "in1|2" (sourceGroup|sourceColIdx).
     std::map<std::string, std::string> routingMap;
     {
         const std::string& stateString = _knob->matrixState();
@@ -812,64 +796,57 @@ void ShuffleMatrixWidget::onCellToggled(const std::string& outputGroup,
         while (std::getline(stateStream, token, ','))
         {
             if (token.empty()) continue;
-            const std::string::size_type firstColon = token.find(':');
-            if (firstColon == std::string::npos) continue;
-
-            const std::string outName = token.substr(0, firstColon);
-            const std::string rest    = token.substr(firstColon + 1);
-
-            if (rest.size() > 4 &&
-                (rest.substr(0, 4) == "in1:" || rest.substr(0, 4) == "in2:"))
-            {
-                routingMap[outName] = rest;
-            }
-            else
-            {
-                routingMap[outName] = "in1:" + rest;
-            }
+            std::istringstream tokenParts(token);
+            std::string outGrp, outRowStr, srcGrp, srcColStr;
+            if (!std::getline(tokenParts, outGrp,   ':')) continue;
+            if (!std::getline(tokenParts, outRowStr, ':')) continue;
+            if (!std::getline(tokenParts, srcGrp,   ':')) continue;
+            if (!std::getline(tokenParts, srcColStr, ':')) continue;
+            routingMap[outGrp + "|" + outRowStr] = srcGrp + "|" + srcColStr;
         }
     }
 
-    const std::string newValue = inputGroup + ":" + sourceColumnName;
+    const std::string newKey   = outputGroup + "|" + std::to_string(outputRowIdx);
+    const std::string newValue = sourceGroup + "|" + std::to_string(sourceColIdx);
 
-    // Radio-button enforcement: only one source per output channel within the same
-    // output group. The outputGroup scope prevents out1 and out2 rows from sharing
-    // radio state when they have identically-named channels.
+    // Radio-button enforcement: uncheck all other buttons in the same output group
+    // and row. The outputGroup scope keeps out1 and out2 independent even when they
+    // happen to have channels at identical row indices.
     for (ChannelButton* otherBtn : _toggleButtons)
     {
-        const QString qName       = otherBtn->objectName();
-        const int firstPipe       = qName.indexOf('|');
-        const int secondPipe      = qName.indexOf('|', firstPipe + 1);
-        const int thirdPipe       = qName.indexOf('|', secondPipe + 1);
-        if (firstPipe < 0 || secondPipe < 0 || thirdPipe < 0) continue;
+        const QString qName  = otherBtn->objectName();
+        const int firstPipe  = qName.indexOf('|');
+        const int secondPipe = qName.indexOf('|', firstPipe + 1);
+        if (firstPipe < 0 || secondPipe < 0) continue;
 
-        const std::string otherOutputGroup = qName.left(firstPipe).toStdString();
-        const std::string otherOutput      = qName.mid(firstPipe + 1, secondPipe - firstPipe - 1).toStdString();
-        const std::string otherGroup       = qName.mid(secondPipe + 1, thirdPipe - secondPipe - 1).toStdString();
-        const std::string otherSource      = qName.mid(thirdPipe + 1).toStdString();
+        const std::string otherGroup  = qName.left(firstPipe).toStdString();
+        const std::string otherRowStr = qName.mid(firstPipe + 1, secondPipe - firstPipe - 1).toStdString();
 
-        // Same output row AND same output group; different button than the one just checked.
-        if (otherOutput == outputChannelName &&
-            otherOutputGroup == outputGroup &&
-            !(otherGroup == inputGroup && otherSource == sourceColumnName))
+        // Same output group and row, but not the button just checked.
+        if (otherGroup  == outputGroup &&
+            otherRowStr == std::to_string(outputRowIdx) &&
+            qName.toStdString() != newKey + "|" + newValue)
         {
             const QSignalBlocker blocker(otherBtn);
             otherBtn->setChecked(false);
         }
     }
 
-    // Erase any previous routing for this output, then store the new one.
-    routingMap.erase(outputChannelName);
-    routingMap[outputChannelName] = newValue;
+    // Overwrite this row's routing entry.
+    routingMap[newKey] = newValue;
 
-    // Serialize back to comma-separated string.
-    // Format: "outName:groupId:srcName,..."
+    // Serialize back to "out1:0:in1:2,out2:0:const:0,..." format.
     std::ostringstream out;
     bool first = true;
     for (const auto& entry : routingMap)
     {
+        // entry.first = "out1|0", entry.second = "in1|2" → "out1:0:in1:2"
+        const std::string::size_type keyPipe = entry.first.find('|');
+        const std::string::size_type valPipe = entry.second.find('|');
+        if (keyPipe == std::string::npos || valPipe == std::string::npos) continue;
         if (!first) out << ',';
-        out << entry.first << ':' << entry.second;
+        out << entry.first.substr(0, keyPipe) << ':' << entry.first.substr(keyPipe + 1)
+            << ':' << entry.second.substr(0, valPipe) << ':' << entry.second.substr(valPipe + 1);
         first = false;
     }
 

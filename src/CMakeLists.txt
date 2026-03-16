@@ -111,10 +111,6 @@ if (Qt6_FOUND)
   target_link_libraries(DeepCShuffle2 PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets)
 endif()
 
-# Temporary diagnostic target — NOT in PLUGINS list, NOT installed.
-# Remove after Bug 3 (ChannelSet knob synchrony) is diagnosed.
-add_nuke_plugin(DeepCTest DeepCTest.cpp)
-
 # create menu file
 string(REPLACE ";" "\", \"" DRAW_NODES "\"${DRAW_NODES}\"")
 string(REPLACE ";" "\", \"" CHANNEL_NODES "\"${CHANNEL_NODES}\"")

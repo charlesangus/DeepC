@@ -121,16 +121,20 @@ public slots:
      * Called when the user toggles a routing cell button.
      * Serialises the new routing state and forwards it to ShuffleMatrixKnob::setValue().
      *
-     * @param outputGroup        Output group identifier (e.g. "out1", "out2", layer name)
-     * @param outputChannelName  NDK channel name for the destination slot (e.g. "rgba.red")
-     * @param inputGroup         "in1" or "in2" — which column group was toggled
-     * @param sourceChannelName  NDK channel name for the source (e.g. "depth.Z")
-     * @param checked            true = route source -> output; false = remove routing
+     * State is stored positionally (row/column indices), not by channel name, so
+     * routing is preserved when the user changes a layer picker to a different layer.
+     *
+     * @param outputGroup   Output group identifier ("out1" or "out2")
+     * @param outputRowIdx  Zero-based row index within that output group
+     * @param sourceGroup   "in1", "in2", or "const" — which column group was toggled
+     * @param sourceColIdx  Zero-based column index within sourceGroup
+     *                      (for "const": 0 = 0.0, 1 = 1.0)
+     * @param checked       true = route source -> output; false = no-op (radio guard)
      */
     void onCellToggled(const std::string& outputGroup,
-                       const std::string& outputChannelName,
-                       const std::string& inputGroup,
-                       const std::string& sourceChannelName,
+                       int outputRowIdx,
+                       const std::string& sourceGroup,
+                       int sourceColIdx,
                        bool checked);
 
     /**

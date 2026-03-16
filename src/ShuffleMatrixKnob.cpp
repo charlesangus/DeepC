@@ -38,7 +38,27 @@ void ShuffleMatrixKnob::to_script(std::ostream& outputStream,
 
 bool ShuffleMatrixKnob::from_script(const char* serializedValue)
 {
-    _matrixState = serializedValue ? serializedValue : "";
+    const std::string value = serializedValue ? serializedValue : "";
+
+    // Detect old name-based state format and silently discard it.
+    // Old format: "rgba.red:in1:rgba.red,rgba.green:in1:rgba.green,..."
+    //   → first colon-separated field is a channel name containing a dot.
+    // New format: "out1:0:in1:2,out1:1:in1:1,..."
+    //   → first colon-separated field is "out1" or "out2" (no dot).
+    if (!value.empty())
+    {
+        const std::string::size_type firstColon = value.find(':');
+        if (firstColon != std::string::npos &&
+            value.substr(0, firstColon).find('.') != std::string::npos)
+        {
+            // Old format detected — discard rather than restore incorrectly.
+            _matrixState = "";
+            changed();
+            return true;
+        }
+    }
+
+    _matrixState = value;
     changed(); // schedules kUpdateWidgets so the widget syncs when it next opens
     return true;
 }

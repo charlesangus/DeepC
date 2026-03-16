@@ -60,6 +60,22 @@ public:
 };
 
 // -----------------------------------------------------------------------------
+// channelAtIndex — resolves the Channel at a zero-based index in a ChannelSet
+// -----------------------------------------------------------------------------
+static Channel channelAtIndex(const ChannelSet& channelSet, int targetIndex)
+{
+    int currentIndex = 0;
+    Channel ch;
+    foreach(ch, channelSet)
+    {
+        if (currentIndex == targetIndex)
+            return ch;
+        ++currentIndex;
+    }
+    return Chan_Black;
+}
+
+// -----------------------------------------------------------------------------
 // _validate
 // -----------------------------------------------------------------------------
 void DeepCShuffle2::_validate(bool for_real)
@@ -79,8 +95,11 @@ void DeepCShuffle2::_validate(bool for_real)
         return;
     }
 
-    // Parse "outName:srcName,outName:srcName,..." up to 8 slots.
-    // srcName may be "const:0" or "const:1" for constant column outputs.
+    // Parse positional routing state: "out1:0:in1:2,out1:1:const:0,..." up to 8 slots.
+    // Format per token: outGroup:outRowIdx:sourceGroup:sourceColIdx
+    //   outGroup    "out1" | "out2"  → resolved via _out1ChannelSet / _out2ChannelSet
+    //   sourceGroup "in1"  | "in2"  → resolved via _in1ChannelSet / _in2ChannelSet
+    //               "const"         → constant; sourceColIdx 0 = 0.0f, 1 = 1.0f
     std::istringstream tokenStream(_matrixState);
     std::string token;
     while (_activeSlots < 8 && std::getline(tokenStream, token, ','))
@@ -88,48 +107,36 @@ void DeepCShuffle2::_validate(bool for_real)
         if (token.empty())
             continue;
 
-        const std::string::size_type colonPos = token.find(':');
-        if (colonPos == std::string::npos)
-            continue;
+        std::istringstream tokenParts(token);
+        std::string outGroup, outRowIdxStr, sourceGroup, sourceColIdxStr;
+        if (!std::getline(tokenParts, outGroup,        ':')) continue;
+        if (!std::getline(tokenParts, outRowIdxStr,    ':')) continue;
+        if (!std::getline(tokenParts, sourceGroup,     ':')) continue;
+        if (!std::getline(tokenParts, sourceColIdxStr, ':')) continue;
 
-        const std::string outName  = token.substr(0, colonPos);
-        const std::string rest     = token.substr(colonPos + 1);
+        int outRowIdx = 0, sourceColIdx = 0;
+        try { outRowIdx    = std::stoi(outRowIdxStr);    } catch (...) { continue; }
+        try { sourceColIdx = std::stoi(sourceColIdxStr); } catch (...) { continue; }
 
-        // Strip optional group prefix ("in1:" or "in2:") added by the widget.
-        // Legacy format has no prefix; both are treated identically by the engine
-        // because in1 and in2 are drawn from the same upstream input.
-        std::string srcName = rest;
-        if (rest.size() > 4 &&
-            (rest.substr(0, 4) == "in1:" || rest.substr(0, 4) == "in2:"))
-        {
-            srcName = rest.substr(4);
-        }
-
-        // Resolve the output channel — must be a real channel name.
-        Channel outputChannel = findChannel(outName.c_str());
+        // Resolve output channel by position within the appropriate ChannelSet.
+        const ChannelSet& outputSet = (outGroup == "out2") ? _out2ChannelSet : _out1ChannelSet;
+        const Channel outputChannel = channelAtIndex(outputSet, outRowIdx);
         if (outputChannel == Chan_Black)
             continue;
 
-        if (srcName == "const:0")
+        if (sourceGroup == "const")
         {
             _outputChannels[_activeSlots]      = outputChannel;
             _sourceChannels[_activeSlots]      = Chan_Black;
             _sourceIsConstant[_activeSlots]    = true;
-            _sourceConstantValue[_activeSlots] = 0.0f;
-            ++_activeSlots;
-        }
-        else if (srcName == "const:1")
-        {
-            _outputChannels[_activeSlots]      = outputChannel;
-            _sourceChannels[_activeSlots]      = Chan_Black;
-            _sourceIsConstant[_activeSlots]    = true;
-            _sourceConstantValue[_activeSlots] = 1.0f;
+            _sourceConstantValue[_activeSlots] = (sourceColIdx == 0) ? 0.0f : 1.0f;
             ++_activeSlots;
         }
         else
         {
-            // Regular channel-to-channel routing.
-            Channel sourceChannel = findChannel(srcName.c_str());
+            // Resolve source channel by position within in1 or in2 ChannelSet.
+            const ChannelSet& sourceSet = (sourceGroup == "in2") ? _in2ChannelSet : _in1ChannelSet;
+            const Channel sourceChannel = channelAtIndex(sourceSet, sourceColIdx);
             if (sourceChannel == Chan_Black)
                 continue;
 
