@@ -31,6 +31,60 @@ static std::string layerNameFromChannelSet(const DD::Image::ChannelSet& channelS
 }
 
 // ---------------------------------------------------------------------------
+// nukeChannelColor — maps short channel name to Nuke-standard display color
+// ---------------------------------------------------------------------------
+
+QColor nukeChannelColor(const std::string& shortChannelName)
+{
+    if (shortChannelName == "red"   || shortChannelName == "r")  return QColor(180,  45,  45);
+    if (shortChannelName == "green" || shortChannelName == "g")  return QColor( 45, 140,  45);
+    if (shortChannelName == "blue"  || shortChannelName == "b")  return QColor( 45,  90, 180);
+    if (shortChannelName == "alpha" || shortChannelName == "a")  return QColor(155, 155, 155);
+    if (shortChannelName == "z"     || shortChannelName == "Z")  return QColor(180,  45,  45);
+    if (shortChannelName == "u")                                 return QColor(160,  45, 160);
+    if (shortChannelName == "v")                                 return QColor(200,  80, 200);
+    if (shortChannelName == "x")                                 return QColor(130,  45, 170);
+    if (shortChannelName == "y")                                 return QColor(100,  45, 150);
+    if (shortChannelName == "w")                                 return QColor( 80,  45, 130);
+    return QColor(80, 80, 80);
+}
+
+// ---------------------------------------------------------------------------
+// ChannelButton — constructor and paintEvent
+// ---------------------------------------------------------------------------
+
+ChannelButton::ChannelButton(QColor baseColor, QWidget* parent)
+    : QPushButton(parent)
+    , _baseColor(baseColor)
+{
+    setCheckable(true);
+    setFixedSize(22, 22);
+    setFlat(true);
+}
+
+void ChannelButton::paintEvent(QPaintEvent* /*event*/)
+{
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+
+    QColor fillColor = isEnabled() ? _baseColor : QColor(55, 55, 55);
+    if (isChecked() && isEnabled())
+        fillColor = fillColor.lighter(130);
+
+    painter.fillRect(rect(), fillColor);
+
+    painter.setPen(QPen(QColor(25, 25, 25), 1));
+    painter.drawRect(rect().adjusted(0, 0, -1, -1));
+
+    if (isChecked() && isEnabled())
+    {
+        painter.setPen(QPen(Qt::white, 2));
+        painter.drawLine(4, 4, 17, 17);
+        painter.drawLine(17, 4, 4, 17);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Constructor / Destructor
 // ---------------------------------------------------------------------------
 
@@ -175,7 +229,8 @@ void ShuffleMatrixWidget::buildLayout()
     {
         const int headerGroupRow   = startRow;
         const int headerChannelRow = startRow + 1;
-        const int dataStartRow     = startRow + 2;
+        const int arrowRow         = startRow + 2;
+        const int dataStartRow     = startRow + 3;
 
         // Row 0 of group: "in 1" / const header / "in 2" span labels + group name on right
         if (in1Count > 0)
@@ -230,6 +285,30 @@ void ShuffleMatrixWidget::buildLayout()
             _gridLayout->addWidget(label, headerChannelRow, in2StartCol + i);
         }
 
+        // Row 2 of group: down-arrow labels under each source column
+        for (int i = 0; i < in1Count; ++i)
+        {
+            QLabel* arrowLabel = new QLabel(QString::fromUtf8("\xe2\x86\x93"), this);  // "↓"
+            arrowLabel->setAlignment(Qt::AlignCenter);
+            _gridLayout->addWidget(arrowLabel, arrowRow, i);
+        }
+        {
+            QLabel* arrowLabel = new QLabel(QString::fromUtf8("\xe2\x86\x93"), this);
+            arrowLabel->setAlignment(Qt::AlignCenter);
+            _gridLayout->addWidget(arrowLabel, arrowRow, const0Col);
+        }
+        {
+            QLabel* arrowLabel = new QLabel(QString::fromUtf8("\xe2\x86\x93"), this);
+            arrowLabel->setAlignment(Qt::AlignCenter);
+            _gridLayout->addWidget(arrowLabel, arrowRow, const1Col);
+        }
+        for (int i = 0; i < in2Count; ++i)
+        {
+            QLabel* arrowLabel = new QLabel(QString::fromUtf8("\xe2\x86\x93"), this);
+            arrowLabel->setAlignment(Qt::AlignCenter);
+            _gridLayout->addWidget(arrowLabel, arrowRow, in2StartCol + i);
+        }
+
         // Data rows: one per output channel in this group
         for (int rowIdx = 0; rowIdx < static_cast<int>(outRows.size()); ++rowIdx)
         {
@@ -242,10 +321,8 @@ void ShuffleMatrixWidget::buildLayout()
             for (int si = 0; si < in1Count; ++si)
             {
                 const std::string& sourceName = in1Columns[si];
-                QPushButton* btn = new QPushButton(this);
-                btn->setCheckable(true);
-                btn->setFixedHeight(22);
-                btn->setFixedWidth(22);
+                ChannelButton* btn = new ChannelButton(
+                    nukeChannelColor(shortChannelName(sourceName)), this);
                 // objectName: "outGroup|outputChannel|in1|sourceChannel"
                 // Four-field format: outGroup prefix scopes radio enforcement so
                 // out1 and out2 rows with matching channel names stay independent.
@@ -261,12 +338,9 @@ void ShuffleMatrixWidget::buildLayout()
                 _toggleButtons.push_back(btn);
             }
 
-            // const:0 toggle button
+            // const:0 toggle button — near-black color (represents constant 0.0 value)
             {
-                QPushButton* btn = new QPushButton(this);
-                btn->setCheckable(true);
-                btn->setFixedHeight(22);
-                btn->setFixedWidth(22);
+                ChannelButton* btn = new ChannelButton(QColor(30, 30, 30), this);
                 btn->setObjectName(
                     QString::fromStdString(capturedOutGroup + "|" + outputName + "|in1|const:0"));
                 btn->setEnabled(!buttonsDisabled);
@@ -278,12 +352,9 @@ void ShuffleMatrixWidget::buildLayout()
                 _toggleButtons.push_back(btn);
             }
 
-            // const:1 toggle button
+            // const:1 toggle button — near-white color (represents constant 1.0 value)
             {
-                QPushButton* btn = new QPushButton(this);
-                btn->setCheckable(true);
-                btn->setFixedHeight(22);
-                btn->setFixedWidth(22);
+                ChannelButton* btn = new ChannelButton(QColor(220, 220, 220), this);
                 btn->setObjectName(
                     QString::fromStdString(capturedOutGroup + "|" + outputName + "|in1|const:1"));
                 btn->setEnabled(!buttonsDisabled);
@@ -299,10 +370,8 @@ void ShuffleMatrixWidget::buildLayout()
             for (int si = 0; si < in2Count; ++si)
             {
                 const std::string& sourceName = in2Columns[si];
-                QPushButton* btn = new QPushButton(this);
-                btn->setCheckable(true);
-                btn->setFixedHeight(22);
-                btn->setFixedWidth(22);
+                ChannelButton* btn = new ChannelButton(
+                    nukeChannelColor(shortChannelName(sourceName)), this);
                 btn->setObjectName(
                     QString::fromStdString(capturedOutGroup + "|" + outputName + "|in2|" + sourceName));
                 btn->setEnabled(!in2Disabled);
@@ -315,8 +384,9 @@ void ShuffleMatrixWidget::buildLayout()
                 _toggleButtons.push_back(btn);
             }
 
-            // Output channel name label on the right
+            // Output channel name label on the right — right-arrow prefix for visual clarity
             QLabel* outLabel = new QLabel(
+                QString::fromUtf8("\xe2\x86\x92 ") +       // "→ "
                 QString::fromStdString(shortChannelName(outputName)), this);
             outLabel->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
             outLabel->setEnabled(!buttonsDisabled);
@@ -343,7 +413,8 @@ void ShuffleMatrixWidget::buildLayout()
     }
 
     // Ensure Nuke allocates enough vertical space in the panel.
-    setMinimumHeight(nextRow * 26);
+    // Use 28px per row to account for the extra arrow row added per group.
+    setMinimumHeight(nextRow * 28);
 }
 
 void ShuffleMatrixWidget::clearLayout()
@@ -449,7 +520,7 @@ void ShuffleMatrixWidget::syncFromKnob()
 
     // Set each button's checked state.
     // objectName format: "outGroup|outputChannel|inputGroup|sourceChannel"
-    for (QPushButton* btn : _toggleButtons)
+    for (ChannelButton* btn : _toggleButtons)
     {
         const QString qName   = btn->objectName();
         const int firstPipe   = qName.indexOf('|');
@@ -525,7 +596,7 @@ void ShuffleMatrixWidget::onCellToggled(const std::string& outputGroup,
     // Radio-button enforcement: only one source per output channel within the same
     // output group. The outputGroup scope prevents out1 and out2 rows from sharing
     // radio state when they have identically-named channels.
-    for (QPushButton* otherBtn : _toggleButtons)
+    for (ChannelButton* otherBtn : _toggleButtons)
     {
         const QString qName       = otherBtn->objectName();
         const int firstPipe       = qName.indexOf('|');
