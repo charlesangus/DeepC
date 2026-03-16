@@ -68,6 +68,19 @@ Plans:
 - [ ] 03-03-PLAN.md — Implement ShuffleMatrixKnob.cpp and ShuffleMatrixWidget.cpp
 - [ ] 03-04-PLAN.md — Rewrite DeepCShuffle.cpp with new data model and knob wiring; UAT checkpoint
 
+### Phase 03.1: refine and fix deepcshuffle ui/behaviour (INSERTED)
+
+**Goal:** DeepCShuffle2 has full visual and behavioral parity with the reference Shuffle2 node: colored X-mark channel buttons, embedded ChannelSet pickers, radio enforcement scoped to each output group, const:0/1 source columns, identity routing on first open, and disabled-not-hidden behavior for none ChannelSets.
+**Requirements**: none (fix phase — all SHUF requirements already marked complete)
+**Depends on:** Phase 3
+**Plans:** 4 plans
+
+Plans:
+- [ ] 03.1-01-PLAN.md — Fix radio no-op guard, outGroup radio scope, add const:0/1 columns, identity routing init
+- [ ] 03.1-02-PLAN.md — Disabled-not-hidden for none ChannelSets; fix make_widget timing for single-step ChannelSet update
+- [ ] 03.1-03-PLAN.md — ChannelButton subclass with colored X-mark paintEvent; down/right arrow decorators
+- [ ] 03.1-04-PLAN.md — Embed QComboBox pickers in widget; hide NDK knobs with INVISIBLE; UAT checkpoint
+
 ### Phase 4: DeepCPNoise 4D
 **Goal**: DeepCPNoise exposes a 4D noise dimension option in the UI for all supported noise types, correctly enabling the evolution knob only for Simplex noise, with the noise type comparison replaced by a named constant.
 **Depends on**: Phase 1
@@ -90,12 +103,13 @@ Plans:
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
+Phases execute in numeric order: 1 → 2 → 3 → 3.1 → 4 → 5
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Codebase Sweep | 5/5 | Complete   | 2026-03-13 |
 | 2. DeepCPMatte GL Handles | 1/1 | Complete   | 2026-03-14 |
 | 3. DeepShuffle UI | 4/4 | Complete   | 2026-03-15 |
+| 3.1. Refine DeepCShuffle UI | 0/4 | Not started | - |
 | 4. DeepCPNoise 4D | 0/TBD | Not started | - |
 | 5. DeepThinner Vendor | 0/TBD | Not started | - |
