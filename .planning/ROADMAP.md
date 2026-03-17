@@ -12,11 +12,10 @@ The DeepC milestone adds interactive GL handles to DeepCPMatte, expands the Deep
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [x] **Phase 1: Codebase Sweep** - Fix all confirmed bugs, modernize NDK APIs, resolve DeepCBlink fate (completed 2026-03-13)
-- [x] **Phase 2: DeepCPMatte GL Handles** - Interactive wireframe viewport overlay and drag-to-reposition handle for the selection volume (completed 2026-03-14)
-- [x] **Phase 3: DeepShuffle UI** - Expand channel routing from 4 to 8 channels with labeled ports and layer-level routing (completed 2026-03-15)
-- [x] **Phase 4: DeepCPNoise 4D** - Expose 4D noise option in the UI wired to existing FastNoise 4D methods (completed 2026-03-17)
-- [ ] **Phase 5: DeepThinner Vendor** - Confirm license compatibility, integrate source into CMake build, register in toolbar menu
+- [x] **Phase 1: Codebase Sweep** - Fix all confirmed bugs, modernize NDK APIs, resolve DeepCBlink fate (completed 2005-03-13)
+- [x] **Phase 2: DeepCPMatte GL Handles** - Interactive wireframe viewport overlay and drag-to-reposition handle for the selection volume (completed 2005-03-14)
+- [x] **Phase 3: DeepShuffle UI** - Expand channel routing from 4 to 8 channels with labeled ports and layer-level routing (completed 2005-03-15)
+- [x] **Phase 4: DeepCPNoise 4D** - Expose 4D noise option in the UI wired to existing FastNoise 4D methods (completed 2005-03-17)
 
 ## Phase Details
 
@@ -96,27 +95,3 @@ Plans:
 - [ ] 04-01-PLAN.md — Add all 4D declarations to FastNoise.h; implement 4D Value and Perlin (base + fractals)
 - [ ] 04-02-PLAN.md — Implement 4D Cubic and Cellular (CELL_4D tables, CUBIC_4D_BOUNDING, algorithm bodies)
 - [ ] 04-03-PLAN.md — Extend GetNoise(x,y,z,w) dispatch; update DeepCPNoise call site + tooltips; UAT checkpoint
-
-### Phase 5: DeepThinner Vendor
-**Goal**: DeepThinner is confirmed license-compatible with GPL-3.0, its source is compiled as a Nuke plugin via CMake, and it appears in the DeepC toolbar submenu in Nuke.
-**Depends on**: Phase 1
-**Requirements**: THIN-01, THIN-02, THIN-03
-**Success Criteria** (what must be TRUE):
-  1. A written license compatibility confirmation exists before any DeepThinner source is added to the repository
-  2. Running the CMake build produces a DeepThinner `.so` artifact with no name collisions against existing DeepC nodes
-  3. DeepThinner is accessible from the DeepC submenu in the Nuke toolbar and can be placed on the node graph
-**Plans**: TBD
-
-## Progress
-
-**Execution Order:**
-Phases execute in numeric order: 1 → 2 → 3 → 3.1 → 4 → 5
-
-| Phase | Plans Complete | Status | Completed |
-|-------|----------------|--------|-----------|
-| 1. Codebase Sweep | 5/5 | Complete   | 2026-03-13 |
-| 2. DeepCPMatte GL Handles | 1/1 | Complete   | 2026-03-14 |
-| 3. DeepShuffle UI | 4/4 | Complete   | 2026-03-15 |
-| 3.1. Refine DeepCShuffle UI | 4/4 | Complete | 2026-03-16 |
-| 4. DeepCPNoise 4D | 3/3 | Complete   | 2026-03-17 |
-| 5. DeepThinner Vendor | 0/TBD | Not started | - |
