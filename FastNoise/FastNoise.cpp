@@ -599,23 +599,59 @@ FN_DECIMAL FastNoise::GetNoise(FN_DECIMAL x, FN_DECIMAL y, FN_DECIMAL z, FN_DECI
 	x *= m_frequency;
 	y *= m_frequency;
 	z *= m_frequency;
-	// for now, simplex is only useful 4d fractal noise, so just use that
+	w *= m_frequency;
 
 	switch (m_noiseType)
 	{
+	case Value:
+		return SingleValue(0, x, y, z, w);
+	case ValueFractal:
+		switch (m_fractalType)
+		{
+		case FBM:        return SingleValueFractalFBM(x, y, z, w);
+		case Billow:     return SingleValueFractalBillow(x, y, z, w);
+		case RigidMulti: return SingleValueFractalRigidMulti(x, y, z, w);
+		default: return 0;
+		}
+	case Perlin:
+		return SinglePerlin(0, x, y, z, w);
+	case PerlinFractal:
+		switch (m_fractalType)
+		{
+		case FBM:        return SinglePerlinFractalFBM(x, y, z, w);
+		case Billow:     return SinglePerlinFractalBillow(x, y, z, w);
+		case RigidMulti: return SinglePerlinFractalRigidMulti(x, y, z, w);
+		default: return 0;
+		}
 	case Simplex:
 		return SingleSimplex(0, x, y, z, w);
 	case SimplexFractal:
 		switch (m_fractalType)
 		{
-		case FBM:
-			return SingleSimplexFractalFBM(x, y, z, w);
-		case Billow:
-			return SingleSimplexFractalBillow(x, y, z, w);
-		case RigidMulti:
-			return SingleSimplexFractalRigidMulti(x, y, z, w);
+		case FBM:        return SingleSimplexFractalFBM(x, y, z, w);
+		case Billow:     return SingleSimplexFractalBillow(x, y, z, w);
+		case RigidMulti: return SingleSimplexFractalRigidMulti(x, y, z, w);
+		default: return 0;
+		}
+	case Cellular:
+		switch (m_cellularReturnType)
+		{
+		case CellValue:
+		case NoiseLookup:
+		case Distance:
+			return SingleCellular(x, y, z, w);
 		default:
-			return 0;
+			return SingleCellular2Edge(x, y, z, w);
+		}
+	case Cubic:
+		return SingleCubic(0, x, y, z, w);
+	case CubicFractal:
+		switch (m_fractalType)
+		{
+		case FBM:        return SingleCubicFractalFBM(x, y, z, w);
+		case Billow:     return SingleCubicFractalBillow(x, y, z, w);
+		case RigidMulti: return SingleCubicFractalRigidMulti(x, y, z, w);
+		default: return 0;
 		}
 	default:
 		return 0;

@@ -267,15 +267,7 @@ void DeepCPNoise::wrappedPerSample(
     position = inverse__axisKnob * position;
     position = position.divide_w(); // TODO: is this necessary? shouldn't be.
 
-    // TODO: handle this better; fragile now - depends on order of noise list
-    if (_noiseType==0)
-    {
-        // GetNoise(x, y, z, w) only implemented for simplex so far
-        perSampleData = _fastNoise.GetNoise(position[0], position[1], position[2], _noiseEvolution);
-    } else
-    {
-        perSampleData = _fastNoise.GetNoise(position[0], position[1], position[2]);
-    }
+    perSampleData = _fastNoise.GetNoise(position[0], position[1], position[2], _noiseEvolution);
     // TODO: used to be then processing the result like this:
     // m = 1.0f - clamp(noiseValue * .5f + .5f, 0.0f, 1.0f);
     // figure out why... just to make a more useful default
@@ -353,17 +345,18 @@ void DeepCPNoise::custom_knobs(Knob_Callback f)
     BeginClosedGroup(f, "Noise");
     Enumeration_knob(f, &_noiseType, noiseTypeNames, "noiseType");
     Tooltip(f,
-        "Simplex: 4D noise - aka improved perlin"
-        "Cellular: 3D noise - aka Voronoi"
-        "Cubic: 3D noise - more random than Perlin?"
-        "Perlin: 3D noise - the classic"
-        "Value: 3D noise - sort of square and blocky"
+        "Simplex: aka improved Perlin - smooth, gradient-based noise\n"
+        "Cellular: aka Voronoi - cell-based pattern noise\n"
+        "Cubic: more random than Perlin, interpolated lattice noise\n"
+        "Perlin: classic gradient noise\n"
+        "Value: smooth blocky noise interpolated from lattice values\n"
+        "All types support 4D evolution via the noise_evolution knob."
     );
     Float_knob(f, &_noiseEvolution, "noise_evolution");
     Tooltip(f,
-        "For Simplex noise (the only 4D noise), this smoothly"
-        "changes the noise in a non-spatial dimension ("
-        "like evolution over time...)."
+        "Adds a 4th noise dimension, enabling temporal evolution or animated noise.\n"
+        "All noise types support 4D via the w dimension. A value of 0 produces the same\n"
+        "result as standard 3D noise. Animate this value to evolve the noise over time."
     );
     // fractal functions
     BeginClosedGroup(f, "Fractal");
