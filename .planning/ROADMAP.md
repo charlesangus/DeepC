@@ -50,6 +50,12 @@ Plans:
 **Plans**: 1 plan
 
 Plans:
+- [ ] 05-01-PLAN.md — Add DeepCShuffle2 icon, fix menu wiring (CMake + Python rename dict + Op::Description removal), update REQUIREMENTS.md traceability
+
+Plans:
+- [ ] 05-01-PLAN.md — Add DeepCShuffle2 icon, fix menu wiring, remove Op::Description, update REQUIREMENTS.md traceability
+
+Plans:
 - [ ] 02-01-PLAN.md — Fix deadlock, add wireframe GL handles, expose Axis_knob at top level
 
 ### Phase 3: DeepShuffle UI
@@ -107,3 +113,6 @@ Plans:
   3. Loading both .so files in Nuke does not produce duplicate or broken menu entries
   4. REQUIREMENTS.md traceability table shows SWEEP-07 and SWEEP-08 as Dropped, not Pending
 **Plans**: 1 plan
+
+Plans:
+- [ ] 05-01-PLAN.md — Add DeepCShuffle2 icon, fix menu wiring (CMake + Python rename dict + Op::Description removal), update REQUIREMENTS.md traceability
