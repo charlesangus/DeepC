@@ -82,6 +82,29 @@ void DeepCShuffle2::_validate(bool for_real)
 {
     DeepFilterOp::_validate(for_real);
 
+    // Nuke calls store() on all knobs before _validate(), so _in1ChannelSet etc.
+    // are fresh here — updated to whatever set_text() wrote on the picker change.
+    // Push them to the matrix knob now so the kUpdateWidgets callback (which fires
+    // after this validate) rebuilds the widget with correct column headers.
+    // Only schedule a widget rebuild when the ChannelSets have actually changed to
+    // avoid redundant layout rebuilds during normal frame playback.
+    if (Knob* matrixKnob = knob("matrix"))
+    {
+        auto* shuffleKnob = dynamic_cast<ShuffleMatrixKnob*>(matrixKnob);
+        if (shuffleKnob)
+        {
+            const bool channelSetsChanged =
+                (shuffleKnob->in1ChannelSet()  != _in1ChannelSet)  ||
+                (shuffleKnob->in2ChannelSet()  != _in2ChannelSet)  ||
+                (shuffleKnob->out1ChannelSet() != _out1ChannelSet) ||
+                (shuffleKnob->out2ChannelSet() != _out2ChannelSet);
+            shuffleKnob->setChannelSets(_in1ChannelSet, _in2ChannelSet,
+                                        _out1ChannelSet, _out2ChannelSet);
+            if (channelSetsChanged)
+                matrixKnob->updateWidgets();
+        }
+    }
+
     // Reset routing arrays
     _outputChannels.fill(Chan_Black);
     _sourceChannels.fill(Chan_Black);
@@ -301,8 +324,6 @@ int DeepCShuffle2::knob_changed(Knob* k)
     if (k->is("in1") || k->is("in2") || k->is("out1") || k->is("out2") ||
         k == &Knob::inputChange || k == &Knob::showPanel)
     {
-        // Push all four ChannelSets into the matrix knob so the widget can build
-        // accurate column headers and row labels without calling back into the Op.
         if (Knob* matrixKnob = knob("matrix"))
         {
             auto* shuffleKnob = dynamic_cast<ShuffleMatrixKnob*>(matrixKnob);
@@ -310,12 +331,15 @@ int DeepCShuffle2::knob_changed(Knob* k)
             {
                 shuffleKnob->setChannelSets(_in1ChannelSet, _in2ChannelSet,
                                             _out1ChannelSet, _out2ChannelSet);
-                // Directly call syncFromKnob() on the live widget to rebuild
-                // the matrix layout synchronously. This eliminates the one-step
-                // lag caused by updateWidgets() posting an async kUpdateWidgets
-                // callback that fires after the NEXT knob_changed call, not the
-                // current one.
-                shuffleKnob->syncWidgetNow();
+                // syncWidgetNow() is only safe when the C++ ChannelSet members are
+                // guaranteed current. That is true for showPanel (Op was validated
+                // before the panel opened) and inputChange (validated after input
+                // reconnect). For picker changes (in1/in2/out1/out2), store() has
+                // NOT yet run on the changed knob, so _in1ChannelSet etc. are stale.
+                // Fresh headers are delivered by _validate() → setChannelSets() →
+                // updateWidgets() after store() runs for those cases.
+                if (k == &Knob::inputChange || k == &Knob::showPanel)
+                    shuffleKnob->syncWidgetNow();
             }
             matrixKnob->updateWidgets();
         }

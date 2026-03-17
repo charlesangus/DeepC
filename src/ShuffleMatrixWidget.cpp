@@ -284,17 +284,23 @@ void ShuffleMatrixWidget::buildLayout()
     const int const1Col         = in1Count + 2;
     const int sepAfterConstCol  = in1Count + 3;    // 8px separator after const:1
     const int in2StartCol       = in1Count + 4;
-    const int outLabelCol       = in2StartCol + in2Count;
+    // outArrowCol holds a fixed-size ArrowLabel(Right) per data row — same 22×22
+    // as ChannelButton so it doesn't disturb column widths.
+    // outLabelCol is the stretchy text column to its right.
+    const int outArrowCol       = in2StartCol + in2Count;
+    const int outLabelCol       = outArrowCol + 1;
 
     _toggleButtons.clear();
 
     // ---- Set column stretch so button columns stay fixed-width ----
     // All button and label-header columns are fixed to their content width
-    // (buttons are 22x22px). The output label column on the right gets all
-    // remaining stretch so it expands without pushing the button columns apart.
+    // (buttons are 22x22px). The arrow column is also fixed (22px ArrowLabel).
+    // The output label column on the right gets all remaining stretch so it
+    // expands without pushing the button columns apart.
     // Separator columns get a fixed minimum width of 8px with zero stretch.
-    for (int col = 0; col < outLabelCol; ++col)
+    for (int col = 0; col < outArrowCol; ++col)
         _gridLayout->setColumnStretch(col, 0);
+    _gridLayout->setColumnStretch(outArrowCol, 0);
     _gridLayout->setColumnStretch(outLabelCol, 1);
     _gridLayout->setColumnMinimumWidth(sepBeforeConstCol, 8);
     _gridLayout->setColumnMinimumWidth(sepAfterConstCol,  8);
@@ -419,7 +425,10 @@ void ShuffleMatrixWidget::buildLayout()
                         targetKnob->changed();
                     }
                 });
-            outPicker->setEnabled(!buttonsDisabled);
+            // Output picker must always be enabled regardless of whether the current
+            // out layer is Chan_Black. If disabled when buttonsDisabled=true, the user
+            // can never select a layer and out2 stays permanently disabled.
+            outPicker->setEnabled(true);
             _gridLayout->addWidget(outPicker, headerGroupRow, outLabelCol, pickerRowSpan, 1);
             if (outPickerPtr)
                 *outPickerPtr = outPicker;
@@ -533,10 +542,13 @@ void ShuffleMatrixWidget::buildLayout()
                 _toggleButtons.push_back(btn);
             }
 
-            // Output channel name label on the right — right-arrow prefix for visual clarity.
-            // Use ⇒ (U+21D2, double-headed right arrow) for a wider, more visible glyph.
+            // Output arrow: a solid filled ArrowLabel(Right) widget, matching the
+            // ChannelButton 22×22 size exactly, drawn with QPainter — visually
+            // consistent with the ArrowLabel(Down) widgets above source columns.
+            _gridLayout->addWidget(new ArrowLabel(ArrowLabel::Right, this), gridRow, outArrowCol);
+
+            // Output channel name label — plain text, no unicode prefix.
             QLabel* outLabel = new QLabel(
-                QString::fromUtf8("\xe2\x87\x92 ") +       // "⇒ "
                 QString::fromStdString(shortChannelName(outputName)), this);
             outLabel->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
             outLabel->setEnabled(!buttonsDisabled);
