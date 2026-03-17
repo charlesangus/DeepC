@@ -33,7 +33,7 @@
 
 ### DeepCPNoise 4D
 
-- [ ] **NOIS-01**: DeepCPNoise exposes a 4D noise option in the UI for all supported noise types (Simplex, Perlin, Cellular, Cubic, Value), wired to the existing FastNoise 4D methods
+- [x] **NOIS-01**: DeepCPNoise exposes a 4D noise option in the UI for all supported noise types (Simplex, Perlin, Cellular, Cubic, Value), wired to the existing FastNoise 4D methods
 
 ### DeepThinner Vendor
 
@@ -100,7 +100,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SHUF-02 | Phase 3 | Complete |
 | SHUF-03 | Phase 3 | Complete |
 | SHUF-04 | Phase 3 | Complete |
-| NOIS-01 | Phase 4 | Pending |
+| NOIS-01 | Phase 4 | Complete |
 | THIN-01 | Phase 5 | Pending |
 | THIN-02 | Phase 5 | Pending |
 | THIN-03 | Phase 5 | Pending |
