@@ -17,6 +17,17 @@ static std::string shortChannelName(const std::string& fullName)
     return fullName;
 }
 
+// Returns a single-character column header for a full NDK channel name ("rgba.red" -> "r").
+// Using only the first letter keeps column headers within the 22px button cell width,
+// preventing longer names like "green" from forcing QGridLayout to widen the column.
+static QString columnHeaderLabel(const std::string& fullName)
+{
+    const std::string shortName = shortChannelName(fullName);
+    if (shortName.empty())
+        return QString();
+    return QString(QChar(shortName[0]));
+}
+
 // Returns the layer part of a full NDK channel name ("rgba.red" -> "rgba").
 static std::string layerNameFromChannelSet(const DD::Image::ChannelSet& channelSet)
 {
@@ -62,6 +73,15 @@ ChannelButton::ChannelButton(QColor baseColor, QWidget* parent)
     setCheckable(true);
     setFixedSize(22, 22);
     setFlat(true);
+}
+
+void ChannelButton::nextCheckState()
+{
+    // Radio-button semantics: a checked button cannot be unchecked by clicking it.
+    // Only allow transitioning from unchecked → checked; ignore clicks on already-
+    // checked buttons so the row always has exactly one source selected.
+    if (!isChecked())
+        setChecked(true);
 }
 
 void ChannelButton::paintEvent(QPaintEvent* /*event*/)
@@ -140,8 +160,8 @@ ShuffleMatrixWidget::ShuffleMatrixWidget(ShuffleMatrixKnob* knob, QWidget* paren
     _knob->addCallback(WidgetCallback, this);
     _gridLayout = new QGridLayout(this);
     _gridLayout->setHorizontalSpacing(2);
-    _gridLayout->setVerticalSpacing(2);
-    _gridLayout->setContentsMargins(4, 4, 4, 4);
+    _gridLayout->setVerticalSpacing(1);
+    _gridLayout->setContentsMargins(2, 2, 2, 2);
     buildLayout();
 }
 
@@ -375,38 +395,52 @@ void ShuffleMatrixWidget::buildLayout()
                           const std::string& groupId,
                           const std::string& groupLabel,
                           bool buttonsDisabled,
+                          bool showGroupHeaders,
                           QComboBox** outPickerPtr) -> int
     {
-        const int headerGroupRow   = startRow;
-        const int headerChannelRow = startRow + 1;
-        const int arrowRow         = startRow + 2;
-        const int dataStartRow     = startRow + 3;
+        // showGroupHeaders=true  (out1): channel-letter row + arrow row + data rows
+        // showGroupHeaders=false (out2): arrow row + data rows
+        // The out picker is anchored at the arrow row in both cases so it visually
+        // lines up with the first row of arrows rather than floating above them.
+        int currentRow = startRow;
 
-        // Row 0 of group: group header labels — "in 1", "const", "in 2", group name
-        if (in1Count > 0)
+        // Channel letter labels: "r", "g", "b", "a", "0", "1", ... (out1 only)
+        if (showGroupHeaders)
         {
-            QLabel* in1Header = new QLabel("in 1", this);
-            in1Header->setAlignment(Qt::AlignCenter);
-            _gridLayout->addWidget(in1Header, headerGroupRow, 0, 1, in1Count);
+            auto makeHeaderLabel = [this](const QString& text) -> QLabel*
+            {
+                QLabel* label = new QLabel(text, this);
+                label->setAlignment(Qt::AlignCenter);
+                return label;
+            };
+            for (int i = 0; i < in1Count; ++i)
+                _gridLayout->addWidget(makeHeaderLabel(columnHeaderLabel(in1Columns[i])), currentRow, i);
+            _gridLayout->addWidget(makeHeaderLabel("0"), currentRow, const0Col);
+            _gridLayout->addWidget(makeHeaderLabel("1"), currentRow, const1Col);
+            for (int i = 0; i < in2Count; ++i)
+                _gridLayout->addWidget(makeHeaderLabel(columnHeaderLabel(in2Columns[i])), currentRow, in2StartCol + i);
+            ++currentRow;
         }
-        // const column group header — spans both "0" and "1" columns
+
+        // Down-arrow row — always shown for both groups
+        const int arrowRow = currentRow;
         {
-            QLabel* constHeader = new QLabel("const", this);
-            constHeader->setAlignment(Qt::AlignCenter);
-            _gridLayout->addWidget(constHeader, headerGroupRow, const0Col, 1, 2);
+            for (int i = 0; i < in1Count; ++i)
+                _gridLayout->addWidget(new ArrowLabel(ArrowLabel::Down, this), arrowRow, i);
+            _gridLayout->addWidget(new ArrowLabel(ArrowLabel::Down, this), arrowRow, const0Col);
+            _gridLayout->addWidget(new ArrowLabel(ArrowLabel::Down, this), arrowRow, const1Col);
+            for (int i = 0; i < in2Count; ++i)
+                _gridLayout->addWidget(new ArrowLabel(ArrowLabel::Down, this), arrowRow, in2StartCol + i);
+            ++currentRow;
         }
-        if (in2Count > 0)
-        {
-            QLabel* in2Header = new QLabel("in 2", this);
-            in2Header->setAlignment(Qt::AlignCenter);
-            _gridLayout->addWidget(in2Header, headerGroupRow, in2StartCol, 1, in2Count);
-        }
-        // Output picker: a QComboBox placed in the outLabelCol at the group header row.
-        // The picker spans all data rows of this group via rowspan so it stays
-        // visually aligned with the button rows on the left.
+
+        const int dataStartRow = currentRow;
+
+        // Output picker: anchored at arrowRow so it visually aligns with the first
+        // arrow, spanning through all data rows.
         {
             const int dataRowCount = static_cast<int>(outRows.size());
-            const int pickerRowSpan = 3 + (dataRowCount > 0 ? dataRowCount : 1);
+            const int pickerRowSpan = 1 + (dataRowCount > 0 ? dataRowCount : 1);
             QComboBox* outPicker = makePicker(groupLabel,
                 [this, groupId](const QString& selectedText)
                 {
@@ -429,47 +463,11 @@ void ShuffleMatrixWidget::buildLayout()
             // out layer is Chan_Black. If disabled when buttonsDisabled=true, the user
             // can never select a layer and out2 stays permanently disabled.
             outPicker->setEnabled(true);
-            _gridLayout->addWidget(outPicker, headerGroupRow, outLabelCol, pickerRowSpan, 1);
+            _gridLayout->addWidget(outPicker, arrowRow, outLabelCol, pickerRowSpan, 1,
+                                   Qt::AlignTop);
             if (outPickerPtr)
                 *outPickerPtr = outPicker;
         }
-
-        // Row 1 of group: per-column short channel name labels
-        for (int i = 0; i < in1Count; ++i)
-        {
-            QLabel* label = new QLabel(
-                QString::fromStdString(shortChannelName(in1Columns[i])), this);
-            label->setAlignment(Qt::AlignCenter);
-            _gridLayout->addWidget(label, headerChannelRow, i);
-        }
-        // const column channel labels: "0" and "1"
-        {
-            QLabel* const0Label = new QLabel("0", this);
-            const0Label->setAlignment(Qt::AlignCenter);
-            _gridLayout->addWidget(const0Label, headerChannelRow, const0Col);
-        }
-        {
-            QLabel* const1Label = new QLabel("1", this);
-            const1Label->setAlignment(Qt::AlignCenter);
-            _gridLayout->addWidget(const1Label, headerChannelRow, const1Col);
-        }
-        for (int i = 0; i < in2Count; ++i)
-        {
-            QLabel* label = new QLabel(
-                QString::fromStdString(shortChannelName(in2Columns[i])), this);
-            label->setAlignment(Qt::AlignCenter);
-            _gridLayout->addWidget(label, headerChannelRow, in2StartCol + i);
-        }
-
-        // Row 2 of group: down-arrow indicators under each source column.
-        // ArrowLabel uses setFixedSize(22, 22) — matching ChannelButton exactly —
-        // so QGridLayout cannot widen any column due to an oversized glyph.
-        for (int i = 0; i < in1Count; ++i)
-            _gridLayout->addWidget(new ArrowLabel(ArrowLabel::Down, this), arrowRow, i);
-        _gridLayout->addWidget(new ArrowLabel(ArrowLabel::Down, this), arrowRow, const0Col);
-        _gridLayout->addWidget(new ArrowLabel(ArrowLabel::Down, this), arrowRow, const1Col);
-        for (int i = 0; i < in2Count; ++i)
-            _gridLayout->addWidget(new ArrowLabel(ArrowLabel::Down, this), arrowRow, in2StartCol + i);
 
         // Data rows: one per output channel in this group
         for (int rowIdx = 0; rowIdx < static_cast<int>(outRows.size()); ++rowIdx)
@@ -603,6 +601,7 @@ void ShuffleMatrixWidget::buildLayout()
         // them unevenly (rounding artefacts give cols 0-1 extra pixels vs 2-3) and
         // producing a visible gap between g and b in both in1 and in2 groups.
         _in1Picker->setMaximumWidth(in1Span * 22 + std::max(0, in1Span - 1) * 2);
+        _in1Picker->setMaximumHeight(22);
         _gridLayout->addWidget(_in1Picker, pickerRow, 0, 1, in1Span);
     }
 
@@ -626,6 +625,7 @@ void ShuffleMatrixWidget::buildLayout()
         const int in2Span = (in2Count > 0) ? in2Count : 1;
         // Same max-width cap as in1 picker to prevent column width distortion.
         _in2Picker->setMaximumWidth(in2Span * 22 + std::max(0, in2Span - 1) * 2);
+        _in2Picker->setMaximumHeight(22);
         _gridLayout->addWidget(_in2Picker, pickerRow, in2StartCol, 1, in2Span);
     }
 
@@ -639,25 +639,22 @@ void ShuffleMatrixWidget::buildLayout()
     const std::string out1Label = layerNameFromChannelSet(out1Set);
     nextRow = buildGroup(nextRow, out1Rows, "out1",
                          out1Label.empty() ? "none" : out1Label,
-                         false, &_out1Picker);
+                         false, /*showGroupHeaders=*/true, &_out1Picker);
 
-    // ---- Build out2 group (with spacer above) ----
-    // Always render the out2 group — when out2 is none (Chan_Black) the group is
-    // shown with placeholder rows but all buttons are disabled so the layout stays
-    // consistent and the picker remains accessible.
+    // ---- Build out2 group ----
+    // No spacer between groups — the picker widgets provide sufficient visual
+    // separation. The group headers ("in 1 / const / in 2") are omitted for out2
+    // since the column structure is already established by the out1 group above.
     {
-        _gridLayout->setRowMinimumHeight(nextRow, 10);
-        ++nextRow;
-
         const std::string out2Label = layerNameFromChannelSet(out2Set);
         nextRow = buildGroup(nextRow, out2Rows, "out2",
                              (out2Disabled || out2Label.empty()) ? "none" : out2Label,
-                             out2Disabled, &_out2Picker);
+                             out2Disabled, /*showGroupHeaders=*/false, &_out2Picker);
     }
 
     // Ensure Nuke allocates enough vertical space in the panel.
-    // Use 28px per row to account for the extra arrow row added per group.
-    setMinimumHeight((nextRow + 1) * 28);
+    // 24px per row: 22px button/arrow height + 2px vertical spacing.
+    setMinimumHeight((nextRow + 1) * 24);
 }
 
 void ShuffleMatrixWidget::clearLayout()
@@ -681,8 +678,8 @@ void ShuffleMatrixWidget::clearLayout()
     delete _gridLayout;
     _gridLayout = new QGridLayout(this);
     _gridLayout->setHorizontalSpacing(2);
-    _gridLayout->setVerticalSpacing(2);
-    _gridLayout->setContentsMargins(4, 4, 4, 4);
+    _gridLayout->setVerticalSpacing(1);
+    _gridLayout->setContentsMargins(2, 2, 2, 2);
     setLayout(_gridLayout);
 }
 

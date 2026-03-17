@@ -306,7 +306,7 @@ void DeepCShuffle2::knobs(Knob_Callback f)
     // The routing matrix widget occupies the full panel — input pickers are
     // embedded at the top, output pickers are embedded to the right of each
     // output row group.
-    CustomKnob2(ShuffleMatrixKnob, f, &_matrixState, "matrix", "routing");
+    CustomKnob2(ShuffleMatrixKnob, f, &_matrixState, "matrix", "");
 
     // out1/out2 are also INVISIBLE — pickers inside the widget handle selection.
     Input_ChannelSet_knob(f, &_out1ChannelSet, 0, "out1", "out 1");

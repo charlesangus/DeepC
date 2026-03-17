@@ -35,6 +35,7 @@ public:
 
 protected:
     void paintEvent(QPaintEvent* event) override;
+    void nextCheckState() override;
 
 private:
     QColor _baseColor;
