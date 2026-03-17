@@ -16,6 +16,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 2: DeepCPMatte GL Handles** - Interactive wireframe viewport overlay and drag-to-reposition handle for the selection volume (completed 2005-03-14)
 - [x] **Phase 3: DeepShuffle UI** - Expand channel routing from 4 to 8 channels with labeled ports and layer-level routing (completed 2005-03-15)
 - [x] **Phase 4: DeepCPNoise 4D** - Expose 4D noise option in the UI wired to existing FastNoise 4D methods (completed 2005-03-17)
+- [ ] **Phase 5: Release Cleanup** - Add DeepCShuffle2 icon, promote DeepCShuffle2 as the menu entry (DeepCShuffle.so kept for compat, hidden from menu), update REQUIREMENTS.md traceability for dropped SWEEP-07/08
 
 ## Phase Details
 
@@ -95,3 +96,14 @@ Plans:
 - [ ] 04-01-PLAN.md — Add all 4D declarations to FastNoise.h; implement 4D Value and Perlin (base + fractals)
 - [ ] 04-02-PLAN.md — Implement 4D Cubic and Cellular (CELL_4D tables, CUBIC_4D_BOUNDING, algorithm bodies)
 - [ ] 04-03-PLAN.md — Extend GetNoise(x,y,z,w) dispatch; update DeepCPNoise call site + tooltips; UAT checkpoint
+
+### Phase 5: Release Cleanup
+**Goal**: DeepCShuffle2 has an icon in the Nuke toolbar menu, the "DeepCShuffle" menu entry now creates a DeepCShuffle2 node (DeepCShuffle.so is still compiled and loadable for backward compatibility but does not appear in the menu), and REQUIREMENTS.md traceability is updated to reflect that SWEEP-07 and SWEEP-08 were dropped (not deferred).
+**Depends on**: Phase 4
+**Requirements**: none (cleanup — no new feature requirements)
+**Success Criteria** (what must be TRUE):
+  1. `icons/DeepCShuffle2.png` exists and is installed by CMake
+  2. The Nuke toolbar menu shows one DeepCShuffle entry that creates a DeepCShuffle2 node; no separate DeepCShuffle entry appears
+  3. Loading both .so files in Nuke does not produce duplicate or broken menu entries
+  4. REQUIREMENTS.md traceability table shows SWEEP-07 and SWEEP-08 as Dropped, not Pending
+**Plans**: 1 plan
