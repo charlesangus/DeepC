@@ -118,5 +118,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 3.1 → 4 → 5
 | 2. DeepCPMatte GL Handles | 1/1 | Complete   | 2026-03-14 |
 | 3. DeepShuffle UI | 4/4 | Complete   | 2026-03-15 |
 | 3.1. Refine DeepCShuffle UI | 4/4 | Complete | 2026-03-16 |
-| 4. DeepCPNoise 4D | 1/3 | In Progress|  |
+| 4. DeepCPNoise 4D | 2/3 | In Progress|  |
 | 5. DeepThinner Vendor | 0/TBD | Not started | - |
