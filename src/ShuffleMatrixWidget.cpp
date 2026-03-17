@@ -596,6 +596,13 @@ void ShuffleMatrixWidget::buildLayout()
             });
         // Span in1 columns; fall back to 1 column if in1 is empty.
         const int in1Span = (in1Count > 0) ? in1Count : 1;
+        // Cap the picker's maximum width to exactly the natural width of its spanned
+        // column group (in1Span columns of 22px each + inter-column 2px spacing).
+        // Without this cap, QSizePolicy::Expanding causes QGridLayout to distribute
+        // the picker's preferred width across the spanned stretch=0 columns, widening
+        // them unevenly (rounding artefacts give cols 0-1 extra pixels vs 2-3) and
+        // producing a visible gap between g and b in both in1 and in2 groups.
+        _in1Picker->setMaximumWidth(in1Span * 22 + std::max(0, in1Span - 1) * 2);
         _gridLayout->addWidget(_in1Picker, pickerRow, 0, 1, in1Span);
     }
 
@@ -617,6 +624,8 @@ void ShuffleMatrixWidget::buildLayout()
         // Span only the in2 columns — do not absorb the separator columns so they
         // remain visually present as gaps between the const group and the in2 group.
         const int in2Span = (in2Count > 0) ? in2Count : 1;
+        // Same max-width cap as in1 picker to prevent column width distortion.
+        _in2Picker->setMaximumWidth(in2Span * 22 + std::max(0, in2Span - 1) * 2);
         _gridLayout->addWidget(_in2Picker, pickerRow, in2StartCol, 1, in2Span);
     }
 
