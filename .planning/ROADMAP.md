@@ -16,7 +16,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 2: DeepCPMatte GL Handles** - Interactive wireframe viewport overlay and drag-to-reposition handle for the selection volume (completed 2005-03-14)
 - [x] **Phase 3: DeepShuffle UI** - Expand channel routing from 4 to 8 channels with labeled ports and layer-level routing (completed 2005-03-15)
 - [x] **Phase 4: DeepCPNoise 4D** - Expose 4D noise option in the UI wired to existing FastNoise 4D methods (completed 2005-03-17)
-- [ ] **Phase 5: Release Cleanup** - Add DeepCShuffle2 icon, promote DeepCShuffle2 as the menu entry (DeepCShuffle.so kept for compat, hidden from menu), update REQUIREMENTS.md traceability for dropped SWEEP-07/08
+- [x] **Phase 5: Release Cleanup** - Add DeepCShuffle2 icon, promote DeepCShuffle2 as the menu entry (DeepCShuffle.so kept for compat, hidden from menu), update REQUIREMENTS.md traceability for dropped SWEEP-07/08 (completed 2026-03-17)
 
 ## Phase Details
 
@@ -48,12 +48,6 @@ Plans:
   2. A wireframe shape (sphere or cube) appears in the 3D viewport at the position and scale of the Axis knob transform
   3. Clicking and dragging the wireframe handle repositions the selection volume and the node reprocesses with the updated transform
 **Plans**: 1 plan
-
-Plans:
-- [ ] 05-01-PLAN.md — Add DeepCShuffle2 icon, fix menu wiring (CMake + Python rename dict + Op::Description removal), update REQUIREMENTS.md traceability
-
-Plans:
-- [ ] 05-01-PLAN.md — Add DeepCShuffle2 icon, fix menu wiring, remove Op::Description, update REQUIREMENTS.md traceability
 
 Plans:
 - [ ] 02-01-PLAN.md — Fix deadlock, add wireframe GL handles, expose Axis_knob at top level
@@ -115,4 +109,4 @@ Plans:
 **Plans**: 1 plan
 
 Plans:
-- [ ] 05-01-PLAN.md — Add DeepCShuffle2 icon, fix menu wiring (CMake + Python rename dict + Op::Description removal), update REQUIREMENTS.md traceability
+- [x] 05-01-PLAN.md — Add DeepCShuffle2 icon, fix menu wiring (CMake + Python rename dict + Op::Description removal), update REQUIREMENTS.md traceability

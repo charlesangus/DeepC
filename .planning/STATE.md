@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_phase: 04-deepcpnoise-4d
-current_plan: 04-03 COMPLETE (phase 04 complete)
-status: planning
-last_updated: "2026-03-17T11:03:08.113Z"
+current_phase: 05-release-cleanup
+current_plan: 05-01 COMPLETE (phase 05 complete)
+status: complete
+last_updated: "2026-03-17T11:56:30Z"
 progress:
   total_phases: 5
   completed_phases: 5
-  total_plans: 17
-  completed_plans: 18
+  total_plans: 18
+  completed_plans: 19
   percent: 100
 ---
 
@@ -23,9 +23,9 @@ See: .planning/PROJECT.md
 ## Position
 
 **Milestone:** v1.0 milestone
-**Current phase:** 04-deepcpnoise-4d
-**Current plan:** 04-03 COMPLETE (phase 04 complete)
-**Status:** Ready to plan
+**Current phase:** 05-release-cleanup
+**Current plan:** 05-01 COMPLETE (phase 05 complete)
+**Status:** Milestone complete
 **Progress:** [██████████] 100%
 
 ## Decisions
@@ -35,6 +35,8 @@ See: .planning/PROJECT.md
 - [Phase 04-deepcpnoise-4d]: 4D Cellular modeled on actual 3D switch-on-distance-function pattern, not plan pseudocode, for consistency and correct multi-index distance support
 - [Phase 04-deepcpnoise-4d plan 03]: GetNoise(x,y,z,w) dispatch extended to all 9 noise types; w *= m_frequency added; WhiteNoise left as default: return 0 consistent with 3D dispatch design
 - [Phase 04-deepcpnoise-4d plan 03]: DeepCPNoise unconditionally calls 4D overload — if(_noiseType==0) branch removed; NOIS-01 fully complete and UAT approved in Nuke
+- [Phase 05-release-cleanup plan 01]: DeepCShuffle.so kept in PLUGINS but removed from CHANNEL_NODES and Op::Description removed — silent backward-compat binary without duplicate menu entry
+- [Phase 05-release-cleanup plan 01]: SWEEP-07 and SWEEP-08 marked Dropped (not deferred) — requirements were scoped out during Phase 5 planning
 
 ## Session Log
 
@@ -42,3 +44,4 @@ See: .planning/PROJECT.md
 - 2026-03-17: Completed 04-01-PLAN.md — 4D declarations in FastNoise.h + 4D Value/Perlin implementations in FastNoise.cpp (2 tasks, 2min)
 - 2026-03-17: Completed 04-02-PLAN.md — CELL_4D tables, CUBIC_4D_BOUNDING, SingleCubic 4D + SingleCellular/2Edge 4D in FastNoise.cpp (2 tasks, 5min)
 - 2026-03-17: Completed 04-03-PLAN.md — GetNoise(x,y,z,w) full dispatch + DeepCPNoise unconditional 4D wiring + tooltip update; UAT approved (2 tasks, 5min); NOIS-01 complete; Phase 04 complete
+- 2026-03-17: Completed 05-01-PLAN.md — DeepCShuffle2 icon, menu wiring via display-name rename, Op::Description removal, REQUIREMENTS.md traceability; UAT approved (~15min); Phase 05 complete; v1.0 milestone complete
