@@ -2692,6 +2692,239 @@ FN_DECIMAL FastNoise::SingleCellular2Edge(FN_DECIMAL x, FN_DECIMAL y, FN_DECIMAL
 	}
 }
 
+FN_DECIMAL FastNoise::SingleCellular(FN_DECIMAL x, FN_DECIMAL y, FN_DECIMAL z, FN_DECIMAL w) const
+{
+	int xr = FastRound(x);
+	int yr = FastRound(y);
+	int zr = FastRound(z);
+	int wr = FastRound(w);
+
+	FN_DECIMAL distance = 999999;
+	int xcell = 0, ycell = 0, zcell = 0, wcell = 0;
+
+	switch (m_cellularDistanceFunction)
+	{
+	case Euclidean:
+		for (int wi = wr - 1; wi <= wr + 1; wi++)
+		{
+			for (int zi = zr - 1; zi <= zr + 1; zi++)
+			{
+				for (int yi = yr - 1; yi <= yr + 1; yi++)
+				{
+					for (int xi = xr - 1; xi <= xr + 1; xi++)
+					{
+						unsigned char lutPos = Index4D_256(0, xi, yi, zi, wi);
+
+						FN_DECIMAL vecX = xi - x + CELL_4D_X[lutPos] * m_cellularJitter;
+						FN_DECIMAL vecY = yi - y + CELL_4D_Y[lutPos] * m_cellularJitter;
+						FN_DECIMAL vecZ = zi - z + CELL_4D_Z[lutPos] * m_cellularJitter;
+						FN_DECIMAL vecW = wi - w + CELL_4D_W[lutPos] * m_cellularJitter;
+
+						FN_DECIMAL newDistance = vecX * vecX + vecY * vecY + vecZ * vecZ + vecW * vecW;
+
+						if (newDistance < distance)
+						{
+							distance = newDistance;
+							xcell = xi; ycell = yi; zcell = zi; wcell = wi;
+						}
+					}
+				}
+			}
+		}
+		break;
+	case Manhattan:
+		for (int wi = wr - 1; wi <= wr + 1; wi++)
+		{
+			for (int zi = zr - 1; zi <= zr + 1; zi++)
+			{
+				for (int yi = yr - 1; yi <= yr + 1; yi++)
+				{
+					for (int xi = xr - 1; xi <= xr + 1; xi++)
+					{
+						unsigned char lutPos = Index4D_256(0, xi, yi, zi, wi);
+
+						FN_DECIMAL vecX = xi - x + CELL_4D_X[lutPos] * m_cellularJitter;
+						FN_DECIMAL vecY = yi - y + CELL_4D_Y[lutPos] * m_cellularJitter;
+						FN_DECIMAL vecZ = zi - z + CELL_4D_Z[lutPos] * m_cellularJitter;
+						FN_DECIMAL vecW = wi - w + CELL_4D_W[lutPos] * m_cellularJitter;
+
+						FN_DECIMAL newDistance = FastAbs(vecX) + FastAbs(vecY) + FastAbs(vecZ) + FastAbs(vecW);
+
+						if (newDistance < distance)
+						{
+							distance = newDistance;
+							xcell = xi; ycell = yi; zcell = zi; wcell = wi;
+						}
+					}
+				}
+			}
+		}
+		break;
+	case Natural:
+		for (int wi = wr - 1; wi <= wr + 1; wi++)
+		{
+			for (int zi = zr - 1; zi <= zr + 1; zi++)
+			{
+				for (int yi = yr - 1; yi <= yr + 1; yi++)
+				{
+					for (int xi = xr - 1; xi <= xr + 1; xi++)
+					{
+						unsigned char lutPos = Index4D_256(0, xi, yi, zi, wi);
+
+						FN_DECIMAL vecX = xi - x + CELL_4D_X[lutPos] * m_cellularJitter;
+						FN_DECIMAL vecY = yi - y + CELL_4D_Y[lutPos] * m_cellularJitter;
+						FN_DECIMAL vecZ = zi - z + CELL_4D_Z[lutPos] * m_cellularJitter;
+						FN_DECIMAL vecW = wi - w + CELL_4D_W[lutPos] * m_cellularJitter;
+
+						FN_DECIMAL newDistance = (FastAbs(vecX) + FastAbs(vecY) + FastAbs(vecZ) + FastAbs(vecW)) + (vecX * vecX + vecY * vecY + vecZ * vecZ + vecW * vecW);
+
+						if (newDistance < distance)
+						{
+							distance = newDistance;
+							xcell = xi; ycell = yi; zcell = zi; wcell = wi;
+						}
+					}
+				}
+			}
+		}
+		break;
+	default:
+		break;
+	}
+
+	unsigned char lutPos;
+	switch (m_cellularReturnType)
+	{
+	case CellValue:
+		return ValCoord4D(m_seed, xcell, ycell, zcell, wcell);
+
+	case NoiseLookup:
+		assert(m_cellularNoiseLookup);
+
+		lutPos = Index4D_256(0, xcell, ycell, zcell, wcell);
+		return m_cellularNoiseLookup->GetNoise(
+			xcell + CELL_4D_X[lutPos] * m_cellularJitter,
+			ycell + CELL_4D_Y[lutPos] * m_cellularJitter,
+			zcell + CELL_4D_Z[lutPos] * m_cellularJitter,
+			wcell + CELL_4D_W[lutPos] * m_cellularJitter);
+
+	case Distance:
+		return distance;
+	default:
+		return 0;
+	}
+}
+
+FN_DECIMAL FastNoise::SingleCellular2Edge(FN_DECIMAL x, FN_DECIMAL y, FN_DECIMAL z, FN_DECIMAL w) const
+{
+	int xr = FastRound(x);
+	int yr = FastRound(y);
+	int zr = FastRound(z);
+	int wr = FastRound(w);
+
+	FN_DECIMAL distance[FN_CELLULAR_INDEX_MAX + 1] = { 999999, 999999, 999999, 999999 };
+
+	switch (m_cellularDistanceFunction)
+	{
+	case Euclidean:
+		for (int wi = wr - 1; wi <= wr + 1; wi++)
+		{
+			for (int zi = zr - 1; zi <= zr + 1; zi++)
+			{
+				for (int yi = yr - 1; yi <= yr + 1; yi++)
+				{
+					for (int xi = xr - 1; xi <= xr + 1; xi++)
+					{
+						unsigned char lutPos = Index4D_256(0, xi, yi, zi, wi);
+
+						FN_DECIMAL vecX = xi - x + CELL_4D_X[lutPos] * m_cellularJitter;
+						FN_DECIMAL vecY = yi - y + CELL_4D_Y[lutPos] * m_cellularJitter;
+						FN_DECIMAL vecZ = zi - z + CELL_4D_Z[lutPos] * m_cellularJitter;
+						FN_DECIMAL vecW = wi - w + CELL_4D_W[lutPos] * m_cellularJitter;
+
+						FN_DECIMAL newDistance = vecX * vecX + vecY * vecY + vecZ * vecZ + vecW * vecW;
+
+						for (int i = m_cellularDistanceIndex1; i > 0; i--)
+							distance[i] = fmax(fmin(distance[i], newDistance), distance[i - 1]);
+						distance[0] = fmin(distance[0], newDistance);
+					}
+				}
+			}
+		}
+		break;
+	case Manhattan:
+		for (int wi = wr - 1; wi <= wr + 1; wi++)
+		{
+			for (int zi = zr - 1; zi <= zr + 1; zi++)
+			{
+				for (int yi = yr - 1; yi <= yr + 1; yi++)
+				{
+					for (int xi = xr - 1; xi <= xr + 1; xi++)
+					{
+						unsigned char lutPos = Index4D_256(0, xi, yi, zi, wi);
+
+						FN_DECIMAL vecX = xi - x + CELL_4D_X[lutPos] * m_cellularJitter;
+						FN_DECIMAL vecY = yi - y + CELL_4D_Y[lutPos] * m_cellularJitter;
+						FN_DECIMAL vecZ = zi - z + CELL_4D_Z[lutPos] * m_cellularJitter;
+						FN_DECIMAL vecW = wi - w + CELL_4D_W[lutPos] * m_cellularJitter;
+
+						FN_DECIMAL newDistance = FastAbs(vecX) + FastAbs(vecY) + FastAbs(vecZ) + FastAbs(vecW);
+
+						for (int i = m_cellularDistanceIndex1; i > 0; i--)
+							distance[i] = fmax(fmin(distance[i], newDistance), distance[i - 1]);
+						distance[0] = fmin(distance[0], newDistance);
+					}
+				}
+			}
+		}
+		break;
+	case Natural:
+		for (int wi = wr - 1; wi <= wr + 1; wi++)
+		{
+			for (int zi = zr - 1; zi <= zr + 1; zi++)
+			{
+				for (int yi = yr - 1; yi <= yr + 1; yi++)
+				{
+					for (int xi = xr - 1; xi <= xr + 1; xi++)
+					{
+						unsigned char lutPos = Index4D_256(0, xi, yi, zi, wi);
+
+						FN_DECIMAL vecX = xi - x + CELL_4D_X[lutPos] * m_cellularJitter;
+						FN_DECIMAL vecY = yi - y + CELL_4D_Y[lutPos] * m_cellularJitter;
+						FN_DECIMAL vecZ = zi - z + CELL_4D_Z[lutPos] * m_cellularJitter;
+						FN_DECIMAL vecW = wi - w + CELL_4D_W[lutPos] * m_cellularJitter;
+
+						FN_DECIMAL newDistance = (FastAbs(vecX) + FastAbs(vecY) + FastAbs(vecZ) + FastAbs(vecW)) + (vecX * vecX + vecY * vecY + vecZ * vecZ + vecW * vecW);
+
+						for (int i = m_cellularDistanceIndex1; i > 0; i--)
+							distance[i] = fmax(fmin(distance[i], newDistance), distance[i - 1]);
+						distance[0] = fmin(distance[0], newDistance);
+					}
+				}
+			}
+		}
+		break;
+	default:
+		break;
+	}
+
+	switch (m_cellularReturnType)
+	{
+	case Distance2:
+		return distance[m_cellularDistanceIndex1];
+	case Distance2Add:
+		return distance[m_cellularDistanceIndex1] + distance[m_cellularDistanceIndex0];
+	case Distance2Sub:
+		return distance[m_cellularDistanceIndex1] - distance[m_cellularDistanceIndex0];
+	case Distance2Mul:
+		return distance[m_cellularDistanceIndex1] * distance[m_cellularDistanceIndex0];
+	case Distance2Div:
+		return distance[m_cellularDistanceIndex0] / distance[m_cellularDistanceIndex1];
+	default:
+		return 0;
+	}
+}
+
 FN_DECIMAL FastNoise::GetCellular(FN_DECIMAL x, FN_DECIMAL y) const
 {
 	x *= m_frequency;
