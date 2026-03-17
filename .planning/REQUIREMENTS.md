@@ -20,10 +20,10 @@
 
 ### DeepShuffle UI
 
-- [ ] **SHUF-01**: DeepCShuffle exposes per-channel input/output routing knobs matching the layout of the legacy Nuke Shuffle node
-- [ ] **SHUF-02**: DeepCShuffle input and output ports are labeled with their assigned channel names
-- [ ] **SHUF-03**: DeepCShuffle supports routing up to 8 channels (expanded from current 4)
-- [ ] **SHUF-04**: DeepCShuffle provides layer-level routing via `Input_ChannelSet_knob` in addition to per-channel selection
+- [x] **SHUF-01**: DeepCShuffle exposes per-channel input/output routing knobs matching the layout of the legacy Nuke Shuffle node
+- [x] **SHUF-02**: DeepCShuffle input and output ports are labeled with their assigned channel names
+- [x] **SHUF-03**: DeepCShuffle supports routing up to 8 channels (expanded from current 4)
+- [x] **SHUF-04**: DeepCShuffle provides layer-level routing via `Input_ChannelSet_knob` in addition to per-channel selection
 
 ### DeepCPMatte GL Handles
 
@@ -96,10 +96,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | GLPM-01 | Phase 2 | Complete |
 | GLPM-02 | Phase 2 | Complete |
 | GLPM-03 | Phase 2 | Complete |
-| SHUF-01 | Phase 3 | Pending |
-| SHUF-02 | Phase 3 | Pending |
-| SHUF-03 | Phase 3 | Pending |
-| SHUF-04 | Phase 3 | Pending |
+| SHUF-01 | Phase 3 | Complete |
+| SHUF-02 | Phase 3 | Complete |
+| SHUF-03 | Phase 3 | Complete |
+| SHUF-04 | Phase 3 | Complete |
 | NOIS-01 | Phase 4 | Pending |
 | THIN-01 | Phase 5 | Pending |
 | THIN-02 | Phase 5 | Pending |
