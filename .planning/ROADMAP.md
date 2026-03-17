@@ -82,13 +82,20 @@ Plans:
 - [x] 03.1-04-PLAN.md — Embed QComboBox pickers in widget (QTimer deferred); INVISIBLE NDK knobs; UAT all fixed
 
 ### Phase 4: DeepCPNoise 4D
-**Goal**: DeepCPNoise exposes a 4D noise dimension option in the UI for all supported noise types, correctly enabling the evolution knob only for Simplex noise, with the noise type comparison replaced by a named constant.
+**Goal**: DeepCPNoise wires the `noise_evolution` float knob as the w dimension to `GetNoise(x,y,z,w)` unconditionally for all five noise types, with FastNoise fully implementing 4D algorithms for Value, Perlin, Cubic, and Cellular (Simplex already had 4D support). The `if (_noiseType==0)` magic index branch is removed.
 **Depends on**: Phase 1
 **Requirements**: NOIS-01
 **Success Criteria** (what must be TRUE):
-  1. A 4D noise option is visible and selectable in the DeepCPNoise UI for all five noise types (Simplex, Perlin, Cellular, Cubic, Value)
-  2. The `noise_evolution` knob is enabled only when Simplex is selected and is grayed out for all other noise types
-**Plans**: TBD
+  1. All five noise types (Simplex, Perlin, Cellular, Cubic, Value) produce non-black output when noise_evolution is non-zero
+  2. `noise_evolution = 0` produces stable output for all types (w=0 is a valid neutral value)
+  3. The `if (_noiseType==0)` conditional is absent from DeepCPNoise.cpp
+  4. No tooltip in DeepCPNoise.cpp implies Simplex is the only noise type with 4D support
+**Plans**: 3 plans
+
+Plans:
+- [ ] 04-01-PLAN.md — Add all 4D declarations to FastNoise.h; implement 4D Value and Perlin (base + fractals)
+- [ ] 04-02-PLAN.md — Implement 4D Cubic and Cellular (CELL_4D tables, CUBIC_4D_BOUNDING, algorithm bodies)
+- [ ] 04-03-PLAN.md — Extend GetNoise(x,y,z,w) dispatch; update DeepCPNoise call site + tooltips; UAT checkpoint
 
 ### Phase 5: DeepThinner Vendor
 **Goal**: DeepThinner is confirmed license-compatible with GPL-3.0, its source is compiled as a Nuke plugin via CMake, and it appears in the DeepC toolbar submenu in Nuke.
@@ -111,5 +118,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 3.1 → 4 → 5
 | 2. DeepCPMatte GL Handles | 1/1 | Complete   | 2026-03-14 |
 | 3. DeepShuffle UI | 4/4 | Complete   | 2026-03-15 |
 | 3.1. Refine DeepCShuffle UI | 4/4 | Complete | 2026-03-16 |
-| 4. DeepCPNoise 4D | 0/TBD | Not started | - |
+| 4. DeepCPNoise 4D | 0/3 | Not started | - |
 | 5. DeepThinner Vendor | 0/TBD | Not started | - |
