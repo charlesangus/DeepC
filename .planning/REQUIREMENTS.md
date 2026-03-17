@@ -89,8 +89,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SWEEP-04 | Phase 1 | Complete |
 | SWEEP-05 | Phase 1 | Complete |
 | SWEEP-06 | Phase 1 | Complete |
-| SWEEP-07 | Phase 1 | Pending |
-| SWEEP-08 | Phase 1 | Pending |
+| SWEEP-07 | Phase 1 | Dropped |
+| SWEEP-08 | Phase 1 | Dropped |
 | SWEEP-09 | Phase 1 | Complete |
 | SWEEP-10 | Phase 1 | Complete |
 | GLPM-01 | Phase 2 | Complete |
