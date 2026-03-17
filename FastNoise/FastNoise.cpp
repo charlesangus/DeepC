@@ -308,6 +308,10 @@ FN_DECIMAL FastNoise::ValCoord3DFast(unsigned char offset, int x, int y, int z) 
 {
 	return VAL_LUT[Index3D_256(offset, x, y, z)];
 }
+FN_DECIMAL FastNoise::ValCoord4DFast(unsigned char offset, int x, int y, int z, int w) const
+{
+	return VAL_LUT[Index4D_256(offset, x, y, z, w)];
+}
 
 FN_DECIMAL FastNoise::GradCoord2D(unsigned char offset, int x, int y, FN_DECIMAL xd, FN_DECIMAL yd) const
 {
@@ -668,6 +672,124 @@ FN_DECIMAL FastNoise::SingleValue(unsigned char offset, FN_DECIMAL x, FN_DECIMAL
 	return Lerp(yf0, yf1, zs);
 }
 
+// 4D Value
+
+FN_DECIMAL FastNoise::SingleValue(unsigned char offset, FN_DECIMAL x, FN_DECIMAL y, FN_DECIMAL z, FN_DECIMAL w) const
+{
+	int x0 = FastFloor(x);
+	int y0 = FastFloor(y);
+	int z0 = FastFloor(z);
+	int w0 = FastFloor(w);
+	int x1 = x0 + 1;
+	int y1 = y0 + 1;
+	int z1 = z0 + 1;
+	int w1 = w0 + 1;
+
+	FN_DECIMAL xs, ys, zs, ws;
+	switch (m_interp)
+	{
+	case Linear:
+		xs = x - (FN_DECIMAL)x0;
+		ys = y - (FN_DECIMAL)y0;
+		zs = z - (FN_DECIMAL)z0;
+		ws = w - (FN_DECIMAL)w0;
+		break;
+	case Hermite:
+		xs = InterpHermiteFunc(x - (FN_DECIMAL)x0);
+		ys = InterpHermiteFunc(y - (FN_DECIMAL)y0);
+		zs = InterpHermiteFunc(z - (FN_DECIMAL)z0);
+		ws = InterpHermiteFunc(w - (FN_DECIMAL)w0);
+		break;
+	case Quintic:
+		xs = InterpQuinticFunc(x - (FN_DECIMAL)x0);
+		ys = InterpQuinticFunc(y - (FN_DECIMAL)y0);
+		zs = InterpQuinticFunc(z - (FN_DECIMAL)z0);
+		ws = InterpQuinticFunc(w - (FN_DECIMAL)w0);
+		break;
+	}
+
+	// 16-corner quadrilinear interpolation (2^4 corners, lerped dimension by dimension)
+	FN_DECIMAL xf000 = Lerp(ValCoord4DFast(offset, x0, y0, z0, w0), ValCoord4DFast(offset, x1, y0, z0, w0), xs);
+	FN_DECIMAL xf100 = Lerp(ValCoord4DFast(offset, x0, y1, z0, w0), ValCoord4DFast(offset, x1, y1, z0, w0), xs);
+	FN_DECIMAL xf010 = Lerp(ValCoord4DFast(offset, x0, y0, z1, w0), ValCoord4DFast(offset, x1, y0, z1, w0), xs);
+	FN_DECIMAL xf110 = Lerp(ValCoord4DFast(offset, x0, y1, z1, w0), ValCoord4DFast(offset, x1, y1, z1, w0), xs);
+
+	FN_DECIMAL xf001 = Lerp(ValCoord4DFast(offset, x0, y0, z0, w1), ValCoord4DFast(offset, x1, y0, z0, w1), xs);
+	FN_DECIMAL xf101 = Lerp(ValCoord4DFast(offset, x0, y1, z0, w1), ValCoord4DFast(offset, x1, y1, z0, w1), xs);
+	FN_DECIMAL xf011 = Lerp(ValCoord4DFast(offset, x0, y0, z1, w1), ValCoord4DFast(offset, x1, y0, z1, w1), xs);
+	FN_DECIMAL xf111 = Lerp(ValCoord4DFast(offset, x0, y1, z1, w1), ValCoord4DFast(offset, x1, y1, z1, w1), xs);
+
+	FN_DECIMAL yf00 = Lerp(xf000, xf100, ys);
+	FN_DECIMAL yf10 = Lerp(xf010, xf110, ys);
+	FN_DECIMAL yf01 = Lerp(xf001, xf101, ys);
+	FN_DECIMAL yf11 = Lerp(xf011, xf111, ys);
+
+	FN_DECIMAL zf0 = Lerp(yf00, yf10, zs);
+	FN_DECIMAL zf1 = Lerp(yf01, yf11, zs);
+
+	return Lerp(zf0, zf1, ws);
+}
+
+FN_DECIMAL FastNoise::SingleValueFractalFBM(FN_DECIMAL x, FN_DECIMAL y, FN_DECIMAL z, FN_DECIMAL w) const
+{
+	FN_DECIMAL sum = SingleValue(m_perm[0], x, y, z, w);
+	FN_DECIMAL amp = 1;
+	int i = 0;
+
+	while (++i < m_octaves)
+	{
+		x *= m_lacunarity;
+		y *= m_lacunarity;
+		z *= m_lacunarity;
+		w *= m_lacunarity;
+
+		amp *= m_gain;
+		sum += SingleValue(m_perm[i], x, y, z, w) * amp;
+	}
+
+	return sum * m_fractalBounding;
+}
+
+FN_DECIMAL FastNoise::SingleValueFractalBillow(FN_DECIMAL x, FN_DECIMAL y, FN_DECIMAL z, FN_DECIMAL w) const
+{
+	FN_DECIMAL sum = FastAbs(SingleValue(m_perm[0], x, y, z, w)) * 2 - 1;
+	FN_DECIMAL amp = 1;
+	int i = 0;
+
+	while (++i < m_octaves)
+	{
+		x *= m_lacunarity;
+		y *= m_lacunarity;
+		z *= m_lacunarity;
+		w *= m_lacunarity;
+
+		amp *= m_gain;
+		sum += (FastAbs(SingleValue(m_perm[i], x, y, z, w)) * 2 - 1) * amp;
+	}
+
+	return sum * m_fractalBounding;
+}
+
+FN_DECIMAL FastNoise::SingleValueFractalRigidMulti(FN_DECIMAL x, FN_DECIMAL y, FN_DECIMAL z, FN_DECIMAL w) const
+{
+	FN_DECIMAL sum = 1 - FastAbs(SingleValue(m_perm[0], x, y, z, w));
+	FN_DECIMAL amp = 1;
+	int i = 0;
+
+	while (++i < m_octaves)
+	{
+		x *= m_lacunarity;
+		y *= m_lacunarity;
+		z *= m_lacunarity;
+		w *= m_lacunarity;
+
+		amp *= m_gain;
+		sum -= (1 - FastAbs(SingleValue(m_perm[i], x, y, z, w))) * amp;
+	}
+
+	return sum;
+}
+
 FN_DECIMAL FastNoise::GetValueFractal(FN_DECIMAL x, FN_DECIMAL y) const
 {
 	x *= m_frequency;
@@ -901,6 +1023,133 @@ FN_DECIMAL FastNoise::SinglePerlin(unsigned char offset, FN_DECIMAL x, FN_DECIMA
 	FN_DECIMAL yf1 = Lerp(xf01, xf11, ys);
 
 	return Lerp(yf0, yf1, zs);
+}
+
+// 4D Perlin
+
+FN_DECIMAL FastNoise::SinglePerlin(unsigned char offset, FN_DECIMAL x, FN_DECIMAL y, FN_DECIMAL z, FN_DECIMAL w) const
+{
+	int x0 = FastFloor(x);
+	int y0 = FastFloor(y);
+	int z0 = FastFloor(z);
+	int w0 = FastFloor(w);
+	int x1 = x0 + 1;
+	int y1 = y0 + 1;
+	int z1 = z0 + 1;
+	int w1 = w0 + 1;
+
+	FN_DECIMAL xs, ys, zs, ws;
+	switch (m_interp)
+	{
+	case Linear:
+		xs = x - (FN_DECIMAL)x0;
+		ys = y - (FN_DECIMAL)y0;
+		zs = z - (FN_DECIMAL)z0;
+		ws = w - (FN_DECIMAL)w0;
+		break;
+	case Hermite:
+		xs = InterpHermiteFunc(x - (FN_DECIMAL)x0);
+		ys = InterpHermiteFunc(y - (FN_DECIMAL)y0);
+		zs = InterpHermiteFunc(z - (FN_DECIMAL)z0);
+		ws = InterpHermiteFunc(w - (FN_DECIMAL)w0);
+		break;
+	case Quintic:
+		xs = InterpQuinticFunc(x - (FN_DECIMAL)x0);
+		ys = InterpQuinticFunc(y - (FN_DECIMAL)y0);
+		zs = InterpQuinticFunc(z - (FN_DECIMAL)z0);
+		ws = InterpQuinticFunc(w - (FN_DECIMAL)w0);
+		break;
+	}
+
+	FN_DECIMAL xd0 = x - (FN_DECIMAL)x0;
+	FN_DECIMAL yd0 = y - (FN_DECIMAL)y0;
+	FN_DECIMAL zd0 = z - (FN_DECIMAL)z0;
+	FN_DECIMAL wd0 = w - (FN_DECIMAL)w0;
+	FN_DECIMAL xd1 = xd0 - 1;
+	FN_DECIMAL yd1 = yd0 - 1;
+	FN_DECIMAL zd1 = zd0 - 1;
+	FN_DECIMAL wd1 = wd0 - 1;
+
+	// 16-corner quadrilinear interpolation using GradCoord4D
+	FN_DECIMAL xf000 = Lerp(GradCoord4D(offset, x0, y0, z0, w0, xd0, yd0, zd0, wd0), GradCoord4D(offset, x1, y0, z0, w0, xd1, yd0, zd0, wd0), xs);
+	FN_DECIMAL xf100 = Lerp(GradCoord4D(offset, x0, y1, z0, w0, xd0, yd1, zd0, wd0), GradCoord4D(offset, x1, y1, z0, w0, xd1, yd1, zd0, wd0), xs);
+	FN_DECIMAL xf010 = Lerp(GradCoord4D(offset, x0, y0, z1, w0, xd0, yd0, zd1, wd0), GradCoord4D(offset, x1, y0, z1, w0, xd1, yd0, zd1, wd0), xs);
+	FN_DECIMAL xf110 = Lerp(GradCoord4D(offset, x0, y1, z1, w0, xd0, yd1, zd1, wd0), GradCoord4D(offset, x1, y1, z1, w0, xd1, yd1, zd1, wd0), xs);
+
+	FN_DECIMAL xf001 = Lerp(GradCoord4D(offset, x0, y0, z0, w1, xd0, yd0, zd0, wd1), GradCoord4D(offset, x1, y0, z0, w1, xd1, yd0, zd0, wd1), xs);
+	FN_DECIMAL xf101 = Lerp(GradCoord4D(offset, x0, y1, z0, w1, xd0, yd1, zd0, wd1), GradCoord4D(offset, x1, y1, z0, w1, xd1, yd1, zd0, wd1), xs);
+	FN_DECIMAL xf011 = Lerp(GradCoord4D(offset, x0, y0, z1, w1, xd0, yd0, zd1, wd1), GradCoord4D(offset, x1, y0, z1, w1, xd1, yd0, zd1, wd1), xs);
+	FN_DECIMAL xf111 = Lerp(GradCoord4D(offset, x0, y1, z1, w1, xd0, yd1, zd1, wd1), GradCoord4D(offset, x1, y1, z1, w1, xd1, yd1, zd1, wd1), xs);
+
+	FN_DECIMAL yf00 = Lerp(xf000, xf100, ys);
+	FN_DECIMAL yf10 = Lerp(xf010, xf110, ys);
+	FN_DECIMAL yf01 = Lerp(xf001, xf101, ys);
+	FN_DECIMAL yf11 = Lerp(xf011, xf111, ys);
+
+	FN_DECIMAL zf0 = Lerp(yf00, yf10, zs);
+	FN_DECIMAL zf1 = Lerp(yf01, yf11, zs);
+
+	return Lerp(zf0, zf1, ws);
+}
+
+FN_DECIMAL FastNoise::SinglePerlinFractalFBM(FN_DECIMAL x, FN_DECIMAL y, FN_DECIMAL z, FN_DECIMAL w) const
+{
+	FN_DECIMAL sum = SinglePerlin(m_perm[0], x, y, z, w);
+	FN_DECIMAL amp = 1;
+	int i = 0;
+
+	while (++i < m_octaves)
+	{
+		x *= m_lacunarity;
+		y *= m_lacunarity;
+		z *= m_lacunarity;
+		w *= m_lacunarity;
+
+		amp *= m_gain;
+		sum += SinglePerlin(m_perm[i], x, y, z, w) * amp;
+	}
+
+	return sum * m_fractalBounding;
+}
+
+FN_DECIMAL FastNoise::SinglePerlinFractalBillow(FN_DECIMAL x, FN_DECIMAL y, FN_DECIMAL z, FN_DECIMAL w) const
+{
+	FN_DECIMAL sum = FastAbs(SinglePerlin(m_perm[0], x, y, z, w)) * 2 - 1;
+	FN_DECIMAL amp = 1;
+	int i = 0;
+
+	while (++i < m_octaves)
+	{
+		x *= m_lacunarity;
+		y *= m_lacunarity;
+		z *= m_lacunarity;
+		w *= m_lacunarity;
+
+		amp *= m_gain;
+		sum += (FastAbs(SinglePerlin(m_perm[i], x, y, z, w)) * 2 - 1) * amp;
+	}
+
+	return sum * m_fractalBounding;
+}
+
+FN_DECIMAL FastNoise::SinglePerlinFractalRigidMulti(FN_DECIMAL x, FN_DECIMAL y, FN_DECIMAL z, FN_DECIMAL w) const
+{
+	FN_DECIMAL sum = 1 - FastAbs(SinglePerlin(m_perm[0], x, y, z, w));
+	FN_DECIMAL amp = 1;
+	int i = 0;
+
+	while (++i < m_octaves)
+	{
+		x *= m_lacunarity;
+		y *= m_lacunarity;
+		z *= m_lacunarity;
+		w *= m_lacunarity;
+
+		amp *= m_gain;
+		sum -= (1 - FastAbs(SinglePerlin(m_perm[i], x, y, z, w))) * amp;
+	}
+
+	return sum;
 }
 
 FN_DECIMAL FastNoise::GetPerlinFractal(FN_DECIMAL x, FN_DECIMAL y) const
