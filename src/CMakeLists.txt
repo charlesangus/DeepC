@@ -39,7 +39,7 @@ endif()
 
 # DeepC Python Menu
 set(DRAW_NODES DeepCConstant DeepCID DeepCPMatte DeepCPNoise)
-set(CHANNEL_NODES DeepCAddChannels DeepCRemoveChannels DeepCShuffle DeepCShuffle2)
+set(CHANNEL_NODES DeepCAddChannels DeepCRemoveChannels DeepCShuffle2)
 set(COLOR_NODES DeepCAdd DeepCClamp DeepCColorLookup DeepCGamma DeepCGrade
 DeepCHueShift DeepCInvert DeepCMatrix DeepCMultiply DeepCPosterize DeepCSaturation)
 set(3D_NODES DeepCWorld)

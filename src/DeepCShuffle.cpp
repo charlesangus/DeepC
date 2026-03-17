@@ -38,8 +38,7 @@ public:
     bool doDeepEngine(DD::Image::Box bbox, const DD::Image::ChannelSet& requestedChannels, DeepOutputPlane& deepOutPlane);
 
     virtual void knobs(Knob_Callback);
-    static const Iop::Description d;
-    const char* Class() const { return d.name; }
+    const char* Class() const { return "DeepCShuffle"; }
     virtual Op* op() { return this; }
     const char* node_help() const;
 };
@@ -154,5 +153,3 @@ const char* DeepCShuffle::node_help() const
 }
 
 
-static Op* build(Node* node) { return new DeepCShuffle(node); }
-const Op::Description DeepCShuffle::d("DeepCShuffle", 0, build);
