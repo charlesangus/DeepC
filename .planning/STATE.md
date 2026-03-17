@@ -5,7 +5,7 @@ milestone_name: milestone
 current_phase: 05-release-cleanup
 current_plan: 05-01 COMPLETE (phase 05 complete)
 status: completed
-last_updated: "2026-03-17T12:00:31.720Z"
+last_updated: "2026-03-17T12:34:28.352Z"
 progress:
   total_phases: 6
   completed_phases: 6
@@ -18,14 +18,17 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md
+See: .planning/PROJECT.md (updated 2026-03-17 after v1.0 milestone)
+
+**Core value:** Artists can use deep-compositing operations in Nuke that don't exist in the built-in toolset, with professional-quality UIs and reliable deep-pixel math.
+**Current focus:** Planning next milestone (v1.1 — DeepThinner + CI/CD)
 
 ## Position
 
-**Milestone:** v1.0 milestone
-**Current phase:** 05-release-cleanup
-**Current plan:** 05-01 COMPLETE (phase 05 complete)
-**Status:** Milestone complete
+**Milestone:** v1.0 COMPLETE — archived 2026-03-17
+**Current phase:** —
+**Current plan:** —
+**Status:** Milestone complete. Ready for /gsd:new-milestone
 **Progress:** [██████████] 100%
 
 ## Decisions
