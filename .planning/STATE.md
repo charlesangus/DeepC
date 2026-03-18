@@ -1,16 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.0
-milestone_name: milestone
-current_phase: 05-release-cleanup
-current_plan: 05-01 COMPLETE (phase 05 complete)
+milestone: v1.1
+milestone_name: local-build-system
+current_phase: 06-local-build-system
+current_plan: 06-01 COMPLETE (phase 06 complete)
 status: completed
-last_updated: "2026-03-17T12:34:28.352Z"
+last_updated: "2026-03-18T04:35:05Z"
 progress:
   total_phases: 6
   completed_phases: 6
-  total_plans: 18
-  completed_plans: 19
+  total_plans: 1
+  completed_plans: 1
   percent: 100
 ---
 
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-17 after v1.0 milestone)
 
 **Core value:** Artists can use deep-compositing operations in Nuke that don't exist in the built-in toolset, with professional-quality UIs and reliable deep-pixel math.
-**Current focus:** Planning v1.1 — NukeDockerBuild local build system integration (Linux + Windows)
+**Current focus:** v1.1 complete — NukeDockerBuild local build system shipped
 
 ## Position
 
 **Milestone:** v1.0 COMPLETE — archived 2026-03-17
-**Current phase:** —
-**Current plan:** —
-**Status:** Milestone complete. Ready for /gsd:new-milestone
+**Current phase:** 06-local-build-system COMPLETE
+**Current plan:** 06-01 COMPLETE
+**Status:** Phase 06 complete. v1.1 local build system shipped.
 **Progress:** [██████████] 100%
 
 ## Decisions
@@ -40,6 +40,10 @@ See: .planning/PROJECT.md (updated 2026-03-17 after v1.0 milestone)
 - [Phase 04-deepcpnoise-4d plan 03]: DeepCPNoise unconditionally calls 4D overload — if(_noiseType==0) branch removed; NOIS-01 fully complete and UAT approved in Nuke
 - [Phase 05-release-cleanup plan 01]: DeepCShuffle.so kept in PLUGINS but removed from CHANNEL_NODES and Op::Description removed — silent backward-compat binary without duplicate menu entry
 - [Phase 05-release-cleanup plan 01]: SWEEP-07 and SWEEP-08 marked Dropped (not deferred) — requirements were scoped out during Phase 5 planning
+- [Phase 06-local-build-system plan 01]: NUKE_VERSIONS defaults to ("16.0") only -- 16.1 and 17.0 deliberately excluded; locked decision from research
+- [Phase 06-local-build-system plan 01]: zip archives over tar.gz to match batchInstall.sh convention
+- [Phase 06-local-build-system plan 01]: Nuke_ROOT passed explicitly via -D flag; FindNuke.cmake uses NO_SYSTEM_ENVIRONMENT_PATH so CMAKE_PREFIX_PATH is ignored
+- [Phase 06-local-build-system plan 01]: $GLOBAL_TOOLCHAIN escaped as \\$GLOBAL_TOOLCHAIN in bash -c string so it expands inside the container, not on the host
 
 ## Session Log
 
@@ -48,3 +52,4 @@ See: .planning/PROJECT.md (updated 2026-03-17 after v1.0 milestone)
 - 2026-03-17: Completed 04-02-PLAN.md — CELL_4D tables, CUBIC_4D_BOUNDING, SingleCubic 4D + SingleCellular/2Edge 4D in FastNoise.cpp (2 tasks, 5min)
 - 2026-03-17: Completed 04-03-PLAN.md — GetNoise(x,y,z,w) full dispatch + DeepCPNoise unconditional 4D wiring + tooltip update; UAT approved (2 tasks, 5min); NOIS-01 complete; Phase 04 complete
 - 2026-03-17: Completed 05-01-PLAN.md — DeepCShuffle2 icon, menu wiring via display-name rename, Op::Description removal, REQUIREMENTS.md traceability; UAT approved (~15min); Phase 05 complete; v1.0 milestone complete
+- 2026-03-18: Completed 06-01-PLAN.md — docker-build.sh with NukeDockerBuild integration; Linux + Windows builds via Docker; zip archive creation; human verified (~10min); Phase 06 complete; v1.1 local build system shipped
