@@ -21,7 +21,7 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-17 after v1.0 milestone)
 
 **Core value:** Artists can use deep-compositing operations in Nuke that don't exist in the built-in toolset, with professional-quality UIs and reliable deep-pixel math.
-**Current focus:** Planning next milestone (v1.1 — DeepThinner + CI/CD)
+**Current focus:** Planning v1.1 — NukeDockerBuild local build system integration (Linux + Windows)
 
 ## Position
 
