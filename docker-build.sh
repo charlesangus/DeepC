@@ -130,7 +130,7 @@ for nuke_version in "${NUKE_VERSIONS[@]}"; do
 
         docker run --rm \
             -v "${BASEDIR}:/nuke_build_directory" \
-            "${DOCKER_REGISTRY}:${nuke_version}-linux-slim-latest" \
+            "${DOCKER_REGISTRY}:${nuke_version}-linux" \
             bash -c "
                 cmake -S /nuke_build_directory \
                       -B /nuke_build_directory/build/${nuke_version}-linux \
@@ -156,7 +156,7 @@ for nuke_version in "${NUKE_VERSIONS[@]}"; do
         # to the wine-msvc toolchain file inside the Windows NukeDockerBuild image.
         docker run --rm \
             -v "${BASEDIR}:/nuke_build_directory" \
-            "${DOCKER_REGISTRY}:${nuke_version}-windows-latest" \
+            "${DOCKER_REGISTRY}:${nuke_version}-windows" \
             bash -c "
                 cmake -S /nuke_build_directory \
                       -B /nuke_build_directory/build/${nuke_version}-windows \
