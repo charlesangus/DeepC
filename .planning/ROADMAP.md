@@ -23,8 +23,15 @@ Full details: `.planning/milestones/v1.0-ROADMAP.md`
 
 ### 📋 v1.1 (Planned)
 
-- [ ] Phase 6: DeepThinner Vendor — Integrate bratgot/DeepThinner: license check, CMake build, toolbar menu registration
-- [ ] Phase 7: CI/CD — Docker + GitHub Actions automated build for Nuke 16
+- [ ] Phase 6: Local Build System — Integrate NukeDockerBuild for multi-version local builds (Linux + Windows) without manual Nuke SDK installation
+
+### Phase 6: Local Build System
+**Goal**: A developer can run a single script to build DeepC for all target Nuke versions on both Linux and Windows, using NukeDockerBuild Docker images — no manual Nuke SDK installation required.
+**Depends on**: Phase 5
+**Plans:** 1 plan
+
+Plans:
+- [ ] 06-01-PLAN.md — Create docker-build.sh with NukeDockerBuild orchestration (Linux + Windows builds, zip archives)
 
 ## Progress
 
@@ -36,5 +43,4 @@ Full details: `.planning/milestones/v1.0-ROADMAP.md`
 | 3.1. Refine DeepCShuffle UI (INSERTED) | v1.0 | 5/5 | Complete | 2026-03-16 |
 | 4. DeepCPNoise 4D | v1.0 | 3/3 | Complete | 2026-03-17 |
 | 5. Release Cleanup | v1.0 | 1/1 | Complete | 2026-03-17 |
-| 6. DeepThinner Vendor | v1.1 | 0/? | Not started | - |
-| 7. CI/CD | v1.1 | 0/? | Not started | - |
+| 6. Local Build System | v1.1 | 0/1 | Not started | - |
