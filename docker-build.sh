@@ -6,7 +6,9 @@ set -euo pipefail
 # Builds DeepC for all target Nuke versions on Linux and/or Windows using
 # pre-built NukeDockerBuild containers. No local Nuke SDK installation required.
 #
-# Prerequisites: docker, zip
+# Prerequisites: docker, zip, git
+# NukeDockerBuild images are built automatically on first use (requires ~1 GB
+# Nuke installer download and acceptance of Foundry's EULA).
 #
 # Usage: docker-build.sh [OPTIONS]
 #   --versions VER[,VER...]   Override default Nuke versions (default: 16.0)
@@ -24,7 +26,8 @@ NUKE_VERSIONS=("16.0")
 BUILD_LINUX=true
 BUILD_WINDOWS=true
 
-DOCKER_REGISTRY="ghcr.io/gillesvink/nukedockerbuild"
+NUKEDOCKERBUILD_IMAGE="nukedockerbuild"
+NUKEDOCKERBUILD_REPO="https://github.com/gillesvink/NukeDockerBuild"
 
 # Path to the Nuke SDK inside every NukeDockerBuild container.
 # FindNuke.cmake uses NO_SYSTEM_ENVIRONMENT_PATH, so CMAKE_PREFIX_PATH is
@@ -107,6 +110,48 @@ if ! command -v zip &>/dev/null; then
     exit 1
 fi
 
+if ! command -v git &>/dev/null; then
+    echo "ERROR: git is not installed or not in PATH" >&2
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Image bootstrap
+# ---------------------------------------------------------------------------
+
+# Ensures nukedockerbuild:<version>-<platform> exists locally.
+# If not, clones NukeDockerBuild and builds it automatically.
+ensure_image() {
+    local nuke_version="$1"
+    local platform="$2"
+    local image_tag="${NUKEDOCKERBUILD_IMAGE}:${nuke_version}-${platform}"
+
+    if docker image inspect "${image_tag}" &>/dev/null; then
+        return 0
+    fi
+
+    echo "  Image '${image_tag}' not found locally — building via NukeDockerBuild..."
+    echo "  NOTE: Building requires acceptance of Foundry's EULA."
+    echo "  NOTE: Nuke installer will be downloaded automatically (~1 GB)."
+
+    local build_tmp_dir
+    build_tmp_dir="$(mktemp -d)"
+    trap 'rm -rf "${build_tmp_dir}"' EXIT
+
+    echo "  Cloning ${NUKEDOCKERBUILD_REPO} into ${build_tmp_dir}..."
+    git clone --depth 1 "${NUKEDOCKERBUILD_REPO}" "${build_tmp_dir}"
+
+    echo "  Building ${image_tag} (this may take 10–30 minutes)..."
+    bash "${build_tmp_dir}/build.sh" "${nuke_version}" "${platform}"
+
+    if ! docker image inspect "${image_tag}" &>/dev/null; then
+        echo "ERROR: NukeDockerBuild finished but '${image_tag}' was not found in local Docker images." >&2
+        exit 1
+    fi
+
+    echo "  Image '${image_tag}' ready."
+}
+
 # ---------------------------------------------------------------------------
 # Directory setup
 # ---------------------------------------------------------------------------
@@ -126,11 +171,12 @@ for nuke_version in "${NUKE_VERSIONS[@]}"; do
     # -----------------------------------------------------------------------
 
     if [[ "${BUILD_LINUX}" == "true" ]]; then
+        ensure_image "${nuke_version}" "linux"
         echo "  [Linux] Starting build..."
 
         docker run --rm \
             -v "${BASEDIR}:/nuke_build_directory" \
-            "${DOCKER_REGISTRY}:${nuke_version}-linux" \
+            "${NUKEDOCKERBUILD_IMAGE}:${nuke_version}-linux" \
             bash -c "
                 cmake -S /nuke_build_directory \
                       -B /nuke_build_directory/build/${nuke_version}-linux \
@@ -149,6 +195,7 @@ for nuke_version in "${NUKE_VERSIONS[@]}"; do
     # -----------------------------------------------------------------------
 
     if [[ "${BUILD_WINDOWS}" == "true" ]]; then
+        ensure_image "${nuke_version}" "windows"
         echo "  [Windows] Starting build..."
 
         # NOTE: \$GLOBAL_TOOLCHAIN is intentionally escaped so it is NOT expanded
@@ -156,7 +203,7 @@ for nuke_version in "${NUKE_VERSIONS[@]}"; do
         # to the wine-msvc toolchain file inside the Windows NukeDockerBuild image.
         docker run --rm \
             -v "${BASEDIR}:/nuke_build_directory" \
-            "${DOCKER_REGISTRY}:${nuke_version}-windows" \
+            "${NUKEDOCKERBUILD_IMAGE}:${nuke_version}-windows" \
             bash -c "
                 cmake -S /nuke_build_directory \
                       -B /nuke_build_directory/build/${nuke_version}-windows \
