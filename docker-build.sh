@@ -21,7 +21,7 @@ set -euo pipefail
 # Defaults
 # ---------------------------------------------------------------------------
 
-NUKE_VERSIONS=("16.0")
+NUKE_VERSIONS=("16.0" "16.1" "17.0")
 
 BUILD_LINUX=true
 BUILD_WINDOWS=true
@@ -136,13 +136,20 @@ ensure_image() {
 
     local build_tmp_dir
     build_tmp_dir="$(mktemp -d)"
-    trap 'rm -rf "${build_tmp_dir}"' EXIT
 
     echo "  Cloning ${NUKEDOCKERBUILD_REPO} into ${build_tmp_dir}..."
     git clone --depth 1 "${NUKEDOCKERBUILD_REPO}" "${build_tmp_dir}"
 
+    if [[ ! -f "${build_tmp_dir}/dockerfiles/${nuke_version}/${platform}/Dockerfile" ]]; then
+        rm -rf "${build_tmp_dir}"
+        echo "  SKIP: NukeDockerBuild has no Dockerfile for Nuke ${nuke_version} ${platform} yet." \
+             "Check ${NUKEDOCKERBUILD_REPO} for updates."
+        return 1
+    fi
+
     echo "  Building ${image_tag} (this may take 10–30 minutes)..."
     bash "${build_tmp_dir}/build.sh" "${nuke_version}" "${platform}"
+    rm -rf "${build_tmp_dir}"
 
     if ! docker image inspect "${image_tag}" &>/dev/null; then
         echo "ERROR: NukeDockerBuild finished but '${image_tag}' was not found in local Docker images." >&2
@@ -171,7 +178,7 @@ for nuke_version in "${NUKE_VERSIONS[@]}"; do
     # -----------------------------------------------------------------------
 
     if [[ "${BUILD_LINUX}" == "true" ]]; then
-        ensure_image "${nuke_version}" "linux"
+        ensure_image "${nuke_version}" "linux" || { echo "  Skipping Linux build for Nuke ${nuke_version}."; continue; }
         echo "  [Linux] Starting build..."
 
         docker run --rm \
@@ -195,7 +202,7 @@ for nuke_version in "${NUKE_VERSIONS[@]}"; do
     # -----------------------------------------------------------------------
 
     if [[ "${BUILD_WINDOWS}" == "true" ]]; then
-        ensure_image "${nuke_version}" "windows"
+        ensure_image "${nuke_version}" "windows" || { echo "  Skipping Windows build for Nuke ${nuke_version}."; continue; }
         echo "  [Windows] Starting build..."
 
         # NOTE: \$GLOBAL_TOOLCHAIN is intentionally escaped so it is NOT expanded
