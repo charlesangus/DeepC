@@ -7,10 +7,10 @@
 
 ### DeepThinner Integration
 
-- [ ] **THIN-01**: DeepThinner.cpp vendored into `src/` with upstream MIT license header comment preserved
-- [ ] **THIN-02**: DeepThinner added to CMake `PLUGINS` list and builds as a `.so`/`.dll`
-- [ ] **THIN-03**: DeepThinner wired into `menu.py.in` for Deep toolbar registration
-- [ ] **THIN-04**: DeepThinner builds successfully via `docker-build.sh` for Linux and Windows
+- [x] **THIN-01**: DeepThinner.cpp vendored into `src/` with upstream MIT license header comment preserved
+- [x] **THIN-02**: DeepThinner added to CMake `PLUGINS` list and builds as a `.so`/`.dll`
+- [x] **THIN-03**: DeepThinner wired into `menu.py.in` for Deep toolbar registration
+- [x] **THIN-04**: DeepThinner builds successfully via `docker-build.sh` for Linux and Windows
 
 ### Documentation
 
@@ -42,10 +42,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| THIN-01 | Phase 7 | Pending |
-| THIN-02 | Phase 7 | Pending |
-| THIN-03 | Phase 7 | Pending |
-| THIN-04 | Phase 7 | Pending |
+| THIN-01 | Phase 7 | Complete |
+| THIN-02 | Phase 7 | Complete |
+| THIN-03 | Phase 7 | Complete |
+| THIN-04 | Phase 7 | Complete |
 | DOCS-01 | Phase 8 | Pending |
 | DOCS-02 | Phase 8 | Pending |
 | DOCS-03 | Phase 8 | Pending |

@@ -1,16 +1,16 @@
 ---
 gsd_state_version: 1.0
 milestone: v1.2
-milestone_name: deepthinner-and-docs
-current_phase: 7
-current_plan: null
-status: ready_to_plan
-last_updated: "2026-03-18T00:00:00Z"
+milestone_name: DeepThinner & Documentation
+current_phase: "7 — DeepThinner Integration (of 2 phases: 7, 8)"
+status: planning
+last_updated: "2026-03-19T04:37:30.881Z"
+last_activity: 2026-03-18 — v1.2 roadmap created; Phases 7–8 defined
 progress:
   total_phases: 2
-  completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
+  completed_phases: 1
+  total_plans: 1
+  completed_plans: 1
   percent: 0
 ---
 
@@ -27,17 +27,19 @@ See: .planning/PROJECT.md (updated 2026-03-18 — Milestone v1.2 started)
 
 **Milestone:** v1.2 — DeepThinner & Documentation
 **Current phase:** 7 — DeepThinner Integration (of 2 phases: 7, 8)
-**Plan:** 0 of ? in current phase
-**Status:** Ready to plan
-**Last activity:** 2026-03-18 — v1.2 roadmap created; Phases 7–8 defined
+**Plan:** 1 of 1 in current phase (Phase 7 complete)
+**Status:** Phase 7 complete — ready for Phase 8 (Documentation)
+**Last activity:** 2026-03-19 — Phase 7 plan 1 complete; DeepThinner vendored and integrated
 
-Progress: [░░░░░░░░░░] 0% (v1.2 phases not yet started)
+Progress: [██████████] 100% (Phase 7 of 2 complete — 1/2 phases done)
 
 ## Decisions
 
 - [v1.2 scope]: DeepThinner vendored as-is — no adaptation to DeepCWrapper/DeepCMWrapper; upstream is stable
 - [v1.2 scope]: THIRD_PARTY_LICENSES.md required for MIT attribution to Marten Blumen
 - [v1.2 scope]: Phase 8 (docs) depends on Phase 7 so plugin list is final before README is written
+- [Phase 07-deepthinner-integration]: DeepThinner placed in non-wrapped PLUGINS list — uses DeepFilterOp directly, no DeepCWrapper adaptation needed
+- [Phase 07-deepthinner-integration]: MIT copyright header prepended to vendored DeepThinner.cpp — upstream stores license in separate file; header required for attribution compliance
 
 ## Blockers/Concerns
 
@@ -47,3 +49,4 @@ None yet.
 
 - 2026-03-18: Milestone v1.2 started — DeepThinner integration + README overhaul
 - 2026-03-18: Roadmap created — Phase 7 (THIN-01–04) and Phase 8 (DOCS-01–04) defined
+- 2026-03-19: Phase 7 plan 1 complete — DeepThinner vendored (MIT, Marten Blumen), CMake build wired, Filter submenu added, Linux build verified

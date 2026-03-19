@@ -35,7 +35,7 @@ Full details: `.planning/milestones/v1.1-ROADMAP.md`
 
 **Milestone Goal:** Vendor DeepThinner into DeepC and overhaul project documentation to reflect current state.
 
-- [ ] **Phase 7: DeepThinner Integration** - Vendor DeepThinner into src/, wire into CMake and menu.py.in, verify build on Linux and Windows
+- [x] **Phase 7: DeepThinner Integration** - Vendor DeepThinner into src/, wire into CMake and menu.py.in, verify build on Linux and Windows (completed 2026-03-19)
 - [ ] **Phase 8: Documentation Overhaul** - Full README rewrite reflecting current plugin list, build workflow, and DeepThinner attribution; create THIRD_PARTY_LICENSES.md
 
 ## Phase Details
@@ -75,5 +75,5 @@ Plans:
 | 4. DeepCPNoise 4D | v1.0 | 3/3 | Complete | 2026-03-17 |
 | 5. Release Cleanup | v1.0 | 1/1 | Complete | 2026-03-17 |
 | 6. Local Build System | v1.1 | 1/1 | Complete | 2026-03-18 |
-| 7. DeepThinner Integration | v1.2 | 0/1 | Not started | - |
+| 7. DeepThinner Integration | 1/1 | Complete   | 2026-03-19 | - |
 | 8. Documentation Overhaul | v1.2 | 0/? | Not started | - |
