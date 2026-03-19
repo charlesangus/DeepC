@@ -49,7 +49,9 @@ Full details: `.planning/milestones/v1.1-ROADMAP.md`
   2. `cmake` includes DeepThinner in the `PLUGINS` list and produces `DeepThinner.so` (Linux) and `DeepThinner.dll` (Windows) without build errors
   3. DeepThinner appears in the Nuke Deep toolbar after sourcing the generated `menu.py`
   4. `docker-build.sh` completes successfully for both Linux and Windows targets, producing release archives that contain the DeepThinner binary
-**Plans**: TBD
+**Plans**: 1 plan
+Plans:
+- [ ] 07-01-PLAN.md — Vendor DeepThinner source, wire CMake + menu, verify dual-platform docker builds
 
 ### Phase 8: Documentation Overhaul
 **Goal**: README.md and THIRD_PARTY_LICENSES.md accurately describe the current project — 23 plugins, docker-build.sh workflow, Nuke 16+ target, DeepThinner attribution — with no stale or dead content
@@ -73,5 +75,5 @@ Full details: `.planning/milestones/v1.1-ROADMAP.md`
 | 4. DeepCPNoise 4D | v1.0 | 3/3 | Complete | 2026-03-17 |
 | 5. Release Cleanup | v1.0 | 1/1 | Complete | 2026-03-17 |
 | 6. Local Build System | v1.1 | 1/1 | Complete | 2026-03-18 |
-| 7. DeepThinner Integration | v1.2 | 0/? | Not started | - |
+| 7. DeepThinner Integration | v1.2 | 0/1 | Not started | - |
 | 8. Documentation Overhaul | v1.2 | 0/? | Not started | - |
