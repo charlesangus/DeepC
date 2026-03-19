@@ -31,10 +31,11 @@ Artists can use deep-compositing operations in Nuke that don't exist in the buil
 - DeepThinner plugin integration (vendor, CMake, menu wiring, MIT attribution)
 - Full README overhaul (current build system, accurate plugin list, DeepThinner attribution + link)
 
-### Active
+### Validated
 
-- [ ] DeepThinner vendored into src/, built via CMake, wired into menu.py.in with MIT attribution
-- [ ] README.md overhauled: current plugin list, docker-build.sh instructions, Nuke 16+ target, DeepThinner with link to original
+- ✓ DeepThinner vendored into src/, built via CMake, wired into menu.py.in with MIT attribution — v1.2 (THIN-01–04)
+- ✓ README.md overhauled: 23-plugin list, docker-build.sh instructions, Nuke 16+ target, DeepThinner with Marten Blumen attribution and link — v1.2 (DOCS-01–04)
+- ✓ THIRD_PARTY_LICENSES.md created with full MIT attribution for DeepThinner and FastNoise — v1.2 (DOCS-04)
 
 ### Out of Scope
 
@@ -88,4 +89,4 @@ Artists can use deep-compositing operations in Nuke that don't exist in the buil
 | $GLOBAL_TOOLCHAIN escaped in bash -c string | Must expand inside container shell, not on host | ✓ Good — cross-compilation works correctly |
 
 ---
-*Last updated: 2026-03-18 — Milestone v1.2 started*
+*Last updated: 2026-03-19 — Milestone v1.2 complete (Phase 7 + Phase 8)*
