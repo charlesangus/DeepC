@@ -29,6 +29,9 @@ endif()
 
 set(FASTNOISE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/FastNoise)
 add_library(FastNoise OBJECT ${FASTNOISE_DIR}/FastNoise.cpp)
+if (WIN32)
+    target_compile_definitions(FastNoise PRIVATE NOMINMAX _USE_MATH_DEFINES)
+endif()
 
 # add sub directory
 add_subdirectory(src)

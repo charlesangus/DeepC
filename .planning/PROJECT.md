@@ -24,12 +24,13 @@ Artists can use deep-compositing operations in Nuke that don't exist in the buil
 
 ### Active (v1.1)
 
-- [ ] DeepThinner: license confirmed compatible with GPL-3.0, source integrated into CMake build, registered in toolbar menu (THIN-01, THIN-02, THIN-03)
-- [ ] Docker + GitHub Actions CI/CD: automated build triggered on push/PR, builds against Nuke 16 (CI-01, CI-02, CI-03, CI-04)
+- [ ] NukeDockerBuild integration: developer can run a single script to build DeepC for all target Nuke versions on Linux and Windows using NukeDockerBuild Docker images — no manual Nuke SDK installation required (BUILD-01, BUILD-02, BUILD-03)
 
 ### Out of Scope
 
 - Shuffle2 noodle/wire routing UI — NDK does not expose this API; internal to Foundry's built-in node only
+- DeepThinner integration — deferred to future milestone
+- Docker + GitHub Actions CI/CD — shelved (NukeDockerBuild local builds cover the immediate need)
 - DeepDefocus (all versions) — deferred to future milestone
 - DeepBlur — deferred to future milestone
 - GL handles for DeepCPNoise or DeepCWorld — not requested
@@ -69,7 +70,7 @@ Artists can use deep-compositing operations in Nuke that don't exist in the buil
 | NDK ChannelSet knobs over QComboBox pickers | QComboBox segfaulted during UAT; NDK knobs are Nuke-integrated | ✓ Good — reverted in Phase 3.1 after UAT failure |
 | SWEEP-07/08 dropped (not deferred) | Refactor risk outweighed benefit; no user-visible value | ✓ Good — avoided scope creep |
 | DeepCBlink removed from build | Unfinished proof-of-concept; no clear path to completion | ✓ Good — cleaner build, no misleading placeholder |
-| GitHub Actions for CI/CD | Native to repo, free for public repos | — Deferred to v1.1 |
+| GitHub Actions CI/CD shelved | NukeDockerBuild local builds cover the immediate need; remote CI adds complexity without clear benefit now | — Shelved |
 | DeepDefocus v1 = CPU first | Correctness before optimization | — Deferred to future milestone |
 
 ---

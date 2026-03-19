@@ -29,6 +29,9 @@ BUILD_WINDOWS=true
 NUKEDOCKERBUILD_IMAGE="nukedockerbuild"
 NUKEDOCKERBUILD_REPO="https://github.com/gillesvink/NukeDockerBuild"
 
+# Extended Windows image name — built on top of NukeDockerBuild with Qt6 added.
+DEEPC_WINDOWS_IMAGE="deepc-build"
+
 # Path to the Nuke SDK inside every NukeDockerBuild container.
 # FindNuke.cmake uses NO_SYSTEM_ENVIRONMENT_PATH, so CMAKE_PREFIX_PATH is
 # NOT used automatically — Nuke_ROOT must be passed explicitly to CMake.
@@ -159,6 +162,26 @@ ensure_image() {
     echo "  Image '${image_tag}' ready."
 }
 
+# Builds deepc-build:<version>-windows on top of nukedockerbuild:<version>-windows,
+# adding Qt 6.5.3 Windows MSVC binaries and host Linux Qt tools for AUTOMOC.
+ensure_deepc_windows_image() {
+    local nuke_version="$1"
+    local extended_image_tag="${DEEPC_WINDOWS_IMAGE}:${nuke_version}-windows"
+
+    if docker image inspect "${extended_image_tag}" &>/dev/null; then
+        return 0
+    fi
+
+    echo "  Building extended Windows image '${extended_image_tag}' with Qt6..."
+    echo "  NOTE: This downloads ~1 GB of Qt binaries and may take several minutes."
+    docker build \
+        --build-arg "NUKE_VERSION=${nuke_version}" \
+        -t "${extended_image_tag}" \
+        -f "${BASEDIR}/docker/windows.Dockerfile" \
+        "${BASEDIR}/docker"
+    echo "  Extended Windows image '${extended_image_tag}' ready."
+}
+
 # ---------------------------------------------------------------------------
 # Directory setup
 # ---------------------------------------------------------------------------
@@ -187,13 +210,13 @@ for nuke_version in "${NUKE_VERSIONS[@]}"; do
             bash -c "
                 cmake -S /nuke_build_directory \
                       -B /nuke_build_directory/build/${nuke_version}-linux \
-                      -D CMAKE_INSTALL_PREFIX=/nuke_build_directory/install/${nuke_version}-linux \
+                      -D CMAKE_INSTALL_PREFIX=/nuke_build_directory/install/${nuke_version}-linux/DeepC \
                       -D Nuke_ROOT=${NUKE_SDK_PATH} &&
                 cmake --build /nuke_build_directory/build/${nuke_version}-linux --config Release &&
                 cmake --install /nuke_build_directory/build/${nuke_version}-linux
             "
 
-        zip -r "${BASEDIR}/release/DeepC-Linux-Nuke${nuke_version}.zip" "${BASEDIR}/install/${nuke_version}-linux"
+        (cd "${BASEDIR}/install/${nuke_version}-linux" && zip -r "${BASEDIR}/release/DeepC-Linux-Nuke${nuke_version}.zip" "DeepC")
         echo "  Linux build complete: release/DeepC-Linux-Nuke${nuke_version}.zip"
     fi
 
@@ -203,14 +226,18 @@ for nuke_version in "${NUKE_VERSIONS[@]}"; do
 
     if [[ "${BUILD_WINDOWS}" == "true" ]]; then
         ensure_image "${nuke_version}" "windows" || { echo "  Skipping Windows build for Nuke ${nuke_version}."; continue; }
+        ensure_deepc_windows_image "${nuke_version}"
         echo "  [Windows] Starting build..."
 
         # NOTE: \$GLOBAL_TOOLCHAIN is intentionally escaped so it is NOT expanded
         # by the host shell. GLOBAL_TOOLCHAIN is a container-only env var pointing
         # to the wine-msvc toolchain file inside the Windows NukeDockerBuild image.
+        #
+        # QT_HOST_PATH points at the Linux Qt installation so CMake's AUTOMOC uses
+        # the Linux moc/uic/rcc binaries instead of the Windows .exe equivalents.
         docker run --rm \
             -v "${BASEDIR}:/nuke_build_directory" \
-            "${NUKEDOCKERBUILD_IMAGE}:${nuke_version}-windows" \
+            "${DEEPC_WINDOWS_IMAGE}:${nuke_version}-windows" \
             bash -c "
                 cmake -S /nuke_build_directory \
                       -B /nuke_build_directory/build/${nuke_version}-windows \
@@ -218,13 +245,14 @@ for nuke_version in "${NUKE_VERSIONS[@]}"; do
                       -DCMAKE_SYSTEM_NAME=Windows \
                       -DCMAKE_BUILD_TYPE=Release \
                       -DCMAKE_TOOLCHAIN_FILE=\$GLOBAL_TOOLCHAIN \
-                      -D CMAKE_INSTALL_PREFIX=/nuke_build_directory/install/${nuke_version}-windows \
-                      -D Nuke_ROOT=${NUKE_SDK_PATH} &&
+                      -D CMAKE_INSTALL_PREFIX=/nuke_build_directory/install/${nuke_version}-windows/DeepC \
+                      -D Nuke_ROOT=${NUKE_SDK_PATH} \
+                      -D QT_HOST_PATH=/opt/Qt/6.5.3/gcc_64 &&
                 cmake --build /nuke_build_directory/build/${nuke_version}-windows --config Release &&
                 cmake --install /nuke_build_directory/build/${nuke_version}-windows
             "
 
-        zip -r "${BASEDIR}/release/DeepC-Windows-Nuke${nuke_version}.zip" "${BASEDIR}/install/${nuke_version}-windows"
+        (cd "${BASEDIR}/install/${nuke_version}-windows" && zip -r "${BASEDIR}/release/DeepC-Windows-Nuke${nuke_version}.zip" "DeepC")
         echo "  Windows build complete: release/DeepC-Windows-Nuke${nuke_version}.zip"
     fi
 

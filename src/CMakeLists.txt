@@ -55,14 +55,22 @@ function(add_nuke_plugin PLUGIN_NAME)
     if (APPLE)
         set_target_properties(${PLUGIN_NAME} PROPERTIES SUFFIX ".dylib")
     endif()
+    if (WIN32)
+        target_compile_definitions(${PLUGIN_NAME} PRIVATE NOMINMAX _USE_MATH_DEFINES)
+    endif()
 endfunction()
 
 # include directories
 include_directories(${NUKE_INCLUDE_DIRS})
 
 # Qt6 — required for ShuffleMatrixKnob embedded Qt widget (Phase 03)
-# Qt 6.5.3 is installed at /opt/Qt/6.5.3/gcc_64 (same version as Nuke 16 runtime)
-list(APPEND CMAKE_PREFIX_PATH "/opt/Qt/6.5.3/gcc_64")
+# Qt 6.5.3 matches the version shipped with Nuke 16.x.
+# Windows cross-compilation uses MSVC x64 binaries; Linux uses gcc_64.
+if (WIN32)
+    list(APPEND CMAKE_PREFIX_PATH "/opt/Qt/6.5.3/msvc2019_64")
+else()
+    list(APPEND CMAKE_PREFIX_PATH "/opt/Qt/6.5.3/gcc_64")
+endif()
 find_package(Qt6 COMPONENTS Core Gui Widgets)
 if (Qt6_FOUND)
   set(CMAKE_AUTOMOC ON)
@@ -73,10 +81,16 @@ endif()
 # DeepCMWrapper
 add_library(DeepCWrapper OBJECT DeepCWrapper.cpp)
 target_link_libraries(DeepCWrapper PRIVATE ${NUKE_DDIMAGE_LIBRARY})
+if (WIN32)
+    target_compile_definitions(DeepCWrapper PRIVATE NOMINMAX _USE_MATH_DEFINES)
+endif()
 
 # DeepCMWrapper
 add_library(DeepCMWrapper OBJECT DeepCMWrapper.cpp)
 target_link_libraries(DeepCMWrapper PRIVATE ${NUKE_DDIMAGE_LIBRARY})
+if (WIN32)
+    target_compile_definitions(DeepCMWrapper PRIVATE NOMINMAX _USE_MATH_DEFINES)
+endif()
 target_sources(DeepCMWrapper PRIVATE $<TARGET_OBJECTS:DeepCWrapper>)
 
 # add configuration 
