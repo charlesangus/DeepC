@@ -14,10 +14,10 @@
 
 ### Documentation
 
-- [ ] **DOCS-01**: README.md updated with accurate plugin list (23 plugins including DeepThinner with attribution and link to https://github.com/bratgot/DeepThinner)
-- [ ] **DOCS-02**: README.md build section replaced with current `docker-build.sh` workflow, Nuke 16+ target, outdated CentOS/VS2017/batchInstall.sh content removed
-- [ ] **DOCS-03**: README.md cleaned of removed/dead content (DeepCBlink, DeepCompress "coming soon")
-- [ ] **DOCS-04**: `THIRD_PARTY_LICENSES.md` created documenting DeepThinner's MIT license with attribution to Marten Blumen
+- [x] **DOCS-01**: README.md updated with accurate plugin list (23 plugins including DeepThinner with attribution and link to https://github.com/bratgot/DeepThinner)
+- [x] **DOCS-02**: README.md build section replaced with current `docker-build.sh` workflow, Nuke 16+ target, outdated CentOS/VS2017/batchInstall.sh content removed
+- [x] **DOCS-03**: README.md cleaned of removed/dead content (DeepCBlink, DeepCompress "coming soon")
+- [x] **DOCS-04**: `THIRD_PARTY_LICENSES.md` created documenting DeepThinner's MIT license with attribution to Marten Blumen
 
 ## Future Requirements
 
@@ -46,10 +46,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | THIN-02 | Phase 7 | Complete |
 | THIN-03 | Phase 7 | Complete |
 | THIN-04 | Phase 7 | Complete |
-| DOCS-01 | Phase 8 | Pending |
-| DOCS-02 | Phase 8 | Pending |
-| DOCS-03 | Phase 8 | Pending |
-| DOCS-04 | Phase 8 | Pending |
+| DOCS-01 | Phase 8 | Complete |
+| DOCS-02 | Phase 8 | Complete |
+| DOCS-03 | Phase 8 | Complete |
+| DOCS-04 | Phase 8 | Complete |
 
 **Coverage:**
 - v1.2 requirements: 8 total
