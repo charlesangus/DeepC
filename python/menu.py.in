@@ -14,6 +14,8 @@ def create_deepc_menu():
                       "nodes": [@MERGE_NODES@]},
             "Util": {"icon":"ToolbarToolsets.png",
                     "nodes": [@Util_NODES@]},
+            "Filter": {"icon":"ToolbarFilter.png",
+                       "nodes": [@FILTER_NODES@]},
     }
 
     # Display-name overrides: maps class name to menu label

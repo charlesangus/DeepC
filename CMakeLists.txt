@@ -43,3 +43,6 @@ install(FILES
 
 file(GLOB ICONS "icons/DeepC*.png")
 install(FILES ${ICONS} DESTINATION icons)
+
+# DeepThinner icon (not prefixed "DeepC", so not matched by the glob above)
+install(FILES icons/DeepThinner.png DESTINATION icons)
