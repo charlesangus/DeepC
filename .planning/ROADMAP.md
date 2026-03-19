@@ -3,7 +3,7 @@
 ## Milestones
 
 - ✅ **v1.0 DeepC** — Phases 1–5 (shipped 2026-03-17)
-- 📋 **v1.1** — Phases 6+ (planned)
+- ✅ **v1.1 Local Build System** — Phase 6 (shipped 2026-03-18)
 
 ## Phases
 
@@ -21,17 +21,14 @@ Full details: `.planning/milestones/v1.0-ROADMAP.md`
 
 </details>
 
-### 📋 v1.1 (Planned)
+<details>
+<summary>✅ v1.1 Local Build System (Phase 6) — SHIPPED 2026-03-18</summary>
 
-- [x] Phase 6: Local Build System — Integrate NukeDockerBuild for multi-version local builds (Linux + Windows) without manual Nuke SDK installation — completed 2026-03-18
+- [x] Phase 6: Local Build System (1/1 plan) — completed 2026-03-18
 
-### Phase 6: Local Build System
-**Goal**: A developer can run a single script to build DeepC for all target Nuke versions on both Linux and Windows, using NukeDockerBuild Docker images — no manual Nuke SDK installation required.
-**Depends on**: Phase 5
-**Plans:** 1 plan
+Full details: `.planning/milestones/v1.1-ROADMAP.md`
 
-Plans:
-- [x] 06-01-PLAN.md — Create docker-build.sh with NukeDockerBuild orchestration (Linux + Windows builds, zip archives) — completed 2026-03-18
+</details>
 
 ## Progress
 

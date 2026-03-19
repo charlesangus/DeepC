@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: local-build-system
-current_phase: 06-local-build-system
-current_plan: 06-01 COMPLETE (phase 06 complete)
-status: completed
-last_updated: "2026-03-18T04:35:05Z"
+current_phase: BETWEEN_MILESTONES
+current_plan: null
+status: milestone_complete
+last_updated: "2026-03-18T00:00:00Z"
 progress:
-  total_phases: 6
-  completed_phases: 6
-  total_plans: 1
-  completed_plans: 1
+  total_phases: 7
+  completed_phases: 7
+  total_plans: 19
+  completed_plans: 19
   percent: 100
 ---
 
@@ -18,17 +18,16 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-03-17 after v1.0 milestone)
+See: .planning/PROJECT.md (updated 2026-03-18 after v1.1 milestone)
 
 **Core value:** Artists can use deep-compositing operations in Nuke that don't exist in the built-in toolset, with professional-quality UIs and reliable deep-pixel math.
-**Current focus:** v1.1 complete — NukeDockerBuild local build system shipped
+**Current focus:** Between milestones — run `/gsd:new-milestone` to plan v1.2+
 
 ## Position
 
-**Milestone:** v1.0 COMPLETE — archived 2026-03-17
-**Current phase:** 06-local-build-system COMPLETE
-**Current plan:** 06-01 COMPLETE
-**Status:** Phase 06 complete. v1.1 local build system shipped.
+**Milestone:** v1.1 COMPLETE — archived 2026-03-18
+**Current phase:** N/A — between milestones
+**Status:** v1.1 milestone complete and archived
 **Progress:** [██████████] 100%
 
 ## Decisions

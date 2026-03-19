@@ -2,7 +2,7 @@
 
 ## What This Is
 
-DeepC is an open-source suite of deep-compositing Nuke NDK plugins targeting Foundry Nuke 16+. v1.0 ships 21 plugins covering color, matte, noise, shuffle, and utility operations on deep images, built on two shared C++ base classes (`DeepCWrapper`, `DeepCMWrapper`). Highlights: DeepCShuffle2 features a full Qt6 custom knob UI with colored channel routing, DeepCPMatte provides an interactive 3D wireframe GL handle, and DeepCPNoise supports true 4D noise evolution across all 9 noise types.
+DeepC is an open-source suite of deep-compositing Nuke NDK plugins targeting Foundry Nuke 16+. v1.1 ships 22 plugins covering color, matte, noise, shuffle, and utility operations on deep images, built on two shared C++ base classes (`DeepCWrapper`, `DeepCMWrapper`). Highlights: DeepCShuffle2 features a full Qt6 custom knob UI with colored channel routing, DeepCPMatte provides an interactive 3D wireframe GL handle, DeepCPNoise supports true 4D noise evolution across all 9 noise types, and developers can build for all target Nuke versions on Linux and Windows via a single Docker-based script.
 
 ## Core Value
 
@@ -21,10 +21,11 @@ Artists can use deep-compositing operations in Nuke that don't exist in the buil
 - ✓ DeepCPMatte GL handles: deadlock-free 3D wireframe viewport handle, interactive drag-to-reposition — v1.0 (GLPM-01, GLPM-02, GLPM-03)
 - ✓ DeepCShuffle2 UI: full parity with Nuke Shuffle2 — colored channel buttons, embedded ChannelSet pickers, radio enforcement, const:0/1 columns, identity routing on first open — v1.0 (SHUF-01, SHUF-02, SHUF-03, SHUF-04)
 - ✓ DeepCPNoise 4D: noise_evolution wired as w dimension unconditionally for all noise types — v1.0 (NOIS-01)
+- ✓ NukeDockerBuild integration: `docker-build.sh` builds DeepC for all target Nuke versions on Linux and Windows via Docker images — no manual Nuke SDK installation required — v1.1 (BUILD-01, BUILD-02, BUILD-03)
 
-### Active (v1.1)
+### Active
 
-- [ ] NukeDockerBuild integration: developer can run a single script to build DeepC for all target Nuke versions on Linux and Windows using NukeDockerBuild Docker images — no manual Nuke SDK installation required (BUILD-01, BUILD-02, BUILD-03)
+(none — planning next milestone)
 
 ### Out of Scope
 
@@ -41,13 +42,14 @@ Artists can use deep-compositing operations in Nuke that don't exist in the buil
 
 ## Context
 
-**v1.0 shipped 2026-03-17.**
+**v1.1 shipped 2026-03-18.**
 
 - Codebase map at `.planning/codebase/` — ARCHITECTURE.md, CONCERNS.md, CONVENTIONS.md
 - Qt 6.5.3 pre-installed at `/opt/Qt/6.5.3/gcc_64` — exact version match with Nuke 16 runtime; no apt install needed
 - DeepCShuffle2 uses Qt6 custom knob (`ShuffleMatrixKnob` + `ShuffleMatrixWidget`) registered via NDK `CustomKnob2`
 - Display-name rename dict in `menu.py.in` decouples class names from menu labels — enables backward-compat .so files with clean UX
 - Silent binary pattern established: include in `PLUGINS`, exclude from `CHANNEL_NODES`, remove `Op::Description`
+- Build system: `docker-build.sh` + NukeDockerBuild Docker images; produces `release/DeepC-{Platform}-Nuke{version}.zip`; default target is Nuke 16.0; Windows cross-compilation from Linux host via mingw container
 - Known pre-existing TODOs in `src/DeepCWrapper.cpp`, `src/DeepCMWrapper.cpp`, `src/DeepCWorld.cpp`, `src/DeepCPNoise.cpp` — low priority, not blocking
 - Nyquist validation partially adopted (Phase 1 fully compliant; Phases 2–4 partial; no test framework exists for Nuke C++ plugins — manual UAT is the gate)
 
@@ -72,6 +74,9 @@ Artists can use deep-compositing operations in Nuke that don't exist in the buil
 | DeepCBlink removed from build | Unfinished proof-of-concept; no clear path to completion | ✓ Good — cleaner build, no misleading placeholder |
 | GitHub Actions CI/CD shelved | NukeDockerBuild local builds cover the immediate need; remote CI adds complexity without clear benefit now | — Shelved |
 | DeepDefocus v1 = CPU first | Correctness before optimization | — Deferred to future milestone |
+| NUKE_VERSIONS defaults to ("16.0") only | Research confirmed 16.0 is the stable target; 16.1 and 17.0 excluded from defaults but supported via --versions flag | ✓ Good — clean default, flexible override |
+| zip over tar.gz for release archives | Matches existing batchInstall.sh convention | ✓ Good — consistent tooling |
+| $GLOBAL_TOOLCHAIN escaped in bash -c string | Must expand inside container shell, not on host | ✓ Good — cross-compilation works correctly |
 
 ---
-*Last updated: 2026-03-17 after v1.0 milestone*
+*Last updated: 2026-03-18 after v1.1 milestone*

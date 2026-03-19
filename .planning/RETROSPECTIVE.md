@@ -45,6 +45,41 @@
 
 ---
 
+## Milestone: v1.1 — Local Build System
+
+**Shipped:** 2026-03-18
+**Phases:** 1 | **Plans:** 1 | **Timeline:** ~1 day (2026-03-17 → 2026-03-18)
+
+### What Was Built
+- `docker-build.sh` — 186-line NukeDockerBuild orchestration script; builds DeepC for Linux (.so) and Windows (.dll) from a single Linux host via Docker; produces `release/DeepC-{Platform}-Nuke{version}.zip` archives
+- NukeDockerBuild auto-bootstrap: clones and builds images from source if prebuilt Docker Hub images are unavailable
+- Per-platform isolated build/install directories prevent CMake cache conflicts in multi-platform builds
+
+### What Worked
+- **Research-first approach again paid off**: Identified the correct NukeDockerBuild image tag format, `$GLOBAL_TOOLCHAIN` escaping requirement, and `Nuke_ROOT` flag necessity before writing a line of code — no debugging loops
+- **Human verification checkpoint**: The verify step caught real post-plan issues (image tag format, Windows Qt6 path, zip structure) that required fix commits after the main plan; structured checkpoint made these visible
+- **Single-phase scope**: A tight, focused milestone (one deliverable, one script) executed quickly and cleanly with no scope creep
+
+### What Was Inefficient
+- **Post-plan fix commits**: Four fix commits were needed after the initial `feat(06-01)` commit — NukeDockerBuild image tag, auto-bootstrap, Qt6 Windows path, zip structure. These were real discoveries during verification, but earlier research into the Windows container environment specifics could have front-loaded some of them
+- **NUKE_VERSIONS decision reversal**: The plan locked `("16.0")` only, but subsequent commits added 16.1 and 17.0 to defaults. The research decision was correct at plan time; post-plan additions suggest the "locked decision" framing was too strong
+
+### Patterns Established
+- **Container cross-compilation pattern**: Mount repo at `/nuke_build_directory`, run full CMake configure + build inside Docker, extract artifacts — no host-side Nuke SDK needed
+- **`$VAR` escaping in `bash -c` strings**: Variables that must expand inside the container shell must be escaped as `\\$VAR` when passed via `bash -c "..."` on the host
+
+### Key Lessons
+1. **Verification checkpoints surface real gaps**: Don't skip them even for "simple" scripts — the Windows Qt6 path and zip structure issues were real and non-obvious
+2. **Single-phase milestones are fast and clean**: When scope is tight and well-understood, a 1-phase milestone executes in ~1 day with minimal overhead
+3. **"Locked decision" framing should match actual lock confidence**: If a decision is likely to be revisited during verification (e.g., default version list), mark it as a default that can be overridden rather than a hard lock
+
+### Cost Observations
+- Model mix: ~100% Sonnet
+- Sessions: 1 session (~1 day)
+- Notable: Short milestone with clear deliverable — minimal orchestrator overhead; most time was in verification fix commits, not planning or execution
+
+---
+
 ## Cross-Milestone Trends
 
 ### Process Evolution
@@ -52,14 +87,17 @@
 | Milestone | Phases | Plans | Key Change |
 |-----------|--------|-------|------------|
 | v1.0 | 6 | 19 | First milestone; established silent binary, display-name rename, and decimal phase insertion patterns |
+| v1.1 | 1 | 1 | Infra/tooling milestone; established container cross-compilation pattern and `\\$VAR` escaping convention |
 
 ### Cumulative Quality
 
 | Milestone | Automated Tests | Manual UAT | Zero-Dep Additions |
 |-----------|-----------------|------------|-------------------|
 | v1.0 | 0 (no test framework) | Checkpoints in every feature phase | 1 (Qt6, bundled by Nuke) |
+| v1.1 | 0 | Human verify checkpoint for build script | 1 (NukeDockerBuild images, Docker-only) |
 
 ### Top Lessons (Verified Across Milestones)
 
 1. Research agents with direct file inspection produce high-confidence plans — exact line numbers and before/after snippets are the highest-value research output
-2. UAT checkpoints at the end of each feature phase catch integration issues before they compound across phases
+2. UAT/verification checkpoints at the end of each feature phase catch integration issues before they compound across phases
+3. Trust research-identified risk flags in plans — when research recommends an alternative approach, follow it (v1.0: NDK knobs; v1.1: exact container env vars)
