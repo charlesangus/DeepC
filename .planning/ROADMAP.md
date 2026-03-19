@@ -62,7 +62,9 @@ Plans:
   2. README.md build section describes `docker-build.sh` usage and Nuke 16+ as the target; CentOS, VS2017, and `batchInstall.sh` references are removed
   3. README.md contains no references to DeepCBlink or "coming soon" DeepCompress
   4. `THIRD_PARTY_LICENSES.md` exists and documents DeepThinner's MIT license with full attribution to Marten Blumen
-**Plans**: TBD
+**Plans**: 1 plan
+Plans:
+- [ ] 08-01-PLAN.md — Overhaul README.md (plugin list, build section, dead content) and create THIRD_PARTY_LICENSES.md
 
 ## Progress
 
@@ -75,5 +77,5 @@ Plans:
 | 4. DeepCPNoise 4D | v1.0 | 3/3 | Complete | 2026-03-17 |
 | 5. Release Cleanup | v1.0 | 1/1 | Complete | 2026-03-17 |
 | 6. Local Build System | v1.1 | 1/1 | Complete | 2026-03-18 |
-| 7. DeepThinner Integration | 1/1 | Complete    | 2026-03-19 | - |
-| 8. Documentation Overhaul | v1.2 | 0/? | Not started | - |
+| 7. DeepThinner Integration | v1.2 | 1/1 | Complete | 2026-03-19 |
+| 8. Documentation Overhaul | v1.2 | 0/1 | Not started | - |
