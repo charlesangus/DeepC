@@ -9,6 +9,7 @@ set(PLUGINS
     DeepCShuffle
     DeepCShuffle2
     DeepCWorld
+    DeepThinner
     )
 
 # DeepCWrapper 
@@ -45,6 +46,7 @@ DeepCHueShift DeepCInvert DeepCMatrix DeepCMultiply DeepCPosterize DeepCSaturati
 set(3D_NODES DeepCWorld)
 set(MERGE_NODES DeepCKeymix)
 set(Util_NODES DeepCAdjustBBox DeepCCopyBBox)
+set(FILTER_NODES DeepThinner)
 
 # add nuke plugin linked to ddimage lib
 function(add_nuke_plugin PLUGIN_NAME)
@@ -132,6 +134,7 @@ string(REPLACE ";" "\", \"" COLOR_NODES "\"${COLOR_NODES}\"")
 string(REPLACE ";" "\", \"" 3D_NODES "\"${3D_NODES}\"")
 string(REPLACE ";" "\", \"" MERGE_NODES "\"${MERGE_NODES}\"")
 string(REPLACE ";" "\", \"" Util_NODES "\"${Util_NODES}\"")
+string(REPLACE ";" "\", \"" FILTER_NODES "\"${FILTER_NODES}\"")
 configure_file(../python/menu.py.in menu.py)
 
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/menu.py" DESTINATION .)
