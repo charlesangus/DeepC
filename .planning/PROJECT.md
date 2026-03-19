@@ -2,7 +2,7 @@
 
 ## What This Is
 
-DeepC is an open-source suite of deep-compositing Nuke NDK plugins targeting Foundry Nuke 16+. v1.1 ships 22 plugins covering color, matte, noise, shuffle, and utility operations on deep images, built on two shared C++ base classes (`DeepCWrapper`, `DeepCMWrapper`). Highlights: DeepCShuffle2 features a full Qt6 custom knob UI with colored channel routing, DeepCPMatte provides an interactive 3D wireframe GL handle, DeepCPNoise supports true 4D noise evolution across all 9 noise types, and developers can build for all target Nuke versions on Linux and Windows via a single Docker-based script.
+DeepC is an open-source suite of deep-compositing Nuke NDK plugins targeting Foundry Nuke 16+. v1.2 ships 23 plugins covering color, matte, noise, shuffle, utility, and deep-sample optimisation operations on deep images. Core plugins are built on two shared C++ base classes (`DeepCWrapper`, `DeepCMWrapper`); DeepThinner (vendored from Marten Blumen's standalone project) uses `DeepFilterOp` directly. Highlights: DeepCShuffle2 features a full Qt6 custom knob UI with colored channel routing, DeepCPMatte provides an interactive 3D wireframe GL handle, DeepCPNoise supports true 4D noise evolution across all 9 noise types, DeepThinner reduces deep sample counts via seven independent artist-controllable passes, and developers can build for all target Nuke versions on Linux and Windows via a single Docker-based script.
 
 ## Core Value
 
@@ -23,14 +23,23 @@ Artists can use deep-compositing operations in Nuke that don't exist in the buil
 - ✓ DeepCPNoise 4D: noise_evolution wired as w dimension unconditionally for all noise types — v1.0 (NOIS-01)
 - ✓ NukeDockerBuild integration: `docker-build.sh` builds DeepC for all target Nuke versions on Linux and Windows via Docker images — no manual Nuke SDK installation required — v1.1 (BUILD-01, BUILD-02, BUILD-03)
 
+## Current Milestone: v1.2 DeepThinner & Documentation
+
+**Goal:** Vendor DeepThinner into DeepC and overhaul project documentation to reflect current state.
+
+**Target features:**
+- DeepThinner plugin integration (vendor, CMake, menu wiring, MIT attribution)
+- Full README overhaul (current build system, accurate plugin list, DeepThinner attribution + link)
+
 ### Active
 
-(none — planning next milestone)
+- [ ] DeepThinner vendored into src/, built via CMake, wired into menu.py.in with MIT attribution
+- [ ] README.md overhauled: current plugin list, docker-build.sh instructions, Nuke 16+ target, DeepThinner with link to original
 
 ### Out of Scope
 
 - Shuffle2 noodle/wire routing UI — NDK does not expose this API; internal to Foundry's built-in node only
-- DeepThinner integration — deferred to future milestone
+- DeepThinner integration — promoted to v1.2 Active (vendoring upstream project)
 - Docker + GitHub Actions CI/CD — shelved (NukeDockerBuild local builds cover the immediate need)
 - DeepDefocus (all versions) — deferred to future milestone
 - DeepBlur — deferred to future milestone
@@ -79,4 +88,4 @@ Artists can use deep-compositing operations in Nuke that don't exist in the buil
 | $GLOBAL_TOOLCHAIN escaped in bash -c string | Must expand inside container shell, not on host | ✓ Good — cross-compilation works correctly |
 
 ---
-*Last updated: 2026-03-18 after v1.1 milestone*
+*Last updated: 2026-03-18 — Milestone v1.2 started*
