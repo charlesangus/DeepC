@@ -4,7 +4,7 @@ milestone: v1.2
 milestone_name: DeepThinner & Documentation
 current_phase: 08
 status: completed
-last_updated: "2026-03-19T13:51:12.777Z"
+last_updated: "2026-03-20T04:19:58.576Z"
 last_activity: 2026-03-19
 progress:
   total_phases: 2
@@ -18,31 +18,24 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-03-18 — Milestone v1.2 started)
+See: .planning/PROJECT.md (updated 2026-03-19 — Milestone v1.2 complete)
 
 **Core value:** Artists can use deep-compositing operations in Nuke that don't exist in the built-in toolset, with professional-quality UIs and reliable deep-pixel math.
-**Current focus:** Phase 08 — documentation-overhaul (complete)
+**Current focus:** Planning next milestone
 
 ## Position
 
 **Milestone:** v1.2 — DeepThinner & Documentation (COMPLETE)
 **Current phase:** 08
 **Plan:** 1 of 1 in current phase (Phase 8 complete)
-**Status:** Milestone complete
+**Status:** v1.2 milestone complete
 **Last activity:** 2026-03-19
 
 Progress: [██████████] 100% (2/2 phases complete)
 
 ## Decisions
 
-- [v1.2 scope]: DeepThinner vendored as-is — no adaptation to DeepCWrapper/DeepCMWrapper; upstream is stable
-- [v1.2 scope]: THIRD_PARTY_LICENSES.md required for MIT attribution to Marten Blumen
-- [v1.2 scope]: Phase 8 (docs) depends on Phase 7 so plugin list is final before README is written
-- [Phase 07-deepthinner-integration]: DeepThinner placed in non-wrapped PLUGINS list — uses DeepFilterOp directly, no DeepCWrapper adaptation needed
-- [Phase 07-deepthinner-integration]: MIT copyright header prepended to vendored DeepThinner.cpp — upstream stores license in separate file; header required for attribution compliance
-- [Phase 08-documentation-overhaul]: DeepThinner entry in plugin list links to upstream GitHub repo (not wiki) since it is a vendored external project
-- [Phase 08-documentation-overhaul]: THIRD_PARTY_LICENSES.md covers all vendored libs (DeepThinner + FastNoise) not just the newly added one
-- [Phase 08-documentation-overhaul]: DeepCShuffle entry keeps display name 'DeepCShuffle' per Nuke convention — internal class uses numeral (DeepCShuffle2), menu label unchanged
+(Cleared — v1.2 complete. Full decision log in PROJECT.md Key Decisions table.)
 
 ## Blockers/Concerns
 

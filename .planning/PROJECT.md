@@ -22,25 +22,13 @@ Artists can use deep-compositing operations in Nuke that don't exist in the buil
 - ✓ DeepCShuffle2 UI: full parity with Nuke Shuffle2 — colored channel buttons, embedded ChannelSet pickers, radio enforcement, const:0/1 columns, identity routing on first open — v1.0 (SHUF-01, SHUF-02, SHUF-03, SHUF-04)
 - ✓ DeepCPNoise 4D: noise_evolution wired as w dimension unconditionally for all noise types — v1.0 (NOIS-01)
 - ✓ NukeDockerBuild integration: `docker-build.sh` builds DeepC for all target Nuke versions on Linux and Windows via Docker images — no manual Nuke SDK installation required — v1.1 (BUILD-01, BUILD-02, BUILD-03)
-
-## Current Milestone: v1.2 DeepThinner & Documentation
-
-**Goal:** Vendor DeepThinner into DeepC and overhaul project documentation to reflect current state.
-
-**Target features:**
-- DeepThinner plugin integration (vendor, CMake, menu wiring, MIT attribution)
-- Full README overhaul (current build system, accurate plugin list, DeepThinner attribution + link)
-
-### Validated
-
-- ✓ DeepThinner vendored into src/, built via CMake, wired into menu.py.in with MIT attribution — v1.2 (THIN-01–04)
-- ✓ README.md overhauled: 23-plugin list, docker-build.sh instructions, Nuke 16+ target, DeepThinner with Marten Blumen attribution and link — v1.2 (DOCS-01–04)
+- ✓ DeepThinner vendored into src/, built via CMake, wired into menu.py.in with MIT attribution — v1.2 (THIN-01, THIN-02, THIN-03, THIN-04)
+- ✓ README.md overhauled: 23-plugin list, docker-build.sh instructions, Nuke 16+ target, DeepThinner with Marten Blumen attribution and link — v1.2 (DOCS-01, DOCS-02, DOCS-03)
 - ✓ THIRD_PARTY_LICENSES.md created with full MIT attribution for DeepThinner and FastNoise — v1.2 (DOCS-04)
 
 ### Out of Scope
 
 - Shuffle2 noodle/wire routing UI — NDK does not expose this API; internal to Foundry's built-in node only
-- DeepThinner integration — promoted to v1.2 Active (vendoring upstream project)
 - Docker + GitHub Actions CI/CD — shelved (NukeDockerBuild local builds cover the immediate need)
 - DeepDefocus (all versions) — deferred to future milestone
 - DeepBlur — deferred to future milestone
@@ -52,7 +40,7 @@ Artists can use deep-compositing operations in Nuke that don't exist in the buil
 
 ## Context
 
-**v1.1 shipped 2026-03-18.**
+**v1.2 shipped 2026-03-19.** 23 plugins. ~38,325 LOC C++.
 
 - Codebase map at `.planning/codebase/` — ARCHITECTURE.md, CONCERNS.md, CONVENTIONS.md
 - Qt 6.5.3 pre-installed at `/opt/Qt/6.5.3/gcc_64` — exact version match with Nuke 16 runtime; no apt install needed
@@ -87,6 +75,9 @@ Artists can use deep-compositing operations in Nuke that don't exist in the buil
 | NUKE_VERSIONS defaults to ("16.0") only | Research confirmed 16.0 is the stable target; 16.1 and 17.0 excluded from defaults but supported via --versions flag | ✓ Good — clean default, flexible override |
 | zip over tar.gz for release archives | Matches existing batchInstall.sh convention | ✓ Good — consistent tooling |
 | $GLOBAL_TOOLCHAIN escaped in bash -c string | Must expand inside container shell, not on host | ✓ Good — cross-compilation works correctly |
+| DeepThinner vendored as-is (non-wrapped PLUGINS list) | Uses DeepFilterOp directly; no DeepCWrapper adaptation needed or desirable | ✓ Good — minimal-diff vendoring, upstream stays clean |
+| MIT copyright header prepended to DeepThinner.cpp | Upstream stores license in separate file; header required for attribution compliance | ✓ Good — attribution visible at source level |
+| THIRD_PARTY_LICENSES.md covers all vendored libs (DeepThinner + FastNoise) | Single file for all third-party attribution; consistent pattern for future additions | ✓ Good — clean, discoverable attribution |
 
 ---
 *Last updated: 2026-03-19 — Milestone v1.2 complete (Phase 7 + Phase 8)*

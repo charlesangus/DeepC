@@ -80,6 +80,43 @@
 
 ---
 
+## Milestone: v1.2 — DeepThinner & Documentation
+
+**Shipped:** 2026-03-19
+**Phases:** 2 | **Plans:** 2 | **Timeline:** ~1 day (2026-03-18 → 2026-03-19)
+
+### What Was Built
+- DeepThinner.cpp (707 lines, MIT, Marten Blumen) vendored into src/ with SPDX copyright header; wired into CMake PLUGINS list, FILTER_NODES variable, and Filter submenu in menu.py.in — DeepC's 24th plugin
+- Local Linux build verified: DeepThinner.so compiled cleanly with Nuke 16.0 SDK in 4 steps
+- README.md overhauled: 23-plugin list with DeepThinner entry (Marten Blumen attribution + upstream link), docker-build.sh Nuke 16+ build workflow, all stale content removed (DeepCBlink, DeepCompress, CentOS, VS2017, batchInstall.sh)
+- THIRD_PARTY_LICENSES.md created: full MIT license attribution for DeepThinner and FastNoise
+
+### What Worked
+- **Minimal-scope milestone executed extremely fast**: 2 phases, 2 plans, 5 tasks, 1 day — clear deliverables with no ambiguity
+- **FILTER_NODES variable pattern**: Mirroring the existing `DRAW_NODES`/`CHANNEL_NODES` CMake variable pattern made menu integration consistent and the plan straightforward — no ad hoc wiring
+- **Milestone audit before completion**: The audit caught the VERIFICATION.md timing artifact (THIN-04 appeared blocked because verification ran before docker builds finished) and confirmed actual satisfaction via file timestamps — prevented a false gap report
+
+### What Was Inefficient
+- **VERIFICATION.md timing artifact**: The Phase 7 verifier ran before docker builds completed, marking THIN-04 as BLOCKED when the builds finished 27 minutes later. Verifier agents could check file modification timestamps against expected build artifact paths to detect stale reads
+- **Phase 7 VALIDATION.md never updated**: The Nyquist VALIDATION.md was created but never updated post-execution (`nyquist_compliant: false`, `wave_0_complete: false` remain). For future phases, the validator should be run at the end of execution, not left as a draft artifact
+
+### Patterns Established
+- **Non-wrapped plugin vendoring pattern**: External plugins that use a Nuke base class directly (e.g., `DeepFilterOp`) go in `PLUGINS` list (not `PLUGINS_WRAPPED` or `PLUGINS_MWRAPPED`). Add a `{CATEGORY}_NODES` CMake variable + `string(REPLACE)` block + menu.py.in entry.
+- **THIRD_PARTY_LICENSES.md pattern**: Cover all vendored libs in a single file; format each as an attribution block (project, author, source, license type) followed by full license text. Include both new and pre-existing vendored dependencies.
+- **Icons not matching DeepC* prefix need explicit install rule**: `install(FILES icons/DeepThinner.png ...)` required; the foreach loop only handles plugins matching the `DeepC*` glob
+
+### Key Lessons
+1. **Milestone audit surfaced a real timing artifact**: Running `/gsd:audit-milestone` before completion found that THIN-04's "BLOCKED" status in VERIFICATION.md was a timing artifact, not a real gap. Audits are worth running even for small milestones.
+2. **Small, focused milestones are the fastest path**: A 2-phase, 5-task milestone with no scope ambiguity executed cleanly in a day. When the deliverable is clear and the pattern is established (vendoring, docs overhaul), overhead is minimal.
+3. **Verification should check timestamps, not just file existence**: For phases where artifacts are produced by external processes (docker builds, CI), the verifier should check that artifact timestamps post-date the code changes, not just that the files exist.
+
+### Cost Observations
+- Model mix: ~100% Sonnet
+- Sessions: 2 sessions (~1 day)
+- Notable: Most compact milestone in the project — research was minimal (well-understood vendoring + docs pattern), execution was primarily file creation/modification, verification was the main complexity point
+
+---
+
 ## Cross-Milestone Trends
 
 ### Process Evolution
@@ -88,6 +125,7 @@
 |-----------|--------|-------|------------|
 | v1.0 | 6 | 19 | First milestone; established silent binary, display-name rename, and decimal phase insertion patterns |
 | v1.1 | 1 | 1 | Infra/tooling milestone; established container cross-compilation pattern and `\\$VAR` escaping convention |
+| v1.2 | 2 | 2 | Vendoring + docs milestone; established non-wrapped plugin pattern, THIRD_PARTY_LICENSES.md format, explicit icon install rule |
 
 ### Cumulative Quality
 
@@ -95,9 +133,11 @@
 |-----------|-----------------|------------|-------------------|
 | v1.0 | 0 (no test framework) | Checkpoints in every feature phase | 1 (Qt6, bundled by Nuke) |
 | v1.1 | 0 | Human verify checkpoint for build script | 1 (NukeDockerBuild images, Docker-only) |
+| v1.2 | 0 | Local build verification + milestone audit | 1 (DeepThinner vendored, no runtime dep added) |
 
 ### Top Lessons (Verified Across Milestones)
 
 1. Research agents with direct file inspection produce high-confidence plans — exact line numbers and before/after snippets are the highest-value research output
 2. UAT/verification checkpoints at the end of each feature phase catch integration issues before they compound across phases
 3. Trust research-identified risk flags in plans — when research recommends an alternative approach, follow it (v1.0: NDK knobs; v1.1: exact container env vars)
+4. Milestone audits catch timing artifacts and false gaps before archiving — run `/gsd:audit-milestone` even for small milestones (v1.2: THIN-04 BLOCKED status was a timing artifact confirmed by audit)
