@@ -92,3 +92,15 @@ When a volumetric deep sample spanning [zFront, zBack] is split at an interior d
 **Context:** DeepSampleOptimizer tidyOverlapping split pass (S01, M004)
 
 The split pass iterates until no overlaps remain. On real blur-gather output this converges in one or two passes. On adversarial input (many nested overlaps), it could be slow. If performance profiling ever flags `optimizeSamples` as hot, adding an iteration cap (e.g. max 16 passes with a warning) is the right fix — not removing the loop.
+
+## Nuke SDK Naming Conventions
+
+### minimum_inputs/maximum_inputs are snake_case, not camelCase
+**Context:** DeepCDepthBlur optional B input (S02, M004)
+
+The Nuke DDImage `Op` base class uses `minimum_inputs()` and `maximum_inputs()` (snake_case). The task plan referenced `minimumInputs`/`maximumInputs` (camelCase) with `override` — neither exists. Do NOT use `override` on these methods; they are non-virtual in some SDK versions. The `inputs(N)` constructor call sets the initial count, while `minimum_inputs`/`maximum_inputs` control the valid range. See `DeepCCopyBBox.cpp` and `DeepCConstant.cpp` for canonical patterns.
+
+### Weight generators must handle n=2 degenerate case
+**Context:** DeepCDepthBlur falloff weights (S02, M004)
+
+For Linear and Smoothstep falloffs with n=2, the two sample positions are t=-1 and t=1. Linear gives weight 0 at both endpoints (1-|t|=0); Smoothstep similarly. The sum is 0, and without a fallback the division produces NaN. All weight generators should include `else for (auto& v : w) v = 1.0f / n;` as a uniform fallback when `sum == 0`.

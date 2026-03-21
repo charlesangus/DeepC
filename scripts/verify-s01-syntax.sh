@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# verify-s01-syntax.sh — Syntax-only compilation check for DeepCBlur.cpp
+# verify-s01-syntax.sh — Syntax-only compilation check for DeepC*.cpp
 # Uses mock DDImage headers (minimal stubs) to verify C++ syntax without
 # the full Nuke SDK. Exits 0 on success, 1 on failure.
 
@@ -38,6 +38,12 @@ public:
     virtual const char* node_help() const { return ""; }
     virtual void knobs(Knob_Callback) {}
     virtual Op* op() { return this; }
+    void inputs(int) {}
+    Op* input(int) const { return nullptr; }
+    virtual int minimum_inputs() const { return 1; }
+    virtual int maximum_inputs() const { return 1; }
+    virtual const char* input_label(int, char*) const { return ""; }
+    virtual bool test_input(int, Op*) const { return true; }
     struct Description {
         Description(const char*, const char*, Op*(*)(Node*)) {}
     };
@@ -199,6 +205,7 @@ public:
     DeepFilterOp(Node* n) : Op(n) {}
     virtual ~DeepFilterOp() {}
     DeepOp* input0() { return &_in; }
+    bool test_input(int input, Op* op) const override { return true; }
 
     virtual void _validate(bool) {}
     virtual void getDeepRequests(Box, const ChannelSet&, int, std::vector<RequestData>&) {}
@@ -238,6 +245,11 @@ inline void EndGroup(Knob_Callback) {}
 HEADER
 
 # --- Run syntax-only compilation ---
-echo "Running syntax check: g++ -std=c++17 -fsyntax-only -I$TMPDIR $SRC_DIR/DeepCBlur.cpp"
-g++ -std=c++17 -fsyntax-only -I"$TMPDIR" "$SRC_DIR/DeepCBlur.cpp"
-echo "Syntax check passed."
+for src_file in DeepCBlur.cpp DeepCDepthBlur.cpp; do
+    if [ -f "$SRC_DIR/$src_file" ]; then
+        echo "Running syntax check: g++ -std=c++17 -fsyntax-only -I$TMPDIR $SRC_DIR/$src_file"
+        g++ -std=c++17 -fsyntax-only -I"$TMPDIR" "$SRC_DIR/$src_file"
+        echo "Syntax check passed: $src_file"
+    fi
+done
+echo "All syntax checks passed."

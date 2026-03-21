@@ -19,7 +19,7 @@
 - [x] **T01: DeepCDepthBlur skeleton + knobs + falloff engine**
   Create `src/DeepCDepthBlur.cpp` as a `DeepFilterOp` subclass. Wire knobs, implement the four falloff weight generators, implement the spread-and-distribute core for a single sample. No B input yet.
 
-- [ ] **T02: Tidy output + optional B input + docker verification**
+- [x] **T02: Tidy output + optional B input + docker verification**
   Add the final tidy pass (sort + clamp overlaps). Add the optional B input with depth-range gating. Run docker build and verify flatten invariant with syntax checks.
 
 ## Verification
@@ -30,6 +30,8 @@
 - `docker-build.sh --linux --versions 16.0` exits 0 with DeepCDepthBlur.so in archive (T02)
 - Weight generators produce normalised weights: sum(weights) ≈ 1.0 for all falloff modes
 - Zero-spread fast path: output == input when spread < 1e-6 or num_samples <= 1
+- Missing A input returns `true` from `doDeepEngine` (no crash, empty output)
+- B input fetch failure falls back to "no B samples" mode gracefully
 
 ## Observability / Diagnostics
 

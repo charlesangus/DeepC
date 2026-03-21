@@ -11,6 +11,12 @@
 //  Falloff modes: Linear, Gaussian, Smoothstep, Exponential
 //  Sample types:  Volumetric (sub-ranges in Z) or Flat (zFront == zBack)
 //
+//  Optional B input: when connected, only source samples whose depth range
+//  (expanded by spread) overlaps any B sample are spread. Others pass through.
+//
+//  Output is tidy: sorted by zFront ascending, with overlapping zBack values
+//  clamped so zBack[i] <= zFront[i+1].
+//
 // ============================================================================
 
 #include "DDImage/DeepFilterOp.h"
@@ -42,6 +48,11 @@ static const char* const HELP =
     "Sample type controls depth representation:\n"
     "  Volumetric — sub-samples span adjacent depth sub-ranges\n"
     "  Flat — all sub-samples have zFront == zBack (point samples)\n\n"
+    "Optional B input: when connected, only source samples whose depth "
+    "range overlaps with any B-input sample (within the spread distance) "
+    "are spread. All other samples pass through unchanged.\n\n"
+    "Output is tidy: samples are sorted by zFront ascending and overlapping "
+    "zBack values are clamped to the next sample's zFront.\n\n"
     "Part of the DeepC plugin collection.";
 
 // ---------------------------------------------------------------------------
@@ -70,6 +81,7 @@ static std::vector<float> weightsLinear(int n)
         sum += w[i];
     }
     if (sum > 0.0f) for (auto& v : w) v /= sum;
+    else for (auto& v : w) v = 1.0f / n;  // uniform fallback for degenerate cases
     return w;
 }
 
@@ -85,6 +97,7 @@ static std::vector<float> weightsGaussian(int n)
         sum += w[i];
     }
     if (sum > 0.0f) for (auto& v : w) v /= sum;
+    else for (auto& v : w) v = 1.0f / n;
     return w;
 }
 
@@ -100,6 +113,7 @@ static std::vector<float> weightsSmoothstep(int n)
         sum += w[i];
     }
     if (sum > 0.0f) for (auto& v : w) v /= sum;
+    else for (auto& v : w) v = 1.0f / n;
     return w;
 }
 
@@ -114,6 +128,7 @@ static std::vector<float> weightsExponential(int n)
         sum += w[i];
     }
     if (sum > 0.0f) for (auto& v : w) v /= sum;
+    else for (auto& v : w) v = 1.0f / n;
     return w;
 }
 
@@ -130,6 +145,15 @@ static std::vector<float> computeWeights(int n, int mode)
 }
 
 // ---------------------------------------------------------------------------
+// Helper: test whether depth range [aFront, aBack] overlaps [bFront, bBack]
+// ---------------------------------------------------------------------------
+static inline bool depthRangesOverlap(float aFront, float aBack,
+                                       float bFront, float bBack)
+{
+    return aBack >= bFront && aFront <= bBack;
+}
+
+// ---------------------------------------------------------------------------
 class DeepCDepthBlur : public DeepFilterOp
 {
     float _spread;       // total depth range for sub-sample distribution
@@ -143,11 +167,31 @@ public:
         _numSamples(5),
         _falloff(0),
         _sampleType(0)
-    {}
+    {
+        inputs(2);  // input 0 = source (required), input 1 = B (optional)
+    }
+
+    int minimum_inputs() const { return 1; }
+    int maximum_inputs() const { return 2; }
 
     const char* Class() const override { return CLASS; }
     const char* node_help() const override { return HELP; }
     Op* op() override { return this; }
+
+    const char* input_label(int n, char*) const
+    {
+        switch (n) {
+            case 0: return "Source";
+            case 1: return "B";
+            default: return "";
+        }
+    }
+
+    bool test_input(int input, Op* op) const
+    {
+        // Both inputs accept deep streams
+        return DeepFilterOp::test_input(input, op);
+    }
 
     // ------------------------------------------------------------------
     // Knobs
@@ -188,7 +232,7 @@ public:
     }
 
     // ------------------------------------------------------------------
-    // getDeepRequests — pass-through, no spatial expansion
+    // getDeepRequests — request A (and B if connected)
     // ------------------------------------------------------------------
     void getDeepRequests(Box box, const ChannelSet& channels, int count,
                          std::vector<RequestData>& requests) override
@@ -201,11 +245,36 @@ public:
         requestChannels += Chan_DeepBack;
         requestChannels += Chan_Alpha;
 
+        // Request source (input 0)
         requests.push_back(RequestData(input0(), box, requestChannels, count));
+
+        // Request B (input 1) if connected — same box, depth-only channels
+        DeepOp* bOp = dynamic_cast<DeepOp*>(Op::input(1));
+        if (bOp) {
+            ChannelSet bChannels;
+            bChannels += Chan_DeepFront;
+            bChannels += Chan_DeepBack;
+            requests.push_back(RequestData(bOp, box, bChannels, count));
+        }
     }
 
     // ------------------------------------------------------------------
     // doDeepEngine — spread each sample across N sub-samples in Z
+    //
+    // Pipeline:
+    //   1. Fetch A plane (source), optionally fetch B plane (depth gate)
+    //   2. For each pixel, for each source sample:
+    //      a. If B is connected and the sample's expanded depth range
+    //         doesn't overlap any B sample, pass through unchanged.
+    //      b. Otherwise, spread into N weighted sub-samples.
+    //   3. Tidy pass: sort output samples by zFront ascending,
+    //      then clamp overlapping zBack values.
+    //
+    // NOTE on tidy pass: The overlap clamp trims zBack extent only (not
+    // alpha), so it can slightly shift the depth range of a sample.
+    // This is acceptable — the tidy step is a secondary correction after
+    // the invariant-preserving spread. The flatten invariant is preserved
+    // because no alpha values are modified by the clamp.
     // ------------------------------------------------------------------
     bool doDeepEngine(Box box, const ChannelSet& channels,
                       DeepOutputPlane& plane) override
@@ -240,10 +309,22 @@ public:
             return true;
         }
 
-        // Fetch input
+        // Fetch source plane
         DeepPlane inPlane;
         if (!in->deepEngine(box, channels, inPlane))
             return false;
+
+        // Fetch optional B plane (depth gate input)
+        DeepOp* bOp = dynamic_cast<DeepOp*>(Op::input(1));
+        DeepPlane bPlane;
+        bool bConnected = false;
+        if (bOp) {
+            ChannelSet bChannels;
+            bChannels += Chan_DeepFront;
+            bChannels += Chan_DeepBack;
+            // Graceful handling: if B fetch fails, treat as no B samples
+            bConnected = bOp->deepEngine(box, bChannels, bPlane);
+        }
 
         // Pre-compute weights for the current falloff and sample count
         const std::vector<float> weights = computeWeights(_numSamples, _falloff);
@@ -253,26 +334,15 @@ public:
         const float halfStep = step * 0.5f;
         const bool isFlat = (_sampleType == 1);
 
-        // Build channel classification: which are depth channels?
         const int nChans = channels.size();
-        std::vector<bool> isDepthChan(nChans, false);
-        {
-            int ci = 0;
-            foreach(z, channels) {
-                if (z == Chan_DeepFront || z == Chan_DeepBack)
-                    isDepthChan[ci] = true;
-                ci++;
-            }
-        }
 
-        // Identify channel indices for DeepFront, DeepBack, Alpha
-        int idxFront = -1, idxBack = -1, idxAlpha = -1;
+        // Identify channel indices for DeepFront, DeepBack within the channelset
+        int idxFront = -1, idxBack = -1;
         {
             int ci = 0;
             foreach(z, channels) {
                 if (z == Chan_DeepFront) idxFront = ci;
                 else if (z == Chan_DeepBack) idxBack = ci;
-                else if (z == Chan_Alpha) idxAlpha = ci;
                 ci++;
             }
         }
@@ -291,45 +361,122 @@ public:
                 continue;
             }
 
-            DeepOutPixel outPixel;
-            outPixel.reserve(sampleCount * N * nChans);
+            // Collect B depth intervals for this pixel (if B connected)
+            std::vector<float> bFronts, bBacks;
+            if (bConnected) {
+                DeepPixel bPx = bPlane.getPixel(it);
+                const int bCount = static_cast<int>(bPx.getSampleCount());
+                bFronts.reserve(bCount);
+                bBacks.reserve(bCount);
+                for (int b = 0; b < bCount; ++b) {
+                    bFronts.push_back(bPx.getUnorderedSample(b, Chan_DeepFront));
+                    bBacks.push_back(bPx.getUnorderedSample(b, Chan_DeepBack));
+                }
+            }
+            const bool hasB = !bFronts.empty();
+
+            // We'll collect all output samples as flat arrays for the
+            // tidy pass (sort + overlap clamp) before emitting
+            struct SampleData {
+                float zFront;
+                float zBack;
+                std::vector<float> chanValues;  // all channels in order
+            };
+            std::vector<SampleData> outSamples;
+            outSamples.reserve(sampleCount * N);
 
             for (int s = 0; s < sampleCount; ++s) {
-                // Read the original sample's zFront
-                const float zFront = px.getUnorderedSample(s, Chan_DeepFront);
+                const float srcFront = px.getUnorderedSample(s, Chan_DeepFront);
+                const float srcBack  = px.getUnorderedSample(s, Chan_DeepBack);
 
-                // Compute sub-sample depth centres:
-                // Evenly spaced in [zFront - S/2 + step/2, zFront + S/2 - step/2]
-                const float baseZ = zFront - S * 0.5f + halfStep;
+                // B-input depth gating: if B is connected, check whether
+                // this source sample's expanded range overlaps any B sample.
+                // If no overlap, pass through unchanged (no spreading).
+                bool shouldSpread = true;
+                if (hasB) {
+                    shouldSpread = false;
+                    const float expandedFront = srcFront - S * 0.5f;
+                    const float expandedBack  = srcBack  + S * 0.5f;
+                    for (size_t b = 0; b < bFronts.size(); ++b) {
+                        if (depthRangesOverlap(expandedFront, expandedBack,
+                                               bFronts[b], bBacks[b])) {
+                            shouldSpread = true;
+                            break;
+                        }
+                    }
+                }
 
+                if (!shouldSpread) {
+                    // Pass through unchanged
+                    SampleData sd;
+                    sd.zFront = srcFront;
+                    sd.zBack  = srcBack;
+                    sd.chanValues.reserve(nChans);
+                    foreach(z, channels) {
+                        sd.chanValues.push_back(px.getUnorderedSample(s, z));
+                    }
+                    outSamples.push_back(std::move(sd));
+                    continue;
+                }
+
+                // Spread into N sub-samples
+                const float baseZ = srcFront - S * 0.5f + halfStep;
                 for (int i = 0; i < N; ++i) {
                     const float centre = baseZ + i * step;
                     const float w = weights[i];
 
-                    // Emit channels for this sub-sample
-                    int ci = 0;
+                    SampleData sd;
+                    if (isFlat) {
+                        sd.zFront = centre;
+                        sd.zBack  = centre;
+                    } else {
+                        sd.zFront = centre - halfStep;
+                        sd.zBack  = centre + halfStep;
+                    }
+                    sd.chanValues.reserve(nChans);
+
                     foreach(z, channels) {
                         if (z == Chan_DeepFront) {
-                            if (isFlat) {
-                                outPixel.push_back(centre);
-                            } else {
-                                outPixel.push_back(centre - halfStep);
-                            }
+                            sd.chanValues.push_back(sd.zFront);
                         } else if (z == Chan_DeepBack) {
-                            if (isFlat) {
-                                outPixel.push_back(centre);
-                            } else {
-                                outPixel.push_back(centre + halfStep);
-                            }
+                            sd.chanValues.push_back(sd.zBack);
                         } else {
                             // Scale channel value by weight (premult preserved)
-                            outPixel.push_back(px.getUnorderedSample(s, z) * w);
+                            sd.chanValues.push_back(px.getUnorderedSample(s, z) * w);
                         }
-                        ci++;
+                    }
+
+                    outSamples.push_back(std::move(sd));
+                }
+            }
+
+            // ---------------------------------------------------------------
+            // Tidy pass: sort by zFront, then clamp overlapping zBack values
+            // ---------------------------------------------------------------
+            std::sort(outSamples.begin(), outSamples.end(),
+                      [](const SampleData& a, const SampleData& b) {
+                          return a.zFront < b.zFront;
+                      });
+
+            // Clamp overlaps: ensure zBack[i] <= zFront[i+1]
+            for (size_t i = 0; i + 1 < outSamples.size(); ++i) {
+                if (outSamples[i].zBack > outSamples[i + 1].zFront) {
+                    outSamples[i].zBack = outSamples[i + 1].zFront;
+                    // Update the zBack channel value in the stored data
+                    if (idxBack >= 0) {
+                        outSamples[i].chanValues[idxBack] = outSamples[i].zBack;
                     }
                 }
             }
 
+            // Emit the tidy output pixel
+            DeepOutPixel outPixel;
+            outPixel.reserve(static_cast<int>(outSamples.size()) * nChans);
+            for (const auto& sd : outSamples) {
+                for (int ci = 0; ci < nChans; ++ci) {
+                    outPixel.push_back(sd.chanValues[ci]);
+                }
+            }
             plane.addPixel(outPixel);
         }
 

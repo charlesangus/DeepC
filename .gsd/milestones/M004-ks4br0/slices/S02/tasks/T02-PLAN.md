@@ -53,3 +53,15 @@ Add the tidy output pass (sort + overlap clamp), wire the optional B input with 
 - `getDeepRequests` for the B input: request the same box from B (depth spreading doesn't change spatial footprint)
 - The overlap clamp (step 1) can slightly change the visual result compared to the invariant — it is trimming the spread sample's Z extent, not its alpha. This is acceptable: the tidy step is a secondary correction after the invariant-preserving spread. Document this in a comment.
 - If B input plane fetch fails (empty tile), treat gracefully as "no B samples" and pass all source samples unchanged
+
+## Expected Output
+
+- `src/DeepCDepthBlur.cpp` — complete implementation with tidy output pass and optional B input depth gating
+- `scripts/verify-s01-syntax.sh` — updated to check DeepCDepthBlur.cpp syntax
+
+## Observability Impact
+
+- **Tidy output:** Output samples are always sorted by zFront ascending; overlapping zBack values are clamped. This is inspectable in Nuke via DeepRead/DeepWrite or any deep sample viewer.
+- **B input gating:** When B is connected, samples outside the B depth range pass through unchanged — visible as untouched samples in the deep pixel list.
+- **Failure visibility:** Missing A input returns `true` (no crash, empty output). Failed B plane fetch degrades to "no B" mode (all samples spread). Invalid knob values are clamped in `_validate`.
+- **Docker build:** `DeepCDepthBlur.so` present in the release archive confirms compile + link against real Nuke SDK headers.
