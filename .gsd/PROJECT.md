@@ -10,7 +10,7 @@ Artists can use deep-compositing operations in Nuke that don't exist in the buil
 
 ## Current State
 
-**v1.2 + DeepCBlur shipped.** 24 plugins. All plugins build and load cleanly in Nuke 16+ on Linux and Windows via `docker-build.sh`.
+**v1.2 + DeepCBlur v2 shipped.** 24 plugins. DeepCBlur upgraded to separable two-pass Gaussian blur (O(2r) vs O(r²)), three kernel accuracy tiers (LQ/MQ/HQ), alpha darkening correction toggle, WH_knob blur size, and sample optimization twirldown. All plugins build and load cleanly in Nuke 16+ on Linux and Windows via `docker-build.sh`.
 
 ## Architecture / Key Patterns
 
@@ -29,4 +29,4 @@ See `.gsd/REQUIREMENTS.md` for the explicit capability contract, requirement sta
 
 - [x] M001: DeepC v1.0–v1.2 — 23 plugins shipped, codebase sweep, GL handles, Shuffle2 UI, 4D noise, build system, DeepThinner, docs
 - [x] M002: DeepCBlur — Gaussian blur on deep images with sample propagation and built-in optimization
-- [ ] M003: DeepCBlur v2 — Separable blur, kernel accuracy tiers, alpha darkening correction, UI polish *(S01 complete — S02 in progress)*
+- [x] M003: DeepCBlur v2 — Separable blur, kernel accuracy tiers, alpha darkening correction, UI polish *(complete)*

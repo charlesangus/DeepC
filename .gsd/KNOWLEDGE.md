@@ -46,3 +46,27 @@ If slice verification uses `grep -c "SomeMacro"` == 1 to prove a knob is present
 **Context:** DeepCBlur alpha correction (S02, M003)
 
 The alpha correction pass must sit between `optimizeSamples` and the emit loop. Placing it before `optimizeSamples` means correction runs on un-optimized samples that may be collapsed later (changing the per-sample channel values correction computed). Placing it after the emit loop means samples have already been written — no effect. The correct order is: blur H → blur V → optimizeSamples → alpha correction → emit.
+
+## DDImage Build Patterns
+
+### docker-build.sh is the only reliable compilation proof
+**Context:** M003 final verification
+
+`scripts/verify-s01-syntax.sh` (g++ -fsyntax-only with mock headers) catches C++ syntax errors quickly but cannot catch DDImage API mismatches — it uses hand-maintained stubs. `docker-build.sh --linux --versions 16.0` compiles against the real Nuke SDK inside Docker and is the authoritative pass/fail signal. Always run both in sequence: syntax check first for fast iteration, docker build last for final proof.
+
+### Knob grep contracts require literal-free comments and HELP strings
+**Context:** M003/S02 WH_knob verification
+
+When a slice defines a `grep -c "SomeMacro" == N` contract to prove a knob is used exactly once, that count includes occurrences in comments, HELP text, and string literals — not just code. Remove the literal from all non-code contexts before committing. This is especially relevant for macros like `WH_knob`, `BeginClosedGroup`, `Bool_knob` where documentation might naturally mention the macro name.
+
+## DeepCBlur-Specific Patterns
+
+### _blurSize[2] replaces _blurWidth / _blurHeight (M003+)
+**Context:** M003/S02 WH_knob refactor
+
+As of M003, `_blurWidth` and `_blurHeight` no longer exist. The authoritative blur size is `double _blurSize[2]` (index 0 = width, 1 = height). All call sites cast to float: `static_cast<float>(_blurSize[0])`. Any future feature touching blur size must read from `_blurSize`, not create new float members.
+
+### Alpha correction must survive any future emit loop restructure
+**Context:** M003/S02 alpha correction placement
+
+The correction pass sits between `optimizeSamples` and the emit loop. This ordering is load-bearing: correction before `optimizeSamples` operates on un-optimized samples that may later be merged (invalidating corrections); correction after emit is a no-op. If the emit loop is ever refactored for a new feature (Z-blur, etc.), verify this ordering is preserved before shipping.
