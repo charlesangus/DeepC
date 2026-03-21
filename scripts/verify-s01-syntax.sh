@@ -226,8 +226,13 @@ inline Knob* Float_knob(Knob_Callback, float*, const char*, const char* = nullpt
 inline Knob* Int_knob(Knob_Callback, int*, const char*, const char* = nullptr) { return nullptr; }
 inline Knob* Enumeration_knob(Knob_Callback, int*, const char* const*, const char*, const char* = nullptr) { return nullptr; }
 inline void SetRange(Knob_Callback, float, float) {}
+inline void SetRange(Knob_Callback, double, double) {}
 inline void SetRange(Knob_Callback, int, int) {}
 inline void Tooltip(Knob_Callback, const char*) {}
+inline Knob* WH_knob(Knob_Callback, double*, const char*, const char* = nullptr) { return nullptr; }
+inline Knob* Bool_knob(Knob_Callback, bool*, const char*, const char* = nullptr) { return nullptr; }
+inline void BeginClosedGroup(Knob_Callback, const char*) {}
+inline void EndGroup(Knob_Callback) {}
 
 }} // namespace DD::Image
 HEADER

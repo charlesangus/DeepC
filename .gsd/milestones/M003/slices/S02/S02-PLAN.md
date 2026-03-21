@@ -37,7 +37,7 @@
 
 ## Tasks
 
-- [ ] **T01: Implement WH_knob, twirldown, alpha correction, and verify build** `est:45m`
+- [x] **T01: Implement WH_knob, twirldown, alpha correction, and verify build** `est:45m`
   - Why: Delivers all four S02 changes (R003, R004, R005, R006, R008) in a single coherent edit — the member declarations, knobs(), and doDeepEngine changes are tightly coupled within one file
   - Files: `src/DeepCBlur.cpp`, `scripts/verify-s01-syntax.sh`
   - Do: (1) Replace `float _blurWidth`/`_blurHeight` with `double _blurSize[2]` + add `bool _alphaCorrection`; (2) rewrite knobs() with WH_knob, BeginClosedGroup twirldown, Bool_knob; (3) update _validate/getDeepRequests/doDeepEngine to cast `_blurSize[0]`/`_blurSize[1]` to float; (4) insert alpha correction loop after optimizeSamples; (5) update HELP string; (6) add WH_knob/Bool_knob/BeginClosedGroup/EndGroup stubs to mock headers in verify script; (7) run syntax check; (8) run docker build
@@ -48,3 +48,10 @@
 
 - `src/DeepCBlur.cpp`
 - `scripts/verify-s01-syntax.sh`
+
+## Observability / Diagnostics
+
+- **Runtime signals:** The `_alphaCorrection` bool knob is inspectable from Nuke's knob panel and script editor (`node["alpha_correction"].value()`). When enabled, the alpha correction pass modifies channel values in-place on the front-to-back sorted samples — visible as brighter composited output vs. uncorrected.
+- **Inspection surfaces:** `cumTransp` tracks cumulative transmittance during the correction pass. If a sample sits behind fully opaque layers (cumTransp < 1e-6), it is left uncorrected — this prevents division-by-near-zero artifacts. No additional logging; behaviour is verified visually in Nuke viewer by toggling the knob.
+- **Failure visibility:** If the correction produces unexpected brightness, disable the `alpha_correction` knob to isolate. Build failures surface via `docker-build.sh` exit code and compiler diagnostics; syntax issues surface via `verify-s01-syntax.sh`.
+- **Redaction:** No secrets or user data involved in this slice.

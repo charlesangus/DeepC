@@ -26,15 +26,20 @@ using namespace DD::Image;
 
 static const char* const CLASS = "DeepCBlur";
 static const char* const HELP =
-    "Gaussian blur for deep images.\n\n"
-    "Applies a 2D Gaussian blur kernel to all colour and alpha channels while "
-    "propagating depth (deep.front / deep.back) from the source samples. "
-    "Neighbouring pixels contribute weighted samples into each output pixel, "
-    "and per-pixel sample optimization merges nearby-depth samples to keep "
-    "counts manageable.\n\n"
-    "blur_width / blur_height control the pixel radius of the kernel in each "
-    "direction (sigma = radius / 3). Values above 10 will be slow due to "
-    "large kernel footprints.\n\n"
+    "Separable Gaussian blur for deep images.\n\n"
+    "Applies a 2D Gaussian blur (horizontal then vertical) to all colour and "
+    "alpha channels while propagating depth (deep.front / deep.back) from the "
+    "source samples. Neighbouring pixels contribute weighted samples into each "
+    "output pixel.\n\n"
+    "Blur Size — Width and height can be set independently via the lock toggle. "
+    "Sigma = radius / 3. Large values will be slow.\n\n"
+    "Kernel Quality — Low (fast/approximate), Medium (normalized, default), "
+    "High (CDF sub-pixel integration).\n\n"
+    "Alpha Correction — Corrects alpha darkening caused by over-compositing "
+    "blurred deep samples. Enable when the blur result appears too dark after "
+    "compositing.\n\n"
+    "Sample Optimization (twirldown) — Max samples cap, merge Z tolerance, "
+    "and colour tolerance control per-pixel sample merging after blur.\n\n"
     "Part of the DeepC plugin collection.";
 
 // ---------------------------------------------------------------------------
@@ -128,8 +133,8 @@ static std::vector<float> computeKernel(float blur, int quality)
 // ---------------------------------------------------------------------------
 class DeepCBlur : public DeepFilterOp
 {
-    float _blurWidth;       // pixel radius in X
-    float _blurHeight;      // pixel radius in Y
+    double _blurSize[2];    // width/height pixel radius pair
+    bool   _alphaCorrection; // post-blur alpha darkening correction
     int   _kernelQuality;   // kernel accuracy tier: 0=Low, 1=Medium, 2=High
     int   _maxSamples;      // per-pixel sample cap (0 = unlimited)
     float _mergeTolerance;  // Z-front distance for sample merge
@@ -148,8 +153,8 @@ class DeepCBlur : public DeepFilterOp
 
 public:
     DeepCBlur(Node* node) : DeepFilterOp(node),
-        _blurWidth(1.0f),
-        _blurHeight(1.0f),
+        _blurSize{1.0, 1.0},
+        _alphaCorrection(false),
         _kernelQuality(1),
         _maxSamples(100),
         _mergeTolerance(0.001f),
@@ -165,19 +170,20 @@ public:
     // ------------------------------------------------------------------
     void knobs(Knob_Callback f) override
     {
-        Float_knob(f, &_blurWidth, "blur_width", "blur width");
-        SetRange(f, 0.0f, 100.0f);
-        Tooltip(f, "Horizontal blur radius in pixels (sigma = radius / 3). "
-                    "Values above 10 will be slow.");
-
-        Float_knob(f, &_blurHeight, "blur_height", "blur height");
-        SetRange(f, 0.0f, 100.0f);
-        Tooltip(f, "Vertical blur radius in pixels (sigma = radius / 3). "
-                    "Values above 10 will be slow.");
+        WH_knob(f, _blurSize, "blur_size", "blur size");
+        SetRange(f, 0.0, 100.0);
+        Tooltip(f, "Blur radius in pixels (sigma = radius / 3). Width and height "
+                    "can be set independently using the lock toggle.");
 
         Enumeration_knob(f, &_kernelQuality, kernelQualityNames, "kernel_quality", "kernel quality");
         Tooltip(f, "Gaussian kernel accuracy tier. Low = fast/approximate, "
                     "Medium = normalized (default), High = CDF sub-pixel integration.");
+
+        Bool_knob(f, &_alphaCorrection, "alpha_correction", "alpha correction");
+        Tooltip(f, "Correct alpha darkening caused by over-compositing blurred deep samples. "
+                    "Enable when the blur result appears too dark after compositing.");
+
+        BeginClosedGroup(f, "Sample Optimization");
 
         Int_knob(f, &_maxSamples, "max_samples", "max samples");
         SetRange(f, 0, 500);
@@ -193,6 +199,8 @@ public:
         SetRange(f, 0.0f, 0.1f);
         Tooltip(f, "Maximum per-channel colour difference for sample merge. "
                     "0 = merge by Z only.");
+
+        EndGroup(f);
     }
 
     // ------------------------------------------------------------------
@@ -202,8 +210,8 @@ public:
     {
         DeepFilterOp::_validate(for_real);
 
-        const int radX = kernelRadius(_blurWidth);
-        const int radY = kernelRadius(_blurHeight);
+        const int radX = kernelRadius(static_cast<float>(_blurSize[0]));
+        const int radY = kernelRadius(static_cast<float>(_blurSize[1]));
 
         if (radX > 0 || radY > 0) {
             Box box = _deepInfo.box();
@@ -223,8 +231,8 @@ public:
         if (!input0())
             return;
 
-        const int radX = kernelRadius(_blurWidth);
-        const int radY = kernelRadius(_blurHeight);
+        const int radX = kernelRadius(static_cast<float>(_blurSize[0]));
+        const int radY = kernelRadius(static_cast<float>(_blurSize[1]));
 
         Box padded(box.x() - radX,
                    box.y() - radY,
@@ -249,8 +257,10 @@ public:
         if (!in)
             return true;
 
-        const int radX = kernelRadius(_blurWidth);
-        const int radY = kernelRadius(_blurHeight);
+        const float blurW = static_cast<float>(_blurSize[0]);
+        const float blurH = static_cast<float>(_blurSize[1]);
+        const int radX = kernelRadius(blurW);
+        const int radY = kernelRadius(blurH);
 
         // If zero blur, pass through
         if (radX == 0 && radY == 0) {
@@ -288,8 +298,8 @@ public:
             return false;
 
         // Compute 1D half-kernels for separable passes
-        const auto kernelH = computeKernel(_blurWidth, _kernelQuality);
-        const auto kernelV = computeKernel(_blurHeight, _kernelQuality);
+        const auto kernelH = computeKernel(blurW, _kernelQuality);
+        const auto kernelV = computeKernel(blurH, _kernelQuality);
 
         // Determine channel layout — identify which channels are depth vs data
         const int nChans = channels.size();
@@ -440,6 +450,22 @@ public:
                                    _mergeTolerance,
                                    _colorTolerance,
                                    _maxSamples);
+
+            // Alpha darkening correction — undo over-composite darkening
+            if (_alphaCorrection && scratch.samples.size() > 1) {
+                float cumTransp = 1.0f;
+                for (auto& sr : scratch.samples) {
+                    if (cumTransp > 1e-6f) {
+                        const float inv = 1.0f / cumTransp;
+                        for (int ci = 0; ci < nChans; ++ci) {
+                            if (!isDepthChan[ci])
+                                sr.channels[ci] *= inv;
+                        }
+                        sr.alpha *= inv;
+                    }
+                    cumTransp *= std::max(0.0f, 1.0f - sr.alpha);
+                }
+            }
 
             // Emit output samples
             scratch.outPixel.clear();
