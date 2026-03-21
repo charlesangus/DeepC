@@ -35,15 +35,146 @@ struct SampleRecord {
 
 // ---------------------------------------------------------------------------
 // colorDistance — max absolute difference across first min(3, N) channels
+//
+// Unpremultiplied comparison: divides each channel by its sample's alpha
+// before computing the max-abs-diff.  Near-zero alpha (< 1e-6) is treated
+// as transparent / always-matching → returns 0.
 // ---------------------------------------------------------------------------
-inline float colorDistance(const std::vector<float>& a,
-                           const std::vector<float>& b)
+inline float colorDistance(const std::vector<float>& a, float alphaA,
+                           const std::vector<float>& b, float alphaB)
 {
+    if (alphaA < 1e-6f || alphaB < 1e-6f)
+        return 0.0f;
+
+    const float invA = 1.0f / alphaA;
+    const float invB = 1.0f / alphaB;
     const size_t n = std::min<size_t>(3, std::min(a.size(), b.size()));
     float d = 0.0f;
     for (size_t i = 0; i < n; ++i)
-        d = std::max(d, std::fabs(a[i] - b[i]));
+        d = std::max(d, std::fabs(a[i] * invA - b[i] * invB));
     return d;
+}
+
+// ---------------------------------------------------------------------------
+// tidyOverlapping — split overlapping depth intervals and over-merge
+//
+// Walks a depth-sorted sample list.  When sample[i].zBack > sample[i+1].zFront
+// (overlap), the earlier volumetric sample is split at the overlap boundary.
+// After all splits, samples at identical [zFront,zBack] are over-composited.
+// ---------------------------------------------------------------------------
+inline void tidyOverlapping(std::vector<SampleRecord>& samples)
+{
+    if (samples.size() < 2)
+        return;
+
+    // --- Split pass: iterate until no overlaps remain ---
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        // Sort by zFront, then by zBack ascending
+        std::sort(samples.begin(), samples.end(),
+            [](const SampleRecord& a, const SampleRecord& b) {
+                return (a.zFront != b.zFront) ? a.zFront < b.zFront
+                                              : a.zBack < b.zBack;
+            });
+
+        for (size_t i = 0; i + 1 < samples.size(); ++i) {
+            SampleRecord& cur  = samples[i];
+            const SampleRecord& nxt = samples[i + 1];
+
+            // No overlap?
+            if (cur.zBack <= nxt.zFront)
+                continue;
+
+            // Point sample — cannot be split; skip
+            if (cur.zFront == cur.zBack)
+                continue;
+
+            // Split cur at z = nxt.zFront
+            float z = nxt.zFront;
+            float totalRange = cur.zBack - cur.zFront;
+            float frontRange = z - cur.zFront;
+            float ratio      = frontRange / totalRange;
+
+            // Subdivide alpha: alpha_front = 1 - (1 - alpha)^ratio
+            float oneMinusA = 1.0f - cur.alpha;
+            float alphaFront = (oneMinusA <= 0.0f) ? cur.alpha
+                             : 1.0f - std::pow(oneMinusA, ratio);
+            float alphaBack  = (oneMinusA <= 0.0f) ? cur.alpha
+                             : 1.0f - std::pow(oneMinusA, 1.0f - ratio);
+
+            // Build back portion first (we'll overwrite cur for the front)
+            SampleRecord back;
+            back.zFront = z;
+            back.zBack  = cur.zBack;
+            back.alpha  = alphaBack;
+            back.channels.resize(cur.channels.size());
+
+            // Premultiplied channels scale proportionally with alpha
+            float scaleFront = (cur.alpha > 1e-6f) ? alphaFront / cur.alpha : 0.0f;
+            float scaleBack  = (cur.alpha > 1e-6f) ? alphaBack  / cur.alpha : 0.0f;
+
+            for (size_t c = 0; c < cur.channels.size(); ++c) {
+                back.channels[c] = cur.channels[c] * scaleBack;
+                cur.channels[c]  = cur.channels[c] * scaleFront;
+            }
+
+            cur.zBack  = z;
+            cur.alpha  = alphaFront;
+
+            samples.insert(samples.begin() + static_cast<long>(i + 1), std::move(back));
+            changed = true;
+            break;  // restart scan after structural change
+        }
+    }
+
+    // --- Over-merge pass: collapse samples at identical [zFront, zBack] ---
+    std::sort(samples.begin(), samples.end(),
+        [](const SampleRecord& a, const SampleRecord& b) {
+            return (a.zFront != b.zFront) ? a.zFront < b.zFront
+                                          : a.zBack < b.zBack;
+        });
+
+    std::vector<SampleRecord> result;
+    result.reserve(samples.size());
+
+    size_t i = 0;
+    while (i < samples.size()) {
+        size_t j = i + 1;
+        while (j < samples.size() &&
+               samples[j].zFront == samples[i].zFront &&
+               samples[j].zBack  == samples[i].zBack)
+        {
+            ++j;
+        }
+
+        if (j - i == 1) {
+            result.push_back(std::move(samples[i]));
+        } else {
+            // Over-composite the group front-to-back
+            const size_t nChan = samples[i].channels.size();
+            SampleRecord merged;
+            merged.zFront = samples[i].zFront;
+            merged.zBack  = samples[i].zBack;
+            merged.alpha  = 0.0f;
+            merged.channels.resize(nChan, 0.0f);
+
+            float alphaAcc = 0.0f;
+            for (size_t s = i; s < j; ++s) {
+                float w = 1.0f - alphaAcc;
+                if (w <= 0.0f) break;
+                const size_t nc = std::min(nChan, samples[s].channels.size());
+                for (size_t c = 0; c < nc; ++c)
+                    merged.channels[c] += samples[s].channels[c] * w;
+                alphaAcc += samples[s].alpha * w;
+            }
+            merged.alpha = alphaAcc;
+            result.push_back(std::move(merged));
+        }
+        i = j;
+    }
+
+    samples = std::move(result);
 }
 
 // ---------------------------------------------------------------------------
@@ -67,6 +198,10 @@ inline void optimizeSamples(std::vector<SampleRecord>& samples,
 {
     if (samples.empty())
         return;
+
+    // --- Overlap tidy pre-pass: split and merge overlapping intervals ---
+    if (samples.size() > 1)
+        tidyOverlapping(samples);
 
     // --- Sort by zFront ascending ---
     std::sort(samples.begin(), samples.end(),
@@ -93,7 +228,9 @@ inline void optimizeSamples(std::vector<SampleRecord>& samples,
                                samples[groupStart].zFront) <= mergeTolerance;
                 bool cClose = (colorTolerance <= 0.0f) ||
                     (colorDistance(samples[groupEnd].channels,
-                                  samples[groupStart].channels) <= colorTolerance);
+                                  samples[groupEnd].alpha,
+                                  samples[groupStart].channels,
+                                  samples[groupStart].alpha) <= colorTolerance);
                 if (zClose && cClose)
                     ++groupEnd;
                 else

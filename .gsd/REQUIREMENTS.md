@@ -2,137 +2,128 @@
 
 This file is the explicit capability and coverage contract for the project.
 
+## Active
+
+### R011 — Unpremultiplied colour comparison in sample optimizer
+- Class: quality-attribute
+- Status: active
+- Description: `colorDistance` in `DeepSampleOptimizer.h` must unpremultiply channel values by alpha before comparing, with a near-zero alpha guard (treat transparent samples as always-matching)
+- Why it matters: Premultiplied comparison causes samples from the same surface at different Gaussian weights to appear as different colours, preventing correct merges and producing jaggy blur output
+- Source: user
+- Primary owning slice: M004-ks4br0/S01
+- Supporting slices: none
+- Validation: unmapped
+- Notes: Fix is in the shared header — both DeepCBlur and DeepCBlur2 benefit automatically
+
+### R012 — Overlapping sample tidy pre-pass in optimizer
+- Class: quality-attribute
+- Status: active
+- Description: `optimizeSamples` must include a pre-pass that detects overlapping depth intervals (accounting for volumetric zFront/zBack ranges), splits them at boundaries using volumetric alpha subdivision, and over-merges front-to-back before the existing tolerance-based merge
+- Why it matters: Overlapping samples produce incorrect compositing results; same-depth-range duplicates from blur gather should always collapse regardless of tolerance settings
+- Source: user
+- Primary owning slice: M004-ks4br0/S01
+- Supporting slices: none
+- Validation: unmapped
+- Notes: Point samples (zFront==zBack) at identical depth are also collapsed. Existing tolerance merge runs after this pre-pass.
+
+### R013 — DeepCDepthBlur flatten invariant
+- Class: core-capability
+- Status: active
+- Description: `flatten(DeepCDepthBlur(input)) == flatten(input)` — the node redistributes each sample's alpha across sub-samples whose weights sum to 1; it does not add new alpha
+- Why it matters: The visual result must be identical to the input when composited — the node only softens holdouts by spreading samples in Z, not by changing the flat image
+- Source: user
+- Primary owning slice: M004-ks4br0/S02
+- Supporting slices: none
+- Validation: unmapped
+- Notes: Channels scale with weight proportionally (premult preserved)
+
+### R014 — DeepCDepthBlur tidy output
+- Class: core-capability
+- Status: active
+- Description: Output samples are sorted by zFront, non-overlapping (zBack[i] ≤ zFront[i+1]), and each sample has zFront ≤ zBack
+- Why it matters: "Tidy" is required for correct downstream deep compositing; overlapping samples produce incorrect DeepMerge results
+- Source: user
+- Primary owning slice: M004-ks4br0/S02
+- Supporting slices: none
+- Validation: unmapped
+- Notes: Final clamp pass: zBack[i] = min(zBack[i], zFront[i+1])
+
+### R015 — DeepCDepthBlur falloff modes
+- Class: primary-user-loop
+- Status: active
+- Description: Enum knob with four modes: Linear, Gaussian, Smoothstep (smoothstep curve), Exponential. All weights normalised to sum to 1 before distributing alpha.
+- Why it matters: Different falloffs produce different softness characters; smoothstep is the natural choice for soft holdout edges, gaussian for organic volumes
+- Source: user
+- Primary owning slice: M004-ks4br0/S02
+- Supporting slices: none
+- Validation: unmapped
+- Notes: Smoothstep confirmed as the "smooth" mode in discussion
+
+### R016 — DeepCDepthBlur spread, num-samples, and sample-type controls
+- Class: primary-user-loop
+- Status: active
+- Description: Float knob for spread depth extent; int knob for number of sub-samples per input sample; enum knob for Volumetric vs Flat/point output sample type
+- Why it matters: Artists need control over how coarse or fine the depth spread is and whether spread samples cover depth ranges (volumetric, physically correct for volumes) or are point samples (flat, better for hard surfaces)
+- Source: user
+- Primary owning slice: M004-ks4br0/S02
+- Supporting slices: none
+- Validation: unmapped
+- Notes: Volumetric sub-samples cover evenly-spaced sub-ranges; flat sub-samples have zFront==zBack at evenly-spaced depths
+
+### R017 — DeepCDepthBlur optional second input with depth-range gating
+- Class: primary-user-loop
+- Status: active
+- Description: Optional B input (second deep image); when connected, only spread samples whose depth range [zFront-spread, zBack+spread] intersects any B sample's [zFront_B, zBack_B]; other samples pass through unchanged
+- Why it matters: Constrains depth spreading to only depths relevant to a downstream DeepMerge with the B image; avoids unnecessary sample inflation in non-interacting depth regions
+- Source: user
+- Primary owning slice: M004-ks4br0/S02
+- Supporting slices: none
+- Validation: unmapped
+- Notes: Gating uses depth-range intersection, not pixel presence
+
 ## Validated
 
-### R001 — Separable 2D Gaussian blur
-- Class: core-capability
-- Status: validated
-- Description: DeepCBlur must decompose the 2D Gaussian kernel into two sequential 1D passes (horizontal then vertical) for O(2r) instead of O(r²) per pixel
-- Why it matters: Performance is unusable at radii above ~10 with the current non-separable approach
-- Source: user
-- Primary owning slice: M003/S01
-- Supporting slices: none
-- Validation: intermediateBuffer + separable H→V passes confirmed in source (grep); syntax check passes; docker-build.sh exits 0 with DeepCBlur.so (M003)
-- Notes: Intermediate buffer holds gathered samples per pixel between passes. Visual parity with non-separable pending human UAT.
-
-### R002 — Kernel accuracy tiers (low/medium/high)
-- Class: core-capability
-- Status: validated
-- Description: Enum knob offering three Gaussian kernel computation methods — low (raw unnormalized), medium (normalized to sum=1, current default), high (CDF-based sub-pixel integration)
-- Why it matters: Gives artists control over quality/speed tradeoff; high quality eliminates banding at small radii
-- Source: user
-- Primary owning slice: M003/S01
-- Supporting slices: none
-- Validation: getLQ/getMQ/getHQ functions present (grep -c == 7); Enumeration_knob wired to computeKernel; docker-build.sh exits 0 (M003)
-- Notes: All three tiers use sigma = blur / 3.0 for backward compatibility with M002. Visual distinctiveness pending human UAT.
-
-### R003 — Alpha darkening correction
-- Class: core-capability
-- Status: validated
-- Description: Post-blur correction pass that iterates samples front-to-back per pixel, dividing RGB and alpha by cumulative transparency to counteract the darkening caused by over-compositing blurred deep samples
-- Why it matters: Without correction, Gaussian-blurred deep images darken when composited — this is the core visual artifact of naive deep blur
-- Source: user
-- Primary owning slice: M003/S02
-- Supporting slices: none
-- Validation: cumTransp logic confirmed in source (grep); Bool_knob alpha_correction present; docker-build.sh exits 0 (M003); visual brightening pending human UAT
-- Notes: Algorithm from CMG99's modified gaussian mode. Applied as a post-blur pass between optimizeSamples and emit loop.
-
-### R004 — WH_knob blur size control
-- Class: primary-user-loop
-- Status: validated
-- Description: Single blur size knob using DDImage WH_knob with double[2] array, showing width and height components with a lock toggle, replacing the two separate Float_knobs
-- Why it matters: Matches Nuke's built-in Blur node convention; more intuitive for artists
-- Source: user
-- Primary owning slice: M003/S02
-- Supporting slices: none
-- Validation: grep -c "WH_knob" == 1; grep "Float_knob.*blur" == empty; docker-build.sh exits 0 (M003)
-- Notes: Follows DeepCAdjustBBox's existing WH_knob pattern. Member is double[2]; call sites cast to float.
-
-### R005 — Sample optimization twirldown group
-- Class: primary-user-loop
-- Status: validated
-- Description: max_samples, merge_tolerance, and color_tolerance knobs must be inside a BeginClosedGroup twirldown labeled "Sample Optimization"
-- Why it matters: Keeps the default UI clean — most artists won't need to touch these
-- Source: user
-- Primary owning slice: M003/S02
-- Supporting slices: none
-- Validation: grep -c "BeginClosedGroup" == 1; docker-build.sh exits 0 (M003)
-- Notes: Follows DeepThinner's existing BeginClosedGroup pattern.
-
-### R006 — Alpha correction enable/disable knob
-- Class: primary-user-loop
-- Status: validated
-- Description: Boolean knob to enable/disable the alpha darkening correction, defaulting to off
-- Why it matters: Correction changes the look — artists need explicit control; off by default preserves backward compatibility
-- Source: user
-- Primary owning slice: M003/S02
-- Supporting slices: none
-- Validation: grep -c "Bool_knob.*alpha_correction" == 1; docker-build.sh exits 0 (M003)
-- Notes: Off by default because it changes visual output from M002.
-
-### R007 — Zero-blur fast path preserved
-- Class: quality-attribute
-- Status: validated
-- Description: When blur size is zero in both dimensions, DeepCBlur must pass through input unchanged with no performance penalty
-- Why it matters: Prevents unnecessary computation when the node is disabled or animated to zero
-- Source: inferred
-- Primary owning slice: M003/S01
-- Supporting slices: none
-- Validation: radX == 0 && radY == 0 fast path confirmed present in source (grep); docker-build.sh exits 0 (M003); live passthrough test pending human UAT
-- Notes: Preserved through S01 refactor.
-
-### R008 — Docker build compiles DeepCBlur.so
-- Class: quality-attribute
-- Status: validated
-- Description: docker-build.sh must successfully compile DeepCBlur.so and include it in the release archive
-- Why it matters: Build verification is the definitive compilation proof for this project
-- Source: inferred
-- Primary owning slice: M003/S02
-- Supporting slices: none
-- Validation: docker-build.sh --linux --versions 16.0 exits 0 with DeepCBlur.so in archive (M003 S02 T01)
-- Notes: Verified against Nuke 16.0 SDK.
+(Previous requirements R001–R008 from M003 moved to validated — see M003-SUMMARY.md)
 
 ## Out of Scope
 
-### R009 — Z-blur (depth-direction blur)
+### R009 — Z-blur (CMG99 style depth-direction blur)
 - Class: core-capability
 - Status: out-of-scope
-- Description: Blurring samples along the Z/depth axis, creating volumetric expansion
-- Why it matters: Prevents scope creep — CMG99 had this but it's a separate feature
+- Description: CMG99's Z-blur that blurs samples across neighbouring pixels in depth
+- Why it matters: Prevents scope confusion with DeepCDepthBlur — this node does NOT consult neighbours
 - Source: user
 - Primary owning slice: none
 - Supporting slices: none
 - Validation: n/a
-- Notes: Could be added as a future milestone if requested.
+- Notes: DeepCDepthBlur is intra-pixel only
 
 ### R010 — Transparent modified gaussian mode
 - Class: core-capability
 - Status: out-of-scope
-- Description: CMG99's second blur mode that sets alpha to near-zero and pre-processes RGB for transparent compositing
-- Why it matters: Prevents scope creep — the alpha correction mode (R003) covers the primary use case
+- Description: CMG99's transparent mode
+- Why it matters: Prevents scope creep
 - Source: user
 - Primary owning slice: none
 - Supporting slices: none
 - Validation: n/a
-- Notes: CMG99 had three modes; we're implementing one correction toggle.
+- Notes: CMG99 had three modes; alpha correction toggle covers the primary case
 
 ## Traceability
 
 | ID | Class | Status | Primary owner | Supporting | Proof |
 |---|---|---|---|---|---|
-| R001 | core-capability | validated | M003/S01 | none | separable engine + intermediateBuffer in source; docker build exits 0 |
-| R002 | core-capability | validated | M003/S01 | none | three kernel tier functions + Enumeration_knob in source; docker build exits 0 |
-| R003 | core-capability | validated | M003/S02 | none | cumTransp correction + Bool_knob in source; docker build exits 0 |
-| R004 | primary-user-loop | validated | M003/S02 | none | WH_knob present (count==1), Float_knob blur absent; docker build exits 0 |
-| R005 | primary-user-loop | validated | M003/S02 | none | BeginClosedGroup present (count==1); docker build exits 0 |
-| R006 | primary-user-loop | validated | M003/S02 | none | Bool_knob alpha_correction present (count==1); docker build exits 0 |
-| R007 | quality-attribute | validated | M003/S01 | none | fast path code present in source; docker build exits 0 |
-| R008 | quality-attribute | validated | M003/S02 | none | docker-build.sh exits 0, DeepCBlur.so in archive |
+| R011 | quality-attribute | active | M004-ks4br0/S01 | none | unmapped |
+| R012 | quality-attribute | active | M004-ks4br0/S01 | none | unmapped |
+| R013 | core-capability | active | M004-ks4br0/S02 | none | unmapped |
+| R014 | core-capability | active | M004-ks4br0/S02 | none | unmapped |
+| R015 | primary-user-loop | active | M004-ks4br0/S02 | none | unmapped |
+| R016 | primary-user-loop | active | M004-ks4br0/S02 | none | unmapped |
+| R017 | primary-user-loop | active | M004-ks4br0/S02 | none | unmapped |
 
 ## Coverage Summary
 
-- Active requirements: 0
-- Validated requirements: 8
-- Out of scope: 2
-- Mapped to slices: 8
+- Active requirements: 7
+- Mapped to slices: 7
+- Validated: 0 (build and visual UAT pending)
 - Unmapped active requirements: 0
