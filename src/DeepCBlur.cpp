@@ -4,10 +4,10 @@
 //
 //  DeepCBlur — Gaussian blur for deep images with sample propagation
 //
-//  Applies a separable 2D Gaussian blur (horizontal → vertical) to deep image
-//  data. Samples from neighbouring pixels are propagated into the output with
-//  depth preserved (not blurred). Per-pixel sample optimization merges
-//  nearby-depth samples after accumulation to keep sample counts manageable.
+//  Applies a 2D Gaussian blur to deep image data. Samples from neighbouring
+//  pixels are propagated into the output with depth preserved (not blurred).
+//  Per-pixel sample optimization merges nearby-depth samples after
+//  accumulation to keep sample counts manageable.
 //
 // ============================================================================
 
@@ -26,116 +26,22 @@ using namespace DD::Image;
 
 static const char* const CLASS = "DeepCBlur";
 static const char* const HELP =
-    "Separable Gaussian blur for deep images.\n\n"
-    "Applies a 2D Gaussian blur (horizontal then vertical) to all colour and "
-    "alpha channels while propagating depth (deep.front / deep.back) from the "
-    "source samples. Neighbouring pixels contribute weighted samples into each "
-    "output pixel.\n\n"
-    "Blur Size — Width and height can be set independently via the lock toggle. "
-    "Sigma = radius / 3. Large values will be slow.\n\n"
-    "Kernel Quality — Low (fast/approximate), Medium (normalized, default), "
-    "High (CDF sub-pixel integration).\n\n"
-    "Alpha Correction — Corrects alpha darkening caused by over-compositing "
-    "blurred deep samples. Enable when the blur result appears too dark after "
-    "compositing.\n\n"
-    "Sample Optimization (twirldown) — Max samples cap, merge Z tolerance, "
-    "and colour tolerance control per-pixel sample merging after blur.\n\n"
+    "Gaussian blur for deep images.\n\n"
+    "Applies a 2D Gaussian blur kernel to all colour and alpha channels while "
+    "propagating depth (deep.front / deep.back) from the source samples. "
+    "Neighbouring pixels contribute weighted samples into each output pixel, "
+    "and per-pixel sample optimization merges nearby-depth samples to keep "
+    "counts manageable.\n\n"
+    "blur_width / blur_height control the pixel radius of the kernel in each "
+    "direction (sigma = radius / 3). Values above 10 will be slow due to "
+    "large kernel footprints.\n\n"
     "Part of the DeepC plugin collection.";
-
-// ---------------------------------------------------------------------------
-// Kernel quality tier names for Enumeration_knob
-// ---------------------------------------------------------------------------
-static const char* const kernelQualityNames[] = { "Low", "Medium", "High", nullptr };
-
-// ---------------------------------------------------------------------------
-// Gaussian kernel generation — three accuracy tiers
-// Each returns a half-kernel of size (radius + 1). The kernel is symmetric:
-//   full kernel = kernel[radius], ..., kernel[1], kernel[0], kernel[1], ..., kernel[radius]
-// ---------------------------------------------------------------------------
-
-// LQ: Raw unnormalized Gaussian — fast but does not sum to 1
-static std::vector<float> getLQGaussianKernel(float sigma, int radius)
-{
-    std::vector<float> kernel(radius + 1);
-    const float twoSigmaSq = 2.0f * sigma * sigma;
-    const float norm = 1.0f / (sigma * std::sqrt(2.0f * static_cast<float>(M_PI)));
-    for (int i = 0; i <= radius; ++i) {
-        kernel[i] = std::exp(-static_cast<float>(i * i) / twoSigmaSq) * norm;
-    }
-    return kernel;
-}
-
-// MQ: Normalized Gaussian — same formula as LQ but rescaled so full kernel sums to 1.0
-static std::vector<float> getMQGaussianKernel(float sigma, int radius)
-{
-    std::vector<float> kernel = getLQGaussianKernel(sigma, radius);
-    // Full symmetric sum: center + 2 * sum(tails)
-    float fullSum = kernel[0];
-    for (int i = 1; i <= radius; ++i)
-        fullSum += 2.0f * kernel[i];
-    if (fullSum > 0.0f) {
-        const float inv = 1.0f / fullSum;
-        for (auto& v : kernel)
-            v *= inv;
-    }
-    return kernel;
-}
-
-// HQ: CDF-based sub-pixel integration for maximum accuracy
-static std::vector<float> getHQGaussianKernel(float sigma, int radius)
-{
-    const int kernelWidth = 2 * radius + 1;
-    const float coverage = 3.5f * sigma;          // cover -3.5σ to +3.5σ
-    const float step = (2.0f * coverage) / static_cast<float>(kernelWidth);
-    const float sqrt2sigma = std::sqrt(2.0f) * sigma;
-
-    // Build full kernel via CDF differences, then extract half
-    std::vector<float> fullKernel(kernelWidth);
-    for (int i = 0; i < kernelWidth; ++i) {
-        const float lo = -coverage + static_cast<float>(i) * step;
-        const float hi = lo + step;
-        fullKernel[i] = 0.5f * (std::erff(hi / sqrt2sigma) - std::erff(lo / sqrt2sigma));
-    }
-
-    // Extract half-kernel (center + right side)
-    std::vector<float> kernel(radius + 1);
-    for (int i = 0; i <= radius; ++i)
-        kernel[i] = fullKernel[radius + i];
-
-    // Normalize so full symmetric kernel sums to 1.0
-    float fullSum = kernel[0];
-    for (int i = 1; i <= radius; ++i)
-        fullSum += 2.0f * kernel[i];
-    if (fullSum > 0.0f) {
-        const float inv = 1.0f / fullSum;
-        for (auto& v : kernel)
-            v *= inv;
-    }
-    return kernel;
-}
-
-// ---------------------------------------------------------------------------
-// Kernel dispatcher — selects tier based on quality enum value
-// ---------------------------------------------------------------------------
-static std::vector<float> computeKernel(float blur, int quality)
-{
-    const float sigma = std::max(blur / 3.0f, 0.001f);
-    const int radius = std::max(0, static_cast<int>(std::ceil(blur)));
-    if (radius == 0)
-        return {1.0f};
-    switch (quality) {
-        case 0:  return getLQGaussianKernel(sigma, radius);
-        case 2:  return getHQGaussianKernel(sigma, radius);
-        default: return getMQGaussianKernel(sigma, radius);
-    }
-}
 
 // ---------------------------------------------------------------------------
 class DeepCBlur : public DeepFilterOp
 {
-    double _blurSize[2];    // width/height pixel radius pair
-    bool   _alphaCorrection; // post-blur alpha darkening correction
-    int   _kernelQuality;   // kernel accuracy tier: 0=Low, 1=Medium, 2=High
+    float _blurWidth;       // pixel radius in X
+    float _blurHeight;      // pixel radius in Y
     int   _maxSamples;      // per-pixel sample cap (0 = unlimited)
     float _mergeTolerance;  // Z-front distance for sample merge
     float _colorTolerance;  // channel-value distance for sample merge
@@ -144,6 +50,7 @@ class DeepCBlur : public DeepFilterOp
     struct ScratchBuf {
         std::vector<deepc::SampleRecord> samples;
         DeepOutPixel                      outPixel;
+        std::vector<float>                kernel;
     };
 
     // Compute kernel radius from blur parameter (blur = 3-sigma radius)
@@ -153,9 +60,8 @@ class DeepCBlur : public DeepFilterOp
 
 public:
     DeepCBlur(Node* node) : DeepFilterOp(node),
-        _blurSize{1.0, 1.0},
-        _alphaCorrection(false),
-        _kernelQuality(1),
+        _blurWidth(1.0f),
+        _blurHeight(1.0f),
         _maxSamples(100),
         _mergeTolerance(0.001f),
         _colorTolerance(0.01f)
@@ -170,20 +76,15 @@ public:
     // ------------------------------------------------------------------
     void knobs(Knob_Callback f) override
     {
-        WH_knob(f, _blurSize, "blur_size", "blur size");
-        SetRange(f, 0.0, 100.0);
-        Tooltip(f, "Blur radius in pixels (sigma = radius / 3). Width and height "
-                    "can be set independently using the lock toggle.");
+        Float_knob(f, &_blurWidth, "blur_width", "blur width");
+        SetRange(f, 0.0f, 100.0f);
+        Tooltip(f, "Horizontal blur radius in pixels (sigma = radius / 3). "
+                    "Values above 10 will be slow.");
 
-        Enumeration_knob(f, &_kernelQuality, kernelQualityNames, "kernel_quality", "kernel quality");
-        Tooltip(f, "Gaussian kernel accuracy tier. Low = fast/approximate, "
-                    "Medium = normalized (default), High = CDF sub-pixel integration.");
-
-        Bool_knob(f, &_alphaCorrection, "alpha_correction", "alpha correction");
-        Tooltip(f, "Correct alpha darkening caused by over-compositing blurred deep samples. "
-                    "Enable when the blur result appears too dark after compositing.");
-
-        BeginClosedGroup(f, "Sample Optimization");
+        Float_knob(f, &_blurHeight, "blur_height", "blur height");
+        SetRange(f, 0.0f, 100.0f);
+        Tooltip(f, "Vertical blur radius in pixels (sigma = radius / 3). "
+                    "Values above 10 will be slow.");
 
         Int_knob(f, &_maxSamples, "max_samples", "max samples");
         SetRange(f, 0, 500);
@@ -199,8 +100,6 @@ public:
         SetRange(f, 0.0f, 0.1f);
         Tooltip(f, "Maximum per-channel colour difference for sample merge. "
                     "0 = merge by Z only.");
-
-        EndGroup(f);
     }
 
     // ------------------------------------------------------------------
@@ -210,8 +109,8 @@ public:
     {
         DeepFilterOp::_validate(for_real);
 
-        const int radX = kernelRadius(static_cast<float>(_blurSize[0]));
-        const int radY = kernelRadius(static_cast<float>(_blurSize[1]));
+        const int radX = kernelRadius(_blurWidth);
+        const int radY = kernelRadius(_blurHeight);
 
         if (radX > 0 || radY > 0) {
             Box box = _deepInfo.box();
@@ -231,8 +130,8 @@ public:
         if (!input0())
             return;
 
-        const int radX = kernelRadius(static_cast<float>(_blurSize[0]));
-        const int radY = kernelRadius(static_cast<float>(_blurSize[1]));
+        const int radX = kernelRadius(_blurWidth);
+        const int radY = kernelRadius(_blurHeight);
 
         Box padded(box.x() - radX,
                    box.y() - radY,
@@ -248,7 +147,7 @@ public:
     }
 
     // ------------------------------------------------------------------
-    // doDeepEngine — separable H→V Gaussian blur with sample propagation
+    // doDeepEngine — apply 2D Gaussian blur with sample propagation
     // ------------------------------------------------------------------
     bool doDeepEngine(Box box, const ChannelSet& channels,
                       DeepOutputPlane& plane) override
@@ -257,10 +156,8 @@ public:
         if (!in)
             return true;
 
-        const float blurW = static_cast<float>(_blurSize[0]);
-        const float blurH = static_cast<float>(_blurSize[1]);
-        const int radX = kernelRadius(blurW);
-        const int radY = kernelRadius(blurH);
+        const int radX = kernelRadius(_blurWidth);
+        const int radY = kernelRadius(_blurHeight);
 
         // If zero blur, pass through
         if (radX == 0 && radY == 0) {
@@ -297,13 +194,37 @@ public:
         if (!in->deepEngine(inputBox, channels, inPlane))
             return false;
 
-        // Compute 1D half-kernels for separable passes
-        const auto kernelH = computeKernel(blurW, _kernelQuality);
-        const auto kernelV = computeKernel(blurH, _kernelQuality);
+        // Pre-compute 2D Gaussian kernel
+        const float sigmaX = std::max(_blurWidth  / 3.0f, 0.001f);
+        const float sigmaY = std::max(_blurHeight / 3.0f, 0.001f);
+        const int kernelW = 2 * radX + 1;
+        const int kernelH = 2 * radY + 1;
+
+        static thread_local ScratchBuf scratch;
+        scratch.kernel.resize(kernelW * kernelH);
+
+        float kernelSum = 0.0f;
+        for (int dy = -radY; dy <= radY; ++dy) {
+            for (int dx = -radX; dx <= radX; ++dx) {
+                const float gx = std::exp(-0.5f * (dx * dx) / (sigmaX * sigmaX));
+                const float gy = std::exp(-0.5f * (dy * dy) / (sigmaY * sigmaY));
+                const float val = gx * gy;
+                scratch.kernel[(dy + radY) * kernelW + (dx + radX)] = val;
+                kernelSum += val;
+            }
+        }
+        // Normalize to sum = 1.0
+        if (kernelSum > 0.0f) {
+            const float invSum = 1.0f / kernelSum;
+            for (auto& v : scratch.kernel)
+                v *= invSum;
+        }
 
         // Determine channel layout — identify which channels are depth vs data
         const int nChans = channels.size();
 
+        // Build channel-index maps: for each channel position, record whether
+        // it is a depth channel (propagated raw) or a data channel (weighted)
         std::vector<bool> isDepthChan(nChans, false);
         {
             int ci = 0;
@@ -314,84 +235,10 @@ public:
             }
         }
 
-        // ---------------------------------------------------------------
-        // HORIZONTAL PASS: gather along X into intermediate buffer
-        //
-        // Intermediate buffer dimensions:
-        //   height = inputBox height (padded Y range, needed for V pass)
-        //   width  = output box width (only output columns are needed)
-        // ---------------------------------------------------------------
-        const int intW = box.r() - box.x();
-        const int intH = inputBox.t() - inputBox.y();
-
-        // Coordinate translation helpers
-        auto intX = [&](int worldX) { return worldX - box.x(); };
-        auto intY = [&](int worldY) { return worldY - inputBox.y(); };
-
-        std::vector<std::vector<std::vector<deepc::SampleRecord>>> intermediateBuffer(
-            intH, std::vector<std::vector<deepc::SampleRecord>>(intW));
+        // Output plane
+        plane = DeepOutputPlane(channels, box, DeepPixel::eUnordered);
 
         const Box& inBox = inPlane.box();
-
-        for (int srcY = inputBox.y(); srcY < inputBox.t(); ++srcY) {
-            if (srcY < inBox.y() || srcY >= inBox.t())
-                continue;
-
-            for (int outX = box.x(); outX < box.r(); ++outX) {
-                if (Op::aborted())
-                    return false;
-
-                auto& destSamples = intermediateBuffer[intY(srcY)][intX(outX)];
-
-                // Gather from horizontal neighbourhood
-                for (int dx = -radX; dx <= radX; ++dx) {
-                    const int srcX = outX + dx;
-                    if (srcX < inBox.x() || srcX >= inBox.r())
-                        continue;
-
-                    DeepPixel srcPixel = inPlane.getPixel(srcY, srcX);
-                    const int srcSamples = static_cast<int>(srcPixel.getSampleCount());
-                    if (srcSamples == 0)
-                        continue;
-
-                    const float weight = kernelH[std::abs(dx)];
-                    if (weight <= 0.0f)
-                        continue;
-
-                    for (int s = 0; s < srcSamples; ++s) {
-                        deepc::SampleRecord rec;
-                        rec.zFront = srcPixel.getUnorderedSample(s, Chan_DeepFront);
-                        rec.zBack  = srcPixel.getUnorderedSample(s, Chan_DeepBack);
-                        rec.alpha  = srcPixel.getUnorderedSample(s, Chan_Alpha) * weight;
-
-                        rec.channels.resize(nChans);
-                        int ci = 0;
-                        foreach(z, channels) {
-                            if (isDepthChan[ci]) {
-                                rec.channels[ci] = srcPixel.getUnorderedSample(s, z);
-                            } else {
-                                rec.channels[ci] = srcPixel.getUnorderedSample(s, z) * weight;
-                            }
-                            ci++;
-                        }
-
-                        destSamples.push_back(std::move(rec));
-                    }
-                }
-            }
-        }
-
-        // ---------------------------------------------------------------
-        // VERTICAL PASS: gather along Y from intermediate → output
-        //
-        // For each output pixel (outX, outY), gather from intermediate
-        // rows outY-radY..outY+radY, weighting by kernelV. The total
-        // weight per sample is H_weight × V_weight (separable property).
-        // optimizeSamples runs only after this final pass.
-        // ---------------------------------------------------------------
-        static thread_local ScratchBuf scratch;
-
-        plane = DeepOutputPlane(channels, box, DeepPixel::eUnordered);
 
         for (Box::iterator it = box.begin(); it != box.end(); ++it) {
             if (Op::aborted())
@@ -402,40 +249,47 @@ public:
 
             scratch.samples.clear();
 
+            // Accumulate weighted samples from kernel neighbourhood
             for (int dy = -radY; dy <= radY; ++dy) {
                 const int srcY = outY + dy;
-                if (srcY < inputBox.y() || srcY >= inputBox.t())
+                if (srcY < inBox.y() || srcY >= inBox.t())
                     continue;
 
-                const int iy = intY(srcY);
-                const int ix = intX(outX);
-                if (ix < 0 || ix >= intW || iy < 0 || iy >= intH)
-                    continue;
+                for (int dx = -radX; dx <= radX; ++dx) {
+                    const int srcX = outX + dx;
+                    if (srcX < inBox.x() || srcX >= inBox.r())
+                        continue;
 
-                const auto& hSamples = intermediateBuffer[iy][ix];
-                if (hSamples.empty())
-                    continue;
+                    DeepPixel srcPixel = inPlane.getPixel(srcY, srcX);
+                    const int srcSamples = static_cast<int>(srcPixel.getSampleCount());
+                    if (srcSamples == 0)
+                        continue;
 
-                const float weight = kernelV[std::abs(dy)];
-                if (weight <= 0.0f)
-                    continue;
+                    const float weight = scratch.kernel[(dy + radY) * kernelW + (dx + radX)];
+                    if (weight <= 0.0f)
+                        continue;
 
-                for (const auto& hRec : hSamples) {
-                    deepc::SampleRecord rec;
-                    rec.zFront = hRec.zFront;
-                    rec.zBack  = hRec.zBack;
-                    rec.alpha  = hRec.alpha * weight;
+                    for (int s = 0; s < srcSamples; ++s) {
+                        deepc::SampleRecord rec;
+                        rec.zFront = srcPixel.getUnorderedSample(s, Chan_DeepFront);
+                        rec.zBack  = srcPixel.getUnorderedSample(s, Chan_DeepBack);
+                        rec.alpha  = srcPixel.getUnorderedSample(s, Chan_Alpha) * weight;
 
-                    rec.channels.resize(nChans);
-                    for (int ci = 0; ci < nChans; ++ci) {
-                        if (isDepthChan[ci]) {
-                            rec.channels[ci] = hRec.channels[ci];
-                        } else {
-                            rec.channels[ci] = hRec.channels[ci] * weight;
+                        // Collect data channels (non-depth) weighted, depth raw
+                        rec.channels.resize(nChans);
+                        int ci = 0;
+                        foreach(z, channels) {
+                            if (isDepthChan[ci]) {
+                                // Depth propagated from source — NOT weighted
+                                rec.channels[ci] = srcPixel.getUnorderedSample(s, z);
+                            } else {
+                                rec.channels[ci] = srcPixel.getUnorderedSample(s, z) * weight;
+                            }
+                            ci++;
                         }
-                    }
 
-                    scratch.samples.push_back(std::move(rec));
+                        scratch.samples.push_back(std::move(rec));
+                    }
                 }
             }
 
@@ -445,27 +299,11 @@ public:
                 continue;
             }
 
-            // Per-pixel sample optimization (only after V pass)
+            // Per-pixel sample optimization
             deepc::optimizeSamples(scratch.samples,
                                    _mergeTolerance,
                                    _colorTolerance,
                                    _maxSamples);
-
-            // Alpha darkening correction — undo over-composite darkening
-            if (_alphaCorrection && scratch.samples.size() > 1) {
-                float cumTransp = 1.0f;
-                for (auto& sr : scratch.samples) {
-                    if (cumTransp > 1e-6f) {
-                        const float inv = 1.0f / cumTransp;
-                        for (int ci = 0; ci < nChans; ++ci) {
-                            if (!isDepthChan[ci])
-                                sr.channels[ci] *= inv;
-                        }
-                        sr.alpha *= inv;
-                    }
-                    cumTransp *= std::max(0.0f, 1.0f - sr.alpha);
-                }
-            }
 
             // Emit output samples
             scratch.outPixel.clear();
