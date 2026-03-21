@@ -12,6 +12,7 @@ set(PLUGINS
     DeepCBlur
     DeepCBlur2
     DeepThinner
+    DeepCDepthBlur
     )
 
 # DeepCWrapper 
@@ -48,7 +49,7 @@ DeepCHueShift DeepCInvert DeepCMatrix DeepCMultiply DeepCPosterize DeepCSaturati
 set(3D_NODES DeepCWorld)
 set(MERGE_NODES DeepCKeymix)
 set(Util_NODES DeepCAdjustBBox DeepCCopyBBox)
-set(FILTER_NODES DeepCBlur DeepCBlur2 DeepThinner)
+set(FILTER_NODES DeepCBlur DeepCBlur2 DeepThinner DeepCDepthBlur)
 
 # add nuke plugin linked to ddimage lib
 function(add_nuke_plugin PLUGIN_NAME)

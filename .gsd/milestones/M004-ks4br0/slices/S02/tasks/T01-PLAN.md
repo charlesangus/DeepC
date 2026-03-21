@@ -55,3 +55,14 @@ Create `src/DeepCDepthBlur.cpp` — a working `DeepFilterOp` with all knobs, fou
 - Weights normalisation: divide each weight by sum(weights)
 - The flatten invariant follows automatically if sum(weights) = 1 and channels scale with weight (premult relationship preserved)
 - No B input yet — add in T02
+
+## Expected Output
+
+- `src/DeepCDepthBlur.cpp`
+- `src/CMakeLists.txt` (modified)
+
+## Observability Impact
+
+- **New signals:** `DeepCDepthBlur` registers as a Nuke plugin with menu path `Deep/DeepCDepthBlur`. Knob values (spread, num_samples, falloff, sample_type) are visible in the Nuke properties panel.
+- **Inspection:** A future agent can verify the node exists by checking `g++ -fsyntax-only` passes, and by grepping CMakeLists.txt for the plugin name. Weight normalisation can be tested by extracting the static functions.
+- **Failure state:** Invalid knob values are clamped silently in `_validate`. Missing input0() returns true (empty output, no crash). The `aborted()` check ensures render cancellation is responsive.
