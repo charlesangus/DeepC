@@ -52,7 +52,7 @@ This milestone is complete only when all are true:
 - [x] **S01: Separable blur + kernel tiers** `risk:high` `depends:[]`
   > After this: DeepCBlur uses two-pass separable Gaussian blur with three kernel accuracy tiers selectable via enum knob. Compiles via docker-build.sh.
 
-- [ ] **S02: Alpha correction + UI polish** `risk:medium` `depends:[S01]`
+- [x] **S02: Alpha correction + UI polish** `risk:medium` `depends:[S01]`
   > After this: WH_knob controls blur size, sample optimization knobs are in a twirldown, alpha correction toggle fixes compositing darkening. Full docker build verified.
 
 ## Boundary Map

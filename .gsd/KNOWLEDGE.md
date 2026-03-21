@@ -29,3 +29,20 @@ The intermediate buffer is indexed as `[relY][relX]` where both indices are *out
 **Context:** DeepCBlur separable blur (S01, M003)
 
 In the V pass, kernel weight is applied to samples that already carry H-pass weight baked in. The separable property means the total 2D weight equals H_weight × V_weight, so the V pass simply multiplies by its 1D kernel weight. This is correct and intentional — do not re-normalize or reset weights between passes.
+
+## DDImage Knob Patterns
+
+### WH_knob requires double[2] member and SetRange(double,double) overload
+**Context:** DeepCBlur UI refactor (S02, M003)
+
+`WH_knob` binds to a `double[2]` member (not `float[2]`). All call sites that pass the values to Nuke API functions expecting `float` must cast explicitly: `static_cast<float>(_blurSize[0])`. The `SetRange` call for `WH_knob` uses double literals — if your mock headers only have a `SetRange(Knob_Callback, float, float)` overload, the syntax check will fail. Add a `SetRange(Knob_Callback, double, double)` overload.
+
+### grep -c contract for single-use macros
+**Context:** `scripts/verify-s01-syntax.sh` (S02, M003)
+
+If slice verification uses `grep -c "SomeMacro"` == 1 to prove a knob is present, remove the literal string from comments, HELP text, and any other non-code context to keep the count at exactly 1. The count contract is deliberately tight to catch accidental duplication.
+
+### Alpha correction pass ordering in doDeepEngine
+**Context:** DeepCBlur alpha correction (S02, M003)
+
+The alpha correction pass must sit between `optimizeSamples` and the emit loop. Placing it before `optimizeSamples` means correction runs on un-optimized samples that may be collapsed later (changing the per-sample channel values correction computed). Placing it after the emit loop means samples have already been written — no effect. The correct order is: blur H → blur V → optimizeSamples → alpha correction → emit.

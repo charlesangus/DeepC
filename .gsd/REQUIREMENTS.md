@@ -12,7 +12,7 @@ This file is the explicit capability and coverage contract for the project.
 - Source: user
 - Primary owning slice: M003/S01
 - Supporting slices: none
-- Validation: unmapped
+- Validation: docker-build.sh exits 0 (S01); visual parity with non-separable pending human UAT
 - Notes: Intermediate buffer holds gathered samples per pixel between passes. Must produce visually equivalent output to the current non-separable kernel at small radii.
 
 ### R002 — Kernel accuracy tiers (low/medium/high)
@@ -23,7 +23,7 @@ This file is the explicit capability and coverage contract for the project.
 - Source: user
 - Primary owning slice: M003/S01
 - Supporting slices: none
-- Validation: unmapped
+- Validation: docker-build.sh exits 0 (S01); visual distinctiveness pending human UAT
 - Notes: Algorithms match CMG99's BlurKernels.cpp approach. Medium is default. 1D kernels only (half-kernel stored, symmetric).
 
 ### R003 — Alpha darkening correction
@@ -34,7 +34,7 @@ This file is the explicit capability and coverage contract for the project.
 - Source: user
 - Primary owning slice: M003/S02
 - Supporting slices: none
-- Validation: unmapped
+- Validation: grep -q "cumTransp" exits 0; docker-build.sh exits 0 (S02); visual brightening pending human UAT
 - Notes: Algorithm from CMG99's modified gaussian mode. Applied as a post-blur pass, not woven into the blur itself.
 
 ### R004 — WH_knob blur size control
@@ -45,7 +45,7 @@ This file is the explicit capability and coverage contract for the project.
 - Source: user
 - Primary owning slice: M003/S02
 - Supporting slices: none
-- Validation: unmapped
+- Validation: grep -c "WH_knob" == 1; grep "Float_knob.*blur" == empty; docker-build.sh exits 0 (S02)
 - Notes: Follows DeepCAdjustBBox's existing WH_knob pattern in the codebase.
 
 ### R005 — Sample optimization twirldown group
@@ -56,7 +56,7 @@ This file is the explicit capability and coverage contract for the project.
 - Source: user
 - Primary owning slice: M003/S02
 - Supporting slices: none
-- Validation: unmapped
+- Validation: grep -c "BeginClosedGroup" == 1; docker-build.sh exits 0 (S02)
 - Notes: Follows DeepThinner's existing BeginClosedGroup pattern.
 
 ### R006 — Alpha correction enable/disable knob
@@ -67,7 +67,7 @@ This file is the explicit capability and coverage contract for the project.
 - Source: user
 - Primary owning slice: M003/S02
 - Supporting slices: none
-- Validation: unmapped
+- Validation: grep -c "Bool_knob.*alpha_correction" == 1; docker-build.sh exits 0 (S02)
 - Notes: Off by default because it changes visual output from M002.
 
 ### R007 — Zero-blur fast path preserved
@@ -78,7 +78,7 @@ This file is the explicit capability and coverage contract for the project.
 - Source: inferred
 - Primary owning slice: M003/S01
 - Supporting slices: none
-- Validation: unmapped
+- Validation: docker-build.sh exits 0 (S01); fast path code path confirmed present; live test pending human UAT
 - Notes: Already exists in current implementation; must be preserved through refactor.
 
 ### R008 — Docker build compiles DeepCBlur.so
@@ -89,8 +89,8 @@ This file is the explicit capability and coverage contract for the project.
 - Source: inferred
 - Primary owning slice: M003/S02
 - Supporting slices: none
-- Validation: unmapped
-- Notes: Existing docker-build.sh already handles DeepCBlur; this requirement ensures the refactored code still compiles.
+- Validation: docker-build.sh --linux --versions 16.0 exits 0 with DeepCBlur.so in archive (S02)
+- Notes: Verified in S02 T01 against Nuke 16.0 SDK.
 
 ## Out of Scope
 
@@ -120,18 +120,18 @@ This file is the explicit capability and coverage contract for the project.
 
 | ID | Class | Status | Primary owner | Supporting | Proof |
 |---|---|---|---|---|---|
-| R001 | core-capability | active | M003/S01 | none | unmapped |
-| R002 | core-capability | active | M003/S01 | none | unmapped |
-| R003 | core-capability | active | M003/S02 | none | unmapped |
-| R004 | primary-user-loop | active | M003/S02 | none | unmapped |
-| R005 | primary-user-loop | active | M003/S02 | none | unmapped |
-| R006 | primary-user-loop | active | M003/S02 | none | unmapped |
-| R007 | quality-attribute | active | M003/S01 | none | unmapped |
-| R008 | quality-attribute | active | M003/S02 | none | unmapped |
+| R001 | core-capability | active | M003/S01 | none | build-verified; visual UAT pending |
+| R002 | core-capability | active | M003/S01 | none | build-verified; visual UAT pending |
+| R003 | core-capability | active | M003/S02 | none | build-verified; visual UAT pending |
+| R004 | primary-user-loop | active | M003/S02 | none | build-verified (grep + docker) |
+| R005 | primary-user-loop | active | M003/S02 | none | build-verified (grep + docker) |
+| R006 | primary-user-loop | active | M003/S02 | none | build-verified (grep + docker) |
+| R007 | quality-attribute | active | M003/S01 | none | build-verified; live test pending |
+| R008 | quality-attribute | active | M003/S02 | none | docker-build.sh exits 0, DeepCBlur.so confirmed |
 
 ## Coverage Summary
 
 - Active requirements: 8
 - Mapped to slices: 8
-- Validated: 0
+- Validated: 0 (all build-verified; visual UAT requires human sign-off in Nuke)
 - Unmapped active requirements: 0
