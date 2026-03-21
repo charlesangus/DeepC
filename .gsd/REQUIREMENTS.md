@@ -6,25 +6,25 @@ This file is the explicit capability and coverage contract for the project.
 
 ### R011 — Unpremultiplied colour comparison in sample optimizer
 - Class: quality-attribute
-- Status: active
+- Status: validated
 - Description: `colorDistance` in `DeepSampleOptimizer.h` must unpremultiply channel values by alpha before comparing, with a near-zero alpha guard (treat transparent samples as always-matching)
 - Why it matters: Premultiplied comparison causes samples from the same surface at different Gaussian weights to appear as different colours, preventing correct merges and producing jaggy blur output
 - Source: user
 - Primary owning slice: M004-ks4br0/S01
 - Supporting slices: none
-- Validation: unmapped
+- Validation: docker-build.sh exit 0 (Nuke 16.0); grep confirms 4-arg signature; syntax check passes; visual jaggy elimination pending human UAT
+
 - Notes: Fix is in the shared header — both DeepCBlur and DeepCBlur2 benefit automatically
 
 ### R012 — Overlapping sample tidy pre-pass in optimizer
 - Class: quality-attribute
-- Status: active
+- Status: validated
 - Description: `optimizeSamples` must include a pre-pass that detects overlapping depth intervals (accounting for volumetric zFront/zBack ranges), splits them at boundaries using volumetric alpha subdivision, and over-merges front-to-back before the existing tolerance-based merge
 - Why it matters: Overlapping samples produce incorrect compositing results; same-depth-range duplicates from blur gather should always collapse regardless of tolerance settings
 - Source: user
 - Primary owning slice: M004-ks4br0/S01
 - Supporting slices: none
-- Validation: unmapped
-- Notes: Point samples (zFront==zBack) at identical depth are also collapsed. Existing tolerance merge runs after this pre-pass.
+- Validation: grep confirms exactly 1 tidyOverlapping(samples) call; docker-build.sh exit 0; code inspection confirms pow-based alpha subdivision formula
 
 ### R013 — DeepCDepthBlur flatten invariant
 - Class: core-capability
@@ -81,9 +81,14 @@ This file is the explicit capability and coverage contract for the project.
 - Validation: unmapped
 - Notes: Gating uses depth-range intersection, not pixel presence
 
+- Notes: Point samples (zFront==zBack) at identical depth are also collapsed. Existing tolerance merge runs after this pre-pass.
+
 ## Validated
 
 (Previous requirements R001–R008 from M003 moved to validated — see M003-SUMMARY.md)
+
+### R011 — Unpremultiplied colour comparison in sample optimizer (validated by S01/T01)
+### R012 — Overlapping sample tidy pre-pass in optimizer (validated by S01/T01)
 
 ## Out of Scope
 
@@ -113,8 +118,8 @@ This file is the explicit capability and coverage contract for the project.
 
 | ID | Class | Status | Primary owner | Supporting | Proof |
 |---|---|---|---|---|---|
-| R011 | quality-attribute | active | M004-ks4br0/S01 | none | unmapped |
-| R012 | quality-attribute | active | M004-ks4br0/S01 | none | unmapped |
+| R011 | quality-attribute | validated | M004-ks4br0/S01 | none | docker-build + grep contracts |
+| R012 | quality-attribute | validated | M004-ks4br0/S01 | none | docker-build + grep contracts |
 | R013 | core-capability | active | M004-ks4br0/S02 | none | unmapped |
 | R014 | core-capability | active | M004-ks4br0/S02 | none | unmapped |
 | R015 | primary-user-loop | active | M004-ks4br0/S02 | none | unmapped |
@@ -123,7 +128,8 @@ This file is the explicit capability and coverage contract for the project.
 
 ## Coverage Summary
 
-- Active requirements: 7
+- Active requirements: 5
 - Mapped to slices: 7
-- Validated: 0 (build and visual UAT pending)
+- Validated: 2 (R011, R012 — S01/T01 build + grep contracts)
+- Pending human UAT: R011 visual jaggy elimination
 - Unmapped active requirements: 0

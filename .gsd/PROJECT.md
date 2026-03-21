@@ -10,7 +10,7 @@ Artists can use deep-compositing operations in Nuke that don't exist in the buil
 
 ## Current State
 
-**v1.2 + DeepCBlur v2 shipped.** 24 plugins. DeepCBlur upgraded to separable two-pass Gaussian blur (O(2r) vs O(r²)), three kernel accuracy tiers (LQ/MQ/HQ), alpha darkening correction toggle, WH_knob blur size, and sample optimization twirldown. All plugins build and load cleanly in Nuke 16+ on Linux and Windows via `docker-build.sh`.
+**v1.2 + DeepCBlur v2 shipped. M004 S01 complete.** 24 plugins. DeepCBlur upgraded to separable two-pass Gaussian blur (O(2r) vs O(r²)), three kernel accuracy tiers (LQ/MQ/HQ), alpha darkening correction toggle, WH_knob blur size, and sample optimization twirldown. `DeepSampleOptimizer.h` now uses unpremultiplied colour comparison and includes a `tidyOverlapping` pre-pass that splits and merges overlapping depth intervals before tolerance-based merge — eliminating concentric jaggy artifacts on hard-surface inputs. All plugins build and load cleanly in Nuke 16+ on Linux and Windows via `docker-build.sh`.
 
 ## Architecture / Key Patterns
 

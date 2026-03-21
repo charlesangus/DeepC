@@ -52,7 +52,7 @@ This milestone is complete only when all are true:
 
 ## Slices
 
-- [ ] **S01: Fix DeepSampleOptimizer colour comparison** `risk:medium` `depends:[]`
+- [x] **S01: Fix DeepSampleOptimizer colour comparison** `risk:medium` `depends:[]`
   > After this: DeepCBlur and DeepCBlur2 both produce smooth blur on hard-surface inputs with default colour tolerance; same-depth samples are collapsed.
 
 - [ ] **S02: DeepCDepthBlur node** `risk:high` `depends:[S01]`

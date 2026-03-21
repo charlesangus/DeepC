@@ -70,3 +70,25 @@ As of M003, `_blurWidth` and `_blurHeight` no longer exist. The authoritative bl
 **Context:** M003/S02 alpha correction placement
 
 The correction pass sits between `optimizeSamples` and the emit loop. This ordering is load-bearing: correction before `optimizeSamples` operates on un-optimized samples that may later be merged (invalidating corrections); correction after emit is a no-op. If the emit loop is ever refactored for a new feature (Z-blur, etc.), verify this ordering is preserved before shipping.
+
+## DeepSampleOptimizer — S01/M004 Patterns
+
+### colorDistance now requires both alphas — 4-arg signature
+**Context:** DeepSampleOptimizer colour comparison fix (S01, M004)
+
+`colorDistance` was changed from a 2-arg `(vectorA, vectorB)` to a 4-arg `(vectorA, alphaA, vectorB, alphaB)` signature. There is exactly one call site in `optimizeSamples`. Any future call site must pass both sample alphas. The old signature no longer exists — code that compiles against mock headers but uses the old 2-arg form will fail at Docker build time.
+
+### tidyOverlapping is the first thing optimizeSamples does — do not move it
+**Context:** DeepSampleOptimizer overlap tidy pre-pass (S01, M004)
+
+`tidyOverlapping(samples)` is called at the very top of `optimizeSamples`, before the tolerance-based merge loop. Moving it after the merge loop would mean overlapping samples escape the tidy pass. Moving it out of `optimizeSamples` entirely would require all call sites to call it manually — easy to miss. The current placement is load-bearing; do not relocate it without updating all affected logic.
+
+### Volumetric alpha subdivision: alpha_sub = 1 - (1-A)^(subRange/totalRange)
+**Context:** DeepSampleOptimizer tidyOverlapping split pass (S01, M004)
+
+When a volumetric deep sample spanning [zFront, zBack] is split at an interior depth boundary, the sub-sample's alpha is computed as `1 - pow(1-alpha, subRange/totalRange)`. Premultiplied channels scale proportionally: `channel_sub = channel * (alpha_sub / alpha)`. This is the physically correct formula for partial transmission through a homogeneous volume. Do NOT use a linear approximation — it produces incorrect compositing when sub-ranges are large fractions of the total range.
+
+### tidyOverlapping convergence loop has no iteration cap
+**Context:** DeepSampleOptimizer tidyOverlapping split pass (S01, M004)
+
+The split pass iterates until no overlaps remain. On real blur-gather output this converges in one or two passes. On adversarial input (many nested overlaps), it could be slow. If performance profiling ever flags `optimizeSamples` as hot, adding an iteration cap (e.g. max 16 passes with a warning) is the right fix — not removing the loop.
