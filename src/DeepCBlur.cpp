@@ -4,10 +4,10 @@
 //
 //  DeepCBlur — Gaussian blur for deep images with sample propagation
 //
-//  Applies a 2D Gaussian blur to deep image data. Samples from neighbouring
-//  pixels are propagated into the output with depth preserved (not blurred).
-//  Per-pixel sample optimization merges nearby-depth samples after
-//  accumulation to keep sample counts manageable.
+//  Applies a separable 2D Gaussian blur (horizontal → vertical) to deep image
+//  data. Samples from neighbouring pixels are propagated into the output with
+//  depth preserved (not blurred). Per-pixel sample optimization merges
+//  nearby-depth samples after accumulation to keep sample counts manageable.
 //
 // ============================================================================
 
@@ -139,7 +139,6 @@ class DeepCBlur : public DeepFilterOp
     struct ScratchBuf {
         std::vector<deepc::SampleRecord> samples;
         DeepOutPixel                      outPixel;
-        std::vector<float>                kernel;
     };
 
     // Compute kernel radius from blur parameter (blur = 3-sigma radius)
@@ -241,7 +240,7 @@ public:
     }
 
     // ------------------------------------------------------------------
-    // doDeepEngine — apply 2D Gaussian blur with sample propagation
+    // doDeepEngine — separable H→V Gaussian blur with sample propagation
     // ------------------------------------------------------------------
     bool doDeepEngine(Box box, const ChannelSet& channels,
                       DeepOutputPlane& plane) override
@@ -288,37 +287,13 @@ public:
         if (!in->deepEngine(inputBox, channels, inPlane))
             return false;
 
-        // Pre-compute 2D Gaussian kernel
-        const float sigmaX = std::max(_blurWidth  / 3.0f, 0.001f);
-        const float sigmaY = std::max(_blurHeight / 3.0f, 0.001f);
-        const int kernelW = 2 * radX + 1;
-        const int kernelH = 2 * radY + 1;
-
-        static thread_local ScratchBuf scratch;
-        scratch.kernel.resize(kernelW * kernelH);
-
-        float kernelSum = 0.0f;
-        for (int dy = -radY; dy <= radY; ++dy) {
-            for (int dx = -radX; dx <= radX; ++dx) {
-                const float gx = std::exp(-0.5f * (dx * dx) / (sigmaX * sigmaX));
-                const float gy = std::exp(-0.5f * (dy * dy) / (sigmaY * sigmaY));
-                const float val = gx * gy;
-                scratch.kernel[(dy + radY) * kernelW + (dx + radX)] = val;
-                kernelSum += val;
-            }
-        }
-        // Normalize to sum = 1.0
-        if (kernelSum > 0.0f) {
-            const float invSum = 1.0f / kernelSum;
-            for (auto& v : scratch.kernel)
-                v *= invSum;
-        }
+        // Compute 1D half-kernels for separable passes
+        const auto kernelH = computeKernel(_blurWidth, _kernelQuality);
+        const auto kernelV = computeKernel(_blurHeight, _kernelQuality);
 
         // Determine channel layout — identify which channels are depth vs data
         const int nChans = channels.size();
 
-        // Build channel-index maps: for each channel position, record whether
-        // it is a depth channel (propagated raw) or a data channel (weighted)
         std::vector<bool> isDepthChan(nChans, false);
         {
             int ci = 0;
@@ -329,26 +304,36 @@ public:
             }
         }
 
-        // Output plane
-        plane = DeepOutputPlane(channels, box, DeepPixel::eUnordered);
+        // ---------------------------------------------------------------
+        // HORIZONTAL PASS: gather along X into intermediate buffer
+        //
+        // Intermediate buffer dimensions:
+        //   height = inputBox height (padded Y range, needed for V pass)
+        //   width  = output box width (only output columns are needed)
+        // ---------------------------------------------------------------
+        const int intW = box.r() - box.x();
+        const int intH = inputBox.t() - inputBox.y();
+
+        // Coordinate translation helpers
+        auto intX = [&](int worldX) { return worldX - box.x(); };
+        auto intY = [&](int worldY) { return worldY - inputBox.y(); };
+
+        std::vector<std::vector<std::vector<deepc::SampleRecord>>> intermediateBuffer(
+            intH, std::vector<std::vector<deepc::SampleRecord>>(intW));
 
         const Box& inBox = inPlane.box();
 
-        for (Box::iterator it = box.begin(); it != box.end(); ++it) {
-            if (Op::aborted())
-                return false;
+        for (int srcY = inputBox.y(); srcY < inputBox.t(); ++srcY) {
+            if (srcY < inBox.y() || srcY >= inBox.t())
+                continue;
 
-            const int outX = it.x;
-            const int outY = it.y;
+            for (int outX = box.x(); outX < box.r(); ++outX) {
+                if (Op::aborted())
+                    return false;
 
-            scratch.samples.clear();
+                auto& destSamples = intermediateBuffer[intY(srcY)][intX(outX)];
 
-            // Accumulate weighted samples from kernel neighbourhood
-            for (int dy = -radY; dy <= radY; ++dy) {
-                const int srcY = outY + dy;
-                if (srcY < inBox.y() || srcY >= inBox.t())
-                    continue;
-
+                // Gather from horizontal neighbourhood
                 for (int dx = -radX; dx <= radX; ++dx) {
                     const int srcX = outX + dx;
                     if (srcX < inBox.x() || srcX >= inBox.r())
@@ -359,7 +344,7 @@ public:
                     if (srcSamples == 0)
                         continue;
 
-                    const float weight = scratch.kernel[(dy + radY) * kernelW + (dx + radX)];
+                    const float weight = kernelH[std::abs(dx)];
                     if (weight <= 0.0f)
                         continue;
 
@@ -369,12 +354,10 @@ public:
                         rec.zBack  = srcPixel.getUnorderedSample(s, Chan_DeepBack);
                         rec.alpha  = srcPixel.getUnorderedSample(s, Chan_Alpha) * weight;
 
-                        // Collect data channels (non-depth) weighted, depth raw
                         rec.channels.resize(nChans);
                         int ci = 0;
                         foreach(z, channels) {
                             if (isDepthChan[ci]) {
-                                // Depth propagated from source — NOT weighted
                                 rec.channels[ci] = srcPixel.getUnorderedSample(s, z);
                             } else {
                                 rec.channels[ci] = srcPixel.getUnorderedSample(s, z) * weight;
@@ -382,8 +365,67 @@ public:
                             ci++;
                         }
 
-                        scratch.samples.push_back(std::move(rec));
+                        destSamples.push_back(std::move(rec));
                     }
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------
+        // VERTICAL PASS: gather along Y from intermediate → output
+        //
+        // For each output pixel (outX, outY), gather from intermediate
+        // rows outY-radY..outY+radY, weighting by kernelV. The total
+        // weight per sample is H_weight × V_weight (separable property).
+        // optimizeSamples runs only after this final pass.
+        // ---------------------------------------------------------------
+        static thread_local ScratchBuf scratch;
+
+        plane = DeepOutputPlane(channels, box, DeepPixel::eUnordered);
+
+        for (Box::iterator it = box.begin(); it != box.end(); ++it) {
+            if (Op::aborted())
+                return false;
+
+            const int outX = it.x;
+            const int outY = it.y;
+
+            scratch.samples.clear();
+
+            for (int dy = -radY; dy <= radY; ++dy) {
+                const int srcY = outY + dy;
+                if (srcY < inputBox.y() || srcY >= inputBox.t())
+                    continue;
+
+                const int iy = intY(srcY);
+                const int ix = intX(outX);
+                if (ix < 0 || ix >= intW || iy < 0 || iy >= intH)
+                    continue;
+
+                const auto& hSamples = intermediateBuffer[iy][ix];
+                if (hSamples.empty())
+                    continue;
+
+                const float weight = kernelV[std::abs(dy)];
+                if (weight <= 0.0f)
+                    continue;
+
+                for (const auto& hRec : hSamples) {
+                    deepc::SampleRecord rec;
+                    rec.zFront = hRec.zFront;
+                    rec.zBack  = hRec.zBack;
+                    rec.alpha  = hRec.alpha * weight;
+
+                    rec.channels.resize(nChans);
+                    for (int ci = 0; ci < nChans; ++ci) {
+                        if (isDepthChan[ci]) {
+                            rec.channels[ci] = hRec.channels[ci];
+                        } else {
+                            rec.channels[ci] = hRec.channels[ci] * weight;
+                        }
+                    }
+
+                    scratch.samples.push_back(std::move(rec));
                 }
             }
 
@@ -393,7 +435,7 @@ public:
                 continue;
             }
 
-            // Per-pixel sample optimization
+            // Per-pixel sample optimization (only after V pass)
             deepc::optimizeSamples(scratch.samples,
                                    _mergeTolerance,
                                    _colorTolerance,

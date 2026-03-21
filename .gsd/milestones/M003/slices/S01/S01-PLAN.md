@@ -27,6 +27,7 @@
 - `grep -q "intermediateBuffer\|intermediate" src/DeepCBlur.cpp` confirms two-pass structure
 - `grep -q "radX == 0 && radY == 0" src/DeepCBlur.cpp` confirms zero-blur fast path preserved
 - `bash scripts/verify-s01-syntax.sh` exits 0 (syntax check with mock DDImage headers)
+- `grep -q "computeKernel.*_kernelQuality" src/DeepCBlur.cpp` confirms kernel quality knob is wired into blur engine (diagnostic: if this fails, kernel tier selection has no effect)
 
 ## Integration Closure
 
@@ -50,7 +51,7 @@
   - Verify: `grep -c "getLQGaussianKernel\|getMQGaussianKernel\|getHQGaussianKernel" src/DeepCBlur.cpp` returns >= 3
   - Done when: Three kernel functions + enum knob + dispatcher exist in DeepCBlur.cpp; file compiles with no syntax errors in isolation
 
-- [ ] **T02: Replace 2D blur with separable H→V passes** `est:1h30m`
+- [x] **T02: Replace 2D blur with separable H→V passes** `est:1h30m`
   - Why: Core separable blur engine (R001). Replaces the O(r²) 2D kernel loop with two sequential 1D passes using an intermediate per-pixel sample buffer. Preserves the zero-blur fast path (R007). Wires the kernel tier dispatcher from T01 into the blur passes.
   - Files: `src/DeepCBlur.cpp`, `scripts/verify-s01-syntax.sh`
   - Do: In `doDeepEngine`, replace the single 2D kernel computation and nested gather loop with: (1) compute 1D H and V half-kernels via `computeKernel()`; (2) H pass iterating rows, gathering from 1D H neighbourhood, storing in `intermediate[y][x]` as `vector<SampleRecord>`; (3) V pass iterating output pixels, gathering from 1D V neighbourhood in intermediate, calling `optimizeSamples`, emitting to plane. Create `scripts/verify-s01-syntax.sh` with mock DDImage headers for syntax-only compilation check. Preserve zero-blur fast path. Remove the old `ScratchBuf::kernel` and 2D kernel code. Use helper lambda for intermediate buffer indexing to avoid off-by-one errors.
