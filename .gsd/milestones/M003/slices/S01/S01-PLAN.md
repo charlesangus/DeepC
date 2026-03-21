@@ -34,9 +34,16 @@
 - New wiring introduced in this slice: `_kernelQuality` enum knob + kernel dispatch in doDeepEngine
 - What remains before the milestone is truly usable end-to-end: S02 adds alpha correction, WH_knob, twirldown UI, and full docker build verification
 
+## Observability / Diagnostics
+
+- **Kernel quality inspection:** The `_kernelQuality` knob value is visible in Nuke's node panel and saved/restored in scripts. A script can query it via `nuke.toNode("DeepCBlur1")["kernel_quality"].value()`.
+- **Blur parameter logging:** Sigma and radius are derived deterministically from `_blurWidth`/`_blurHeight` divided by 3.0 — inspectable by reading those knob values.
+- **Failure visibility:** If blur produces unexpected results, the kernel quality tier is the first diagnostic variable to check. Zero-blur fast path logs no diagnostic (transparent passthrough).
+- **Redaction:** No secrets or user data involved — all values are numeric rendering parameters.
+
 ## Tasks
 
-- [ ] **T01: Add kernel tier functions and enum knob** `est:45m`
+- [x] **T01: Add kernel tier functions and enum knob** `est:45m`
   - Why: Establishes the three kernel accuracy tiers (R002) as independent free functions and wires the Enumeration_knob into the UI. This is risk-free work that T02 builds on.
   - Files: `src/DeepCBlur.cpp`
   - Do: Port `getLQGaussianKernel`, `getMQGaussianKernel`, `getHQGaussianKernel` from CMG99 (commit 9551704) as static free functions returning `std::vector<float>` half-kernels. Add `_kernelQuality` int member (default 1 = Medium). Add `Enumeration_knob` in `knobs()`. Add `computeKernel()` dispatcher. Use sigma = blur / 3.0 (not CMG99's 0.42466). Do NOT change `doDeepEngine` yet — kernel functions are added but not wired into the blur loop.

@@ -38,10 +38,99 @@ static const char* const HELP =
     "Part of the DeepC plugin collection.";
 
 // ---------------------------------------------------------------------------
+// Kernel quality tier names for Enumeration_knob
+// ---------------------------------------------------------------------------
+static const char* const kernelQualityNames[] = { "Low", "Medium", "High", nullptr };
+
+// ---------------------------------------------------------------------------
+// Gaussian kernel generation — three accuracy tiers
+// Each returns a half-kernel of size (radius + 1). The kernel is symmetric:
+//   full kernel = kernel[radius], ..., kernel[1], kernel[0], kernel[1], ..., kernel[radius]
+// ---------------------------------------------------------------------------
+
+// LQ: Raw unnormalized Gaussian — fast but does not sum to 1
+static std::vector<float> getLQGaussianKernel(float sigma, int radius)
+{
+    std::vector<float> kernel(radius + 1);
+    const float twoSigmaSq = 2.0f * sigma * sigma;
+    const float norm = 1.0f / (sigma * std::sqrt(2.0f * static_cast<float>(M_PI)));
+    for (int i = 0; i <= radius; ++i) {
+        kernel[i] = std::exp(-static_cast<float>(i * i) / twoSigmaSq) * norm;
+    }
+    return kernel;
+}
+
+// MQ: Normalized Gaussian — same formula as LQ but rescaled so full kernel sums to 1.0
+static std::vector<float> getMQGaussianKernel(float sigma, int radius)
+{
+    std::vector<float> kernel = getLQGaussianKernel(sigma, radius);
+    // Full symmetric sum: center + 2 * sum(tails)
+    float fullSum = kernel[0];
+    for (int i = 1; i <= radius; ++i)
+        fullSum += 2.0f * kernel[i];
+    if (fullSum > 0.0f) {
+        const float inv = 1.0f / fullSum;
+        for (auto& v : kernel)
+            v *= inv;
+    }
+    return kernel;
+}
+
+// HQ: CDF-based sub-pixel integration for maximum accuracy
+static std::vector<float> getHQGaussianKernel(float sigma, int radius)
+{
+    const int kernelWidth = 2 * radius + 1;
+    const float coverage = 3.5f * sigma;          // cover -3.5σ to +3.5σ
+    const float step = (2.0f * coverage) / static_cast<float>(kernelWidth);
+    const float sqrt2sigma = std::sqrt(2.0f) * sigma;
+
+    // Build full kernel via CDF differences, then extract half
+    std::vector<float> fullKernel(kernelWidth);
+    for (int i = 0; i < kernelWidth; ++i) {
+        const float lo = -coverage + static_cast<float>(i) * step;
+        const float hi = lo + step;
+        fullKernel[i] = 0.5f * (std::erff(hi / sqrt2sigma) - std::erff(lo / sqrt2sigma));
+    }
+
+    // Extract half-kernel (center + right side)
+    std::vector<float> kernel(radius + 1);
+    for (int i = 0; i <= radius; ++i)
+        kernel[i] = fullKernel[radius + i];
+
+    // Normalize so full symmetric kernel sums to 1.0
+    float fullSum = kernel[0];
+    for (int i = 1; i <= radius; ++i)
+        fullSum += 2.0f * kernel[i];
+    if (fullSum > 0.0f) {
+        const float inv = 1.0f / fullSum;
+        for (auto& v : kernel)
+            v *= inv;
+    }
+    return kernel;
+}
+
+// ---------------------------------------------------------------------------
+// Kernel dispatcher — selects tier based on quality enum value
+// ---------------------------------------------------------------------------
+static std::vector<float> computeKernel(float blur, int quality)
+{
+    const float sigma = std::max(blur / 3.0f, 0.001f);
+    const int radius = std::max(0, static_cast<int>(std::ceil(blur)));
+    if (radius == 0)
+        return {1.0f};
+    switch (quality) {
+        case 0:  return getLQGaussianKernel(sigma, radius);
+        case 2:  return getHQGaussianKernel(sigma, radius);
+        default: return getMQGaussianKernel(sigma, radius);
+    }
+}
+
+// ---------------------------------------------------------------------------
 class DeepCBlur : public DeepFilterOp
 {
     float _blurWidth;       // pixel radius in X
     float _blurHeight;      // pixel radius in Y
+    int   _kernelQuality;   // kernel accuracy tier: 0=Low, 1=Medium, 2=High
     int   _maxSamples;      // per-pixel sample cap (0 = unlimited)
     float _mergeTolerance;  // Z-front distance for sample merge
     float _colorTolerance;  // channel-value distance for sample merge
@@ -62,6 +151,7 @@ public:
     DeepCBlur(Node* node) : DeepFilterOp(node),
         _blurWidth(1.0f),
         _blurHeight(1.0f),
+        _kernelQuality(1),
         _maxSamples(100),
         _mergeTolerance(0.001f),
         _colorTolerance(0.01f)
@@ -85,6 +175,10 @@ public:
         SetRange(f, 0.0f, 100.0f);
         Tooltip(f, "Vertical blur radius in pixels (sigma = radius / 3). "
                     "Values above 10 will be slow.");
+
+        Enumeration_knob(f, &_kernelQuality, kernelQualityNames, "kernel_quality", "kernel quality");
+        Tooltip(f, "Gaussian kernel accuracy tier. Low = fast/approximate, "
+                    "Medium = normalized (default), High = CDF sub-pixel integration.");
 
         Int_knob(f, &_maxSamples, "max_samples", "max samples");
         SetRange(f, 0, 500);
