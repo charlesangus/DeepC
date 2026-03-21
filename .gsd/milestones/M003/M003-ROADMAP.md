@@ -49,7 +49,7 @@ This milestone is complete only when all are true:
 
 ## Slices
 
-- [ ] **S01: Separable blur + kernel tiers** `risk:high` `depends:[]`
+- [x] **S01: Separable blur + kernel tiers** `risk:high` `depends:[]`
   > After this: DeepCBlur uses two-pass separable Gaussian blur with three kernel accuracy tiers selectable via enum knob. Compiles via docker-build.sh.
 
 - [ ] **S02: Alpha correction + UI polish** `risk:medium` `depends:[S01]`
