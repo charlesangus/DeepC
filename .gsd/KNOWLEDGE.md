@@ -104,3 +104,29 @@ The Nuke DDImage `Op` base class uses `minimum_inputs()` and `maximum_inputs()` 
 **Context:** DeepCDepthBlur falloff weights (S02, M004)
 
 For Linear and Smoothstep falloffs with n=2, the two sample positions are t=-1 and t=1. Linear gives weight 0 at both endpoints (1-|t|=0); Smoothstep similarly. The sum is 0, and without a fallback the division produces NaN. All weight generators should include `else for (auto& v : w) v = 1.0f / n;` as a uniform fallback when `sum == 0`.
+
+## DeepCDepthBlur — S02/M004 Patterns
+
+### Optional B input: snake_case minimum_inputs/maximum_inputs, no override, inputs(2) constructor
+**Context:** DeepCDepthBlur optional B input (S02, M004)
+
+The Nuke DDImage `Op` base uses `minimum_inputs()` and `maximum_inputs()` (snake_case). The task plan referenced camelCase `minimumInputs`/`maximumInputs` with `override` — neither exists. This was caught only during the docker build, NOT by the mock-header syntax check (mock headers accepted both forms). The correct pattern, matching `DeepCCopyBBox.cpp` and `DeepCConstant.cpp`:
+- Constructor: `inputs(2)` to set the initial input count
+- `int minimum_inputs() const { return 1; }` — no override
+- `int maximum_inputs() const { return 2; }` — no override
+- Runtime fetch: `dynamic_cast<DeepOp*>(Op::input(1))` with null check
+
+### Tidy output clamp must not touch alpha — only zBack
+**Context:** DeepCDepthBlur tidy pass (S02, M004)
+
+The overlap clamp (`zBack[i] = min(zBack[i], zFront[i+1])`) must modify only `zBack`. Modifying alpha to compensate for the trimmed Z extent would break the flatten invariant. The flatten invariant is maintained because alpha was already set by the normalised weight during spreading — trimming the depth interval's extent doesn't change the compositing weight. Future modifications to the tidy pass must preserve this: touch only Z extent, never alpha.
+
+### Weight normalisation must handle sum==0 (n=2 degenerate case)
+**Context:** DeepCDepthBlur falloff weights (S02, M004)
+
+For Linear and Smoothstep falloffs with n=2, sample positions are at t=−1 and t=+1. Linear weight = 1−|t| = 0 at both; Smoothstep similarly. Sum = 0, causing division-by-zero (NaN). All weight generators must include a uniform fallback: `if (sum > 0.0f) for (auto& v : w) v /= sum; else for (auto& v : w) v = 1.0f / n;`. This was not in the original plan but is required for correct output at num_samples=2 with Linear or Smoothstep.
+
+### Flatten invariant is structural, not runtime-asserted
+**Context:** DeepCDepthBlur correctness guarantee (S02, M004)
+
+`flatten(output) == flatten(input)` holds by construction: weights sum to 1 so total alpha is preserved; channels scale proportionally so premult is preserved; the tidy clamp touches only zBack not alpha. There is no runtime assertion. The only way to catch a regression is a visual A/B comparison in Nuke (DeepToImage before vs after DeepCDepthBlur). Consider adding a unit test harness that exercises `computeWeights` directly if CI is ever added.

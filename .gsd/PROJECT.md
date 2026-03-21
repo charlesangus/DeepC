@@ -10,7 +10,7 @@ Artists can use deep-compositing operations in Nuke that don't exist in the buil
 
 ## Current State
 
-**v1.2 + DeepCBlur v2 shipped. M004 S01 complete.** 24 plugins. DeepCBlur upgraded to separable two-pass Gaussian blur (O(2r) vs O(r²)), three kernel accuracy tiers (LQ/MQ/HQ), alpha darkening correction toggle, WH_knob blur size, and sample optimization twirldown. `DeepSampleOptimizer.h` now uses unpremultiplied colour comparison and includes a `tidyOverlapping` pre-pass that splits and merges overlapping depth intervals before tolerance-based merge — eliminating concentric jaggy artifacts on hard-surface inputs. All plugins build and load cleanly in Nuke 16+ on Linux and Windows via `docker-build.sh`.
+**v1.2 + DeepCBlur v2 + DeepCDepthBlur shipped. M004 complete.** 25 plugins. DeepCBlur upgraded to separable two-pass Gaussian blur (O(2r) vs O(r²)), three kernel accuracy tiers (LQ/MQ/HQ), alpha darkening correction toggle, WH_knob blur size, and sample optimization twirldown. `DeepSampleOptimizer.h` now uses unpremultiplied colour comparison and includes a `tidyOverlapping` pre-pass that splits and merges overlapping depth intervals before tolerance-based merge — eliminating concentric jaggy artifacts on hard-surface inputs. `DeepCDepthBlur` is a new DeepFilterOp that spreads each input sample's alpha across N sub-samples in Z with four falloff modes (Linear, Gaussian, Smoothstep, Exponential), enforces tidy output (sorted by zFront, non-overlapping), preserves the flatten invariant by construction, and supports an optional B input for depth-range-gated spreading. All plugins build and load cleanly in Nuke 16+ on Linux via `docker-build.sh`.
 
 ## Architecture / Key Patterns
 
@@ -30,4 +30,4 @@ See `.gsd/REQUIREMENTS.md` for the explicit capability contract, requirement sta
 - [x] M001: DeepC v1.0–v1.2 — 23 plugins shipped, codebase sweep, GL handles, Shuffle2 UI, 4D noise, build system, DeepThinner, docs
 - [x] M002: DeepCBlur — Gaussian blur on deep images with sample propagation and built-in optimization
 - [x] M003: DeepCBlur v2 — Separable blur, kernel accuracy tiers, alpha darkening correction, UI polish *(complete)*
-- [ ] M004-ks4br0: DeepCBlur correctness + DeepCDepthBlur — Fix premult colour comparison and overlap tidy in optimizer; new Z-axis depth spread node
+- [x] M004-ks4br0: DeepCBlur correctness + DeepCDepthBlur — Fix premult colour comparison and overlap tidy in optimizer; new Z-axis depth spread node *(complete)*

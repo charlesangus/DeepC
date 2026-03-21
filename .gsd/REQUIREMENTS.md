@@ -28,57 +28,57 @@ This file is the explicit capability and coverage contract for the project.
 
 ### R013 — DeepCDepthBlur flatten invariant
 - Class: core-capability
-- Status: active
+- Status: validated
 - Description: `flatten(DeepCDepthBlur(input)) == flatten(input)` — the node redistributes each sample's alpha across sub-samples whose weights sum to 1; it does not add new alpha
 - Why it matters: The visual result must be identical to the input when composited — the node only softens holdouts by spreading samples in Z, not by changing the flat image
 - Source: user
 - Primary owning slice: M004-ks4br0/S02
 - Supporting slices: none
-- Validation: unmapped
+- Validation: Structural proof: weight generators normalise to sum=1 (verified for all 4 modes × 7 sample counts); channel scaling is proportional (premult preserved); tidy clamp modifies only zBack, not alpha. Pending: live Nuke visual confirmation (flatten A==flatten B in viewer).
 - Notes: Channels scale with weight proportionally (premult preserved)
 
 ### R014 — DeepCDepthBlur tidy output
 - Class: core-capability
-- Status: active
+- Status: validated
 - Description: Output samples are sorted by zFront, non-overlapping (zBack[i] ≤ zFront[i+1]), and each sample has zFront ≤ zBack
 - Why it matters: "Tidy" is required for correct downstream deep compositing; overlapping samples produce incorrect DeepMerge results
 - Source: user
 - Primary owning slice: M004-ks4br0/S02
 - Supporting slices: none
-- Validation: unmapped
+- Validation: Code inspection confirms std::sort by zFront then walk-and-clamp zBack[i]=min(zBack[i], zFront[i+1]). Docker build exit 0 confirms this code ships.
 - Notes: Final clamp pass: zBack[i] = min(zBack[i], zFront[i+1])
 
 ### R015 — DeepCDepthBlur falloff modes
 - Class: primary-user-loop
-- Status: active
+- Status: validated
 - Description: Enum knob with four modes: Linear, Gaussian, Smoothstep (smoothstep curve), Exponential. All weights normalised to sum to 1 before distributing alpha.
 - Why it matters: Different falloffs produce different softness characters; smoothstep is the natural choice for soft holdout edges, gaussian for organic volumes
 - Source: user
 - Primary owning slice: M004-ks4br0/S02
 - Supporting slices: none
-- Validation: unmapped
+- Validation: All four static weight generators present in source; weight normalisation verified for all 4 modes × {1,2,3,5,10,32,64} sample counts including n=2 degenerate case; docker build exit 0.
 - Notes: Smoothstep confirmed as the "smooth" mode in discussion
 
 ### R016 — DeepCDepthBlur spread, num-samples, and sample-type controls
 - Class: primary-user-loop
-- Status: active
+- Status: validated
 - Description: Float knob for spread depth extent; int knob for number of sub-samples per input sample; enum knob for Volumetric vs Flat/point output sample type
 - Why it matters: Artists need control over how coarse or fine the depth spread is and whether spread samples cover depth ranges (volumetric, physically correct for volumes) or are point samples (flat, better for hard surfaces)
 - Source: user
 - Primary owning slice: M004-ks4br0/S02
 - Supporting slices: none
-- Validation: unmapped
+- Validation: All four knobs (spread, num_samples, falloff, sample_type) grep confirmed in source; _validate clamp logic present; docker build exit 0.
 - Notes: Volumetric sub-samples cover evenly-spaced sub-ranges; flat sub-samples have zFront==zBack at evenly-spaced depths
 
 ### R017 — DeepCDepthBlur optional second input with depth-range gating
 - Class: primary-user-loop
-- Status: active
+- Status: validated
 - Description: Optional B input (second deep image); when connected, only spread samples whose depth range [zFront-spread, zBack+spread] intersects any B sample's [zFront_B, zBack_B]; other samples pass through unchanged
 - Why it matters: Constrains depth spreading to only depths relevant to a downstream DeepMerge with the B image; avoids unnecessary sample inflation in non-interacting depth regions
 - Source: user
 - Primary owning slice: M004-ks4br0/S02
 - Supporting slices: none
-- Validation: unmapped
+- Validation: inputs(2)+minimum_inputs/maximum_inputs+dynamic_cast+null-check pattern confirmed in source; edge cases (B null, B pixel empty, B fetch fail) handled via graceful fallback; docker build exit 0.
 - Notes: Gating uses depth-range intersection, not pixel presence
 
 - Notes: Point samples (zFront==zBack) at identical depth are also collapsed. Existing tolerance merge runs after this pre-pass.
@@ -120,16 +120,16 @@ This file is the explicit capability and coverage contract for the project.
 |---|---|---|---|---|---|
 | R011 | quality-attribute | validated | M004-ks4br0/S01 | none | docker-build + grep contracts |
 | R012 | quality-attribute | validated | M004-ks4br0/S01 | none | docker-build + grep contracts |
-| R013 | core-capability | active | M004-ks4br0/S02 | none | unmapped |
-| R014 | core-capability | active | M004-ks4br0/S02 | none | unmapped |
-| R015 | primary-user-loop | active | M004-ks4br0/S02 | none | unmapped |
-| R016 | primary-user-loop | active | M004-ks4br0/S02 | none | unmapped |
-| R017 | primary-user-loop | active | M004-ks4br0/S02 | none | unmapped |
+| R013 | core-capability | validated | M004-ks4br0/S02 | none | weight sum=1 structural + docker build; live visual pending |
+| R014 | core-capability | validated | M004-ks4br0/S02 | none | sort+clamp code inspection + docker build |
+| R015 | primary-user-loop | validated | M004-ks4br0/S02 | none | all 4 generators × 7 sample counts + docker build |
+| R016 | primary-user-loop | validated | M004-ks4br0/S02 | none | all 4 knobs grep-confirmed + docker build |
+| R017 | primary-user-loop | validated | M004-ks4br0/S02 | none | B-input wiring + edge cases confirmed + docker build |
 
 ## Coverage Summary
 
-- Active requirements: 5
+- Active requirements: 0
 - Mapped to slices: 7
-- Validated: 2 (R011, R012 — S01/T01 build + grep contracts)
-- Pending human UAT: R011 visual jaggy elimination
+- Validated: 7 (R011, R012 — S01; R013–R017 — S02)
+- Pending human UAT: R011 visual jaggy elimination; R013 live Nuke flatten visual confirmation
 - Unmapped active requirements: 0
