@@ -1,0 +1,35 @@
+import nuke
+
+def create_deepc_menu():
+    menus = {
+            "Draw": {"icon":"ToolbarDraw.png",
+                    "nodes": [@DRAW_NODES@]},
+            "Channel": {"icon":"ToolbarChannel.png",
+                        "nodes": [@CHANNEL_NODES@]},
+            "Color": {"icon":"ToolbarColor.png",
+                      "nodes": [@COLOR_NODES@]},
+            "3D": {"icon":"ToolbarChannel.png",
+                    "nodes": [@3D_NODES@]},
+            "Merge": {"icon":"ToolbarMerge.png",
+                      "nodes": [@MERGE_NODES@]},
+            "Util": {"icon":"ToolbarToolsets.png",
+                    "nodes": [@Util_NODES@]},
+            "Filter": {"icon":"ToolbarFilter.png",
+                       "nodes": [@FILTER_NODES@]},
+    }
+
+    # Display-name overrides: maps class name to menu label
+    _display_name = {"DeepCShuffle2": "DeepCShuffle"}
+
+    toolbar = nuke.menu("Nodes")
+    DeepCMenu = toolbar.addMenu("DeepC", icon="DeepC.png")
+
+
+    for menu, entry in menus.items():
+        new = DeepCMenu.addMenu(menu, icon=entry["icon"])
+
+        for node in entry.get("nodes"):
+            label = _display_name.get(node, node)
+            new.addCommand(label, "nuke.createNode('{}')".format(node), icon="{}.png".format(node))
+
+create_deepc_menu()

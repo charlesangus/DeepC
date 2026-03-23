@@ -1,0 +1,872 @@
+#include "ShuffleMatrixWidget.h"
+#include "ShuffleMatrixKnob.h"
+#include "DDImage/Channel.h"
+#include "DDImage/ChannelSet.h"
+#include "DDImage/Op.h"
+#include <QTabWidget>
+#include <QTimer>
+#include <sstream>
+#include <map>
+
+// Returns the part of a full NDK channel name after the last dot ("rgba.red" -> "red").
+static std::string shortChannelName(const std::string& fullName)
+{
+    const std::string::size_type dotPosition = fullName.rfind('.');
+    if (dotPosition != std::string::npos)
+        return fullName.substr(dotPosition + 1);
+    return fullName;
+}
+
+// Returns a single-character column header for a full NDK channel name ("rgba.red" -> "r").
+// Using only the first letter keeps column headers within the 22px button cell width,
+// preventing longer names like "green" from forcing QGridLayout to widen the column.
+static QString columnHeaderLabel(const std::string& fullName)
+{
+    const std::string shortName = shortChannelName(fullName);
+    if (shortName.empty())
+        return QString();
+    return QString(QChar(shortName[0]));
+}
+
+// Returns the layer part of a full NDK channel name ("rgba.red" -> "rgba").
+static std::string layerNameFromChannelSet(const DD::Image::ChannelSet& channelSet)
+{
+    DD::Image::Channel ch;
+    foreach(ch, channelSet)
+    {
+        const std::string fullName = DD::Image::getName(ch);
+        const std::string::size_type dotPosition = fullName.rfind('.');
+        if (dotPosition != std::string::npos)
+            return fullName.substr(0, dotPosition);
+        return fullName;
+    }
+    return "";
+}
+
+// ---------------------------------------------------------------------------
+// nukeChannelColor — maps short channel name to Nuke-standard display color
+// ---------------------------------------------------------------------------
+
+QColor nukeChannelColor(const std::string& shortChannelName)
+{
+    if (shortChannelName == "red"   || shortChannelName == "r")  return QColor(180,  45,  45);
+    if (shortChannelName == "green" || shortChannelName == "g")  return QColor( 45, 140,  45);
+    if (shortChannelName == "blue"  || shortChannelName == "b")  return QColor( 45,  90, 180);
+    if (shortChannelName == "alpha" || shortChannelName == "a")  return QColor(155, 155, 155);
+    if (shortChannelName == "z"     || shortChannelName == "Z")  return QColor(180,  45,  45);
+    if (shortChannelName == "u")                                 return QColor(160,  45, 160);
+    if (shortChannelName == "v")                                 return QColor(200,  80, 200);
+    if (shortChannelName == "x")                                 return QColor(130,  45, 170);
+    if (shortChannelName == "y")                                 return QColor(100,  45, 150);
+    if (shortChannelName == "w")                                 return QColor( 80,  45, 130);
+    return QColor(80, 80, 80);
+}
+
+// ---------------------------------------------------------------------------
+// ChannelButton — constructor and paintEvent
+// ---------------------------------------------------------------------------
+
+ChannelButton::ChannelButton(QColor baseColor, QWidget* parent)
+    : QPushButton(parent)
+    , _baseColor(baseColor)
+{
+    setCheckable(true);
+    setFixedSize(22, 22);
+    setFlat(true);
+}
+
+void ChannelButton::nextCheckState()
+{
+    // Radio-button semantics: a checked button cannot be unchecked by clicking it.
+    // Only allow transitioning from unchecked → checked; ignore clicks on already-
+    // checked buttons so the row always has exactly one source selected.
+    if (!isChecked())
+        setChecked(true);
+}
+
+void ChannelButton::paintEvent(QPaintEvent* /*event*/)
+{
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+
+    // Disabled fill: QColor(85,85,85) is visibly distinct from Nuke's ~#2b2b2b panel
+    // background, whereas the previous QColor(55,55,55) was essentially invisible.
+    QColor fillColor = isEnabled() ? _baseColor : QColor(85, 85, 85);
+    if (isChecked() && isEnabled())
+        fillColor = fillColor.lighter(130);
+
+    painter.fillRect(rect(), fillColor);
+
+    const QColor borderColor = isEnabled() ? QColor(25, 25, 25) : QColor(110, 110, 110);
+    painter.setPen(QPen(borderColor, 1));
+    painter.drawRect(rect().adjusted(0, 0, -1, -1));
+
+    if (isChecked() && isEnabled())
+    {
+        // Choose X-mark color based on fill luminance to ensure visibility on
+        // both dark and light backgrounds. const:1 buttons have a near-white
+        // fill (lightnessF > 0.5) so the X must be drawn in black, not white.
+        const QColor xMarkColor = (fillColor.lightnessF() > 0.5) ? Qt::black : Qt::white;
+        painter.setPen(QPen(xMarkColor, 2));
+        painter.drawLine(4, 4, 17, 17);
+        painter.drawLine(17, 4, 4, 17);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ArrowLabel — constructor and paintEvent
+// ---------------------------------------------------------------------------
+
+ArrowLabel::ArrowLabel(Direction direction, QWidget* parent)
+    : QWidget(parent)
+    , _direction(direction)
+{
+    setFixedSize(22, 22);
+}
+
+void ArrowLabel::paintEvent(QPaintEvent* /*event*/)
+{
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+
+    // Solid filled triangle, centered in the 22x22 cell.
+    // Color is a muted light grey that reads clearly on Nuke's dark panel background.
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(160, 160, 160));
+
+    QPolygon arrowShape;
+    if (_direction == Down)
+    {
+        // Downward-pointing triangle: wide base at top, apex at bottom center.
+        arrowShape << QPoint(4, 7) << QPoint(18, 7) << QPoint(11, 16);
+    }
+    else // Right
+    {
+        // Rightward-pointing triangle: tall base on left, apex at right center.
+        arrowShape << QPoint(7, 4) << QPoint(7, 18) << QPoint(16, 11);
+    }
+    painter.drawPolygon(arrowShape);
+}
+
+// ---------------------------------------------------------------------------
+// Constructor / Destructor
+// ---------------------------------------------------------------------------
+
+ShuffleMatrixWidget::ShuffleMatrixWidget(ShuffleMatrixKnob* knob, QWidget* parent)
+    : QWidget(parent)
+    , _knob(knob)
+    , _gridLayout(nullptr)
+{
+    _knob->addCallback(WidgetCallback, this);
+    _gridLayout = new QGridLayout(this);
+    _gridLayout->setHorizontalSpacing(2);
+    _gridLayout->setVerticalSpacing(1);
+    _gridLayout->setContentsMargins(2, 2, 2, 2);
+    buildLayout();
+}
+
+ShuffleMatrixWidget::~ShuffleMatrixWidget()
+{
+    if (_knob)
+        _knob->removeCallback(WidgetCallback, this);
+}
+
+// ---------------------------------------------------------------------------
+// Static callback — handles Nuke knob lifecycle events
+// ---------------------------------------------------------------------------
+
+int ShuffleMatrixWidget::WidgetCallback(void* closure, DD::Image::Knob::CallbackReason reason)
+{
+    auto* widget = static_cast<ShuffleMatrixWidget*>(closure);
+    switch (reason)
+    {
+        case DD::Image::Knob::kIsVisible:
+            for (QWidget* parentWidget = widget->parentWidget();
+                 parentWidget;
+                 parentWidget = parentWidget->parentWidget())
+            {
+                if (qobject_cast<QTabWidget*>(parentWidget))
+                    return widget->isVisibleTo(parentWidget);
+            }
+            return widget->isVisible() ? 1 : 0;
+
+        case DD::Image::Knob::kUpdateWidgets:
+            widget->syncFromKnob();
+            return 0;
+
+        case DD::Image::Knob::kDestroying:
+            // Null the back-pointer in the knob so syncWidgetNow() cannot fire
+            // into a destroyed widget. Must come before nulling widget->_knob
+            // because clearWidgetPointer() dereferences the knob pointer.
+            if (widget->_knob)
+                widget->_knob->clearWidgetPointer();
+            widget->_knob = nullptr;
+            return 0;
+
+        default:
+            return 0;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Layout construction
+// ---------------------------------------------------------------------------
+
+void ShuffleMatrixWidget::buildLayout()
+{
+    const DD::Image::ChannelSet& in1Set  = _knob->in1ChannelSet();
+    const DD::Image::ChannelSet& in2Set  = _knob->in2ChannelSet();
+    const DD::Image::ChannelSet& out1Set = _knob->out1ChannelSet();
+    const DD::Image::ChannelSet& out2Set = _knob->out2ChannelSet();
+
+    // ---- Collect input source columns ----
+
+    std::vector<std::string> in1Columns;
+    std::vector<std::string> in2Columns;
+
+    {
+        DD::Image::Channel ch;
+        foreach(ch, in1Set)
+            in1Columns.push_back(DD::Image::getName(ch));
+    }
+
+    // When in2 is set to none (Chan_Black) we still want to render the in2 columns
+    // but with all buttons disabled, so the layout does not visually collapse.
+    // Populate placeholder channel names so the column group is always visible.
+    const bool in2Disabled = (in2Set == DD::Image::ChannelSet(DD::Image::Chan_Black));
+    {
+        DD::Image::Channel ch;
+        foreach(ch, in2Set)
+            in2Columns.push_back(DD::Image::getName(ch));
+    }
+    if (in2Disabled && in2Columns.empty())
+    {
+        // Insert fixed placeholder column names so the in2 section always renders
+        // as a visible greyed-out group even when no layer is selected.
+        in2Columns.push_back("rgba.red");
+        in2Columns.push_back("rgba.green");
+        in2Columns.push_back("rgba.blue");
+        in2Columns.push_back("rgba.alpha");
+    }
+
+    // ---- Collect output rows per group ----
+
+    std::vector<std::string> out1Rows;
+    std::vector<std::string> out2Rows;
+
+    {
+        DD::Image::Channel ch;
+        foreach(ch, out1Set)
+        {
+            if (out1Rows.size() >= 8) break;
+            out1Rows.push_back(DD::Image::getName(ch));
+        }
+    }
+
+    // When out2 is set to none (Chan_Black) we still want to render the out2 rows
+    // but with all buttons disabled, so the layout does not visually collapse.
+    const bool out2Disabled = (out2Set == DD::Image::ChannelSet(DD::Image::Chan_Black));
+    {
+        DD::Image::Channel ch;
+        foreach(ch, out2Set)
+        {
+            if (out2Rows.size() >= 8) break;
+            out2Rows.push_back(DD::Image::getName(ch));
+        }
+    }
+    if (out2Disabled && out2Rows.empty())
+    {
+        // Insert fixed placeholder row names so the out2 section always renders
+        // as a visible greyed-out group even when no layer is selected.
+        out2Rows.push_back("rgba.red");
+        out2Rows.push_back("rgba.green");
+        out2Rows.push_back("rgba.blue");
+        out2Rows.push_back("rgba.alpha");
+    }
+
+    // ---- Shared column layout ----
+    //
+    //   Cols 0 .. in1Count-1           : in1 toggle columns
+    //   Col  in1Count                  : 8px separator between in1 and const:0
+    //   Col  in1Count+1                : "0" const column (constant 0.0 source)
+    //   Col  in1Count+2                : "1" const column (constant 1.0 source)
+    //   Col  in1Count+3                : 8px separator between const:1 and in2
+    //   Cols in1Count+4 .. +in2Count+3 : in2 toggle columns (always rendered; disabled if in2=none)
+    //   Col  outLabelCol               : output channel name / group name label
+    //
+    // The two const columns have normal 2px inter-column spacing between them.
+    // An 8px separator column on each outer side gives visual separation from in1/in2 groups.
+
+    const int in1Count          = static_cast<int>(in1Columns.size());
+    const int in2Count          = static_cast<int>(in2Columns.size());
+    const int sepBeforeConstCol = in1Count;        // 8px separator before const:0
+    const int const0Col         = in1Count + 1;
+    const int const1Col         = in1Count + 2;
+    const int sepAfterConstCol  = in1Count + 3;    // 8px separator after const:1
+    const int in2StartCol       = in1Count + 4;
+    // outArrowCol holds a fixed-size ArrowLabel(Right) per data row — same 22×22
+    // as ChannelButton so it doesn't disturb column widths.
+    // outLabelCol is the stretchy text column to its right.
+    const int outArrowCol       = in2StartCol + in2Count;
+    const int outLabelCol       = outArrowCol + 1;
+
+    _toggleButtons.clear();
+
+    // ---- Set column stretch so button columns stay fixed-width ----
+    // All button and label-header columns are fixed to their content width
+    // (buttons are 22x22px). The arrow column is also fixed (22px ArrowLabel).
+    // The output label column on the right gets all remaining stretch so it
+    // expands without pushing the button columns apart.
+    // Separator columns get a fixed minimum width of 8px with zero stretch.
+    for (int col = 0; col < outArrowCol; ++col)
+        _gridLayout->setColumnStretch(col, 0);
+    _gridLayout->setColumnStretch(outArrowCol, 0);
+    _gridLayout->setColumnStretch(outLabelCol, 1);
+    _gridLayout->setColumnMinimumWidth(sepBeforeConstCol, 8);
+    _gridLayout->setColumnMinimumWidth(sepAfterConstCol,  8);
+
+    // ---- Helper: create and populate a ChannelSet picker QComboBox ----
+    //
+    // Creates a QComboBox populated with all available layer names from the knob,
+    // sets the current selection to currentLayerName, and connects currentTextChanged
+    // to a QTimer::singleShot(0) deferred handler that calls the supplied callback.
+    // The deferred callback breaks the re-entrant call stack that caused a segfault
+    // in the previous QComboBox attempt (commit 8785a83): the Nuke API calls that
+    // rebuild the widget are deferred to the next event loop tick, so the signal
+    // handler returns before the QComboBox that fired it can be deleted.
+
+    auto makePicker = [&](const std::string& currentLayerName,
+                          std::function<void(const QString&)> onChanged) -> QComboBox*
+    {
+        QComboBox* picker = new QComboBox(this);
+        picker->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+
+        const std::vector<std::string> layerNames = _knob->availableLayerNames();
+        int currentIndex = 0;
+        for (int idx = 0; idx < static_cast<int>(layerNames.size()); ++idx)
+        {
+            picker->addItem(QString::fromStdString(layerNames[idx]));
+            if (layerNames[idx] == currentLayerName)
+                currentIndex = idx;
+        }
+        // If currentLayerName was not in the list (e.g. a non-standard layer),
+        // add it so the current state is always visible in the picker.
+        if (currentIndex == 0 && !currentLayerName.empty() && currentLayerName != "none")
+        {
+            picker->addItem(QString::fromStdString(currentLayerName));
+            currentIndex = picker->count() - 1;
+        }
+        {
+            const QSignalBlocker blockWhileSetting(picker);
+            picker->setCurrentIndex(currentIndex);
+        }
+
+        connect(picker, &QComboBox::currentTextChanged,
+                [onChanged](const QString& selectedText)
+                {
+                    // Defer the Nuke API call to the next event loop tick via
+                    // QTimer::singleShot(0). This ensures the currentTextChanged
+                    // signal dispatch completes and the QComboBox remains alive
+                    // before syncFromKnob() rebuilds (and deletes) the widget.
+                    QTimer::singleShot(0, [onChanged, selectedText]()
+                    {
+                        onChanged(selectedText);
+                    });
+                });
+
+        return picker;
+    };
+
+    // ---- Lambda: build one output group (two header rows + data rows) ----
+    //
+    // Each group gets its own "in 1" / "in 2" header and per-column channel
+    // labels so it reads as a self-contained matrix, not part of a shared block.
+    // Returns the next unused grid row.
+    //
+    // groupId    — stable identity string used in button objectNames for radio
+    //              enforcement ("out1" or "out2"). Must be unique across groups.
+    // groupLabel — human-readable display name shown in the panel (layer name
+    //              or "out 1"/"out 2" fallback). Independent of groupId.
+    // outPickerPtr — receives the created output picker QComboBox; used by
+    //                buildLayout() to store the pointer into _out1Picker/_out2Picker.
+
+    auto buildGroup = [&](int startRow,
+                          const std::vector<std::string>& outRows,
+                          const std::string& groupId,
+                          const std::string& groupLabel,
+                          bool buttonsDisabled,
+                          bool showGroupHeaders,
+                          QComboBox** outPickerPtr) -> int
+    {
+        // showGroupHeaders=true  (out1): channel-letter row + arrow row + data rows
+        // showGroupHeaders=false (out2): arrow row + data rows
+        // The out picker is anchored at the arrow row in both cases so it visually
+        // lines up with the first row of arrows rather than floating above them.
+        int currentRow = startRow;
+
+        // Channel letter labels: "r", "g", "b", "a", "0", "1", ... (out1 only)
+        if (showGroupHeaders)
+        {
+            auto makeHeaderLabel = [this](const QString& text) -> QLabel*
+            {
+                QLabel* label = new QLabel(text, this);
+                label->setAlignment(Qt::AlignCenter);
+                return label;
+            };
+            for (int i = 0; i < in1Count; ++i)
+                _gridLayout->addWidget(makeHeaderLabel(columnHeaderLabel(in1Columns[i])), currentRow, i);
+            _gridLayout->addWidget(makeHeaderLabel("0"), currentRow, const0Col);
+            _gridLayout->addWidget(makeHeaderLabel("1"), currentRow, const1Col);
+            for (int i = 0; i < in2Count; ++i)
+                _gridLayout->addWidget(makeHeaderLabel(columnHeaderLabel(in2Columns[i])), currentRow, in2StartCol + i);
+            ++currentRow;
+        }
+
+        // Down-arrow row — always shown for both groups
+        const int arrowRow = currentRow;
+        {
+            for (int i = 0; i < in1Count; ++i)
+                _gridLayout->addWidget(new ArrowLabel(ArrowLabel::Down, this), arrowRow, i);
+            _gridLayout->addWidget(new ArrowLabel(ArrowLabel::Down, this), arrowRow, const0Col);
+            _gridLayout->addWidget(new ArrowLabel(ArrowLabel::Down, this), arrowRow, const1Col);
+            for (int i = 0; i < in2Count; ++i)
+                _gridLayout->addWidget(new ArrowLabel(ArrowLabel::Down, this), arrowRow, in2StartCol + i);
+            ++currentRow;
+        }
+
+        const int dataStartRow = currentRow;
+
+        // Output picker: anchored at arrowRow so it visually aligns with the first
+        // arrow, spanning through all data rows.
+        {
+            const int dataRowCount = static_cast<int>(outRows.size());
+            const int pickerRowSpan = 1 + (dataRowCount > 0 ? dataRowCount : 1);
+            QComboBox* outPicker = makePicker(groupLabel,
+                [this, groupId](const QString& selectedText)
+                {
+                    // Guard: widget might have been destroyed between timer post and fire.
+                    if (!_knob) return;
+                    const std::string layerText = selectedText.toStdString();
+                    // Look up the ChannelSet knob by its NDK name ("out1" or "out2").
+                    // set_text() stores the new layer name into the knob's value.
+                    // knob_changed() is called immediately so the Op resolves the new
+                    // ChannelSet and rebuilds the matrix synchronously via syncWidgetNow().
+                    DD::Image::Knob* targetKnob = _knob->op()->knob(groupId.c_str());
+                    if (targetKnob)
+                    {
+                        targetKnob->set_text(layerText == "none" ? "none" : layerText.c_str());
+                        _knob->op()->knob_changed(targetKnob);
+                        targetKnob->changed();
+                    }
+                });
+            // Output picker must always be enabled regardless of whether the current
+            // out layer is Chan_Black. If disabled when buttonsDisabled=true, the user
+            // can never select a layer and out2 stays permanently disabled.
+            outPicker->setEnabled(true);
+            _gridLayout->addWidget(outPicker, arrowRow, outLabelCol, pickerRowSpan, 1,
+                                   Qt::AlignTop);
+            if (outPickerPtr)
+                *outPickerPtr = outPicker;
+        }
+
+        // Data rows: one per output channel in this group
+        for (int rowIdx = 0; rowIdx < static_cast<int>(outRows.size()); ++rowIdx)
+        {
+            const std::string& outputName = outRows[rowIdx];
+            const int gridRow = dataStartRow + rowIdx;
+
+            // capturedGroupId scopes radio enforcement: "out1" or "out2".
+            // This ensures rows across the two output groups remain independent
+            // even when their channel names are identical (e.g. rgba.red in both).
+            const std::string capturedGroupId = groupId;
+
+            // in1 toggle buttons
+            for (int si = 0; si < in1Count; ++si)
+            {
+                const std::string& sourceName = in1Columns[si];
+                ChannelButton* btn = new ChannelButton(
+                    nukeChannelColor(shortChannelName(sourceName)), this);
+                // objectName: "outGroup|outRowIdx|sourceGroup|sourceColIdx"
+                // Positional format so routing survives layer name changes.
+                btn->setObjectName(
+                    QString::fromStdString(capturedGroupId + "|" + std::to_string(rowIdx) + "|in1|" + std::to_string(si)));
+                btn->setEnabled(!buttonsDisabled);
+                connect(btn, &QPushButton::toggled,
+                        [this, capturedGroupId, rowIdx, si](bool checked)
+                        { this->onCellToggled(capturedGroupId, rowIdx, "in1", si, checked); });
+                _gridLayout->addWidget(btn, gridRow, si);
+                _toggleButtons.push_back(btn);
+            }
+
+            // const:0 toggle button — near-black color (represents constant 0.0 value)
+            {
+                ChannelButton* btn = new ChannelButton(QColor(30, 30, 30), this);
+                btn->setObjectName(
+                    QString::fromStdString(capturedGroupId + "|" + std::to_string(rowIdx) + "|const|0"));
+                btn->setEnabled(!buttonsDisabled);
+                connect(btn, &QPushButton::toggled,
+                        [this, capturedGroupId, rowIdx](bool checked)
+                        { this->onCellToggled(capturedGroupId, rowIdx, "const", 0, checked); });
+                _gridLayout->addWidget(btn, gridRow, const0Col);
+                _toggleButtons.push_back(btn);
+            }
+
+            // const:1 toggle button — near-white color (represents constant 1.0 value)
+            {
+                ChannelButton* btn = new ChannelButton(QColor(220, 220, 220), this);
+                btn->setObjectName(
+                    QString::fromStdString(capturedGroupId + "|" + std::to_string(rowIdx) + "|const|1"));
+                btn->setEnabled(!buttonsDisabled);
+                connect(btn, &QPushButton::toggled,
+                        [this, capturedGroupId, rowIdx](bool checked)
+                        { this->onCellToggled(capturedGroupId, rowIdx, "const", 1, checked); });
+                _gridLayout->addWidget(btn, gridRow, const1Col);
+                _toggleButtons.push_back(btn);
+            }
+
+            // in2 toggle buttons — disabled when in2=Chan_Black (placeholder columns)
+            for (int si = 0; si < in2Count; ++si)
+            {
+                const std::string& sourceName = in2Columns[si];
+                ChannelButton* btn = new ChannelButton(
+                    nukeChannelColor(shortChannelName(sourceName)), this);
+                btn->setObjectName(
+                    QString::fromStdString(capturedGroupId + "|" + std::to_string(rowIdx) + "|in2|" + std::to_string(si)));
+                btn->setEnabled(!in2Disabled);
+                connect(btn, &QPushButton::toggled,
+                        [this, capturedGroupId, rowIdx, si](bool checked)
+                        { this->onCellToggled(capturedGroupId, rowIdx, "in2", si, checked); });
+                _gridLayout->addWidget(btn, gridRow, in2StartCol + si);
+                _toggleButtons.push_back(btn);
+            }
+
+            // Output arrow: a solid filled ArrowLabel(Right) widget, matching the
+            // ChannelButton 22×22 size exactly, drawn with QPainter — visually
+            // consistent with the ArrowLabel(Down) widgets above source columns.
+            _gridLayout->addWidget(new ArrowLabel(ArrowLabel::Right, this), gridRow, outArrowCol);
+
+            // Output channel name label — plain text, no unicode prefix.
+            QLabel* outLabel = new QLabel(
+                QString::fromStdString(shortChannelName(outputName)), this);
+            outLabel->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
+            outLabel->setEnabled(!buttonsDisabled);
+            {
+                QFont labelFont = outLabel->font();
+                labelFont.setPointSize(labelFont.pointSize() + 2);
+                outLabel->setFont(labelFont);
+            }
+            _gridLayout->addWidget(outLabel, gridRow, outLabelCol);
+        }
+
+        return dataStartRow + static_cast<int>(outRows.size());
+    };
+
+    // ---- Row 0: in1 and in2 ChannelSet pickers ----
+    //
+    // in1 picker spans the in1 toggle columns; in2 picker spans const + in2 columns.
+    // Both are placed in the same row (row 0) so they sit directly above their
+    // respective column groups, matching the target 2-column layout:
+    //
+    //   [in1 picker]           [in2 picker]
+    //   [in1→out1 matrix]      [in2→out1 matrix]   [out1 picker]
+    //   [in1→out2 matrix]      [in2→out2 matrix]   [out2 picker]
+
+    const int pickerRow = 0;
+
+    {
+        const std::string in1LayerName = layerNameFromChannelSet(in1Set);
+        _in1Picker = makePicker(
+            in1LayerName.empty() ? "none" : in1LayerName,
+            [this](const QString& selectedText)
+            {
+                if (!_knob) return;
+                DD::Image::Knob* targetKnob = _knob->op()->knob("in1");
+                if (targetKnob)
+                {
+                    targetKnob->set_text(selectedText.toStdString().c_str());
+                    // Call knob_changed() immediately so the Op resolves the new
+                    // ChannelSet and calls setChannelSets()+syncWidgetNow() before
+                    // the async kUpdateWidgets callback fires. Without this the matrix
+                    // shows stale channel names until the next interaction.
+                    _knob->op()->knob_changed(targetKnob);
+                    targetKnob->changed();
+                }
+            });
+        // Span in1 columns; fall back to 1 column if in1 is empty.
+        const int in1Span = (in1Count > 0) ? in1Count : 1;
+        // Cap the picker's maximum width to exactly the natural width of its spanned
+        // column group (in1Span columns of 22px each + inter-column 2px spacing).
+        // Without this cap, QSizePolicy::Expanding causes QGridLayout to distribute
+        // the picker's preferred width across the spanned stretch=0 columns, widening
+        // them unevenly (rounding artefacts give cols 0-1 extra pixels vs 2-3) and
+        // producing a visible gap between g and b in both in1 and in2 groups.
+        _in1Picker->setMaximumWidth(in1Span * 22 + std::max(0, in1Span - 1) * 2);
+        _in1Picker->setMaximumHeight(22);
+        _gridLayout->addWidget(_in1Picker, pickerRow, 0, 1, in1Span);
+    }
+
+    {
+        const std::string in2LayerName = layerNameFromChannelSet(in2Set);
+        _in2Picker = makePicker(
+            (in2Disabled || in2LayerName.empty()) ? "none" : in2LayerName,
+            [this](const QString& selectedText)
+            {
+                if (!_knob) return;
+                DD::Image::Knob* targetKnob = _knob->op()->knob("in2");
+                if (targetKnob)
+                {
+                    targetKnob->set_text(selectedText.toStdString().c_str());
+                    _knob->op()->knob_changed(targetKnob);
+                    targetKnob->changed();
+                }
+            });
+        // Span only the in2 columns — do not absorb the separator columns so they
+        // remain visually present as gaps between the const group and the in2 group.
+        const int in2Span = (in2Count > 0) ? in2Count : 1;
+        // Same max-width cap as in1 picker to prevent column width distortion.
+        _in2Picker->setMaximumWidth(in2Span * 22 + std::max(0, in2Span - 1) * 2);
+        _in2Picker->setMaximumHeight(22);
+        _gridLayout->addWidget(_in2Picker, pickerRow, in2StartCol, 1, in2Span);
+    }
+
+    // Groups start at row 1 (row 0 is occupied by the input pickers).
+    int nextRow = 1;
+
+    // ---- Build out1 group ----
+    // groupId "out1" is a stable identity token used in button objectNames for
+    // radio-scope enforcement. groupLabel is the human-readable layer name shown
+    // in the panel UI. These two values must be kept independent.
+    const std::string out1Label = layerNameFromChannelSet(out1Set);
+    nextRow = buildGroup(nextRow, out1Rows, "out1",
+                         out1Label.empty() ? "none" : out1Label,
+                         false, /*showGroupHeaders=*/true, &_out1Picker);
+
+    // ---- Build out2 group ----
+    // No spacer between groups — the picker widgets provide sufficient visual
+    // separation. The group headers ("in 1 / const / in 2") are omitted for out2
+    // since the column structure is already established by the out1 group above.
+    {
+        const std::string out2Label = layerNameFromChannelSet(out2Set);
+        nextRow = buildGroup(nextRow, out2Rows, "out2",
+                             (out2Disabled || out2Label.empty()) ? "none" : out2Label,
+                             out2Disabled, /*showGroupHeaders=*/false, &_out2Picker);
+    }
+
+    // Ensure Nuke allocates enough vertical space in the panel.
+    // 24px per row: 22px button/arrow height + 2px vertical spacing.
+    setMinimumHeight((nextRow + 1) * 24);
+}
+
+void ShuffleMatrixWidget::clearLayout()
+{
+    // Null picker pointers before deleting — they will be deleted by the layout
+    // takeAt loop below as child widgets. Nulling here prevents any dangling
+    // dereference if a deferred QTimer fires between clearLayout and buildLayout.
+    _in1Picker  = nullptr;
+    _in2Picker  = nullptr;
+    _out1Picker = nullptr;
+    _out2Picker = nullptr;
+
+    while (QLayoutItem* item = _gridLayout->takeAt(0))
+    {
+        delete item->widget();
+        delete item;
+    }
+    _toggleButtons.clear();
+
+    // Recreate the layout to reset column/row minimum sizes set by buildLayout().
+    delete _gridLayout;
+    _gridLayout = new QGridLayout(this);
+    _gridLayout->setHorizontalSpacing(2);
+    _gridLayout->setVerticalSpacing(1);
+    _gridLayout->setContentsMargins(2, 2, 2, 2);
+    setLayout(_gridLayout);
+}
+
+// ---------------------------------------------------------------------------
+// Sync from knob state
+// ---------------------------------------------------------------------------
+
+void ShuffleMatrixWidget::syncFromKnob()
+{
+    if (!_knob)
+        return;
+
+    // Identity routing initialisation — runs once on first panel open when no
+    // state has been serialized yet. Uses initializeState() to write directly
+    // without calling changed(), avoiding a recursive rebuild.
+    if (_knob->matrixState().empty())
+    {
+        const DD::Image::ChannelSet& in1Set  = _knob->in1ChannelSet();
+        const DD::Image::ChannelSet& out1Set = _knob->out1ChannelSet();
+
+        if (in1Set  != DD::Image::ChannelSet(DD::Image::Chan_Black) &&
+            out1Set != DD::Image::ChannelSet(DD::Image::Chan_Black))
+        {
+            // Build identity state in positional format: "out1:outRowIdx:in1:inColIdx"
+            // Match each out1 channel by name to the in1 channel at the same name,
+            // emitting their respective positional indices. Positional format ensures
+            // the identity routing survives layer picker changes.
+            std::vector<std::string> out1Names, in1Names;
+            {
+                DD::Image::Channel ch;
+                foreach(ch, out1Set) out1Names.push_back(DD::Image::getName(ch));
+            }
+            {
+                DD::Image::Channel ch;
+                foreach(ch, in1Set) in1Names.push_back(DD::Image::getName(ch));
+            }
+
+            std::ostringstream identityStream;
+            bool firstEntry = true;
+            for (int outIdx = 0; outIdx < static_cast<int>(out1Names.size()); ++outIdx)
+            {
+                for (int inIdx = 0; inIdx < static_cast<int>(in1Names.size()); ++inIdx)
+                {
+                    if (out1Names[outIdx] == in1Names[inIdx])
+                    {
+                        if (!firstEntry) identityStream << ',';
+                        identityStream << "out1:" << outIdx << ":in1:" << inIdx;
+                        firstEntry = false;
+                        break;
+                    }
+                }
+            }
+            const std::string identityState = identityStream.str();
+            if (!identityState.empty())
+                _knob->initializeState(identityState);
+        }
+    }
+
+    clearLayout();
+    buildLayout();
+
+    // Parse positional routing state: "out1:0:in1:2,out1:1:const:0,..."
+    // Key:   "out1|0" (outGroup|outRowIdx)
+    // Value: "in1|2" (sourceGroup|sourceColIdx)
+    //
+    // Positional format survives layer name changes — routing is preserved
+    // by grid position, not by channel name, so changing in1 from rgba to
+    // diffuse keeps all checked boxes in place.
+    std::map<std::string, std::string> routingMap;
+    {
+        const std::string& stateString = _knob->matrixState();
+        std::istringstream stateStream(stateString);
+        std::string token;
+        while (std::getline(stateStream, token, ','))
+        {
+            if (token.empty()) continue;
+            std::istringstream tokenParts(token);
+            std::string outGroup, outRowIdxStr, sourceGroup, sourceColIdxStr;
+            if (!std::getline(tokenParts, outGroup,       ':')) continue;
+            if (!std::getline(tokenParts, outRowIdxStr,   ':')) continue;
+            if (!std::getline(tokenParts, sourceGroup,    ':')) continue;
+            if (!std::getline(tokenParts, sourceColIdxStr,':')) continue;
+            routingMap[outGroup + "|" + outRowIdxStr] = sourceGroup + "|" + sourceColIdxStr;
+        }
+    }
+
+    // Set each button's checked state by matching positional objectName against map.
+    // objectName format: "outGroup|outRowIdx|sourceGroup|sourceColIdx"
+    for (ChannelButton* btn : _toggleButtons)
+    {
+        const QString qName      = btn->objectName();
+        const int firstPipe      = qName.indexOf('|');
+        const int secondPipe     = qName.indexOf('|', firstPipe + 1);
+        const int thirdPipe      = qName.indexOf('|', secondPipe + 1);
+        if (firstPipe < 0 || secondPipe < 0 || thirdPipe < 0) continue;
+
+        const std::string outGroup        = qName.left(firstPipe).toStdString();
+        const std::string outRowIdxStr    = qName.mid(firstPipe + 1, secondPipe - firstPipe - 1).toStdString();
+        const std::string sourceGroup     = qName.mid(secondPipe + 1, thirdPipe - secondPipe - 1).toStdString();
+        const std::string sourceColIdxStr = qName.mid(thirdPipe + 1).toStdString();
+
+        const std::string key   = outGroup + "|" + outRowIdxStr;
+        const std::string value = sourceGroup + "|" + sourceColIdxStr;
+
+        const QSignalBlocker blocker(btn);
+        auto it = routingMap.find(key);
+        btn->setChecked(it != routingMap.end() && it->second == value);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// User interaction slot
+// ---------------------------------------------------------------------------
+
+void ShuffleMatrixWidget::onCellToggled(const std::string& outputGroup,
+                                         int outputRowIdx,
+                                         const std::string& sourceGroup,
+                                         int sourceColIdx,
+                                         bool checked)
+{
+    if (!_knob)
+        return;
+    if (!checked) return;  // no-op: rows must never be left with no source selected
+
+    // Parse current positional routing state into a mutable map.
+    // Key: "out1|0" (outGroup|outRowIdx), Value: "in1|2" (sourceGroup|sourceColIdx).
+    std::map<std::string, std::string> routingMap;
+    {
+        const std::string& stateString = _knob->matrixState();
+        std::istringstream stateStream(stateString);
+        std::string token;
+        while (std::getline(stateStream, token, ','))
+        {
+            if (token.empty()) continue;
+            std::istringstream tokenParts(token);
+            std::string outGrp, outRowStr, srcGrp, srcColStr;
+            if (!std::getline(tokenParts, outGrp,   ':')) continue;
+            if (!std::getline(tokenParts, outRowStr, ':')) continue;
+            if (!std::getline(tokenParts, srcGrp,   ':')) continue;
+            if (!std::getline(tokenParts, srcColStr, ':')) continue;
+            routingMap[outGrp + "|" + outRowStr] = srcGrp + "|" + srcColStr;
+        }
+    }
+
+    const std::string newKey   = outputGroup + "|" + std::to_string(outputRowIdx);
+    const std::string newValue = sourceGroup + "|" + std::to_string(sourceColIdx);
+
+    // Radio-button enforcement: uncheck all other buttons in the same output group
+    // and row. The outputGroup scope keeps out1 and out2 independent even when they
+    // happen to have channels at identical row indices.
+    for (ChannelButton* otherBtn : _toggleButtons)
+    {
+        const QString qName  = otherBtn->objectName();
+        const int firstPipe  = qName.indexOf('|');
+        const int secondPipe = qName.indexOf('|', firstPipe + 1);
+        if (firstPipe < 0 || secondPipe < 0) continue;
+
+        const std::string otherGroup  = qName.left(firstPipe).toStdString();
+        const std::string otherRowStr = qName.mid(firstPipe + 1, secondPipe - firstPipe - 1).toStdString();
+
+        // Same output group and row, but not the button just checked.
+        if (otherGroup  == outputGroup &&
+            otherRowStr == std::to_string(outputRowIdx) &&
+            qName.toStdString() != newKey + "|" + newValue)
+        {
+            const QSignalBlocker blocker(otherBtn);
+            otherBtn->setChecked(false);
+        }
+    }
+
+    // Overwrite this row's routing entry.
+    routingMap[newKey] = newValue;
+
+    // Serialize back to "out1:0:in1:2,out2:0:const:0,..." format.
+    std::ostringstream out;
+    bool first = true;
+    for (const auto& entry : routingMap)
+    {
+        // entry.first = "out1|0", entry.second = "in1|2" → "out1:0:in1:2"
+        const std::string::size_type keyPipe = entry.first.find('|');
+        const std::string::size_type valPipe = entry.second.find('|');
+        if (keyPipe == std::string::npos || valPipe == std::string::npos) continue;
+        if (!first) out << ',';
+        out << entry.first.substr(0, keyPipe) << ':' << entry.first.substr(keyPipe + 1)
+            << ':' << entry.second.substr(0, valPipe) << ':' << entry.second.substr(valPipe + 1);
+        first = false;
+    }
+
+    _knob->setValue(out.str());
+}
