@@ -439,7 +439,18 @@ public:
                     // 8. Splat each channel to output pixel.
                     // Normalised sensor position → output pixel index:
                     //   out_x = landing_x * half_w + half_w - 0.5
+                    //
+                    // Guard: only write channels that are actually present in
+                    // imagePlane.channels().  ImagePlane allocates memory only for
+                    // its ChannelSet; writing a channel outside that set computes an
+                    // invalid offset and silently corrupts the heap — the symptoms
+                    // being exactly the "malloc(): invalid size (unsorted)" abort
+                    // that triggered this fix.  Nuke may call renderStripe requesting
+                    // only a subset of RGBA (e.g. just alpha), so the guard is
+                    // load-bearing, not defensive.
                     for (int c = 0; c < 3; ++c) {
+                        if (!chans.contains(rgb_chans[c])) continue;
+
                         const float out_xf = landing_x[c] * half_w + half_w - 0.5f;
                         const float out_yf = landing_y[c] * half_h + half_h - 0.5f;
                         const int out_xi = static_cast<int>(std::floor(out_xf + 0.5f));
@@ -459,7 +470,7 @@ public:
                     }
 
                     // Alpha: use G-channel (index 1) landing position.
-                    {
+                    if (chans.contains(Chan_Alpha)) {
                         const float out_xf = landing_x[1] * half_w + half_w - 0.5f;
                         const float out_yf = landing_y[1] * half_h + half_h - 0.5f;
                         const int out_xi = static_cast<int>(std::floor(out_xf + 0.5f));

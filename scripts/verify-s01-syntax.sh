@@ -83,6 +83,7 @@ public:
     ChannelSet& operator+=(Channel) { return *this; }
     ChannelSet operator+(Channel) const { return *this; }
     ChannelSet operator+(const ChannelSet&) const { return *this; }
+    bool contains(Channel) const { return true; }
 private:
     Channel _first;
     int _count;
