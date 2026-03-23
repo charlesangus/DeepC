@@ -1,4 +1,4 @@
-# M001: DeepC v1.0–v1.2
+# M001: DeepC v1.0-v1.2
 
 **Vision:** DeepC is an open-source suite of deep-compositing Nuke NDK plugins targeting Foundry Nuke 16+. v1.2 ships 23 plugins covering color, matte, noise, shuffle, utility, and deep-sample optimisation operations on deep images.
 

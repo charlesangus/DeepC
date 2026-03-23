@@ -10,7 +10,7 @@ Artists can use deep-compositing operations in Nuke that don't exist in the buil
 
 ## Current State
 
-**v1.2 + DeepCBlur v2 shipped.** 24 plugins. DeepCBlur upgraded to separable two-pass Gaussian blur (O(2r) vs O(r²)), three kernel accuracy tiers (LQ/MQ/HQ), alpha darkening correction toggle, WH_knob blur size, and sample optimization twirldown. All plugins build and load cleanly in Nuke 16+ on Linux and Windows via `docker-build.sh`.
+**v1.2 + DeepCBlur v2 + DeepCDepthBlur correctness shipped.** 24 plugins. DeepCDepthBlur alpha decomposition corrected from additive (`α * w`) to multiplicative (`1 - pow(1-α, w)`), ensuring the flatten invariant holds under Nuke's deep compositing model. Zero-alpha guards added (double 1e-6f pattern). Second input renamed "B" → "ref". Docker build confirmed clean (DeepCDepthBlur.so, 415,640 bytes, Nuke 16.0v2 / GCC 11.2.1). R013, R017, R018 validated.
 
 ## Architecture / Key Patterns
 
@@ -30,4 +30,5 @@ See `.gsd/REQUIREMENTS.md` for the explicit capability contract, requirement sta
 - [x] M001: DeepC v1.0–v1.2 — 23 plugins shipped, codebase sweep, GL handles, Shuffle2 UI, 4D noise, build system, DeepThinner, docs
 - [x] M002: DeepCBlur — Gaussian blur on deep images with sample propagation and built-in optimization
 - [x] M003: DeepCBlur v2 — Separable blur, kernel accuracy tiers, alpha darkening correction, UI polish *(complete)*
-- [ ] M004-ks4br0: DeepCBlur correctness + DeepCDepthBlur — Fix premult colour comparison and overlap tidy in optimizer; new Z-axis depth spread node
+- [x] M004-ks4br0: DeepCBlur correctness + DeepCDepthBlur — Fix premult colour comparison and overlap tidy in optimizer; new Z-axis depth spread node
+- [x] M005-9j5er8: DeepCDepthBlur correctness — Fix multiplicative alpha decomposition, zero-alpha filtering, input rename

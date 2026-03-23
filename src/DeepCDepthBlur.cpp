@@ -181,8 +181,8 @@ public:
     const char* input_label(int n, char*) const
     {
         switch (n) {
-            case 0: return "Source";
-            case 1: return "B";
+            case 0: return "";
+            case 1: return "ref";
             default: return "";
         }
     }
@@ -419,7 +419,23 @@ public:
                     continue;
                 }
 
-                // Spread into N sub-samples
+                // Fetch source alpha once per sample (outside sub-sample loop)
+                const float srcAlpha = px.getUnorderedSample(s, Chan_Alpha);
+
+                // Zero-alpha input guard: pass through unchanged without spreading
+                if (srcAlpha < 1e-6f) {
+                    SampleData sd;
+                    sd.zFront = srcFront;
+                    sd.zBack  = srcBack;
+                    sd.chanValues.reserve(nChans);
+                    foreach(z, channels) {
+                        sd.chanValues.push_back(px.getUnorderedSample(s, z));
+                    }
+                    outSamples.push_back(std::move(sd));
+                    continue;  // skip spreading for zero-alpha input
+                }
+
+                // Spread into N sub-samples using multiplicative alpha decomposition
                 const float baseZ = srcFront - S * 0.5f + halfStep;
                 for (int i = 0; i < N; ++i) {
                     const float centre = baseZ + i * step;
@@ -433,6 +449,13 @@ public:
                         sd.zFront = centre - halfStep;
                         sd.zBack  = centre + halfStep;
                     }
+
+                    // Multiplicative alpha decomposition: α_sub = 1 - (1-α)^w
+                    // This preserves the flatten invariant by construction.
+                    const float alphaSub = static_cast<float>(1.0 - std::pow(1.0 - static_cast<double>(srcAlpha), static_cast<double>(w)));
+                    if (alphaSub < 1e-6f)
+                        continue;  // skip near-zero sub-samples
+
                     sd.chanValues.reserve(nChans);
 
                     foreach(z, channels) {
@@ -440,9 +463,12 @@ public:
                             sd.chanValues.push_back(sd.zFront);
                         } else if (z == Chan_DeepBack) {
                             sd.chanValues.push_back(sd.zBack);
+                        } else if (z == Chan_Alpha) {
+                            sd.chanValues.push_back(alphaSub);
                         } else {
-                            // Scale channel value by weight (premult preserved)
-                            sd.chanValues.push_back(px.getUnorderedSample(s, z) * w);
+                            // Premult-correct: scale by (α_sub / α_src)
+                            // Division is safe: srcAlpha >= 1e-6f guaranteed by guard above
+                            sd.chanValues.push_back(px.getUnorderedSample(s, z) * (alphaSub / srcAlpha));
                         }
                     }
 

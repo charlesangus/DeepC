@@ -130,3 +130,29 @@ For Linear and Smoothstep falloffs with n=2, sample positions are at t=−1 and 
 **Context:** DeepCDepthBlur correctness guarantee (S02, M004)
 
 `flatten(output) == flatten(input)` holds by construction: weights sum to 1 so total alpha is preserved; channels scale proportionally so premult is preserved; the tidy clamp touches only zBack not alpha. There is no runtime assertion. The only way to catch a regression is a visual A/B comparison in Nuke (DeepToImage before vs after DeepCDepthBlur). Consider adding a unit test harness that exercises `computeWeights` directly if CI is ever added.
+
+## DeepCDepthBlur — M005-9j5er8 Patterns
+
+### Multiplicative alpha decomposition requires double-precision intermediate
+**Context:** DeepCDepthBlur doDeepEngine spreading (S01, M005)
+
+`alphaSub = static_cast<float>(1.0 - std::pow(1.0 - static_cast<double>(srcAlpha), static_cast<double>(w)))` — the `double` intermediate is intentional. `float` arithmetic for `pow(1-α, w)` loses precision at extreme alpha values (near 0 or near 1) in ways that are visually detectable. The `static_cast<float>` on the result satisfies `-Wconversion` without changing the precision where it matters. Do not simplify to all-`float` arithmetic.
+
+### Double 1e-6f guard pattern eliminates all zero-alpha deep image output
+**Context:** DeepCDepthBlur zero-alpha guards (S01, M005)
+
+Two separate guards are required, not one:
+1. **Input-level guard** (`srcAlpha < 1e-6f`): Pass the sample through unchanged, skip spreading entirely. Prevents division-by-zero in `alphaSub / srcAlpha` premult scaling.
+2. **Sub-sample-level guard** (`alphaSub < 1e-6f`): Drop the sub-sample silently. Prevents NaN propagation from degenerate `pow` results at pathological alpha values.
+
+Both are necessary — the input guard does not protect against degenerate pow outputs, and the sub-sample guard alone doesn't protect against division-by-zero. `grep -c '1e-6f' src/DeepCDepthBlur.cpp` → ≥2 is the diagnostic command to verify both are present.
+
+### Flatten invariant is provable at source level, not runtime-asserted
+**Context:** DeepCDepthBlur correctness guarantee (S01, M005)
+
+The invariant `flatten(DeepCDepthBlur(input)) == flatten(input)` is guaranteed by construction — the multiplicative formula `1 - pow(1-α, w)` is the exact inverse of Nuke's `1 - ∏(1-αᵢ)` flatten model when weights sum to 1. There is no runtime assertion. The only machine-executable check is `grep -q 'pow(1' src/DeepCDepthBlur.cpp`. Visual regression detection requires a Nuke A/B comparison (`DeepToImage` before vs after). If CI is ever added, test `computeWeights` for sum=1 directly.
+
+### "ref" input label does not imply depth-range gating is implemented
+**Context:** DeepCDepthBlur R017 partial coverage (S01, M005)
+
+R017 describes two things: (1) input label "ref" with main input unlabelled — **implemented and validated in M005**. (2) Depth-range gating: only spread samples whose Z range intersects a ref sample's range — **not implemented**, explicitly deferred. Future milestones implementing this feature need non-trivial additions to `doDeepEngine` to iterate ref samples per input sample.
