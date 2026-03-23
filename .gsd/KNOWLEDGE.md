@@ -156,3 +156,106 @@ The invariant `flatten(DeepCDepthBlur(input)) == flatten(input)` is guaranteed b
 **Context:** DeepCDepthBlur R017 partial coverage (S01, M005)
 
 R017 describes two things: (1) input label "ref" with main input unlabelled — **implemented and validated in M005**. (2) Depth-range gating: only spread samples whose Z range intersects a ref sample's range — **not implemented**, explicitly deferred. Future milestones implementing this feature need non-trivial additions to `doDeepEngine` to iterate ref samples per input sample.
+
+### C-style typedef structs need a tag name when forward-declared in C++
+**Context:** poly.h / deepc_po_math.h ODR firewall (M006/S01/T01)
+
+`typedef struct { ... } foo_t;` creates an anonymous struct with a typedef. You cannot forward-declare it in another header as `typedef struct foo_t;` — the names don't match. Fix: give the struct a tag: `typedef struct foo_s { ... } foo_t;` then forward-declare as `typedef struct foo_s foo_t;`. Also, the header that defines the full type must emit a preprocessor sentinel (`#define DEEPC_POLY_H`) so any co-included header can skip the forward declaration with `#ifndef DEEPC_POLY_H`.
+
+### poly.h ODR pattern: single-TU inclusion via sentinel guard
+**Context:** poly.h vendored from lentil (M006/S01/T01)
+
+poly.h defines all its functions inline in the header (lentil style). To avoid ODR violations when multiple .cpp files are compiled into the same .so, include poly.h in exactly ONE translation unit (`DeepCDefocusPO.cpp`). deepc_po_math.h uses a forward declaration + `#ifndef DEEPC_POLY_H` guard so it compiles both standalone and when poly.h is included first.
+
+### CMake syntax validation without Docker/Nuke SDK
+**Context:** docker-build.sh unavailable in workspace (M006/S01/T04)
+
+When Docker is absent, CMake syntax validity can be confirmed with: `cmake -S . -B /tmp/cmake-check-build -DNuke_ROOT=/nonexistent`. CMake parses all `CMakeLists.txt` syntax before calling `find_package(Nuke REQUIRED)`, which fails (expected). Any CMake syntax error in the plugin list, target definitions, or install rules surfaces before the Nuke SDK check. This is a useful intermediate gate between `g++ -fsyntax-only` and the full docker build.
+
+### docker-build.sh is CI-only; syntax-only gate is the local fast path
+**Context:** docker-build.sh unavailable in workspace (M006/S01/T04)
+
+`docker-build.sh` requires a live Docker daemon and pulls/builds a NukeDockerBuild container image. It will never run in a workspace-only environment. The correct fast-feedback loop is: `bash scripts/verify-s01-syntax.sh` (mock headers, <5s) → `cmake -S . -B /tmp/cmake-check-build -DNuke_ROOT=/nonexistent` (CMake syntax, ~5s) → docker build in CI. Do not block slice completion on the docker gate if the workspace has no Docker.
+
+## DeepCDefocusPO — S02/M006 Patterns
+
+### Normalised [-1,1] sensor coordinates — use these, not mm
+**Context:** DeepCDefocusPO PO scatter engine (S02, M006)
+
+The lentil polynomial was fitted in a normalised coordinate space, but the exact physical sensor size assumed varies by .fit file. Using normalised `[-1,1]` sensor coordinates throughout avoids any sensor-size dependency. Pixel-to-norm: `sx = (px + 0.5 - half_w) / half_w`. Norm-to-pixel: `out_px = landing_x * half_w + half_w - 0.5`. Aperture radius in normalised units = `1 / fstop`. The research proposed `pix_per_mm` with a 36mm sensor, but the implementation (and the research's own recommended approach) use normalised coords. Do not add a sensor-size constant unless a specific .fit file requires it.
+
+### Focal length hardcoded at 50mm in S02 — only for CoC culling
+**Context:** DeepCDefocusPO focal length default (S02, M006)
+
+`focal_length_mm = 50.0f` is used only for the CoC-based early cull (performance guard) in `renderStripe`. The actual bokeh size and shape come from the polynomial itself via the Newton iteration — the focal length constant does not affect scatter correctness. A wrong `focal_length_mm` produces suboptimal culling (too aggressive or too lenient) but no visual error. S04 adds a Float_knob; until then, 50mm is the default.
+
+### Stripe-boundary seam: out-of-stripe scatter contributions are silently discarded
+**Context:** DeepCDefocusPO PlanarIop stripe model (S02, M006)
+
+`renderStripe` is called once per stripe. Scatter contributions from a deep sample in the current stripe that land in a neighbouring stripe are discarded (not wrapped). This produces a dark seam at stripe boundaries when bokeh radius is large relative to stripe height. This is an accepted limitation documented in a code comment. Mitigation: request a single full-height stripe by setting the output box to the full format in `_validate` — deferred to S04. Do not attempt to "fix" this by requesting broader deepEngine bounds, as that would over-fetch the Deep input without solving the output-write problem.
+
+### PlanarIop's single-threaded renderStripe eliminates scatter buffer races
+**Context:** DeepCDefocusPO base class selection (S01/S02, M006)
+
+Stochastic aperture scatter writes to random output pixels (`imagePlane.writableAt(...) +=`). This is safe only because `PlanarIop::renderStripe` is single-threaded — Nuke calls `renderStripe` once per stripe, sequentially, never from two threads simultaneously for the same ImagePlane. If this were multi-threaded (e.g. via a Thread/Engine approach), the `+=` accumulation would be a data race requiring atomics or a mutex. D027 confirms PlanarIop was chosen specifically for this property. Do not change the base class without revisiting the scatter loop.
+
+### Format::width()/height() must be stubbed in verify-s01-syntax.sh when renderStripe uses them
+**Context:** verify-s01-syntax.sh mock headers (S02, M006)
+
+When `renderStripe` calls `fmt.width()` and `fmt.height()` on a `const Format&`, the mock `Format` class in `verify-s01-syntax.sh` must expose these methods. S01's mock `Format` was empty; S02 extended it with `int width() const { return 2048; }` and `int height() const { return 1556; }`. Any future `renderStripe` refactor that calls new Format methods must extend the mock accordingly — the syntax check is the first gate and will fail otherwise.
+
+## DeepCDefocusPO — S03/M006 Patterns
+
+### Holdout transmittance lambda: unordered iteration is correct; hzf >= Z is the depth gate
+**Context:** DeepCDefocusPO depth-aware holdout (S03, M006)
+
+The `transmittance_at(ox, oy, Z)` lambda accumulates `T *= (1 - alpha_i)` over holdout samples using `getUnorderedSample`. This is correct and intentional — the product `∏(1-αᵢ)` is commutative, so sample order does not matter. The depth gate `if (hzf >= Z) continue` skips samples at or behind the scatter depth Z; only samples in front of (shallower than) the scatter depth contribute to blocking. Future nodes implementing DeepHoldout semantics should copy this exact pattern: unordered iteration, front-to-back transmittance product, `hzf >= Z` guard, `std::max(0.0f, T)` clamp, `holdoutConnected` boolean identity short-circuit.
+
+### Holdout must be fetched at output pixel bounds, not input sample position
+**Context:** DeepCDefocusPO depth-aware holdout (S03, M006)
+
+`holdoutOp->deepEngine(bounds, ...)` is called at the **output-pixel bounds** (the same `bounds` passed to `renderStripe`), not at the position of the input Deep sample being scattered. This is the load-bearing guarantee that the holdout is never defocused through the lens: evaluating at the output pixel means the holdout mask is always sharp, regardless of how far out-of-focus the input sample is. Using input-pixel coordinates would scatter the holdout through the Newton iteration, blurring the holdout boundary — the double-defocus problem. The deepRequest in `getRequests` must also use the output-pixel box for the same reason.
+
+### DeepPlane::getPixel takes (y, x) — row-major DDImage convention
+**Context:** DeepCDefocusPO holdout plane access (S03, M006)
+
+`DeepPlane::getPixel(row, col)` takes `(y, x)` in DDImage convention — row first, column second. The transmittance_at lambda calls `holdoutPlane.getPixel(oy, ox)`. This is the opposite of the common `(x, y)` expectation. Getting this wrong produces a transposed holdout mask that appears correct for square formats but fails for non-square images. The mock header stubs `DeepPlane::getPixel` with `(int y, int x)` — check the signature there when debugging.
+
+## DeepCDefocusPO — S04/M006 Patterns
+
+### Verify-script Knobs.h heredoc must be extended for every new knob helper
+**Context:** DeepCDefocusPO knob polish (S04, M006)
+
+The `scripts/verify-s01-syntax.sh` mock `Knobs.h` heredoc must be extended whenever a new DDImage knob helper is used in `knobs()`. Any undeclared helper will fail the syntax check with "undeclared identifier". This is not a Nuke SDK change — it is a maintenance requirement of the mock-header approach. Common helpers requiring stubs: `Divider`, `BeginClosedGroup`, `EndGroup`, `Bool_knob`, `WH_knob`. Check the mock first when the syntax script starts failing after adding a new knob.
+
+### Unit-labelled knob names are the DeepCDefocusPO convention
+**Context:** DeepCDefocusPO knob polish (S04, M006)
+
+All knobs with physical units follow the `"name (unit)"` pattern: `"focus distance (mm)"`, `"focal length (mm)"`. This makes unit expectations unambiguous to artists. Apply the same pattern to any future knobs on this node (or sibling nodes) that carry physical units.
+
+### Divider knob usage: insert between logical groups, stub needed in mock
+**Context:** DeepCDefocusPO knob layout (S04, M006)
+
+`Divider(f, "")` creates a horizontal rule between knob groups. The two DDImage arguments are the callback handle and an (optional) empty label. The verify-script mock must provide `inline void Divider(Knob_Callback, const char*) {}` or the syntax check fails. A Divider stub does not need any body — it is a pure UI layout hint.
+
+## DeepCDefocusPO — S05/M006 Patterns
+
+### CMake icon glob is automatic: just create the file in icons/
+**Context:** DeepCDefocusPO icon registration (S05, M006)
+
+The root `CMakeLists.txt` uses `file(GLOB ICONS "icons/DeepC*.png")` to auto-install all matching PNGs at build time. Creating `icons/DeepCMyNewNode.png` is sufficient — no CMakeLists.txt edit is needed. This applies to all existing and future DeepC nodes. Without the file, the menu entry loads but shows no icon; the icon is not required for functionality.
+
+### Stale comment blocks from early slices must be removed before milestone close
+**Context:** DeepCDefocusPO header cleanup (S05, M006)
+
+Development across multiple slices often leaves phase comments like `S01 state: skeleton only` or `S02 replaces the renderStripe body`. These must be removed in the final integration slice (S05) so the merged code describes the implemented state, not the development history. The S05 verify contract `! grep -q 'S01 state'` enforces this. Future milestones should add a stale-comment-removal contract to their S05 equivalent.
+
+### Proof separation: structural gates in workspace, runtime gates in CI
+**Context:** DeepCDefocusPO final verification model (S05, M006)
+
+M006's proof strategy cleanly separates what can be proven in the workspace from what requires CI/Nuke. Structural gates (syntax check, cmake-parse, grep contracts, icon presence) run locally in <10s. Runtime gates (docker build → .so, Nuke session → bokeh/holdout/CA visibility) require infrastructure unavailable in the workspace. Document this separation explicitly in the slice plan so slice-completion decisions are not blocked by missing runtime infrastructure.
+
+### Third-party vendored sources require THIRD_PARTY_LICENSES.md entry before milestone close
+**Context:** lentil/poly.h attribution (S05, M006)
+
+`src/poly.h` was vendored from `lentil` (Johannes Hanika / hanatos, MIT) in S01 without a license entry. S05 added the entry. Any future vendor of a header-only or snippet library must add the entry in the same slice it is vendored — not deferred to the final integration slice. The S05 contract `grep -q 'lentil|hanatos' THIRD_PARTY_LICENSES.md` enforces presence but not timeliness.
