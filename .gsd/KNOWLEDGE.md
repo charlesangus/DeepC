@@ -259,3 +259,15 @@ M006's proof strategy cleanly separates what can be proven in the workspace from
 **Context:** lentil/poly.h attribution (S05, M006)
 
 `src/poly.h` was vendored from `lentil` (Johannes Hanika / hanatos, MIT) in S01 without a license entry. S05 added the entry. Any future vendor of a header-only or snippet library must add the entry in the same slice it is vendored — not deferred to the final integration slice. The S05 contract `grep -q 'lentil|hanatos' THIRD_PARTY_LICENSES.md` enforces presence but not timeliness.
+
+## DeepCDefocusPO — PlanarIop Scatter Write Correctness
+
+### imagePlane.writableAt requires chans.contains() guard — missing channel = heap corruption
+**Context:** DeepCDefocusPO malloc crash fix (Q3)
+
+`ImagePlane::writableAt(x, y, channel)` computes a stride-based offset into a buffer sized for the ChannelSet returned by `imagePlane.channels()`. Writing a channel *not* in that ChannelSet produces an invalid offset and silently corrupts adjacent heap. The crash symptom is `malloc(): invalid size (unsorted)` at the *next* allocation after `renderStripe` returns — not at the write site, making it easy to misdiagnose. Nuke can and does call `renderStripe` requesting only a subset of RGBA. Every `writableAt` in `renderStripe` must be guarded with `chans.contains(chan)` before writing.
+
+### ChannelSet::contains() mock stub was missing from verify-s01-syntax.sh
+**Context:** DeepCDefocusPO malloc crash fix (Q3)
+
+`ChannelSet::contains(Channel)` is used throughout the codebase (DeepCWrapper, DeepCKeymix, etc.) but the mock `ChannelSet` in `verify-s01-syntax.sh` was missing the method. Any new use of `ChannelSet` methods in a plugin's `renderStripe` or `doDeepEngine` must be checked against the mock stub list — add missing methods as `bool contains(Channel) const { return true; }` or equivalent no-op stub.
