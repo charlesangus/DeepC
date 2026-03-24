@@ -271,11 +271,14 @@ public:
     ImagePlane() {}
     const Box& bounds() const { static Box b; return b; }
     const ChannelSet& channels() const { static ChannelSet c; return c; }
-    void makeWritable() {}
-    float& writableAt(int /*x*/, int /*y*/, Channel /*z*/) {
+    void makeWritable(size_t = 0) {}
+    // writableAt(x, y, z) — z is a channel *index* (not a Channel enum).
+    // Use chanNo(chan) to convert Channel enum → index before calling.
+    float& writableAt(int /*x*/, int /*y*/, int /*z*/) {
         static float dummy = 0.0f;
         return dummy;
     }
+    int chanNo(Channel /*z*/) const { return 0; }
     float* writable(Channel, int /*y*/) { return nullptr; }
 };
 

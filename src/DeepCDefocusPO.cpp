@@ -192,7 +192,21 @@ public:
     }
 
     // ------------------------------------------------------------------
-    // _validate — propagate format from Deep input; load poly if needed
+    // _validate — propagate format from Deep input.
+    //
+    // NOTE: poly loading deliberately does NOT happen here.  _validate can
+    // be called by Nuke on the main thread while renderStripe is executing
+    // on a worker thread.  Calling poly_system_destroy / poly_system_read
+    // from _validate would free _poly_sys.poly[k].term pointers that are
+    // simultaneously being read in renderStripe — a data race that produces
+    // use-after-free, heap corruption (free(): invalid pointer,
+    // _int_malloc assertions), and SIGSEGV.
+    //
+    // Instead, renderStripe loads (or reloads) the poly at its own entry
+    // point, before any render work begins.  Because PlanarIop::renderStripe
+    // is called sequentially (one stripe at a time, not re-entrant), and
+    // _validate cannot be called from within renderStripe, the load is safe
+    // without any additional locking.
     // ------------------------------------------------------------------
 
     void _validate(bool for_real) override
@@ -215,27 +229,13 @@ public:
         info_.channels(Mask_RGBA);
         set_out_channels(Mask_RGBA);
 
-        // Load or reload the polynomial lens file when running for-real
-        // and the file path is non-empty and either has never been loaded
-        // or has changed since last load.
-        if (for_real && _poly_file && _poly_file[0] != '\0'
-            && (_reload_poly || !_poly_loaded))
-        {
-            // Destroy any previously loaded system before reading a new one.
-            if (_poly_loaded) {
-                poly_system_destroy(&_poly_sys);
-                _poly_loaded = false;
-            }
-
-            const int rc = poly_system_read(&_poly_sys, _poly_file);
-            if (rc != 0) {
-                // poly_system_read already freed partial allocations — safe.
-                error("Cannot open lens file: %s", _poly_file);
-                return;
-            }
-
-            _poly_loaded  = true;
-            _reload_poly  = false;
+        // If the poly file path changed, mark it dirty for renderStripe to reload.
+        // Do NOT load/destroy here — see note above.
+        if (for_real && _poly_file && _poly_file[0] != '\0' && _reload_poly) {
+            // Mark as unloaded so renderStripe reloads at next render.
+            // Actual destroy+reload happens in renderStripe under single-threaded
+            // PlanarIop execution.
+            _poly_loaded = false;
         }
     }
 
@@ -286,12 +286,40 @@ public:
         const Box& bounds = imagePlane.bounds();
         const ChannelSet& chans = imagePlane.channels();
 
-        // Fast path: no poly loaded or no input — zero output.
-        if (!_poly_loaded || !input0()) {
+        // Helper: zero the entire output stripe.  Used by all early-exit paths
+        // so Nuke never receives uninitialized pixel data.
+        //
+        // writableAt(x, y, z) takes a channel *index* (not a Channel enum value).
+        // chanNo(chan) converts Channel enum → index within this plane.
+        auto zero_output = [&]() {
             foreach(z, chans)
                 for (int y = bounds.y(); y < bounds.t(); ++y)
                     for (int x = bounds.x(); x < bounds.r(); ++x)
-                        imagePlane.writableAt(x, y, z) = 0.0f;
+                        imagePlane.writableAt(x, y, imagePlane.chanNo(z)) = 0.0f;
+        };
+
+        // Load or reload the polynomial lens file here, not in _validate.
+        // _validate runs on the main thread and can interleave with renderStripe
+        // on a worker thread.  Loading here (under PlanarIop's sequential
+        // single-stripe guarantee) eliminates the data race on _poly_sys.
+        if (_poly_file && _poly_file[0] != '\0' && (!_poly_loaded || _reload_poly)) {
+            if (_poly_loaded) {
+                poly_system_destroy(&_poly_sys);
+                _poly_loaded = false;
+            }
+            const int rc = poly_system_read(&_poly_sys, _poly_file);
+            if (rc != 0) {
+                // File unreadable — zero output and skip render.
+                zero_output();
+                return;
+            }
+            _poly_loaded = true;
+            _reload_poly = false;
+        }
+
+        // Fast path: no poly loaded or no input — zero output.
+        if (!_poly_loaded || !input0()) {
+            zero_output();
             return;
         }
 
@@ -300,8 +328,10 @@ public:
         ChannelSet needed = Mask_RGBA;
         needed += Chan_DeepFront;
         needed += Chan_DeepBack;
-        if (!input0()->deepEngine(bounds, needed, deepPlane))
+        if (!input0()->deepEngine(bounds, needed, deepPlane)) {
+            zero_output();
             return;
+        }
 
         // 1b. Fetch holdout plane at the same output bounds (R024: holdout is
         //     evaluated at the *output* pixel position, not the input position).
@@ -342,10 +372,7 @@ public:
         };
 
         // 2. Zero the output accumulation buffer.
-        foreach(z, chans)
-            for (int y = bounds.y(); y < bounds.t(); ++y)
-                for (int x = bounds.x(); x < bounds.r(); ++x)
-                    imagePlane.writableAt(x, y, z) = 0.0f;
+        zero_output();
 
         // 3. Format dimensions for normalised coordinate conversion.
         //    Sensor coordinates use [-1, 1] x [-1, 1] (normalised).
@@ -465,7 +492,7 @@ public:
                         const float chan_val = pixel.getUnorderedSample(s, rgb_chans[c]);
                         const float w = transmit[c] / static_cast<float>(N);
                         const float holdout_w = transmittance_at(out_xi, out_yi, depth);
-                        imagePlane.writableAt(out_xi, out_yi, rgb_chans[c])
+                        imagePlane.writableAt(out_xi, out_yi, imagePlane.chanNo(rgb_chans[c]))
                             += chan_val * alpha * w * holdout_w;
                     }
 
@@ -479,7 +506,7 @@ public:
                          && out_yi >= bounds.y() && out_yi < bounds.t()) {
                             const float w = transmit[1] / static_cast<float>(N);
                             const float holdout_w = transmittance_at(out_xi, out_yi, depth);
-                            imagePlane.writableAt(out_xi, out_yi, Chan_Alpha)
+                            imagePlane.writableAt(out_xi, out_yi, imagePlane.chanNo(Chan_Alpha))
                                 += alpha * w * holdout_w;
                         }
                     }
