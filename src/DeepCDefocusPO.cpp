@@ -225,7 +225,8 @@ public:
         // Copy spatial format and channel set from the Deep input.
         const DeepInfo& di = in->deepInfo();
         info_.set(di.box());
-        info_.full_size_format(di.full_size_format());
+        info_.format(*di.format());
+        info_.full_size_format(*di.fullSizeFormat());
         info_.channels(Mask_RGBA);
         set_out_channels(Mask_RGBA);
 
@@ -450,16 +451,30 @@ public:
                     float transmit[3];
 
                     for (int c = 0; c < 3; ++c) {
-                        const float sensor_t[2] = { sx0, sy0 };
-                        const float ap[2]       = { ax, ay };
-                        Vec2 land = lt_newton_trace(sensor_t, ap, lambdas[c], &_poly_sys);
-                        landing_x[c] = static_cast<float>(land.x);
-                        landing_y[c] = static_cast<float>(land.y);
+                        // Forward poly evaluation: sensor + aperture → landing position.
+                        //
+                        // The polynomial maps (sensor, aperture, lambda) → 
+                        // (aperture', sensor', lambda').  output[2:3] gives the
+                        // sensor landing position after passing through the lens.
+                        //
+                        // This is a FORWARD (scatter) evaluation — we know where the
+                        // sample is on the sensor and where on the aperture we're
+                        // tracing, and we want to know where the light lands.
+                        // The Newton inverse trace (lt_newton_trace) is for the
+                        // GATHER direction, which is the wrong operation for a
+                        // scatter-based defocus plugin.
+                        float in5[5]  = { sx0, sy0, ax, ay, lambdas[c] };
+                        float out5[5] = {};
+                        // max_degree=3: evaluate terms up to degree 3 (56 of
+                        // 4368 terms).  Higher degrees add sub-pixel aberration
+                        // refinement at significant cost; degree 3 captures the
+                        // primary bokeh shape.
+                        poly_system_evaluate(&_poly_sys, in5, out5, 5, 3);
+
+                        landing_x[c] = out5[2];
+                        landing_y[c] = out5[3];
 
                         // Transmittance from poly output[4].
-                        float in5[5]  = { sensor_t[0], sensor_t[1], ax, ay, lambdas[c] };
-                        float out5[5] = {};
-                        poly_system_evaluate(&_poly_sys, in5, out5, 5);
                         transmit[c] = std::max(0.0f, std::min(1.0f, out5[4]));
                     }
 

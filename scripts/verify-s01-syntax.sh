@@ -238,6 +238,8 @@ public:
     void set(const Box& b) { Box::set(b.x(), b.y(), b.r(), b.t()); }
     void set(const Box& b, int /*pad*/) { set(b); }
     void channels(ChannelMask) {}
+    void format(const Format&) {}
+    const Format& format() const { static Format f; return f; }
     void full_size_format(const Format&) {}
     const Format& full_size_format() const { static Format f; return f; }
 };
@@ -320,7 +322,8 @@ namespace DD { namespace Image {
 struct DeepInfo {
     Box& box() { static Box b; return b; }
     const Box& box() const { static Box b; return b; }
-    const Format& full_size_format() const { static Format f; return f; }
+    const Format* format() const { static Format f; return &f; }
+    const Format* fullSizeFormat() const { static Format f; return &f; }
 };
 
 class DeepOp {

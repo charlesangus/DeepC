@@ -75,12 +75,22 @@ inline float poly_pow(float x, int n)
 // poly_term_evaluate — evaluate a single polynomial term
 //
 // term(input) = coeff * product_i( input[i]^exp[i] )
+//
+// Matches lentil's poly_coeff_eps: skip terms with negligible coefficient
+// to avoid wasting cycles on the ~95% of terms that contribute nothing
+// when aperture or other inputs are near zero.
 // ---------------------------------------------------------------------------
+static constexpr float poly_coeff_eps = 1e-35f;
+
 inline float poly_term_evaluate(const poly_term_t* t, const float* input)
 {
+    if (std::fabs(t->coeff) < poly_coeff_eps) return 0.0f;
     float v = t->coeff;
-    for (int i = 0; i < 5; ++i)
+    for (int i = 0; i < 5; ++i) {
+        if (t->exp[i] == 0) continue;              // x^0 = 1
+        if (input[i] == 0.0f) return 0.0f;         // 0^n = 0 for n>0
         v *= poly_pow(input[i], t->exp[i]);
+    }
     return v;
 }
 
@@ -90,11 +100,17 @@ inline float poly_term_evaluate(const poly_term_t* t, const float* input)
 // output[j] = sum_k( poly[j].term[k](input) )   for j in [0,num_out)
 //
 // num_out is clamped to [0,5]; callers typically pass 5.
+//
+// max_degree: when >= 0, skip terms whose total degree exceeds this value.
+// Terms in .fit files are sorted by ascending degree, so once a term exceeds
+// max_degree the loop can break early.  Pass -1 to evaluate all terms
+// (equivalent to max_degree = infinity).
 // ---------------------------------------------------------------------------
 inline void poly_system_evaluate(const poly_system_t* sys,
                                  const float* input,
                                  float* output,
-                                 int num_out)
+                                 int num_out,
+                                 int max_degree = -1)
 {
     if (num_out < 0) num_out = 0;
     if (num_out > 5) num_out = 5;
@@ -102,8 +118,17 @@ inline void poly_system_evaluate(const poly_system_t* sys,
     for (int j = 0; j < num_out; ++j) {
         const poly_t* p = &sys->poly[j];
         float acc = 0.0f;
-        for (int k = 0; k < p->num_terms; ++k)
+        for (int k = 0; k < p->num_terms; ++k) {
+            if (max_degree >= 0) {
+                // Terms are sorted by degree — early exit once exceeded.
+                int degree = 0;
+                for (int d = 0; d < 5; ++d)
+                    degree += p->term[k].exp[d];
+                if (degree > max_degree)
+                    break;
+            }
             acc += poly_term_evaluate(&p->term[k], input);
+        }
         output[j] = acc;
     }
 }

@@ -1,38 +1,5 @@
 #! /usr/local/Nuke16.0v6/libnuke-16.0.6.so -nx
-#write_info Write1 file:"./test.exr" format:"1280 720 1" chans:":rgba.red:rgba.green:rgba.blue:" framerange:"1 1" fps:"0" colorspace:"default (linear)" datatype:"16 bit half" transfer:"unknown" views:"main" colorManagement:"Nuke"
 version 16.0 v6
-define_window_layout_xml {<?xml version="1.0" encoding="UTF-8"?>
-<layout version="1.0">
-    <window x="0" y="0" w="1919" h="1052" screen="0">
-        <splitter orientation="1">
-            <split size="40"/>
-            <dock id="" hideTitles="1" activePageId="Toolbar.1">
-                <page id="Toolbar.1"/>
-            </dock>
-            <split size="1256" stretch="1"/>
-            <splitter orientation="2">
-                <split size="593"/>
-                <dock id="" activePageId="Viewer.1">
-                    <page id="Viewer.1"/>
-                </dock>
-                <split size="417"/>
-                <dock id="" activePageId="DAG.1" focus="true">
-                    <page id="DAG.1"/>
-                    <page id="Curve Editor.1"/>
-                    <page id="DopeSheet.1"/>
-                </dock>
-            </splitter>
-            <split size="615"/>
-            <dock id="" activePageId="Properties.1">
-                <page id="Properties.1"/>
-                <page id="Scenegraph.1"/>
-                <page id="uk.co.thefoundry.scripteditor.1"/>
-                <page id="com.nukediff.MergePanel"/>
-            </dock>
-        </splitter>
-    </window>
-</layout>
-}
 Root {
  inputs 0
  name /home/latuser/git/DeepC/test/test_deepcdefocus_po.nk
@@ -52,44 +19,40 @@ Root {
 }
 CheckerBoard2 {
  inputs 0
+ format "1280 720 0 0 1280 720 1 HD_720"
+ boxsize {64 64}
+ color0 {0.1 0.1 0.1 1}
+ color1 {0.8 0.6 0.2 1}
+ color2 {0.3 0.5 0.7 1}
+ color3 {0.9 0.2 0.4 1}
+ centerlinewidth 0
  name CheckerBoard1
  xpos 203
  ypos -222
 }
-Transform {
- translate {-418 -420}
- scale 0.134
- center {1024 778}
- name Transform1
+Reformat {
+ type "to box"
+ box_width 128
+ box_height 72
+ box_fixed true
+ name Reformat1
  xpos 203
  ypos -150
 }
-Crop {
- box {0 0 1280 720}
- name Crop1
- xpos 203
- ypos -104
-}
 DeepFromImage {
+ set_z true
+ z 5000
  name DeepFromImage1
  xpos 203
  ypos -80
 }
-set N1f8e8b30 [stack 0]
-Viewer {
- frame 1
- frame_range 1-1
- monitorOutNDISenderName "Nuke - untitled - Viewer1"
- monitorOutOutputTransform rec709
- name Viewer1
- xpos -40
- ypos -9
-}
-push $N1f8e8b30
 DeepCDefocusPO {
  poly_file /home/latuser/git/lentil/polynomial-optics/database/lenses/1953-angenieux-double-gauss/55/fitted/exitpupil.fit
+ focus_distance 2000
+ fstop 2.8
+ aperture_samples 4
  name DeepCDefocusPO1
- xpos 193
+ xpos 203
  ypos -1
 }
 Write {
