@@ -152,7 +152,6 @@ public:
 
     const char* Class()     const override { return CLASS; }
     const char* node_help() const override { return HELP; }
-    Op*         op()              override { return this; }
 
     // ------------------------------------------------------------------
     // Input wiring — both inputs accept Deep streams
