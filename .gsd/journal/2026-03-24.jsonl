@@ -1,0 +1,4 @@
+{"ts":"2026-03-24T12:10:35.211Z","flowId":"2e815821-7876-4496-84e8-82b12d6d0552","seq":1,"eventType":"iteration-start","data":{"iteration":1}}
+{"ts":"2026-03-24T12:10:35.238Z","flowId":"2e815821-7876-4496-84e8-82b12d6d0552","seq":2,"eventType":"dispatch-match","rule":"rewrite-docs (override gate)","data":{"unitType":"rewrite-docs","unitId":"M007-gvtoom/S01"}}
+{"ts":"2026-03-24T12:10:35.239Z","flowId":"2e815821-7876-4496-84e8-82b12d6d0552","seq":3,"eventType":"unit-start","data":{"unitType":"rewrite-docs","unitId":"M007-gvtoom/S01"}}
+{"ts":"2026-03-24T12:12:42.368Z","flowId":"2e815821-7876-4496-84e8-82b12d6d0552","seq":4,"eventType":"unit-end","data":{"unitType":"rewrite-docs","unitId":"M007-gvtoom/S01","status":"completed","artifactVerified":true},"causedBy":{"flowId":"2e815821-7876-4496-84e8-82b12d6d0552","seq":3}}

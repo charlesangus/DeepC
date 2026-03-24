@@ -259,3 +259,40 @@ M006's proof strategy cleanly separates what can be proven in the workspace from
 **Context:** lentil/poly.h attribution (S05, M006)
 
 `src/poly.h` was vendored from `lentil` (Johannes Hanika / hanatos, MIT) in S01 without a license entry. S05 added the entry. Any future vendor of a header-only or snippet library must add the entry in the same slice it is vendored — not deferred to the final integration slice. The S05 contract `grep -q 'lentil|hanatos' THIRD_PARTY_LICENSES.md` enforces presence but not timeliness.
+
+## DeepCDefocusPO — PlanarIop Scatter Write Correctness
+
+### imagePlane.writableAt requires chans.contains() guard — missing channel = heap corruption
+**Context:** DeepCDefocusPO malloc crash fix (Q3)
+
+`ImagePlane::writableAt(x, y, channel)` computes a stride-based offset into a buffer sized for the ChannelSet returned by `imagePlane.channels()`. Writing a channel *not* in that ChannelSet produces an invalid offset and silently corrupts adjacent heap. The crash symptom is `malloc(): invalid size (unsorted)` at the *next* allocation after `renderStripe` returns — not at the write site, making it easy to misdiagnose. Nuke can and does call `renderStripe` requesting only a subset of RGBA. Every `writableAt` in `renderStripe` must be guarded with `chans.contains(chan)` before writing.
+
+### ChannelSet::contains() mock stub was missing from verify-s01-syntax.sh
+**Context:** DeepCDefocusPO malloc crash fix (Q3)
+
+`ChannelSet::contains(Channel)` is used throughout the codebase (DeepCWrapper, DeepCKeymix, etc.) but the mock `ChannelSet` in `verify-s01-syntax.sh` was missing the method. Any new use of `ChannelSet` methods in a plugin's `renderStripe` or `doDeepEngine` must be checked against the mock stub list — add missing methods as `bool contains(Channel) const { return true; }` or equivalent no-op stub.
+
+## Local Build and Install Flow
+
+### Symlink from build/local-linux into Nuke — no install step needed
+**Context:** User-confirmed workflow override (2026-03-24)
+
+There is a symlink from Nuke's plugin path into `build/local-linux/src/` (or similar). Rebuilding in place with `cmake --build build/local-linux` is sufficient for Nuke to pick up the new `.so` — no `cmake --install`, `batchInstall.sh`, or manual copy is required. The correct local iteration loop is:
+
+1. Edit source
+2. `cmake --build build/local-linux --target <PluginName>` (or `--target all`)
+3. Restart/rescan Nuke — the new `.so` is live immediately via the symlink
+
+`docker-build.sh` remains the CI/release gate (produces versioned release zips). Do not run it for local iteration — it is slow and unnecessary when the symlink is in place. See D030.
+
+## DeepCDefocusPO — Segfault Root Causes (Q4–Q6)
+
+### ImagePlane::writableAt takes channel index, not Channel enum
+**Context:** DeepCDefocusPO segfault root cause (Q4–Q6)
+
+`ImagePlane::writableAt(int x, int y, int z)` takes `z` as a **channel index** (0-based position in the plane's channel list), NOT a `Channel` enum value. `Chan_Red=1, Chan_Green=2, Chan_Blue=3, Chan_Alpha=4`. For a 4-component RGBA plane valid indices are `0–3`; passing `Chan_Alpha=4` writes one element past the buffer end on every call. The downstream symptoms — `malloc(): invalid size`, `free(): invalid pointer`, `_int_malloc` assertion, SIGSEGV — are all heap corruption artifacts that shift location between runs. Fix: `imagePlane.writableAt(x, y, imagePlane.chanNo(channel))`. The mock `ImagePlane` in `verify-s01-syntax.sh` had `writableAt(int,int,Channel)` which accepted the wrong type and masked this entire bug class from the fast syntax gate — the mock must use `writableAt(int,int,int)` + `chanNo(Channel)` to match the real API.
+
+### poly_system_read must NOT be called from _validate — data race with renderStripe
+**Context:** DeepCDefocusPO segfault root cause (Q6)
+
+`_validate` can be called by Nuke on the main thread while `renderStripe` is executing on a worker thread. Calling `poly_system_destroy` + `poly_system_read` from `_validate` frees and reallocates `_poly_sys.poly[k].term` pointers being concurrently read by `renderStripe` — a data race manifesting as `free(): invalid pointer` and heap corruption. Fix: move poly loading to `renderStripe` entry. `PlanarIop::renderStripe` is called sequentially (one stripe at a time, not re-entrant), so loading there is thread-safe without additional locking. `_validate` should only set `_poly_loaded = false` as a dirty flag when the file path changes.
