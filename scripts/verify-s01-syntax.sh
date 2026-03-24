@@ -60,13 +60,14 @@ cat > "$TMPDIR/DDImage/Channel.h" << 'HEADER'
 #pragma once
 namespace DD { namespace Image {
 
-typedef int Channel;
-static const Channel Chan_DeepFront = 0;
-static const Channel Chan_DeepBack = 1;
-static const Channel Chan_Alpha = 2;
-static const Channel Chan_Red = 3;
-static const Channel Chan_Green = 4;
-static const Channel Chan_Blue = 5;
+enum Channel {
+    Chan_DeepFront = 0,
+    Chan_DeepBack = 1,
+    Chan_Alpha = 2,
+    Chan_Red = 3,
+    Chan_Green = 4,
+    Chan_Blue = 5
+};
 
 typedef unsigned int ChannelMask;
 static const ChannelMask Mask_None = 0;
@@ -75,11 +76,11 @@ static const ChannelMask Mask_All  = 0xFFFFFFFF;
 
 class ChannelSet {
 public:
-    ChannelSet() : _first(0), _count(0) {}
-    ChannelSet(ChannelMask) : _first(0), _count(4) {}
+    ChannelSet() : _first(static_cast<Channel>(0)), _count(0) {}
+    ChannelSet(ChannelMask) : _first(static_cast<Channel>(0)), _count(4) {}
     int size() const { return _count; }
     Channel first() const { return _first; }
-    Channel next(Channel z) const { return (z + 1 < _first + _count) ? z + 1 : 0; }
+    Channel next(Channel z) const { int n = static_cast<int>(z) + 1; return (n < static_cast<int>(_first) + _count) ? static_cast<Channel>(n) : static_cast<Channel>(0); }
     ChannelSet& operator+=(Channel) { return *this; }
     ChannelSet operator+(Channel) const { return *this; }
     ChannelSet operator+(const ChannelSet&) const { return *this; }
@@ -93,7 +94,7 @@ private:
 
 // DDImage foreach macro — iterates channels in a ChannelSet
 #define foreach(VAR, SET) \
-    for (DD::Image::Channel VAR = (SET).first(); VAR; VAR = (SET).next(VAR))
+    for (DD::Image::Channel VAR = (SET).first(); static_cast<int>(VAR) != 0; VAR = (SET).next(VAR))
 HEADER
 
 # --- Box.h ---
@@ -238,8 +239,6 @@ public:
     void set(const Box& b) { Box::set(b.x(), b.y(), b.r(), b.t()); }
     void set(const Box& b, int /*pad*/) { set(b); }
     void channels(ChannelMask) {}
-    void format(const Format&) {}
-    const Format& format() const { static Format f; return f; }
     void full_size_format(const Format&) {}
     const Format& full_size_format() const { static Format f; return f; }
 };
@@ -273,14 +272,16 @@ public:
     ImagePlane() {}
     const Box& bounds() const { static Box b; return b; }
     const ChannelSet& channels() const { static ChannelSet c; return c; }
-    void makeWritable(size_t = 0) {}
-    // writableAt(x, y, z) — z is a channel *index* (not a Channel enum).
-    // Use chanNo(chan) to convert Channel enum → index before calling.
-    float& writableAt(int /*x*/, int /*y*/, int /*z*/) {
+    void makeWritable() {}
+    float& writableAt(int /*x*/, int /*y*/, Channel /*z*/) {
         static float dummy = 0.0f;
         return dummy;
     }
-    int chanNo(Channel /*z*/) const { return 0; }
+    float& writableAt(int /*x*/, int /*y*/, int /*chanIdx*/) {
+        static float dummy = 0.0f;
+        return dummy;
+    }
+    int chanNo(Channel z) const { return static_cast<int>(z); }
     float* writable(Channel, int /*y*/) { return nullptr; }
 };
 
@@ -322,7 +323,6 @@ namespace DD { namespace Image {
 struct DeepInfo {
     Box& box() { static Box b; return b; }
     const Box& box() const { static Box b; return b; }
-    const Format* format() const { static Format f; return &f; }
     const Format* fullSizeFormat() const { static Format f; return &f; }
 };
 
@@ -376,60 +376,26 @@ private:
 HEADER
 
 # --- Run syntax-only compilation ---
-for src_file in DeepCBlur.cpp DeepCDepthBlur.cpp DeepCDefocusPO.cpp; do
+for src_file in DeepCBlur.cpp DeepCDepthBlur.cpp DeepCDefocusPOThin.cpp DeepCDefocusPORay.cpp; do
     if [ -f "$SRC_DIR/$src_file" ]; then
         echo "Running syntax check: g++ -std=c++17 -fsyntax-only -I$TMPDIR -I$SRC_DIR $SRC_DIR/$src_file"
         g++ -std=c++17 -fsyntax-only -I"$TMPDIR" -I"$SRC_DIR" "$SRC_DIR/$src_file"
         echo "Syntax check passed: $src_file"
     fi
 done
-# --- S02 grep contracts ---
-echo "Checking S02 contracts..."
-grep -q 'halton'          "$SRC_DIR/deepc_po_math.h"     || { echo "FAIL: halton missing from deepc_po_math.h"; exit 1; }
-grep -q 'map_to_disk'     "$SRC_DIR/deepc_po_math.h"     || { echo "FAIL: map_to_disk missing from deepc_po_math.h"; exit 1; }
-grep -q 'mat2_inverse'    "$SRC_DIR/deepc_po_math.h"     || { echo "FAIL: mat2_inverse missing from deepc_po_math.h"; exit 1; }
-grep -q '0\.45f'          "$SRC_DIR/DeepCDefocusPO.cpp"  || { echo "FAIL: R wavelength 0.45 missing"; exit 1; }
-grep -q '0\.55f'          "$SRC_DIR/DeepCDefocusPO.cpp"  || { echo "FAIL: G wavelength 0.55 missing"; exit 1; }
-grep -q '0\.65f'          "$SRC_DIR/DeepCDefocusPO.cpp"  || { echo "FAIL: B wavelength 0.65 missing"; exit 1; }
-grep -q 'deepEngine'      "$SRC_DIR/DeepCDefocusPO.cpp"  || { echo "FAIL: deepEngine call missing"; exit 1; }
-grep -q 'lt_newton_trace' "$SRC_DIR/DeepCDefocusPO.cpp"  || { echo "FAIL: lt_newton_trace not called in scatter loop"; exit 1; }
-grep -q 'halton'          "$SRC_DIR/DeepCDefocusPO.cpp"  || { echo "FAIL: halton not called in scatter loop"; exit 1; }
-grep -q 'map_to_disk'     "$SRC_DIR/DeepCDefocusPO.cpp"  || { echo "FAIL: map_to_disk not called in scatter loop"; exit 1; }
-# Ensure no leftover stub markers
-if grep -q 'S02: replace' "$SRC_DIR/DeepCDefocusPO.cpp"; then
-    echo "FAIL: leftover S02 stub marker in DeepCDefocusPO.cpp"; exit 1
-fi
-echo "S02 contracts: all pass."
-# --- S03 grep contracts ---
-echo "Checking S03 contracts..."
-grep -q 'holdoutConnected'      "$SRC_DIR/DeepCDefocusPO.cpp" || { echo "FAIL: holdoutConnected missing"; exit 1; }
-grep -q 'transmittance_at'      "$SRC_DIR/DeepCDefocusPO.cpp" || { echo "FAIL: transmittance_at lambda missing"; exit 1; }
-grep -q 'holdout_w'             "$SRC_DIR/DeepCDefocusPO.cpp" || { echo "FAIL: holdout_w factor missing from splat"; exit 1; }
-grep -q 'hzf >= Z'              "$SRC_DIR/DeepCDefocusPO.cpp" || { echo "FAIL: depth gate (hzf >= Z) missing"; exit 1; }
-grep -q 'holdoutOp->deepRequest\|holdout.*deepRequest' "$SRC_DIR/DeepCDefocusPO.cpp" || { echo "FAIL: holdout deepRequest missing from getRequests"; exit 1; }
-test "$(grep -c 'input(1)' "$SRC_DIR/DeepCDefocusPO.cpp")" -ge 3 || { echo "FAIL: input(1) appears fewer than 3 times (label + getRequests + renderStripe)"; exit 1; }
-! grep -q 'TODO\|STUB' "$SRC_DIR/DeepCDefocusPO.cpp" || { echo "FAIL: leftover TODO/STUB markers"; exit 1; }
-echo "S03 contracts: all pass."
-# --- S04 grep contracts ---
-echo "Checking S04 contracts..."
-grep -q '_focal_length_mm'       "$SRC_DIR/DeepCDefocusPO.cpp" || { echo "FAIL: _focal_length_mm member missing"; exit 1; }
-grep -q 'focal_length'           "$SRC_DIR/DeepCDefocusPO.cpp" || { echo "FAIL: focal_length knob missing"; exit 1; }
-! grep -q 'const float focal_length_mm = 50' "$SRC_DIR/DeepCDefocusPO.cpp" || { echo "FAIL: hardcoded 50mm still in renderStripe"; exit 1; }
-! grep -q 'S01 skeleton' "$SRC_DIR/DeepCDefocusPO.cpp" || { echo "FAIL: stale S01 skeleton comment in HELP string"; exit 1; }
-grep -q 'Divider' "$SRC_DIR/DeepCDefocusPO.cpp" || { echo "FAIL: Divider missing from knobs()"; exit 1; }
-echo "S04 contracts: all pass."
 # --- S05 contracts ---
 echo "Checking S05 contracts..."
-# Stale S01/S02 comment lines removed
-! grep -q 'S01 state: skeleton only' "$SRC_DIR/DeepCDefocusPO.cpp" || { echo "FAIL: stale S01 skeleton comment still present"; exit 1; }
-! grep -q 'S02 replaces the renderStripe' "$SRC_DIR/DeepCDefocusPO.cpp" || { echo "FAIL: stale S02 comment still present"; exit 1; }
-# CMake entries present (regression guard)
-grep -c 'DeepCDefocusPO' "$SRC_DIR/CMakeLists.txt" | grep -q '^2$' || { echo "FAIL: DeepCDefocusPO not in exactly 2 CMakeLists.txt locations"; exit 1; }
-# FILTER_NODES entry
-grep -q 'FILTER_NODES.*DeepCDefocusPO\|DeepCDefocusPO.*FILTER_NODES' "$SRC_DIR/CMakeLists.txt" || { echo "FAIL: DeepCDefocusPO not in FILTER_NODES"; exit 1; }
+# CMake entries present for both new plugins (regression guard)
+grep -c 'DeepCDefocusPOThin' "$SRC_DIR/CMakeLists.txt" | grep -q '^2$' || { echo "FAIL: DeepCDefocusPOThin not in exactly 2 CMakeLists.txt locations"; exit 1; }
+grep -c 'DeepCDefocusPORay' "$SRC_DIR/CMakeLists.txt" | grep -q '^2$' || { echo "FAIL: DeepCDefocusPORay not in exactly 2 CMakeLists.txt locations"; exit 1; }
+# Old plugin gone from CMake
+test "$(grep -c 'DeepCDefocusPO[^TR]' "$SRC_DIR/CMakeLists.txt")" -eq 0 || { echo "FAIL: old DeepCDefocusPO still in CMakeLists.txt"; exit 1; }
+# FILTER_NODES entries
+grep -q 'FILTER_NODES.*DeepCDefocusPOThin' "$SRC_DIR/CMakeLists.txt" || { echo "FAIL: DeepCDefocusPOThin not in FILTER_NODES"; exit 1; }
+grep -q 'FILTER_NODES.*DeepCDefocusPORay' "$SRC_DIR/CMakeLists.txt" || { echo "FAIL: DeepCDefocusPORay not in FILTER_NODES"; exit 1; }
 # THIRD_PARTY_LICENSES entry
 grep -q 'lentil\|hanatos' "$(dirname "$SRC_DIR")/THIRD_PARTY_LICENSES.md" || { echo "FAIL: lentil/poly.h not in THIRD_PARTY_LICENSES.md"; exit 1; }
-# Op::Description registration present
-grep -q 'Op::Description' "$SRC_DIR/DeepCDefocusPO.cpp" || { echo "FAIL: Op::Description missing"; exit 1; }
+# Old file removed
+test ! -f "$SRC_DIR/DeepCDefocusPO.cpp" || { echo "FAIL: DeepCDefocusPO.cpp should be deleted"; exit 1; }
 echo "S05 contracts: all pass."
 echo "All syntax checks passed."

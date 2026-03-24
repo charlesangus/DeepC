@@ -46,7 +46,8 @@ typedef struct poly_system_s poly_system_t;
 inline void poly_system_evaluate(const poly_system_t* sys,
                                  const float* input,
                                  float* output,
-                                 int num_out);
+                                 int num_out,
+                                 int max_degree = -1);
 #endif
 
 // ---------------------------------------------------------------------------
@@ -216,4 +217,29 @@ inline float coc_radius(float focal_length_mm,
     const float aperture_diam = focal_length_mm / fstop;
     const float delta = std::fabs(sample_depth_mm - focus_dist_mm);
     return aperture_diam * delta / sample_depth_mm;
+}
+
+// ---------------------------------------------------------------------------
+// sphereToCs — map a 2D point on a sphere of radius R to a unit 3D direction
+//
+// Given a point (x, y) on the tangent plane, projects onto a sphere of radius
+// R and returns the normalised direction vector (out_x, out_y, out_z).
+// If the point lies outside the sphere (disc < 0), returns (x, y, 0).
+// Correctness validated in S03; this stub only needs to compile in S01.
+// ---------------------------------------------------------------------------
+inline void sphereToCs(float x, float y, float R,
+                       float& out_x, float& out_y, float& out_z)
+{
+    const float r2 = x*x + y*y;
+    const float disc = R*R - r2;
+    if (disc < 0.0f) {
+        out_x = x; out_y = y; out_z = 0.0f;
+        return;
+    }
+    out_z = R - std::copysign(std::sqrt(disc), R);
+    const float len = std::sqrt(x*x + y*y + out_z*out_z);
+    if (len < 1e-9f) { out_x = 0; out_y = 0; out_z = 1; return; }
+    out_x = x / len;
+    out_y = y / len;
+    out_z = out_z / len;
 }

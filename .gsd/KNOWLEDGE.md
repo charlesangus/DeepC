@@ -296,3 +296,106 @@ There is a symlink from Nuke's plugin path into `build/local-linux/src/` (or sim
 **Context:** DeepCDefocusPO segfault root cause (Q6)
 
 `_validate` can be called by Nuke on the main thread while `renderStripe` is executing on a worker thread. Calling `poly_system_destroy` + `poly_system_read` from `_validate` frees and reallocates `_poly_sys.poly[k].term` pointers being concurrently read by `renderStripe` — a data race manifesting as `free(): invalid pointer` and heap corruption. Fix: move poly loading to `renderStripe` entry. `PlanarIop::renderStripe` is called sequentially (one stripe at a time, not re-entrant), so loading there is thread-safe without additional locking. `_validate` should only set `_poly_loaded = false` as a dirty flag when the file path changes.
+
+## DeepCDefocusPO Replacement — M007 S01 Patterns
+
+### poly_system_evaluate max_degree uses break, not continue
+**Context:** M007/S01 T01 — max_degree early-exit in poly.h
+
+`.fit` polynomial term arrays are sorted ascending by total degree. When `max_degree >= 0` and the current term's degree sum exceeds the limit, the correct control flow is `break`, not `continue`. Using `continue` would skip the current term but keep evaluating higher-degree terms that will also exceed the limit — wasting cycles with no effect on output. Using `break` correctly truncates evaluation for all remaining terms in a single check. This relies on the ascending-sort invariant in the lentil gencode output format.
+
+### Two-plugin scaffold pattern: Thin is base, Ray extends
+**Context:** M007/S01 T02 — DeepCDefocusPOThin and DeepCDefocusPORay scaffolds
+
+DeepCDefocusPOThin is the minimal scaffold: all shared knobs (poly_file, focal_length, focus_distance, fstop, aperture_samples, max_degree), holdout, CA wavelengths, Halton/Shirley, and one `poly_system_t _lens_sys`. DeepCDefocusPORay extends it by adding `aperture_file` File_knob, a second `poly_system_t _aperture_sys` with independent load/reload tracking and separate error messages, and 4 lens geometry Float_knobs in a closed group. The extension pattern avoids code drift: anything that applies to both nodes belongs in Thin's class body.
+
+### CA wavelengths as static constexpr class members
+**Context:** M007/S01 T02 — DeepCDefocusPOThin and DeepCDefocusPORay
+
+CA wavelengths (WL_B=0.45f, WL_G=0.55f, WL_R=0.65f) are declared as `static constexpr float` class members rather than local `const float` arrays in renderStripe. This makes them reachable from helper methods and lambda captures in S02/S03 without capturing by value or passing as parameters. Any S02/S03 scatter or gather loop that iterates over wavelengths should use `{WL_B, WL_G, WL_R}` directly.
+
+### S02/S03/S04 grep contracts removed from verify script — slices must add their own
+**Context:** M007/S01 T03 — scripts/verify-s01-syntax.sh contract cleanup
+
+When DeepCDefocusPO.cpp was deleted, all the verify script's S02/S03/S04 contract blocks that referenced that file were removed. They were specific to the old single-plugin architecture. S02 and S03 must add new contract blocks to `scripts/verify-s01-syntax.sh` when they implement their respective engines. The pattern: add a `# SXX contracts` block at the bottom of the script with grep checks that verify the new engine code in the Thin/Ray files.
+
+
+## DeepCDefocusPOThin — S02/M007 Patterns
+
+### mock Channel.h must declare Channel as enum, not typedef int
+**Context:** M007/S02 T01 — verify-s01-syntax.sh mock header fix
+
+When `Channel` is declared as `typedef int Channel` in the mock headers, `writableAt(int,int,Channel)` and `writableAt(int,int,int)` have **identical signatures** — both overloads resolve to the same function. This means the mock will accept either call silently even though the real DDImage API provides both distinct overloads and relies on the distinction for type safety. Fix: change to `enum Channel { Chan_Black = 0, Chan_Red = 1, ... }` in the mock `DDImage/Channel.h`. Also update the `foreach` macro to use `static_cast<int>(VAR) != 0` instead of implicit bool conversion (enums without an explicit underlying type may not convert to bool in all compilers). Any future expansion of the mock headers must preserve the `enum` type for `Channel`.
+
+### Option B poly warp: poly output is an aberration offset, not a screen position
+**Context:** M007/S02 T01 — DeepCDefocusPOThin renderStripe
+
+In the thin-lens variant (Option B from D032), `poly_system_evaluate` output channels `[0:1]` represent a warp offset applied to the aperture sample position — NOT an absolute screen/sensor coordinate. The correct computation is:
+1. Generate normalised aperture sample `(u, v)` via Halton + map_to_disk
+2. Call `poly_system_evaluate` with `(u, v, wavelength)` → get warp vector `(wx, wy)`
+3. Clamp `|(wx, wy)|` to `ap_radius` (prevents runaway aberrations)
+4. Scale by `coc_radius / ap_radius` to map aperture space → screen space
+5. Add to the base pixel position (not to the polynomial output directly)
+
+Treating poly output as absolute positions produces an aperture ring artifact (the classic "broken scatter" symptom from M006). This is the defining failure mode to watch for in any PO scatter implementation.
+
+## DeepCDefocusPORay — S03/M007-gvtoom Patterns
+
+### DDImage::Box has no pad() or intersect() methods — use manual std::max/std::min
+**Context:** DeepCDefocusPORay CoC neighbourhood bounds (T01, S03, M007-gvtoom)
+
+The slice plan assumed `Box::pad(n)` and `Box::intersect(other)` exist. Neither method is in the DDImage API. Any deep spatial op that needs a padded or intersected Box must construct it manually:
+```cpp
+Box expanded(std::max(in_box.x(), bounds.x() - pad),
+             std::max(in_box.y(), bounds.y() - pad),
+             std::min(in_box.r(), bounds.r() + pad),
+             std::min(in_box.t(), bounds.t() + pad));
+```
+The `std::max` on the lower bound and `std::min` on the upper bound simultaneously pad AND clamp to valid input extents. This is the correct pattern — do not pad without clamping or you will request samples outside the valid input region.
+
+### Dual poly reload guard: each poly file needs its own loaded/reload flags
+**Context:** DeepCDefocusPORay aperture + exitpupil poly systems (T01, S03, M007-gvtoom)
+
+When a node has two polynomial files (e.g. exitpupil.fit and aperture.fit), each needs independent `_xxx_loaded` and `_reload_xxx` flags. Sharing flags between two poly systems means changing one file path triggers a reload of both — wasteful and potentially order-dependent. The reload guard pattern at `renderStripe` entry: `if (_reload_xxx || !_xxx_loaded) { poly_system_destroy(&_xxx_sys); _xxx_loaded = (poly_system_read(...) == 0); }`. Apply this independently for each file.
+
+### Gather selectivity guard is the gather counterpart to scatter's splat-to-target
+**Context:** DeepCDefocusPORay gather loop (T01, S03, M007-gvtoom)
+
+In the Thin scatter engine, each deep sample splats to its computed landing pixel. In the Ray gather engine, we invert this: for each output pixel (ox, oy), we iterate the neighbourhood, compute each sample's landing, and only accumulate if `ox_land == ox && oy_land == oy`. This selectivity guard is the gather analogue of the scatter's forward write — without it, every neighbourhood sample contributes to every output pixel and the result is undefocused. The guard must use `round()` on the floating-point landing, matching the scatter's truncation/rounding convention, or the two variants will disagree on pixel assignments at boundaries.
+
+### Option B gather: CoC warp landing is consistent with Thin scatter; Newton iteration deferred
+**Context:** DeepCDefocusPORay algorithm choice (S03-RESEARCH.md, T01, S03, M007-gvtoom)
+
+The final pixel landing in the Ray variant uses the same CoC warp formula as the Thin scatter (polynomial aberration offset scaled by `coc_radius / aperture_housing_radius`, added to the base pixel position). This "Option B" was chosen over a full lentil-style Newton iteration to retire the convergence risk. `sphereToCs` is called and produces a physically correct 3D ray direction (satisfying R033), but the landing currently ignores it. If a future slice adds the Newton solver, the call site is already in place — wire the sphereToCs output into the iteration initial guess instead of discarding it.
+
+## Polynomial Optics — M007 Patterns
+
+### Option B poly warp: polynomial output is a warp offset, NOT a screen position
+**Context:** DeepCDefocusPOThin scatter and DeepCDefocusPORay gather (M007/S02, M007/S03)
+
+The polynomial system's output channels [0:1] are interpreted as an aperture warp offset within the CoC disk — NOT as absolute sensor coordinates or scatter directions. The warp vector's magnitude is clamped to `ap_radius`, then scaled by `coc_radius / ap_radius` to produce the final pixel-space displacement. This is consistent across both Thin (scatter) and Ray (gather) variants. Any future variant that wants full Newton-iterated ray tracing must explicitly change this interpretation.
+
+### Gather selectivity guard eliminates need for Newton solver
+**Context:** DeepCDefocusPORay gather engine (M007/S03)
+
+The `ox_land != ox || oy_land != oy` guard tests whether a sample's CoC-warped landing matches the current output pixel. This simple test enables a brute-force gather without scene-intersection data structures or Newton convergence. It is O(N·K·S) per output pixel (N=neighbourhood pixels, K=deep samples, S=aperture samples) but correct. For 128×72 test resolution this is acceptable; production resolution may need spatial acceleration.
+
+### DDImage::Box has no pad() or intersect() methods
+**Context:** DeepCDefocusPORay expanded input bounds (M007/S03)
+
+The DDImage Box class lacks `pad(int)` and `intersect(Box)` convenience methods. Expanded/clamped bounds must be constructed manually via `std::max`/`std::min` on individual edges: `Box(max(x, lo_x - pad), max(y, lo_y - pad), min(r, hi_r + pad), min(t, hi_t + pad))`. This is the established pattern for any future deep spatial op needing padded or clamped boxes.
+
+### Channel enum required for writableAt overload resolution in mock headers
+**Context:** verify-s01-syntax.sh mock DDImage headers (M007/S01, M007/S02)
+
+`Channel` must be an `enum` (not `typedef int`) in mock headers for `writableAt(int,int,Channel)` and `writableAt(int,int,int)` to resolve as distinct overloads. The mock `foreach` macro must use `static_cast<int>(VAR)` accordingly. This matches the real DDImage API and must be maintained for any future plugin that uses channel-typed writableAt.
+
+### Thread-safe poly load: renderStripe entry, not _validate
+**Context:** Both DeepCDefocusPO variants (M007/S01, M007/S02, M007/S03)
+
+Polynomial systems are loaded at `renderStripe` entry (not `_validate`) gated by a `_reload_poly` flag. This is the M006-established thread-safety pattern: `_validate` caches path/knob values only; `renderStripe` does the actual `poly_system_read` call. The Ray variant extends this with a second `_reload_aperture` flag for the aperture.fit file.
+
+### Dual .fit file pattern for raytraced variant
+**Context:** DeepCDefocusPORay (M007/S01, M007/S03)
+
+The Ray variant requires two .fit files: `exitpupil.fit` (poly_file knob) and `aperture.fit` (aperture_file knob). Each has independent loaded/reload flags and error reporting. A missing or invalid aperture_file silently produces black output because the vignetting guard rejects all samples. This dual-file pattern should be documented for artists.
