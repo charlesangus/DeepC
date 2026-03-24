@@ -1,4 +1,4 @@
-# M007-gvtoom: DeepCDefocusPO Correctness — Thin-Lens + Raytraced Variants
+# M007-gvtoom: DeepCDefocusPO Correctness - Thin-Lens + Raytraced Variants
 
 **Vision:** Replace the broken DeepCDefocusPO scatter model with two correct variants — DeepCDefocusPOThin (thin-lens CoC + polynomial aberration modulation) and DeepCDefocusPORay (lentil-style raytraced gather) — both producing correct defocused output from Deep input.
 
