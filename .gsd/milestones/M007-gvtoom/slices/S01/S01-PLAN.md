@@ -37,6 +37,11 @@ grep -q 'sphereToCs' src/deepc_po_math.h
 grep -q 'writableAt.*= 0' src/DeepCDefocusPOThin.cpp
 grep -q 'writableAt.*= 0' src/DeepCDefocusPORay.cpp
 
+# Failure path: _validate reports error via Nuke error() on bad poly file
+grep -q 'error.*Cannot open lens file' src/DeepCDefocusPOThin.cpp
+grep -q 'error.*Cannot open lens file' src/DeepCDefocusPORay.cpp
+grep -q 'error.*Cannot open aperture file' src/DeepCDefocusPORay.cpp
+
 # Old file gone
 test ! -f src/DeepCDefocusPO.cpp
 ```
@@ -50,7 +55,7 @@ test ! -f src/DeepCDefocusPO.cpp
   - Verify: `grep -q 'max_degree' src/poly.h && grep -q 'sphereToCs' src/deepc_po_math.h && grep -q 'max_degree' src/deepc_po_math.h`
   - Done when: poly.h evaluator supports max_degree truncation; deepc_po_math.h has sphereToCs and updated forward declaration
 
-- [ ] **T02: Create DeepCDefocusPOThin.cpp and DeepCDefocusPORay.cpp scaffolds** `est:1h`
+- [x] **T02: Create DeepCDefocusPOThin.cpp and DeepCDefocusPORay.cpp scaffolds** `est:1h`
   - Why: The two new plugin source files, derived from the working DeepCDefocusPO.cpp template
   - Files: `src/DeepCDefocusPOThin.cpp`, `src/DeepCDefocusPORay.cpp`, `src/DeepCDefocusPO.cpp` (read-only template)
   - Do: Copy DeepCDefocusPO.cpp to create both scaffolds. Thin: rename class/CLASS/HELP, add `_max_degree` Int_knob (default 11, range 1–11), replace renderStripe body with zero-output stub. Ray: same as Thin plus `aperture_file` File_knob, 4 lens geometry Float_knobs in "Lens geometry" group (Angenieux 55mm defaults), second `poly_system_t _aperture_sys` with loading in _validate, stub renderStripe. Both preserve: holdout input, CA wavelengths, Halton/Shirley, knob_changed, _validate poly loading, _close cleanup.
