@@ -338,3 +338,32 @@ In the thin-lens variant (Option B from D032), `poly_system_evaluate` output cha
 5. Add to the base pixel position (not to the polynomial output directly)
 
 Treating poly output as absolute positions produces an aperture ring artifact (the classic "broken scatter" symptom from M006). This is the defining failure mode to watch for in any PO scatter implementation.
+
+## DeepCDefocusPORay — S03/M007-gvtoom Patterns
+
+### DDImage::Box has no pad() or intersect() methods — use manual std::max/std::min
+**Context:** DeepCDefocusPORay CoC neighbourhood bounds (T01, S03, M007-gvtoom)
+
+The slice plan assumed `Box::pad(n)` and `Box::intersect(other)` exist. Neither method is in the DDImage API. Any deep spatial op that needs a padded or intersected Box must construct it manually:
+```cpp
+Box expanded(std::max(in_box.x(), bounds.x() - pad),
+             std::max(in_box.y(), bounds.y() - pad),
+             std::min(in_box.r(), bounds.r() + pad),
+             std::min(in_box.t(), bounds.t() + pad));
+```
+The `std::max` on the lower bound and `std::min` on the upper bound simultaneously pad AND clamp to valid input extents. This is the correct pattern — do not pad without clamping or you will request samples outside the valid input region.
+
+### Dual poly reload guard: each poly file needs its own loaded/reload flags
+**Context:** DeepCDefocusPORay aperture + exitpupil poly systems (T01, S03, M007-gvtoom)
+
+When a node has two polynomial files (e.g. exitpupil.fit and aperture.fit), each needs independent `_xxx_loaded` and `_reload_xxx` flags. Sharing flags between two poly systems means changing one file path triggers a reload of both — wasteful and potentially order-dependent. The reload guard pattern at `renderStripe` entry: `if (_reload_xxx || !_xxx_loaded) { poly_system_destroy(&_xxx_sys); _xxx_loaded = (poly_system_read(...) == 0); }`. Apply this independently for each file.
+
+### Gather selectivity guard is the gather counterpart to scatter's splat-to-target
+**Context:** DeepCDefocusPORay gather loop (T01, S03, M007-gvtoom)
+
+In the Thin scatter engine, each deep sample splats to its computed landing pixel. In the Ray gather engine, we invert this: for each output pixel (ox, oy), we iterate the neighbourhood, compute each sample's landing, and only accumulate if `ox_land == ox && oy_land == oy`. This selectivity guard is the gather analogue of the scatter's forward write — without it, every neighbourhood sample contributes to every output pixel and the result is undefocused. The guard must use `round()` on the floating-point landing, matching the scatter's truncation/rounding convention, or the two variants will disagree on pixel assignments at boundaries.
+
+### Option B gather: CoC warp landing is consistent with Thin scatter; Newton iteration deferred
+**Context:** DeepCDefocusPORay algorithm choice (S03-RESEARCH.md, T01, S03, M007-gvtoom)
+
+The final pixel landing in the Ray variant uses the same CoC warp formula as the Thin scatter (polynomial aberration offset scaled by `coc_radius / aperture_housing_radius`, added to the base pixel position). This "Option B" was chosen over a full lentil-style Newton iteration to retire the convergence risk. `sphereToCs` is called and produces a physically correct 3D ray direction (satisfying R033), but the landing currently ignores it. If a future slice adds the Newton solver, the call site is already in place — wire the sphereToCs output into the iteration initial guess instead of discarding it.

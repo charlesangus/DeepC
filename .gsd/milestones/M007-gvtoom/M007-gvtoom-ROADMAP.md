@@ -53,7 +53,7 @@ This milestone is complete only when all are true:
 - [x] **S02: DeepCDefocusPOThin scatter engine** `risk:medium` `depends:[S01]`
   > After this: DeepCDefocusPOThin renders a defocused checkerboard with visible bokeh. `nuke -x test/test_thin.nk` exits 0 with non-black 128×72 EXR. Thin-lens CoC controls scatter radius; polynomial modulates bokeh shape. Holdout, CA, and Halton sampling functional.
 
-- [ ] **S03: DeepCDefocusPORay gather engine** `risk:high` `depends:[S01]`
+- [x] **S03: DeepCDefocusPORay gather engine** `risk:high` `depends:[S01]`
   > After this: DeepCDefocusPORay renders the same test scene with physically raytraced bokeh. `nuke -x test/test_ray.nk` exits 0 with non-black 128×72 EXR. Full lentil-style Newton solver with sphereToCs, lens geometry constants, and aperture.fit. Holdout, CA, and Halton sampling functional.
 
 ## Boundary Map

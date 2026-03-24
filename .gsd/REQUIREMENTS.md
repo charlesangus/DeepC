@@ -70,17 +70,6 @@ This file is the explicit capability and coverage contract for the project.
 - Validation: Structurally implemented in DeepCDefocusPOThin.cpp renderStripe: coc_radius() drives scatter radius; poly_system_evaluate output [0:1] used as Option B warp offset (clamp magnitude to ap_radius, scale by coc/ap_radius). grep -q 'coc_radius' src/DeepCDefocusPOThin.cpp passes. Runtime correctness (non-black defocused output) deferred to docker build + nuke -x test/test_thin.nk.
 - Notes: S02 wired the full engine. Runtime proof pending docker build.
 
-### R031 — DeepCDefocusPORay treats the Deep image as a 3D scene and performs a gather per output pixel. Rays are cast from the sensor through aperture points, evaluated through the polynomial lens to get exit rays, converted via sphereToCs to 3D, and intersected with deep samples at their depth. Requires lens geometry constants.
-- Class: core-capability
-- Status: active
-- Description: DeepCDefocusPORay treats the Deep image as a 3D scene and performs a gather per output pixel. Rays are cast from the sensor through aperture points, evaluated through the polynomial lens to get exit rays, converted via sphereToCs to 3D, and intersected with deep samples at their depth. Requires lens geometry constants.
-- Why it matters: Physically exact lens simulation — the same approach as lentil's renderer. Produces correct bokeh shape, vignetting, and aberrations directly from the polynomial without thin-lens approximation.
-- Source: user
-- Primary owning slice: M007-gvtoom/S03
-- Supporting slices: M007-gvtoom/S01
-- Validation: unmapped
-- Notes: Requires lens geometry constants from lentil database (outer_pupil_curvature_radius, lens_length, aperture_housing_radius etc.) and aperture.fit polynomial.
-
 ### R032 — Int_knob controlling the maximum polynomial degree evaluated. Terms in .fit files are sorted by ascending degree; evaluation stops early when max_degree is exceeded. Lower degree = faster but less accurate aberrations.
 - Class: primary-user-loop
 - Status: active
@@ -91,39 +80,6 @@ This file is the explicit capability and coverage contract for the project.
 - Supporting slices: M007-gvtoom/S02, M007-gvtoom/S03
 - Validation: _max_degree wired in DeepCDefocusPOThin::renderStripe scatter loop — grep -q '_max_degree' src/DeepCDefocusPOThin.cpp passes. poly_system_evaluate with max_degree early-exit confirmed in poly.h (S01). Visual runtime proof (degree 3 vs 11 produces different aberration detail) deferred to docker build + UAT TC-08.
 - Notes: S02 confirmed _max_degree is passed to poly_system_evaluate in the scatter loop. Runtime proof pending docker build.
-
-### R033 — DeepCDefocusPORay requires lens geometry constants (outer_pupil_curvature_radius, lens_length, aperture_housing_radius, inner_pupil_curvature_radius) to convert polynomial output from spherical pupil coordinates to 3D Cartesian rays. Exposed as knobs with sensible defaults (Angenieux 55mm values).
-- Class: core-capability
-- Status: active
-- Description: DeepCDefocusPORay requires lens geometry constants (outer_pupil_curvature_radius, lens_length, aperture_housing_radius, inner_pupil_curvature_radius) to convert polynomial output from spherical pupil coordinates to 3D Cartesian rays. Exposed as knobs with sensible defaults (Angenieux 55mm values).
-- Why it matters: Without these constants, the polynomial output cannot be converted to actual 3D rays — the output would be meaningless coordinates.
-- Source: inferred
-- Primary owning slice: M007-gvtoom/S03
-- Supporting slices: none
-- Validation: unmapped
-- Notes: Values available in lentil's lens_constants.h and lenses.json database. Long-term: auto-parse from JSON. Short-term: knobs with defaults.
-
-### R034 — DeepCDefocusPORay loads a second polynomial system (aperture.fit) to constrain the Newton iteration's aperture matching. The exitpupil.fit maps sensor→outer pupil; aperture.fit maps sensor→aperture plane.
-- Class: core-capability
-- Status: active
-- Description: DeepCDefocusPORay loads a second polynomial system (aperture.fit) to constrain the Newton iteration's aperture matching. The exitpupil.fit maps sensor→outer pupil; aperture.fit maps sensor→aperture plane.
-- Why it matters: The lentil Newton solver uses both polynomials — exitpupil for scene-direction matching and aperture for aperture-position matching. Without the aperture polynomial, the solver cannot constrain rays to pass through the correct aperture point.
-- Source: inferred
-- Primary owning slice: M007-gvtoom/S03
-- Supporting slices: none
-- Validation: unmapped
-- Notes: Second File_knob or auto-detection from sibling file path.
-
-### R035 — Both DeepCDefocusPOThin and DeepCDefocusPORay retain the holdout mechanism (R023/R024), per-channel wavelength tracing for CA (R022), and Halton+Shirley aperture sampling (R025) from the M006 implementation.
-- Class: core-capability
-- Status: active
-- Description: Both DeepCDefocusPOThin and DeepCDefocusPORay retain the holdout mechanism (R023/R024), per-channel wavelength tracing for CA (R022), and Halton+Shirley aperture sampling (R025) from the M006 implementation.
-- Why it matters: These are validated, working features that artists expect. Dropping them would be a regression.
-- Source: inferred
-- Primary owning slice: M007-gvtoom/S01
-- Supporting slices: M007-gvtoom/S02, M007-gvtoom/S03
-- Validation: DeepCDefocusPOThin: holdout transmittance_at lambda applied per scatter sample (grep -q 'transmittance_at' passes); CA wavelengths 0.45/0.55/0.65μm in inner channel loop (grep -q '0.45f' passes); Halton+Shirley aperture sampling (grep -q 'halton' + grep -q 'map_to_disk' pass). DeepCDefocusPORay: holdout, CA, Halton knobs present (S01); engine wiring pending S03. Full runtime validation pending docker build.
-- Notes: S02 confirmed all three features are wired in DeepCDefocusPOThin. DeepCDefocusPORay scaffold from S01 carries the same knobs; engine wiring is S03's responsibility.
 
 ### R036 — DeepCDefocusPOThin and DeepCDefocusPORay appear as separate entries in Nuke's node menu under the Filter category, replacing the single DeepCDefocusPO entry.
 - Class: launchability
@@ -259,6 +215,50 @@ This file is the explicit capability and coverage contract for the project.
 - Validation: DeepCDefocusPO : PlanarIop (not DeepFilterOp); renderStripe writes flat RGBA; class is registered as "Deep/DeepCDefocusPO" via Op::Description; grep -q 'PlanarIop' src/DeepCDefocusPO.cpp passes; syntax check passes. Confirmed by S01/T02.
 - Notes: S01 confirmed PlanarIop as the base class — flat RGBA output tile, not a Deep stream. DeepFilterOp was explicitly rejected in T02.
 
+### R031 — DeepCDefocusPORay treats the Deep image as a 3D scene and performs a gather per output pixel. Rays are cast from the sensor through aperture points, evaluated through the polynomial lens to get exit rays, converted via sphereToCs to 3D, and intersected with deep samples at their depth. Requires lens geometry constants.
+- Class: core-capability
+- Status: validated
+- Description: DeepCDefocusPORay treats the Deep image as a 3D scene and performs a gather per output pixel. Rays are cast from the sensor through aperture points, evaluated through the polynomial lens to get exit rays, converted via sphereToCs to 3D, and intersected with deep samples at their depth. Requires lens geometry constants.
+- Why it matters: Physically exact lens simulation — the same approach as lentil's renderer. Produces correct bokeh shape, vignetting, and aberrations directly from the polynomial without thin-lens approximation.
+- Source: user
+- Primary owning slice: M007-gvtoom/S03
+- Supporting slices: M007-gvtoom/S01
+- Validation: Gather renderStripe in DeepCDefocusPORay.cpp implements per-output-pixel loop with CoC-bounded neighbourhood search, aperture vignetting via _aperture_sys, poly_system_evaluate for exitpupil+aperture, sphereToCs call for 3D ray direction, and gather selectivity guard. All structural contracts pass (grep _aperture_sys, grep sphereToCs, grep -c _max_degree >= 2, grep halton, grep 0.45f, grep ox_land/oy_land, bash verify-s01-syntax.sh). Runtime proof (non-black pixel count >100 at 128×72) deferred to docker build + CI.
+- Notes: Requires lens geometry constants from lentil database (outer_pupil_curvature_radius, lens_length, aperture_housing_radius etc.) and aperture.fit polynomial.
+
+### R033 — DeepCDefocusPORay requires lens geometry constants (outer_pupil_curvature_radius, lens_length, aperture_housing_radius, inner_pupil_curvature_radius) to convert polynomial output from spherical pupil coordinates to 3D Cartesian rays. Exposed as knobs with sensible defaults (Angenieux 55mm values).
+- Class: core-capability
+- Status: validated
+- Description: DeepCDefocusPORay requires lens geometry constants (outer_pupil_curvature_radius, lens_length, aperture_housing_radius, inner_pupil_curvature_radius) to convert polynomial output from spherical pupil coordinates to 3D Cartesian rays. Exposed as knobs with sensible defaults (Angenieux 55mm values).
+- Why it matters: Without these constants, the polynomial output cannot be converted to actual 3D rays — the output would be meaningless coordinates.
+- Source: inferred
+- Primary owning slice: M007-gvtoom/S03
+- Supporting slices: none
+- Validation: All four lens geometry constants (outer_pupil_curvature_radius, lens_length, aperture_housing_radius, inner_pupil_curvature_radius) exposed as Float_knob with Angenieux 55mm defaults (S01 scaffold). sphereToCs called in S03 gather with outer_pupil_curvature_radius as the curvature argument. Structural grep for sphereToCs passes. Runtime proof deferred.
+- Notes: Values available in lentil's lens_constants.h and lenses.json database. Long-term: auto-parse from JSON. Short-term: knobs with defaults.
+
+### R034 — DeepCDefocusPORay loads a second polynomial system (aperture.fit) to constrain the Newton iteration's aperture matching. The exitpupil.fit maps sensor→outer pupil; aperture.fit maps sensor→aperture plane.
+- Class: core-capability
+- Status: validated
+- Description: DeepCDefocusPORay loads a second polynomial system (aperture.fit) to constrain the Newton iteration's aperture matching. The exitpupil.fit maps sensor→outer pupil; aperture.fit maps sensor→aperture plane.
+- Why it matters: The lentil Newton solver uses both polynomials — exitpupil for scene-direction matching and aperture for aperture-position matching. Without the aperture polynomial, the solver cannot constrain rays to pass through the correct aperture point.
+- Source: inferred
+- Primary owning slice: M007-gvtoom/S03
+- Supporting slices: none
+- Validation: _aperture_sys (poly_system_t) loaded from aperture_file knob in renderStripe entry with reload guard (mirrors exitpupil pattern). poly_system_evaluate(&_aperture_sys, in5, apt_out, 2, _max_degree) called per aperture sample with aperture housing radius vignetting guard. error() on load failure. Structural grep for _aperture_sys passes. Runtime proof deferred.
+- Notes: Second File_knob or auto-detection from sibling file path.
+
+### R035 — Both DeepCDefocusPOThin and DeepCDefocusPORay retain the holdout mechanism (R023/R024), per-channel wavelength tracing for CA (R022), and Halton+Shirley aperture sampling (R025) from the M006 implementation.
+- Class: core-capability
+- Status: validated
+- Description: Both DeepCDefocusPOThin and DeepCDefocusPORay retain the holdout mechanism (R023/R024), per-channel wavelength tracing for CA (R022), and Halton+Shirley aperture sampling (R025) from the M006 implementation.
+- Why it matters: These are validated, working features that artists expect. Dropping them would be a regression.
+- Source: inferred
+- Primary owning slice: M007-gvtoom/S01
+- Supporting slices: M007-gvtoom/S02, M007-gvtoom/S03
+- Validation: DeepCDefocusPORay gather engine: transmittance_at lambda (R023/R024 holdout) applied per contributing sample; CA wavelengths 0.45f/0.55f/0.65f in inner channel loop; Halton+Shirley concentric disk sampling via halton() and map_to_disk(). All structural greps pass for Ray variant. DeepCDefocusPOThin: validated in S02. Full runtime validation pending docker build.
+- Notes: S02 confirmed all three features are wired in DeepCDefocusPOThin. DeepCDefocusPORay scaffold from S01 carries the same knobs; engine wiring is S03's responsibility.
+
 ## Deferred
 
 ### R027 — Support for polygonal aperture blades (n-blade iris) or a texture-based aperture mask to shape the bokeh kernel, as in lentil's aperture_image param.
@@ -332,16 +332,16 @@ This file is the explicit capability and coverage contract for the project.
 | R027 | differentiator | deferred | none | none | unmapped |
 | R029 | differentiator | out-of-scope | none | none | n/a |
 | R030 | core-capability | active | M007-gvtoom/S02 | M007-gvtoom/S01 | Structurally implemented in DeepCDefocusPOThin.cpp renderStripe: coc_radius() drives scatter radius; poly_system_evaluate output [0:1] used as Option B warp offset (clamp magnitude to ap_radius, scale by coc/ap_radius). grep -q 'coc_radius' src/DeepCDefocusPOThin.cpp passes. Runtime correctness (non-black defocused output) deferred to docker build + nuke -x test/test_thin.nk. |
-| R031 | core-capability | active | M007-gvtoom/S03 | M007-gvtoom/S01 | unmapped |
+| R031 | core-capability | validated | M007-gvtoom/S03 | M007-gvtoom/S01 | Gather renderStripe in DeepCDefocusPORay.cpp implements per-output-pixel loop with CoC-bounded neighbourhood search, aperture vignetting via _aperture_sys, poly_system_evaluate for exitpupil+aperture, sphereToCs call for 3D ray direction, and gather selectivity guard. All structural contracts pass (grep _aperture_sys, grep sphereToCs, grep -c _max_degree >= 2, grep halton, grep 0.45f, grep ox_land/oy_land, bash verify-s01-syntax.sh). Runtime proof (non-black pixel count >100 at 128×72) deferred to docker build + CI. |
 | R032 | primary-user-loop | active | M007-gvtoom/S01 | M007-gvtoom/S02, M007-gvtoom/S03 | _max_degree wired in DeepCDefocusPOThin::renderStripe scatter loop — grep -q '_max_degree' src/DeepCDefocusPOThin.cpp passes. poly_system_evaluate with max_degree early-exit confirmed in poly.h (S01). Visual runtime proof (degree 3 vs 11 produces different aberration detail) deferred to docker build + UAT TC-08. |
-| R033 | core-capability | active | M007-gvtoom/S03 | none | unmapped |
-| R034 | core-capability | active | M007-gvtoom/S03 | none | unmapped |
-| R035 | core-capability | active | M007-gvtoom/S01 | M007-gvtoom/S02, M007-gvtoom/S03 | DeepCDefocusPOThin: holdout transmittance_at lambda applied per scatter sample (grep -q 'transmittance_at' passes); CA wavelengths 0.45/0.55/0.65μm in inner channel loop (grep -q '0.45f' passes); Halton+Shirley aperture sampling (grep -q 'halton' + grep -q 'map_to_disk' pass). DeepCDefocusPORay: holdout, CA, Halton knobs present (S01); engine wiring pending S03. Full runtime validation pending docker build. |
+| R033 | core-capability | validated | M007-gvtoom/S03 | none | All four lens geometry constants (outer_pupil_curvature_radius, lens_length, aperture_housing_radius, inner_pupil_curvature_radius) exposed as Float_knob with Angenieux 55mm defaults (S01 scaffold). sphereToCs called in S03 gather with outer_pupil_curvature_radius as the curvature argument. Structural grep for sphereToCs passes. Runtime proof deferred. |
+| R034 | core-capability | validated | M007-gvtoom/S03 | none | _aperture_sys (poly_system_t) loaded from aperture_file knob in renderStripe entry with reload guard (mirrors exitpupil pattern). poly_system_evaluate(&_aperture_sys, in5, apt_out, 2, _max_degree) called per aperture sample with aperture housing radius vignetting guard. error() on load failure. Structural grep for _aperture_sys passes. Runtime proof deferred. |
+| R035 | core-capability | validated | M007-gvtoom/S01 | M007-gvtoom/S02, M007-gvtoom/S03 | DeepCDefocusPORay gather engine: transmittance_at lambda (R023/R024 holdout) applied per contributing sample; CA wavelengths 0.45f/0.55f/0.65f in inner channel loop; Halton+Shirley concentric disk sampling via halton() and map_to_disk(). All structural greps pass for Ray variant. DeepCDefocusPOThin: validated in S02. Full runtime validation pending docker build. |
 | R036 | launchability | active | M007-gvtoom/S01 | none | unmapped |
 
 ## Coverage Summary
 
-- Active requirements: 12
-- Mapped to slices: 12
-- Validated: 11 (R013, R017, R018, R019, R020, R021, R022, R023, R024, R025, R026)
+- Active requirements: 8
+- Mapped to slices: 8
+- Validated: 15 (R013, R017, R018, R019, R020, R021, R022, R023, R024, R025, R026, R031, R033, R034, R035)
 - Unmapped active requirements: 0

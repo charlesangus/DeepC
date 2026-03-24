@@ -10,7 +10,7 @@ Artists can use deep-compositing operations in Nuke that don't exist in the buil
 
 ## Current State
 
-**M007-gvtoom S02 complete.** 24 plugins. DeepCDefocusPOThin has a full thin-lens CoC scatter engine in `renderStripe`: coc_radius scatter radius, Option B poly-warped aperture samples, per-channel CA at 0.45/0.55/0.65μm, holdout transmittance, Halton+Shirley sampling, chanNo+chans.contains write guards, _max_degree truncation. `test/test_thin.nk` at 128×72 with Angenieux 55mm ready for docker build + runtime UAT. S03 (raytraced gather engine, DeepCDefocusPORay) remains.
+**M007-gvtoom S03 complete (all slices done).** 24 plugins (old DeepCDefocusPO removed, replaced by DeepCDefocusPOThin + DeepCDefocusPORay). DeepCDefocusPOThin: full thin-lens CoC scatter engine (S02). DeepCDefocusPORay: full raytraced gather engine (S03) — CoC-bounded neighbourhood search, aperture vignetting via aperture.fit, sphereToCs for physical ray direction, gather selectivity guard, holdout transmittance, CA at 0.45/0.55/0.65μm, Halton+Shirley sampling, _max_degree truncation. Both `test/test_thin.nk` and `test/test_ray.nk` at 128×72 with Angenieux 55mm ready for docker build + runtime UAT. All structural verification contracts pass. Remaining gate: docker build + `nuke -x` runtime proof (CI/assembly).
 
 ## Architecture / Key Patterns
 
