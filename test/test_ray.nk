@@ -1,0 +1,141 @@
+#! /usr/local/Nuke16.0v6/libnuke-16.0.6.so -nx
+#write_info Write1 file:"./test_ray.exr" format:"128 72 1" chans:":rgba.red:rgba.green:rgba.blue:" framerange:"1 1" fps:"0" colorspace:"default (linear)" datatype:"16 bit half" transfer:"unknown" views:"main" colorManagement:"Nuke"
+version 16.0 v6
+define_window_layout_xml {<?xml version="1.0" encoding="UTF-8"?>
+<layout version="1.0">
+    <window x="0" y="0" w="1919" h="1052" screen="0">
+        <splitter orientation="1">
+            <split size="40"/>
+            <dock id="" hideTitles="1" activePageId="Toolbar.1">
+                <page id="Toolbar.1"/>
+            </dock>
+            <split size="1256" stretch="1"/>
+            <splitter orientation="2">
+                <split size="593"/>
+                <dock id="" activePageId="Viewer.1">
+                    <page id="Viewer.1"/>
+                </dock>
+                <split size="417"/>
+                <dock id="" activePageId="DAG.1" focus="true">
+                    <page id="DAG.1"/>
+                    <page id="Curve Editor.1"/>
+                    <page id="DopeSheet.1"/>
+                </dock>
+            </splitter>
+            <split size="615"/>
+            <dock id="" activePageId="Properties.1">
+                <page id="Properties.1"/>
+                <page id="Scenegraph.1"/>
+                <page id="uk.co.thefoundry.scripteditor.1"/>
+                <page id="com.nukediff.MergePanel"/>
+            </dock>
+        </splitter>
+    </window>
+</layout>
+}
+Root {
+ inputs 0
+ name /home/latuser/git/DeepC/test/test_ray.nk
+ project_directory "\[python \{nuke.script_directory()\}]"
+ last_frame 1
+ format "128 72 0 0 128 72 1 128x72"
+ proxy_type scale
+ proxy_format "1024 778 0 0 1024 778 1 1K_Super_35(full-ap)"
+ colorManagement Nuke
+ workingSpaceLUT linear
+ monitorLut sRGB
+ monitorOutLUT rec709
+ int8Lut sRGB
+ int16Lut sRGB
+ logLut Cineon
+ floatLut linear
+}
+Reformat {
+ inputs 0
+ type "to box"
+ box_width 128
+ box_height 72
+ box_fixed true
+ name Reformat1
+ xpos 203
+ ypos -523
+}
+Grid {
+ number 3.7
+ size 2
+ translate {10 5}
+ name Grid1
+ xpos 203
+ ypos -389
+}
+set N39247870 [stack 0]
+Dot {
+ name Dot1
+ xpos 467
+ ypos -263
+ hide_input true
+}
+Dilate {
+ size {0 -2}
+ name Dilate2
+ xpos 433
+ ypos -245
+}
+Dot {
+ name Dot2
+ xpos 467
+ ypos -135
+}
+push $N39247870
+Dilate {
+ size {-2 0}
+ name Dilate1
+ xpos 203
+ ypos -365
+}
+Merge2 {
+ inputs 2
+ operation mask
+ name Merge1
+ xpos 203
+ ypos -149
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 5000
+ name DeepFromImage1
+ xpos 203
+ ypos -103
+}
+DeepCDefocusPORay {
+ poly_file /home/latuser/git/lentil/polynomial-optics/database/lenses/1953-angenieux-double-gauss/55/fitted/exitpupil.fit
+ aperture_file /home/latuser/git/lentil/polynomial-optics/database/lenses/1953-angenieux-double-gauss/55/fitted/aperture.fit
+ focal_length 55
+ focus_distance 10000
+ max_degree 11
+ name DeepCDefocusPORay1
+ xpos 203
+ ypos -1
+}
+set N371c0090 [stack 0]
+Write {
+ file ./test_ray.exr
+ file_type exr
+ first_part rgba
+ ocioColorspace scene_linear
+ display default
+ view sRGB
+ name Write1
+ xpos 203
+ ypos 68
+}
+push $N371c0090
+Viewer {
+ frame_range 1-1
+ monitorOutNDISenderName "Nuke - test_ray - Viewer1"
+ monitorOutOutputTransform rec709
+ name Viewer1
+ xpos 538
+ ypos -199
+}

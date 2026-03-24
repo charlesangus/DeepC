@@ -49,16 +49,23 @@ grep -q 'aperture_file' test/test_ray.nk
 - New wiring introduced in this slice: gather renderStripe replaces zero-output stub; `test/test_ray.nk` exercises the full pipeline
 - What remains before the milestone is truly usable end-to-end: docker build + `nuke -x` runtime proof (may be done in a CI/assembly slice)
 
+## Observability / Diagnostics
+
+- **Lens file load errors:** `error()` calls surface in Nuke's message panel with the failing file path for both exitpupil and aperture poly files.
+- **Zero output (all-black):** Indicates poly not loaded or input deep stream empty. Check: (1) poly_file knob valid, (2) aperture_file knob valid if set, (3) input has samples in requested region.
+- **Structural verification:** `grep -q '_aperture_sys' src/DeepCDefocusPORay.cpp && grep -q 'sphereToCs' src/DeepCDefocusPORay.cpp` confirms subsystems present.
+- **Failure-path verification:** If `aperture_file` points to a missing file, `error("aperture poly open failed: ...")` fires — testable without Nuke via structural grep.
+
 ## Tasks
 
-- [ ] **T01: Implement gather renderStripe in DeepCDefocusPORay.cpp** `est:1h`
+- [x] **T01: Implement gather renderStripe in DeepCDefocusPORay.cpp** `est:1h`
   - Why: The stub renderStripe zeros all output. This task implements the full gather engine — the core deliverable of S03 and the primary risk item.
   - Files: `src/DeepCDefocusPORay.cpp`
   - Do: Replace the stub `renderStripe` with a gather engine following the Thin scatter pattern for boilerplate (zero_output, poly reload guard, holdout fetch, transmittance_at, CA loop, alpha tracking) and adding gather-specific logic: expanded deepEngine fetch (bounds + CoC halo), outer input-pixel neighbourhood loop, aperture vignetting via `_aperture_sys` (num_out=2), `sphereToCs` call, CoC warp landing (Option B, consistent with Thin), and gather selectivity guard (`ox_land == ox && oy_land == oy`). The algorithm is fully specified in S03-RESEARCH.md.
   - Verify: `grep -q '_aperture_sys' src/DeepCDefocusPORay.cpp && grep -q 'sphereToCs' src/DeepCDefocusPORay.cpp && test $(grep -c '_max_degree' src/DeepCDefocusPORay.cpp) -ge 2 && grep -q 'halton' src/DeepCDefocusPORay.cpp && grep -qE 'ox_land|oy_land' src/DeepCDefocusPORay.cpp && bash scripts/verify-s01-syntax.sh`
   - Done when: renderStripe contains the full gather algorithm with all must-have features; all structural grep checks pass; syntax check passes.
 
-- [ ] **T02: Create test/test_ray.nk and run verification contracts** `est:30m`
+- [x] **T02: Create test/test_ray.nk and run verification contracts** `est:30m`
   - Why: The gather engine needs an end-to-end test script parallel to test_thin.nk. This also runs all verification contracts to confirm the slice is complete.
   - Files: `test/test_ray.nk`
   - Do: Clone `test/test_thin.nk`, swap `DeepCDefocusPOThin` → `DeepCDefocusPORay`, add `aperture_file` knob pointing to the Angenieux 55mm aperture.fit, update Write target to `./test_ray.exr`, update node names. Run all structural verification contracts from the slice plan.
