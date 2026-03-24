@@ -150,4 +150,3 @@ install(TARGETS
         ${PLUGINS_WRAPPED} 
         ${PLUGINS_MWRAPPED} 
         DESTINATION .)
- .)
