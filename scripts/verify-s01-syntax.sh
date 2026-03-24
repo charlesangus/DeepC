@@ -60,13 +60,14 @@ cat > "$TMPDIR/DDImage/Channel.h" << 'HEADER'
 #pragma once
 namespace DD { namespace Image {
 
-typedef int Channel;
-static const Channel Chan_DeepFront = 0;
-static const Channel Chan_DeepBack = 1;
-static const Channel Chan_Alpha = 2;
-static const Channel Chan_Red = 3;
-static const Channel Chan_Green = 4;
-static const Channel Chan_Blue = 5;
+enum Channel {
+    Chan_DeepFront = 0,
+    Chan_DeepBack = 1,
+    Chan_Alpha = 2,
+    Chan_Red = 3,
+    Chan_Green = 4,
+    Chan_Blue = 5
+};
 
 typedef unsigned int ChannelMask;
 static const ChannelMask Mask_None = 0;
@@ -75,14 +76,15 @@ static const ChannelMask Mask_All  = 0xFFFFFFFF;
 
 class ChannelSet {
 public:
-    ChannelSet() : _first(0), _count(0) {}
-    ChannelSet(ChannelMask) : _first(0), _count(4) {}
+    ChannelSet() : _first(static_cast<Channel>(0)), _count(0) {}
+    ChannelSet(ChannelMask) : _first(static_cast<Channel>(0)), _count(4) {}
     int size() const { return _count; }
     Channel first() const { return _first; }
-    Channel next(Channel z) const { return (z + 1 < _first + _count) ? z + 1 : 0; }
+    Channel next(Channel z) const { int n = static_cast<int>(z) + 1; return (n < static_cast<int>(_first) + _count) ? static_cast<Channel>(n) : static_cast<Channel>(0); }
     ChannelSet& operator+=(Channel) { return *this; }
     ChannelSet operator+(Channel) const { return *this; }
     ChannelSet operator+(const ChannelSet&) const { return *this; }
+    bool contains(Channel) const { return true; }
 private:
     Channel _first;
     int _count;
@@ -92,7 +94,7 @@ private:
 
 // DDImage foreach macro — iterates channels in a ChannelSet
 #define foreach(VAR, SET) \
-    for (DD::Image::Channel VAR = (SET).first(); VAR; VAR = (SET).next(VAR))
+    for (DD::Image::Channel VAR = (SET).first(); static_cast<int>(VAR) != 0; VAR = (SET).next(VAR))
 HEADER
 
 # --- Box.h ---
@@ -275,6 +277,11 @@ public:
         static float dummy = 0.0f;
         return dummy;
     }
+    float& writableAt(int /*x*/, int /*y*/, int /*chanIdx*/) {
+        static float dummy = 0.0f;
+        return dummy;
+    }
+    int chanNo(Channel z) const { return static_cast<int>(z); }
     float* writable(Channel, int /*y*/) { return nullptr; }
 };
 

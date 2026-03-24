@@ -294,10 +294,200 @@ public:
         imagePlane.makeWritable();
         const Box& bounds = imagePlane.bounds();
         const ChannelSet& chans = imagePlane.channels();
-        foreach(z, chans)
-            for (int y = bounds.y(); y < bounds.t(); ++y)
-                for (int x = bounds.x(); x < bounds.r(); ++x)
-                    imagePlane.writableAt(x, y, z) = 0.0f;
+        const Format* fmt = info_.full_size_format();
+        const float half_w = fmt->width()  * 0.5f;
+        const float half_h = fmt->height() * 0.5f;
+
+        // ---- zero_output lambda (used for early returns) ----
+        auto zero_output = [&]() {
+            foreach(z, chans) {
+                const int ci = imagePlane.chanNo(z);
+                for (int y = bounds.y(); y < bounds.t(); ++y)
+                    for (int x = bounds.x(); x < bounds.r(); ++x)
+                        imagePlane.writableAt(x, y, ci) = 0.0f;
+            }
+        };
+
+        // ---- Poly load/reload at renderStripe entry (M006 pattern) ----
+        if (_poly_file && _poly_file[0] && (!_poly_loaded || _reload_poly)) {
+            if (_poly_loaded) { poly_system_destroy(&_poly_sys); _poly_loaded = false; }
+            if (poly_system_read(&_poly_sys, _poly_file) != 0) {
+                error("Cannot open lens file: %s", _poly_file);
+                zero_output();
+                return;
+            }
+            _poly_loaded = true;
+            _reload_poly = false;
+        }
+        if (!_poly_loaded || !input0()) {
+            zero_output();
+            return;
+        }
+
+        // ---- Zero the output buffer before accumulation ----
+        zero_output();
+
+        // ---- Deep channels needed ----
+        ChannelSet deep_chans;
+        deep_chans += Chan_Red;
+        deep_chans += Chan_Green;
+        deep_chans += Chan_Blue;
+        deep_chans += Chan_Alpha;
+        deep_chans += Chan_DeepFront;
+        deep_chans += Chan_DeepBack;
+
+        // ---- Holdout fetch ----
+        DeepPlane holdoutPlane;
+        const bool has_holdout = (input1() != nullptr);
+        if (has_holdout) {
+            ChannelSet holdout_chans;
+            holdout_chans += Chan_Alpha;
+            holdout_chans += Chan_DeepFront;
+            holdout_chans += Chan_DeepBack;
+            input1()->deepEngine(bounds, holdout_chans, holdoutPlane);
+        }
+
+        auto transmittance_at = [&](int px, int py, float Z) -> float {
+            if (!has_holdout) return 1.0f;
+            // getPixel(y, x) — row-first DDImage convention
+            DeepPixel hp = holdoutPlane.getPixel(py, px);
+            float transmit = 1.0f;
+            for (int s = 0; s < hp.getSampleCount(); ++s) {
+                float hzf = hp.getUnorderedSample(s, Chan_DeepFront);
+                if (hzf >= Z) continue;  // skip samples at or behind scatter depth
+                float ha = hp.getUnorderedSample(s, Chan_Alpha);
+                transmit *= (1.0f - ha);
+            }
+            return transmit;
+        };
+
+        // ---- Deep input fetch ----
+        DeepPlane deepPlane;
+        if (!input0()->deepEngine(bounds, deep_chans, deepPlane)) {
+            return;  // already zeroed
+        }
+
+        // ---- Scatter constants ----
+        const int N = std::max(_aperture_samples, 1);
+        const float inv_N = 1.0f / static_cast<float>(N);
+        const float ap_radius = 1.0f / (_fstop + 1e-6f);
+
+        // Per-channel CA descriptor: {DDImage channel, wavelength}
+        struct ChanWave { Channel chan; float lambda; };
+        const ChanWave ca_table[3] = {
+            { Chan_Red,   CA_LAMBDA_R },
+            { Chan_Green, CA_LAMBDA_G },
+            { Chan_Blue,  CA_LAMBDA_B },
+        };
+
+        // ---- Per-pixel, per-sample, per-aperture scatter loop ----
+        for (int y = bounds.y(); y < bounds.t(); ++y) {
+            for (int x = bounds.x(); x < bounds.r(); ++x) {
+                // Normalised sensor coords for this pixel
+                const float sx = (x + 0.5f - half_w) / half_w;
+                const float sy = (y + 0.5f - half_h) / half_h;
+
+                DeepPixel dp = deepPlane.getPixel(y, x);
+                const int sample_count = dp.getSampleCount();
+
+                for (int s = 0; s < sample_count; ++s) {
+                    const float Z = dp.getUnorderedSample(s, Chan_DeepFront);
+                    const float sR = dp.getUnorderedSample(s, Chan_Red);
+                    const float sG = dp.getUnorderedSample(s, Chan_Green);
+                    const float sB = dp.getUnorderedSample(s, Chan_Blue);
+                    const float sA = dp.getUnorderedSample(s, Chan_Alpha);
+
+                    // Thin-lens CoC in normalised coords
+                    const float coc_mm = coc_radius(_focal_length_mm, _fstop,
+                                                     _focus_distance, Z);
+                    const float coc_norm = coc_mm / (_focal_length_mm * 0.5f + 1e-6f);
+
+                    // Aperture sample loop
+                    for (int k = 0; k < N; ++k) {
+                        float ax_unit, ay_unit;
+                        map_to_disk(halton(k, 2), halton(k, 3), ax_unit, ay_unit);
+
+                        // ---- Per-channel CA: R, G, B ----
+                        const float sample_colors[3] = { sR, sG, sB };
+
+                        // We'll track the green-channel landing for alpha
+                        int alpha_out_px = x, alpha_out_py = y;
+                        float alpha_transmit = 1.0f;
+
+                        for (int c = 0; c < 3; ++c) {
+                            const Channel chan = ca_table[c].chan;
+                            const float lambda = ca_table[c].lambda;
+
+                            if (!chans.contains(chan)) continue;
+
+                            const float ax = ax_unit * ap_radius;
+                            const float ay = ay_unit * ap_radius;
+
+                            float in5[5] = { sx, sy, ax, ay, lambda };
+                            float out5[5] = {};
+                            poly_system_evaluate(&_poly_sys, in5, out5, 5,
+                                                 _max_degree);
+
+                            const float transmit = std::max(0.0f,
+                                                   std::min(1.0f, out5[4]));
+
+                            // Option B warp: out5[0:1] are warped aperture positions
+                            float wx = out5[0];
+                            float wy = out5[1];
+                            // Clamp magnitude to ap_radius
+                            const float wmag = std::sqrt(wx * wx + wy * wy);
+                            if (wmag > ap_radius && wmag > 1e-9f) {
+                                wx *= ap_radius / wmag;
+                                wy *= ap_radius / wmag;
+                            }
+
+                            // Scale warped position to CoC
+                            const float landing_x = sx + coc_norm * wx
+                                                    / (ap_radius + 1e-6f);
+                            const float landing_y = sy + coc_norm * wy
+                                                    / (ap_radius + 1e-6f);
+
+                            // Convert landing to pixel coords
+                            const float out_px_f = landing_x * half_w + half_w - 0.5f;
+                            const float out_py_f = landing_y * half_h + half_h - 0.5f;
+                            const int out_px_i = static_cast<int>(std::round(out_px_f));
+                            const int out_py_i = static_cast<int>(std::round(out_py_f));
+
+                            // Bounds check
+                            if (out_px_i < bounds.x() || out_px_i >= bounds.r() ||
+                                out_py_i < bounds.y() || out_py_i >= bounds.t())
+                                continue;
+
+                            const float holdout_t = transmittance_at(
+                                                        out_px_i, out_py_i, Z);
+                            const float weight = transmit * holdout_t * inv_N;
+
+                            imagePlane.writableAt(out_px_i, out_py_i,
+                                imagePlane.chanNo(chan)) += sample_colors[c] * weight;
+
+                            // Track green-channel landing for alpha
+                            if (c == 1) {
+                                alpha_out_px = out_px_i;
+                                alpha_out_py = out_py_i;
+                                alpha_transmit = transmit;
+                            }
+                        }
+
+                        // ---- Alpha: use green-channel (0.55μm) landing position ----
+                        if (chans.contains(Chan_Alpha) &&
+                            alpha_out_px >= bounds.x() && alpha_out_px < bounds.r() &&
+                            alpha_out_py >= bounds.y() && alpha_out_py < bounds.t())
+                        {
+                            const float holdout_t = transmittance_at(
+                                                        alpha_out_px, alpha_out_py, Z);
+                            const float weight = alpha_transmit * holdout_t * inv_N;
+                            imagePlane.writableAt(alpha_out_px, alpha_out_py,
+                                imagePlane.chanNo(Chan_Alpha)) += sA * weight;
+                        }
+                    }  // k (aperture samples)
+                }  // s (deep samples)
+            }  // x
+        }  // y
     }
 
     // ------------------------------------------------------------------

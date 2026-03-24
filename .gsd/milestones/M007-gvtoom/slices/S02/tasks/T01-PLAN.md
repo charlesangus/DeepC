@@ -106,6 +106,12 @@ Also fix the `ImagePlane` mock in `verify-s01-syntax.sh` to include `chanNo(Chan
 - `grep -q '_max_degree' src/DeepCDefocusPOThin.cpp`
 - `grep -q 'chans.contains' src/DeepCDefocusPOThin.cpp`
 
+## Observability Impact
+
+- **New signals:** `error("Cannot open lens file: %s")` emitted on poly load failure. Zero-output lambda provides silent-but-diagnosable black output on early-return paths.
+- **Inspection:** A future agent can confirm scatter engine is active by checking grep contracts (`coc_radius`, `halton`, `transmittance_at`, etc.) and by running `nuke -x test/test_thin.nk` to produce non-black output.
+- **Failure state:** If renderStripe produces black output despite valid inputs, check: (1) `_poly_loaded` false → missing `.fit` file, (2) `_aperture_samples` = 0 → no scatter loop iterations, (3) bounds mismatch → all scatter samples land outside tile.
+
 ## Inputs
 
 - `src/DeepCDefocusPOThin.cpp` — S01 scaffold with zero-output renderStripe stub, all knobs/members/infrastructure in place

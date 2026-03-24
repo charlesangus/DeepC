@@ -44,6 +44,20 @@ grep -q 'DeepCDefocusPOThin' test/test_thin.nk
 grep -q 'exitpupil.fit' test/test_thin.nk
 ```
 
+## Observability / Diagnostics
+
+- **Runtime signals:** `error()` call when poly file cannot be loaded (visible in Nuke error console). Zero-output early return when `!_poly_loaded || !input0()` — diagnosable by black output tile.
+- **Inspection surfaces:** Poly load/reload state (`_poly_loaded`, `_reload_poly`) toggles are observable via Nuke knob_changed flow. The `_max_degree` knob controls polynomial truncation — lower values produce visibly degraded but faster output, confirming the code path is active.
+- **Failure visibility:** Missing/corrupt `.fit` file → `error("Cannot open lens file: %s")` message. Missing deep input → silent zero output (black tile). Out-of-bounds scatter samples are bounds-checked and silently clipped (no crash, just missing energy).
+- **Redaction:** No secrets or PII in this slice; `.fit` file paths may appear in error messages but are user-provided scene paths.
+
+## Verification (Diagnostic)
+
+```bash
+# Failure-path: verify that missing poly produces a parseable error string in the source
+grep -q 'error.*Cannot open lens file' src/DeepCDefocusPOThin.cpp
+```
+
 ## Integration Closure
 
 - Upstream surfaces consumed: `src/DeepCDefocusPOThin.cpp` scaffold (S01), `src/deepc_po_math.h`, `src/poly.h`
@@ -52,7 +66,7 @@ grep -q 'exitpupil.fit' test/test_thin.nk
 
 ## Tasks
 
-- [ ] **T01: Implement thin-lens scatter engine in renderStripe + fix mock header** `est:1h`
+- [x] **T01: Implement thin-lens scatter engine in renderStripe + fix mock header** `est:1h`
   - Why: The S01 scaffold has a zero-output stub in `renderStripe`. This task replaces it with the full thin-lens CoC scatter engine that produces correct defocused output. Also fixes the `chanNo` mock header gap.
   - Files: `src/DeepCDefocusPOThin.cpp`, `scripts/verify-s01-syntax.sh`
   - Do: Replace `renderStripe` body with: poly load/reload check, deep fetch via `deepEngine`, per-pixel/per-sample/per-aperture scatter loop using `coc_radius` for scatter radius, Option B poly-warped aperture positions, per-channel CA wavelengths, holdout `transmittance_at` lambda, `chanNo`+`chans.contains` guards. Add `chanNo(Channel)` and `writableAt(int,int,int)` signatures to `ImagePlane` mock in verify script.
