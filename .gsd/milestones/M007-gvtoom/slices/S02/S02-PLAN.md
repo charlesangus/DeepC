@@ -73,7 +73,7 @@ grep -q 'error.*Cannot open lens file' src/DeepCDefocusPOThin.cpp
   - Verify: `bash scripts/verify-s01-syntax.sh` exits 0; all grep contracts pass
   - Done when: Syntax check passes and all 8 grep contracts return 0
 
-- [ ] **T02: Write test/test_thin.nk test script** `est:20m`
+- [x] **T02: Write test/test_thin.nk test script** `est:20m`
   - Why: The UAT gate requires `nuke -x test/test_thin.nk` to produce non-black 128×72 EXR. This task creates the Nuke script adapted from the reference test.
   - Files: `test/test_thin.nk`
   - Do: Adapt `/home/latuser/git/DeepC/test/test_deepcdefocus_po.nk` — change node class to `DeepCDefocusPOThin`, add `max_degree 11`, set `focal_length 55`, `focus_distance 10000`, output to `./test_thin.exr` at 128×72.
