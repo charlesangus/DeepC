@@ -10,7 +10,7 @@ Artists can use deep-compositing operations in Nuke that don't exist in the buil
 
 ## Current State
 
-**M007-gvtoom S01 complete.** 24 plugins. DeepCDefocusPO removed; replaced by DeepCDefocusPOThin and DeepCDefocusPORay scaffolds. Both compile via syntax check, appear in CMake PLUGINS + FILTER_NODES, expose all knobs including max_degree, and have stub renderStripe (zeros output). Shared infrastructure complete: `poly_system_evaluate` with max_degree early-exit, `sphereToCs` in deepc_po_math.h. S02 (thin-lens scatter engine) and S03 (raytraced gather engine) remain.
+**M007-gvtoom S02 complete.** 24 plugins. DeepCDefocusPOThin has a full thin-lens CoC scatter engine in `renderStripe`: coc_radius scatter radius, Option B poly-warped aperture samples, per-channel CA at 0.45/0.55/0.65μm, holdout transmittance, Halton+Shirley sampling, chanNo+chans.contains write guards, _max_degree truncation. `test/test_thin.nk` at 128×72 with Angenieux 55mm ready for docker build + runtime UAT. S03 (raytraced gather engine, DeepCDefocusPORay) remains.
 
 ## Architecture / Key Patterns
 

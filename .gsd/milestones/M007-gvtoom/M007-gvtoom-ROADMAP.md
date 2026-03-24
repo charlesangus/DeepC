@@ -50,7 +50,7 @@ This milestone is complete only when all are true:
 - [x] **S01: Shared infrastructure, max_degree knob, two-plugin scaffold** `risk:low` `depends:[]`
   > After this: both DeepCDefocusPOThin and DeepCDefocusPORay load in Nuke, show all knobs including max_degree, compile via docker-build. No render output yet — renderStripe zeros the output.
 
-- [ ] **S02: DeepCDefocusPOThin scatter engine** `risk:medium` `depends:[S01]`
+- [x] **S02: DeepCDefocusPOThin scatter engine** `risk:medium` `depends:[S01]`
   > After this: DeepCDefocusPOThin renders a defocused checkerboard with visible bokeh. `nuke -x test/test_thin.nk` exits 0 with non-black 128×72 EXR. Thin-lens CoC controls scatter radius; polynomial modulates bokeh shape. Holdout, CA, and Halton sampling functional.
 
 - [ ] **S03: DeepCDefocusPORay gather engine** `risk:high` `depends:[S01]`

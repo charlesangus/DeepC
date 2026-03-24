@@ -67,8 +67,8 @@ This file is the explicit capability and coverage contract for the project.
 - Source: user
 - Primary owning slice: M007-gvtoom/S02
 - Supporting slices: M007-gvtoom/S01
-- Validation: unmapped
-- Notes: Supersedes R030 (previously out-of-scope thin-lens mode). Now a first-class plugin.
+- Validation: Structurally implemented in DeepCDefocusPOThin.cpp renderStripe: coc_radius() drives scatter radius; poly_system_evaluate output [0:1] used as Option B warp offset (clamp magnitude to ap_radius, scale by coc/ap_radius). grep -q 'coc_radius' src/DeepCDefocusPOThin.cpp passes. Runtime correctness (non-black defocused output) deferred to docker build + nuke -x test/test_thin.nk.
+- Notes: S02 wired the full engine. Runtime proof pending docker build.
 
 ### R031 — DeepCDefocusPORay treats the Deep image as a 3D scene and performs a gather per output pixel. Rays are cast from the sensor through aperture points, evaluated through the polynomial lens to get exit rays, converted via sphereToCs to 3D, and intersected with deep samples at their depth. Requires lens geometry constants.
 - Class: core-capability
@@ -89,8 +89,8 @@ This file is the explicit capability and coverage contract for the project.
 - Source: user
 - Primary owning slice: M007-gvtoom/S01
 - Supporting slices: M007-gvtoom/S02, M007-gvtoom/S03
-- Validation: unmapped
-- Notes: S01 structural proof complete: Int_knob `_max_degree` (default 11, range 1–11) present in both DeepCDefocusPOThin.cpp and DeepCDefocusPORay.cpp; `poly_system_evaluate` in poly.h accepts `max_degree=-1` with ascending-sorted break early-exit. Runtime proof (visible quality change at lower degree) deferred to S02/S03 execution.
+- Validation: _max_degree wired in DeepCDefocusPOThin::renderStripe scatter loop — grep -q '_max_degree' src/DeepCDefocusPOThin.cpp passes. poly_system_evaluate with max_degree early-exit confirmed in poly.h (S01). Visual runtime proof (degree 3 vs 11 produces different aberration detail) deferred to docker build + UAT TC-08.
+- Notes: S02 confirmed _max_degree is passed to poly_system_evaluate in the scatter loop. Runtime proof pending docker build.
 
 ### R033 — DeepCDefocusPORay requires lens geometry constants (outer_pupil_curvature_radius, lens_length, aperture_housing_radius, inner_pupil_curvature_radius) to convert polynomial output from spherical pupil coordinates to 3D Cartesian rays. Exposed as knobs with sensible defaults (Angenieux 55mm values).
 - Class: core-capability
@@ -122,8 +122,8 @@ This file is the explicit capability and coverage contract for the project.
 - Source: inferred
 - Primary owning slice: M007-gvtoom/S01
 - Supporting slices: M007-gvtoom/S02, M007-gvtoom/S03
-- Validation: unmapped
-- Notes: S01 structural proof complete: holdout input wiring, CA wavelengths (WL_B=0.45f, WL_G=0.55f, WL_R=0.65f as static constexpr members), and Halton+Shirley aperture sampling all present in both DeepCDefocusPOThin.cpp and DeepCDefocusPORay.cpp. Runtime proof deferred to S02/S03.
+- Validation: DeepCDefocusPOThin: holdout transmittance_at lambda applied per scatter sample (grep -q 'transmittance_at' passes); CA wavelengths 0.45/0.55/0.65μm in inner channel loop (grep -q '0.45f' passes); Halton+Shirley aperture sampling (grep -q 'halton' + grep -q 'map_to_disk' pass). DeepCDefocusPORay: holdout, CA, Halton knobs present (S01); engine wiring pending S03. Full runtime validation pending docker build.
+- Notes: S02 confirmed all three features are wired in DeepCDefocusPOThin. DeepCDefocusPORay scaffold from S01 carries the same knobs; engine wiring is S03's responsibility.
 
 ### R036 — DeepCDefocusPOThin and DeepCDefocusPORay appear as separate entries in Nuke's node menu under the Filter category, replacing the single DeepCDefocusPO entry.
 - Class: launchability
@@ -331,12 +331,12 @@ This file is the explicit capability and coverage contract for the project.
 | R026 | core-capability | validated | M006/S01 | none | DeepCDefocusPO : PlanarIop (not DeepFilterOp); renderStripe writes flat RGBA; class is registered as "Deep/DeepCDefocusPO" via Op::Description; grep -q 'PlanarIop' src/DeepCDefocusPO.cpp passes; syntax check passes. Confirmed by S01/T02. |
 | R027 | differentiator | deferred | none | none | unmapped |
 | R029 | differentiator | out-of-scope | none | none | n/a |
-| R030 | core-capability | active | M007-gvtoom/S02 | M007-gvtoom/S01 | unmapped |
+| R030 | core-capability | active | M007-gvtoom/S02 | M007-gvtoom/S01 | Structurally implemented in DeepCDefocusPOThin.cpp renderStripe: coc_radius() drives scatter radius; poly_system_evaluate output [0:1] used as Option B warp offset (clamp magnitude to ap_radius, scale by coc/ap_radius). grep -q 'coc_radius' src/DeepCDefocusPOThin.cpp passes. Runtime correctness (non-black defocused output) deferred to docker build + nuke -x test/test_thin.nk. |
 | R031 | core-capability | active | M007-gvtoom/S03 | M007-gvtoom/S01 | unmapped |
-| R032 | primary-user-loop | active | M007-gvtoom/S01 | M007-gvtoom/S02, M007-gvtoom/S03 | unmapped |
+| R032 | primary-user-loop | active | M007-gvtoom/S01 | M007-gvtoom/S02, M007-gvtoom/S03 | _max_degree wired in DeepCDefocusPOThin::renderStripe scatter loop — grep -q '_max_degree' src/DeepCDefocusPOThin.cpp passes. poly_system_evaluate with max_degree early-exit confirmed in poly.h (S01). Visual runtime proof (degree 3 vs 11 produces different aberration detail) deferred to docker build + UAT TC-08. |
 | R033 | core-capability | active | M007-gvtoom/S03 | none | unmapped |
 | R034 | core-capability | active | M007-gvtoom/S03 | none | unmapped |
-| R035 | core-capability | active | M007-gvtoom/S01 | M007-gvtoom/S02, M007-gvtoom/S03 | unmapped |
+| R035 | core-capability | active | M007-gvtoom/S01 | M007-gvtoom/S02, M007-gvtoom/S03 | DeepCDefocusPOThin: holdout transmittance_at lambda applied per scatter sample (grep -q 'transmittance_at' passes); CA wavelengths 0.45/0.55/0.65μm in inner channel loop (grep -q '0.45f' passes); Halton+Shirley aperture sampling (grep -q 'halton' + grep -q 'map_to_disk' pass). DeepCDefocusPORay: holdout, CA, Halton knobs present (S01); engine wiring pending S03. Full runtime validation pending docker build. |
 | R036 | launchability | active | M007-gvtoom/S01 | none | unmapped |
 
 ## Coverage Summary

@@ -318,3 +318,23 @@ CA wavelengths (WL_B=0.45f, WL_G=0.55f, WL_R=0.65f) are declared as `static cons
 **Context:** M007/S01 T03 — scripts/verify-s01-syntax.sh contract cleanup
 
 When DeepCDefocusPO.cpp was deleted, all the verify script's S02/S03/S04 contract blocks that referenced that file were removed. They were specific to the old single-plugin architecture. S02 and S03 must add new contract blocks to `scripts/verify-s01-syntax.sh` when they implement their respective engines. The pattern: add a `# SXX contracts` block at the bottom of the script with grep checks that verify the new engine code in the Thin/Ray files.
+
+
+## DeepCDefocusPOThin — S02/M007 Patterns
+
+### mock Channel.h must declare Channel as enum, not typedef int
+**Context:** M007/S02 T01 — verify-s01-syntax.sh mock header fix
+
+When `Channel` is declared as `typedef int Channel` in the mock headers, `writableAt(int,int,Channel)` and `writableAt(int,int,int)` have **identical signatures** — both overloads resolve to the same function. This means the mock will accept either call silently even though the real DDImage API provides both distinct overloads and relies on the distinction for type safety. Fix: change to `enum Channel { Chan_Black = 0, Chan_Red = 1, ... }` in the mock `DDImage/Channel.h`. Also update the `foreach` macro to use `static_cast<int>(VAR) != 0` instead of implicit bool conversion (enums without an explicit underlying type may not convert to bool in all compilers). Any future expansion of the mock headers must preserve the `enum` type for `Channel`.
+
+### Option B poly warp: poly output is an aberration offset, not a screen position
+**Context:** M007/S02 T01 — DeepCDefocusPOThin renderStripe
+
+In the thin-lens variant (Option B from D032), `poly_system_evaluate` output channels `[0:1]` represent a warp offset applied to the aperture sample position — NOT an absolute screen/sensor coordinate. The correct computation is:
+1. Generate normalised aperture sample `(u, v)` via Halton + map_to_disk
+2. Call `poly_system_evaluate` with `(u, v, wavelength)` → get warp vector `(wx, wy)`
+3. Clamp `|(wx, wy)|` to `ap_radius` (prevents runaway aberrations)
+4. Scale by `coc_radius / ap_radius` to map aperture space → screen space
+5. Add to the base pixel position (not to the polynomial output directly)
+
+Treating poly output as absolute positions produces an aperture ring artifact (the classic "broken scatter" symptom from M006). This is the defining failure mode to watch for in any PO scatter implementation.
