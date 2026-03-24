@@ -62,7 +62,7 @@ test ! -f src/DeepCDefocusPO.cpp
   - Verify: `grep -q '_max_degree' src/DeepCDefocusPOThin.cpp && grep -q 'aperture_file' src/DeepCDefocusPORay.cpp && grep -q 'outer_pupil_curvature_radius' src/DeepCDefocusPORay.cpp`
   - Done when: Both .cpp files exist with all required knobs, stub renderStripe, and preserved holdout/CA/Halton infrastructure
 
-- [ ] **T03: Update CMake, verify script, and remove old DeepCDefocusPO.cpp** `est:30m`
+- [x] **T03: Update CMake, verify script, and remove old DeepCDefocusPO.cpp** `est:30m`
   - Why: Wires the new plugins into the build system and updates the syntax-check gate
   - Files: `src/CMakeLists.txt`, `scripts/verify-s01-syntax.sh`, `src/DeepCDefocusPO.cpp` (delete)
   - Do: In CMakeLists.txt replace `DeepCDefocusPO` with `DeepCDefocusPOThin` and `DeepCDefocusPORay` in both PLUGINS and FILTER_NODES lists. In verify-s01-syntax.sh update the for-loop to check `DeepCDefocusPOThin.cpp DeepCDefocusPORay.cpp` (remove DeepCDefocusPO.cpp). Update the S05 CMake grep contracts for the new plugin names (4 occurrences total: 2 Thin + 2 Ray). Remove the old S02/S03/S04/S05 grep contracts that reference DeepCDefocusPO.cpp (they test the old single-plugin and will fail since the file is gone). Delete `src/DeepCDefocusPO.cpp`.

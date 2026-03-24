@@ -13,7 +13,8 @@ set(PLUGINS
     DeepCBlur2
     DeepThinner
     DeepCDepthBlur
-    DeepCDefocusPO
+    DeepCDefocusPOThin
+    DeepCDefocusPORay
     )
 
 # DeepCWrapper 
@@ -50,7 +51,7 @@ DeepCHueShift DeepCInvert DeepCMatrix DeepCMultiply DeepCPosterize DeepCSaturati
 set(3D_NODES DeepCWorld)
 set(MERGE_NODES DeepCKeymix)
 set(Util_NODES DeepCAdjustBBox DeepCCopyBBox)
-set(FILTER_NODES DeepCBlur DeepCBlur2 DeepThinner DeepCDepthBlur DeepCDefocusPO)
+set(FILTER_NODES DeepCBlur DeepCBlur2 DeepThinner DeepCDepthBlur DeepCDefocusPOThin DeepCDefocusPORay)
 
 # add nuke plugin linked to ddimage lib
 function(add_nuke_plugin PLUGIN_NAME)
@@ -149,3 +150,4 @@ install(TARGETS
         ${PLUGINS_WRAPPED} 
         ${PLUGINS_MWRAPPED} 
         DESTINATION .)
+ .)
