@@ -94,7 +94,8 @@ inline float poly_term_evaluate(const poly_term_t* t, const float* input)
 inline void poly_system_evaluate(const poly_system_t* sys,
                                  const float* input,
                                  float* output,
-                                 int num_out)
+                                 int num_out,
+                                 int max_degree = -1)
 {
     if (num_out < 0) num_out = 0;
     if (num_out > 5) num_out = 5;
@@ -102,8 +103,18 @@ inline void poly_system_evaluate(const poly_system_t* sys,
     for (int j = 0; j < num_out; ++j) {
         const poly_t* p = &sys->poly[j];
         float acc = 0.0f;
-        for (int k = 0; k < p->num_terms; ++k)
+        for (int k = 0; k < p->num_terms; ++k) {
+            // Early exit: terms are sorted ascending by total degree in .fit
+            // files, so once we exceed max_degree we can break.
+            if (max_degree >= 0) {
+                int deg = 0;
+                for (int d = 0; d < 5; ++d)
+                    deg += std::abs(p->term[k].exp[d]);
+                if (deg > max_degree)
+                    break;
+            }
             acc += poly_term_evaluate(&p->term[k], input);
+        }
         output[j] = acc;
     }
 }

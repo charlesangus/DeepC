@@ -43,7 +43,7 @@ test ! -f src/DeepCDefocusPO.cpp
 
 ## Tasks
 
-- [ ] **T01: Add max_degree to poly_system_evaluate and sphereToCs to deepc_po_math.h** `est:30m`
+- [x] **T01: Add max_degree to poly_system_evaluate and sphereToCs to deepc_po_math.h** `est:30m`
   - Why: Shared infrastructure both new plugins depend on — must land first
   - Files: `src/poly.h`, `src/deepc_po_math.h`
   - Do: Add `int max_degree = -1` parameter to `poly_system_evaluate` with early-exit when term degree sum exceeds limit. Update the forward declaration in `deepc_po_math.h`. Add `sphereToCs` inline function to `deepc_po_math.h`.
@@ -73,3 +73,11 @@ test ! -f src/DeepCDefocusPO.cpp
 - `src/CMakeLists.txt`
 - `scripts/verify-s01-syntax.sh`
 - `src/DeepCDefocusPO.cpp` (delete)
+
+## Observability / Diagnostics
+
+- **max_degree early-exit**: When `max_degree >= 0`, `poly_system_evaluate` breaks the term loop once cumulative degree exceeds the limit — callers can observe the effect by comparing output with `max_degree = -1` vs a truncated value.
+- **sphereToCs fallback**: When the input point lies outside the sphere (disc < 0), `sphereToCs` returns `(x, y, 0)` — a degenerate but safe direction. No NaN or crash on out-of-range inputs.
+- **Compile-time verification**: `scripts/verify-s01-syntax.sh` performs syntax-only compilation (`-fsyntax-only`) of both plugin files, catching missing includes, signature mismatches, and undefined symbols at build time.
+- **Failure path**: If `poly_system_read` fails (returns non-zero), `_validate` in both plugin scaffolds should report the error via Nuke's `error()` mechanism (validated in T02).
+- **Diagnostic grep checks**: All slice verification checks are grep-based, verifiable without a running Nuke instance.
