@@ -367,3 +367,35 @@ In the Thin scatter engine, each deep sample splats to its computed landing pixe
 **Context:** DeepCDefocusPORay algorithm choice (S03-RESEARCH.md, T01, S03, M007-gvtoom)
 
 The final pixel landing in the Ray variant uses the same CoC warp formula as the Thin scatter (polynomial aberration offset scaled by `coc_radius / aperture_housing_radius`, added to the base pixel position). This "Option B" was chosen over a full lentil-style Newton iteration to retire the convergence risk. `sphereToCs` is called and produces a physically correct 3D ray direction (satisfying R033), but the landing currently ignores it. If a future slice adds the Newton solver, the call site is already in place — wire the sphereToCs output into the iteration initial guess instead of discarding it.
+
+## Polynomial Optics — M007 Patterns
+
+### Option B poly warp: polynomial output is a warp offset, NOT a screen position
+**Context:** DeepCDefocusPOThin scatter and DeepCDefocusPORay gather (M007/S02, M007/S03)
+
+The polynomial system's output channels [0:1] are interpreted as an aperture warp offset within the CoC disk — NOT as absolute sensor coordinates or scatter directions. The warp vector's magnitude is clamped to `ap_radius`, then scaled by `coc_radius / ap_radius` to produce the final pixel-space displacement. This is consistent across both Thin (scatter) and Ray (gather) variants. Any future variant that wants full Newton-iterated ray tracing must explicitly change this interpretation.
+
+### Gather selectivity guard eliminates need for Newton solver
+**Context:** DeepCDefocusPORay gather engine (M007/S03)
+
+The `ox_land != ox || oy_land != oy` guard tests whether a sample's CoC-warped landing matches the current output pixel. This simple test enables a brute-force gather without scene-intersection data structures or Newton convergence. It is O(N·K·S) per output pixel (N=neighbourhood pixels, K=deep samples, S=aperture samples) but correct. For 128×72 test resolution this is acceptable; production resolution may need spatial acceleration.
+
+### DDImage::Box has no pad() or intersect() methods
+**Context:** DeepCDefocusPORay expanded input bounds (M007/S03)
+
+The DDImage Box class lacks `pad(int)` and `intersect(Box)` convenience methods. Expanded/clamped bounds must be constructed manually via `std::max`/`std::min` on individual edges: `Box(max(x, lo_x - pad), max(y, lo_y - pad), min(r, hi_r + pad), min(t, hi_t + pad))`. This is the established pattern for any future deep spatial op needing padded or clamped boxes.
+
+### Channel enum required for writableAt overload resolution in mock headers
+**Context:** verify-s01-syntax.sh mock DDImage headers (M007/S01, M007/S02)
+
+`Channel` must be an `enum` (not `typedef int`) in mock headers for `writableAt(int,int,Channel)` and `writableAt(int,int,int)` to resolve as distinct overloads. The mock `foreach` macro must use `static_cast<int>(VAR)` accordingly. This matches the real DDImage API and must be maintained for any future plugin that uses channel-typed writableAt.
+
+### Thread-safe poly load: renderStripe entry, not _validate
+**Context:** Both DeepCDefocusPO variants (M007/S01, M007/S02, M007/S03)
+
+Polynomial systems are loaded at `renderStripe` entry (not `_validate`) gated by a `_reload_poly` flag. This is the M006-established thread-safety pattern: `_validate` caches path/knob values only; `renderStripe` does the actual `poly_system_read` call. The Ray variant extends this with a second `_reload_aperture` flag for the aperture.fit file.
+
+### Dual .fit file pattern for raytraced variant
+**Context:** DeepCDefocusPORay (M007/S01, M007/S03)
+
+The Ray variant requires two .fit files: `exitpupil.fit` (poly_file knob) and `aperture.fit` (aperture_file knob). Each has independent loaded/reload flags and error reporting. A missing or invalid aperture_file silently produces black output because the vignetting guard rejects all samples. This dual-file pattern should be documented for artists.

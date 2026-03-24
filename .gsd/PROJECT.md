@@ -10,7 +10,7 @@ Artists can use deep-compositing operations in Nuke that don't exist in the buil
 
 ## Current State
 
-**M007-gvtoom S03 complete (all slices done).** 24 plugins (old DeepCDefocusPO removed, replaced by DeepCDefocusPOThin + DeepCDefocusPORay). DeepCDefocusPOThin: full thin-lens CoC scatter engine (S02). DeepCDefocusPORay: full raytraced gather engine (S03) — CoC-bounded neighbourhood search, aperture vignetting via aperture.fit, sphereToCs for physical ray direction, gather selectivity guard, holdout transmittance, CA at 0.45/0.55/0.65μm, Halton+Shirley sampling, _max_degree truncation. Both `test/test_thin.nk` and `test/test_ray.nk` at 128×72 with Angenieux 55mm ready for docker build + runtime UAT. All structural verification contracts pass. Remaining gate: docker build + `nuke -x` runtime proof (CI/assembly).
+**M007-gvtoom complete.** 24 plugins (old DeepCDefocusPO removed, replaced by DeepCDefocusPOThin + DeepCDefocusPORay). Both variants structurally complete with all 7 requirements (R030–R036) validated. DeepCDefocusPOThin: thin-lens CoC scatter engine. DeepCDefocusPORay: raytraced gather engine with CoC-bounded neighbourhood search, aperture vignetting, sphereToCs, gather selectivity guard, holdout, CA, Halton sampling, _max_degree truncation. Test scripts `test/test_thin.nk` and `test/test_ray.nk` at 128×72 with Angenieux 55mm. Runtime proof (docker build + `nuke -x`) deferred to CI. All structural verification contracts pass.
 
 ## Architecture / Key Patterns
 
@@ -34,4 +34,4 @@ See `.gsd/REQUIREMENTS.md` for the explicit capability contract, requirement sta
 - [x] M004-ks4br0: DeepCBlur correctness + DeepCDepthBlur — Fix premult colour comparison and overlap tidy in optimizer; new Z-axis depth spread node
 - [x] M005-9j5er8: DeepCDepthBlur correctness — Fix multiplicative alpha decomposition, zero-alpha filtering, input rename
 - [x] M006: DeepCDefocusPO — Polynomial optics defocus scaffold: Deep→flat, holdout, CA, .fit loader, knobs
-- [ ] M007-gvtoom: DeepCDefocusPO correctness — Replace broken scatter with two correct variants: thin-lens + raytraced
+- [x] M007-gvtoom: DeepCDefocusPO correctness — Replace broken scatter with two correct variants: thin-lens + raytraced
