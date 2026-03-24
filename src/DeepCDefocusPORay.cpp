@@ -291,7 +291,7 @@ public:
         // Copy spatial format and channel set from the Deep input.
         const DeepInfo& di = in->deepInfo();
         info_.set(di.box());
-        info_.full_size_format(*di.full_size_format());
+        info_.full_size_format(*di.fullSizeFormat());
         info_.channels(Mask_RGBA);
         set_out_channels(Mask_RGBA);
 

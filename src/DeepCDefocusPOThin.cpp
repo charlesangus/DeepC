@@ -121,7 +121,6 @@ public:
 
     const char* Class()     const override { return CLASS; }
     const char* node_help() const override { return HELP; }
-    Op*         op()              override { return this; }
 
     // ------------------------------------------------------------------
     // Input wiring — both inputs accept Deep streams
@@ -227,7 +226,7 @@ public:
         // Copy spatial format and channel set from the Deep input.
         const DeepInfo& di = in->deepInfo();
         info_.set(di.box());
-        info_.full_size_format(*di.full_size_format());
+        info_.full_size_format(*di.fullSizeFormat());
         info_.channels(Mask_RGBA);
         set_out_channels(Mask_RGBA);
 
@@ -294,9 +293,9 @@ public:
         imagePlane.makeWritable();
         const Box& bounds = imagePlane.bounds();
         const ChannelSet& chans = imagePlane.channels();
-        const Format* fmt = info_.full_size_format();
-        const float half_w = fmt->width()  * 0.5f;
-        const float half_h = fmt->height() * 0.5f;
+        const Format& fmt = info_.full_size_format();
+        const float half_w = fmt.width()  * 0.5f;
+        const float half_h = fmt.height() * 0.5f;
 
         // ---- zero_output lambda (used for early returns) ----
         auto zero_output = [&]() {
