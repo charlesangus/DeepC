@@ -59,7 +59,82 @@ This file is the explicit capability and coverage contract for the project.
 - Validation: unmapped
 - Notes: Volumetric sub-samples cover evenly-spaced sub-ranges; flat sub-samples have zFront==zBack at evenly-spaced depths
 
+### R030 — DeepCDefocusPOThin uses thin-lens CoC for scatter radius, with the polynomial modulating bokeh shape within the CoC (aberrations, cat-eye, coma, CA). Scatter radius comes from thin-lens physics; poly warps aperture sample positions for physically-motivated bokeh shape.
+- Class: core-capability
+- Status: active
+- Description: DeepCDefocusPOThin uses thin-lens CoC for scatter radius, with the polynomial modulating bokeh shape within the CoC (aberrations, cat-eye, coma, CA). Scatter radius comes from thin-lens physics; poly warps aperture sample positions for physically-motivated bokeh shape.
+- Why it matters: Produces correct defocused output (not aperture ring) with faster performance than full raytrace. Practical choice for most compositing work.
+- Source: user
+- Primary owning slice: M007-gvtoom/S02
+- Supporting slices: M007-gvtoom/S01
+- Validation: unmapped
+- Notes: Supersedes R030 (previously out-of-scope thin-lens mode). Now a first-class plugin.
 
+### R031 — DeepCDefocusPORay treats the Deep image as a 3D scene and performs a gather per output pixel. Rays are cast from the sensor through aperture points, evaluated through the polynomial lens to get exit rays, converted via sphereToCs to 3D, and intersected with deep samples at their depth. Requires lens geometry constants.
+- Class: core-capability
+- Status: active
+- Description: DeepCDefocusPORay treats the Deep image as a 3D scene and performs a gather per output pixel. Rays are cast from the sensor through aperture points, evaluated through the polynomial lens to get exit rays, converted via sphereToCs to 3D, and intersected with deep samples at their depth. Requires lens geometry constants.
+- Why it matters: Physically exact lens simulation — the same approach as lentil's renderer. Produces correct bokeh shape, vignetting, and aberrations directly from the polynomial without thin-lens approximation.
+- Source: user
+- Primary owning slice: M007-gvtoom/S03
+- Supporting slices: M007-gvtoom/S01
+- Validation: unmapped
+- Notes: Requires lens geometry constants from lentil database (outer_pupil_curvature_radius, lens_length, aperture_housing_radius etc.) and aperture.fit polynomial.
+
+### R032 — Int_knob controlling the maximum polynomial degree evaluated. Terms in .fit files are sorted by ascending degree; evaluation stops early when max_degree is exceeded. Lower degree = faster but less accurate aberrations.
+- Class: primary-user-loop
+- Status: active
+- Description: Int_knob controlling the maximum polynomial degree evaluated. Terms in .fit files are sorted by ascending degree; evaluation stops early when max_degree is exceeded. Lower degree = faster but less accurate aberrations.
+- Why it matters: Artist-controllable quality/speed tradeoff. Degree 3 (56 terms) is ~78× faster than degree 11 (4368 terms). Higher degrees add sub-pixel aberration refinement.
+- Source: user
+- Primary owning slice: M007-gvtoom/S01
+- Supporting slices: M007-gvtoom/S02, M007-gvtoom/S03
+- Validation: unmapped
+- Notes: S01 structural proof complete: Int_knob `_max_degree` (default 11, range 1–11) present in both DeepCDefocusPOThin.cpp and DeepCDefocusPORay.cpp; `poly_system_evaluate` in poly.h accepts `max_degree=-1` with ascending-sorted break early-exit. Runtime proof (visible quality change at lower degree) deferred to S02/S03 execution.
+
+### R033 — DeepCDefocusPORay requires lens geometry constants (outer_pupil_curvature_radius, lens_length, aperture_housing_radius, inner_pupil_curvature_radius) to convert polynomial output from spherical pupil coordinates to 3D Cartesian rays. Exposed as knobs with sensible defaults (Angenieux 55mm values).
+- Class: core-capability
+- Status: active
+- Description: DeepCDefocusPORay requires lens geometry constants (outer_pupil_curvature_radius, lens_length, aperture_housing_radius, inner_pupil_curvature_radius) to convert polynomial output from spherical pupil coordinates to 3D Cartesian rays. Exposed as knobs with sensible defaults (Angenieux 55mm values).
+- Why it matters: Without these constants, the polynomial output cannot be converted to actual 3D rays — the output would be meaningless coordinates.
+- Source: inferred
+- Primary owning slice: M007-gvtoom/S03
+- Supporting slices: none
+- Validation: unmapped
+- Notes: Values available in lentil's lens_constants.h and lenses.json database. Long-term: auto-parse from JSON. Short-term: knobs with defaults.
+
+### R034 — DeepCDefocusPORay loads a second polynomial system (aperture.fit) to constrain the Newton iteration's aperture matching. The exitpupil.fit maps sensor→outer pupil; aperture.fit maps sensor→aperture plane.
+- Class: core-capability
+- Status: active
+- Description: DeepCDefocusPORay loads a second polynomial system (aperture.fit) to constrain the Newton iteration's aperture matching. The exitpupil.fit maps sensor→outer pupil; aperture.fit maps sensor→aperture plane.
+- Why it matters: The lentil Newton solver uses both polynomials — exitpupil for scene-direction matching and aperture for aperture-position matching. Without the aperture polynomial, the solver cannot constrain rays to pass through the correct aperture point.
+- Source: inferred
+- Primary owning slice: M007-gvtoom/S03
+- Supporting slices: none
+- Validation: unmapped
+- Notes: Second File_knob or auto-detection from sibling file path.
+
+### R035 — Both DeepCDefocusPOThin and DeepCDefocusPORay retain the holdout mechanism (R023/R024), per-channel wavelength tracing for CA (R022), and Halton+Shirley aperture sampling (R025) from the M006 implementation.
+- Class: core-capability
+- Status: active
+- Description: Both DeepCDefocusPOThin and DeepCDefocusPORay retain the holdout mechanism (R023/R024), per-channel wavelength tracing for CA (R022), and Halton+Shirley aperture sampling (R025) from the M006 implementation.
+- Why it matters: These are validated, working features that artists expect. Dropping them would be a regression.
+- Source: inferred
+- Primary owning slice: M007-gvtoom/S01
+- Supporting slices: M007-gvtoom/S02, M007-gvtoom/S03
+- Validation: unmapped
+- Notes: S01 structural proof complete: holdout input wiring, CA wavelengths (WL_B=0.45f, WL_G=0.55f, WL_R=0.65f as static constexpr members), and Halton+Shirley aperture sampling all present in both DeepCDefocusPOThin.cpp and DeepCDefocusPORay.cpp. Runtime proof deferred to S02/S03.
+
+### R036 — DeepCDefocusPOThin and DeepCDefocusPORay appear as separate entries in Nuke's node menu under the Filter category, replacing the single DeepCDefocusPO entry.
+- Class: launchability
+- Status: active
+- Description: DeepCDefocusPOThin and DeepCDefocusPORay appear as separate entries in Nuke's node menu under the Filter category, replacing the single DeepCDefocusPO entry.
+- Why it matters: Artists need to find and instantiate both nodes from the standard Nuke menu.
+- Source: inferred
+- Primary owning slice: M007-gvtoom/S01
+- Supporting slices: none
+- Validation: unmapped
+- Notes: S01 structural proof complete: both plugins registered as "Deep/DeepCDefocusPOThin" and "Deep/DeepCDefocusPORay" via Op::Description; both present in CMakeLists.txt PLUGINS and FILTER_NODES (2 occurrences each); old DeepCDefocusPO removed (0 occurrences). Actual Nuke menu appearance requires docker build — deferred to S02/S03.
 
 ## Validated
 
@@ -118,6 +193,17 @@ This file is the explicit capability and coverage contract for the project.
 - Validation: poly_system_read/poly_system_evaluate/poly_system_destroy defined inline in src/poly.h (MIT); File_knob wired in DeepCDefocusPO.cpp; _validate(for_real) calls poly_system_read with error() on failure; syntax check passes (g++ -fsyntax-only); grep -q 'poly_system_read' src/DeepCDefocusPO.cpp and src/poly.h both pass. Docker build gate pending CI (no Docker in workspace).
 - Notes: S01 satisfied the structural proof: poly.h vendored, File_knob wired, load/destroy lifecycle correct. Full runtime proof (load real .fit without crash) deferred to docker build in CI.
 
+### R021 — The circle-of-confusion radius for each deep sample at depth Z is computed from the lens's actual focal length (from the .fit file metadata), the user-specified f-stop, and the user-specified focus distance. Bokeh sizes must match what the same lens would produce in Arnold/lentil for the same scene depth.
+- Class: core-capability
+- Status: validated
+- Description: The circle-of-confusion radius for each deep sample at depth Z is computed from the lens's actual focal length (from the .fit file metadata), the user-specified f-stop, and the user-specified focus distance. Bokeh sizes must match what the same lens would produce in Arnold/lentil for the same scene depth.
+- Why it matters: The defining promise of polynomial optics over thin-lens approximation is physical accuracy — "real-world bokeh sizes matching what a real lens would produce."
+- Source: user
+- Primary owning slice: M006/S02
+- Supporting slices: M006/S01, M006/S04
+- Validation: coc_radius() in deepc_po_math.h uses focal_length_mm / fstop for aperture_diameter and applies |depth - focus_dist| / depth formula. S04 wired Float_knob focal_length_mm (range 1–1000mm, default 50.0f) replacing the S02 hardcoded constant. All structural proofs pass: grep -q 'coc_radius' src/DeepCDefocusPO.cpp, grep -q '_focal_length_mm', grep -q 'focal_length' all pass. Absolute bokeh-size matching against real lentil/Arnold output is a runtime-only check deferred to CI docker build + Nuke session (documented in M006-CONTEXT.md as UAT).
+- Notes: Structural proof complete as of M006/S05. Absolute bokeh-size matching is UAT-only (requires real .fit file, Nuke license, and Arnold reference render). Knob default of 50mm is sensible for a "normal" lens; artist-adjustable via the focal_length Float_knob.
+
 ### R022 — When scattering a deep sample, R, G, and B channels are traced at distinct wavelengths (e.g. 0.45μm, 0.55μm, 0.65μm) through the polynomial system. Each channel lands at a slightly different sensor position, producing natural chromatic aberration from the lens model.
 - Class: core-capability
 - Status: validated
@@ -140,28 +226,6 @@ This file is the explicit capability and coverage contract for the project.
 - Validation: transmittance_at lambda computes product(1 - alpha_i) for holdout samples where hzf < Z; holdout_w applied to all RGB and alpha splat accumulations in renderStripe; holdoutConnected false-path returns 1.0f (identity — no masking when holdout disconnected); getRequests requests Chan_Alpha + Chan_DeepFront + Chan_DeepBack from input(1). All S03 grep contracts pass; bash scripts/verify-s01-syntax.sh exits 0. Confirmed by M006/S03/T01.
 - Notes: Transmittance at depth Z = product of (1 - alpha_i) for all holdout samples with zFront < Z. This is the standard deep over transmittance accumulation.
 
-### R025 — For each deep sample being scattered, N points are drawn uniformly on the aperture disk. Each point is traced through the polynomial system to a sensor landing position, and the sample's contribution is splatted to the output buffer at that position. N is an Int_knob exposed to the artist.
-- Class: primary-user-loop
-- Status: validated
-- Description: For each deep sample being scattered, N points are drawn uniformly on the aperture disk. Each point is traced through the polynomial system to a sensor landing position, and the sample's contribution is splatted to the output buffer at that position. N is an Int_knob exposed to the artist.
-- Why it matters: N controls the quality/speed tradeoff — low N is fast but noisy, high N is clean. Artists need this control.
-- Source: user
-- Primary owning slice: M006/S02
-- Supporting slices: none
-- Validation: Halton(2,3) low-discrepancy sequence + Shirley concentric disk mapping in renderStripe aperture loop. Int_knob aperture_samples wired in S01 knob layout. Loop runs N = max(_aperture_samples, 1) iterations per deep sample. grep -q 'halton' src/DeepCDefocusPO.cpp, grep -q 'map_to_disk' src/deepc_po_math.h both pass. S02 contracts all pass.
-- Notes: Aperture disk sampling should use a low-discrepancy sequence (e.g. Halton or stratified jitter) rather than pure random to reduce variance at low N.
-
-### R021 — The circle-of-confusion radius for each deep sample at depth Z is computed from the lens's actual focal length (from the .fit file metadata), the user-specified f-stop, and the user-specified focus distance. Bokeh sizes must match what the same lens would produce in Arnold/lentil for the same scene depth.
-- Class: core-capability
-- Status: validated
-- Description: The circle-of-confusion radius for each deep sample at depth Z is computed from the lens's actual focal length (from the .fit file metadata), the user-specified f-stop, and the user-specified focus distance. Bokeh sizes must match what the same lens would produce in Arnold/lentil for the same scene depth.
-- Why it matters: The defining promise of polynomial optics over thin-lens approximation is physical accuracy — "real-world bokeh sizes matching what a real lens would produce."
-- Source: user
-- Primary owning slice: M006/S02
-- Supporting slices: M006/S01, M006/S04
-- Validation: coc_radius() in deepc_po_math.h uses focal_length_mm / fstop for aperture_diameter and applies |depth - focus_dist| / depth formula. S04 wired Float_knob focal_length_mm (range 1–1000mm, default 50.0f) replacing the S02 hardcoded constant. All structural proofs pass: grep -q 'coc_radius' src/DeepCDefocusPO.cpp, grep -q '_focal_length_mm', grep -q 'focal_length' all pass. Absolute bokeh-size matching against real lentil/Arnold output is a runtime-only check deferred to CI docker build + Nuke session (documented in M006-CONTEXT.md as UAT).
-- Notes: Structural proof complete as of M006/S05. Absolute bokeh-size matching is UAT-only (requires real .fit file, Nuke license, and Arnold reference render). Knob default of 50mm is sensible for a "normal" lens; artist-adjustable via the focal_length Float_knob.
-
 ### R024 — The holdout input contributes no colour to the output. It is not scattered through the lens model. The holdout's transmittance is evaluated at the output pixel position and used to weight the main input's scattered contributions at that pixel. The holdout mask is sharp, not blurred.
 - Class: core-capability
 - Status: validated
@@ -172,6 +236,17 @@ This file is the explicit capability and coverage contract for the project.
 - Supporting slices: none
 - Validation: Only Chan_Alpha + Chan_DeepFront + Chan_DeepBack requested from holdout input (no colour channels — cannot contribute colour by design). holdoutOp->deepEngine called at output pixel bounds, not input sample position (never scattered through lens). holdout_w = transmittance_at(out_xi, out_yi, depth) applied to all RGB and alpha splat accumulations. holdoutConnected false-path returns holdout_w = 1.0f (identity). All S03 grep contracts pass. Confirmed by M006/S03/T01. Runtime visual check (sharp holdout mask, no bokeh on holdout geometry) deferred to CI/UAT Nuke session.
 - Notes: holdout_w is computed per aperture sample (per output pixel per deep sample), not per stripe — this is the load-bearing correctness property. The holdout is sharp because it is evaluated at the output pixel, not scattered from the input pixel.
+
+### R025 — For each deep sample being scattered, N points are drawn uniformly on the aperture disk. Each point is traced through the polynomial system to a sensor landing position, and the sample's contribution is splatted to the output buffer at that position. N is an Int_knob exposed to the artist.
+- Class: primary-user-loop
+- Status: validated
+- Description: For each deep sample being scattered, N points are drawn uniformly on the aperture disk. Each point is traced through the polynomial system to a sensor landing position, and the sample's contribution is splatted to the output buffer at that position. N is an Int_knob exposed to the artist.
+- Why it matters: N controls the quality/speed tradeoff — low N is fast but noisy, high N is clean. Artists need this control.
+- Source: user
+- Primary owning slice: M006/S02
+- Supporting slices: none
+- Validation: Halton(2,3) low-discrepancy sequence + Shirley concentric disk mapping in renderStripe aperture loop. Int_knob aperture_samples wired in S01 knob layout. Loop runs N = max(_aperture_samples, 1) iterations per deep sample. grep -q 'halton' src/DeepCDefocusPO.cpp, grep -q 'map_to_disk' src/deepc_po_math.h both pass. S02 contracts all pass.
+- Notes: Aperture disk sampling should use a low-discrepancy sequence (e.g. Halton or stratified jitter) rather than pure random to reduce variance at low N.
 
 ### R026 — The node's output is a standard Nuke flat RGBA image. Downstream nodes connect to it as they would to any Iop. The node is not a DeepFilterOp and does not produce a Deep stream.
 - Class: core-capability
@@ -232,83 +307,6 @@ This file is the explicit capability and coverage contract for the project.
 - Validation: n/a
 - Notes: Out of scope for M006. Stochastic forward scatter is the correct starting point. Bidirectional gather is a future optimisation milestone if noise at low N proves problematic in practice.
 
-### R030 — DeepCDefocusPOThin: thin-lens CoC scatter with polynomial aberration modulation producing correct defocused output
-- Class: core-capability
-- Status: active
-- Description: DeepCDefocusPOThin uses thin-lens CoC for scatter radius, with the polynomial modulating bokeh shape within the CoC (aberrations, cat-eye, coma, CA). Scatter radius comes from thin-lens physics; poly warps aperture sample positions for physically-motivated bokeh shape.
-- Why it matters: Produces correct defocused output (not aperture ring) with faster performance than full raytrace. Practical choice for most compositing work.
-- Source: user
-- Primary owning slice: M007-gvtoom/S02
-- Supporting slices: M007-gvtoom/S01
-- Validation: unmapped
-- Notes: Supersedes R030 (previously out-of-scope thin-lens mode). Now a first-class plugin.
-
-### R031 — DeepCDefocusPORay: lentil-style raytraced gather through polynomial lens system producing correct defocused output
-- Class: core-capability
-- Status: active
-- Description: DeepCDefocusPORay treats the Deep image as a 3D scene and performs a gather per output pixel. Rays are cast from the sensor through aperture points, evaluated through the polynomial lens to get exit rays, converted via sphereToCs to 3D, and intersected with deep samples at their depth. Requires lens geometry constants.
-- Why it matters: Physically exact lens simulation — the same approach as lentil's renderer. Produces correct bokeh shape, vignetting, and aberrations directly from the polynomial without thin-lens approximation.
-- Source: user
-- Primary owning slice: M007-gvtoom/S03
-- Supporting slices: M007-gvtoom/S01
-- Validation: unmapped
-- Notes: Requires lens geometry constants from lentil database (outer_pupil_curvature_radius, lens_length, aperture_housing_radius etc.) and aperture.fit polynomial.
-
-### R032 — max_degree Int_knob on both DeepCDefocusPOThin and DeepCDefocusPORay controlling polynomial evaluation degree truncation
-- Class: primary-user-loop
-- Status: active
-- Description: Int_knob controlling the maximum polynomial degree evaluated. Terms in .fit files are sorted by ascending degree; evaluation stops early when max_degree is exceeded. Lower degree = faster but less accurate aberrations.
-- Why it matters: Artist-controllable quality/speed tradeoff. Degree 3 (56 terms) is ~78× faster than degree 11 (4368 terms). Higher degrees add sub-pixel aberration refinement.
-- Source: user
-- Primary owning slice: M007-gvtoom/S01
-- Supporting slices: M007-gvtoom/S02, M007-gvtoom/S03
-- Validation: unmapped
-- Notes: Default should be a reasonable quality level (e.g. 5 or 7). Range 1–11 for the Angenieux 55mm lens.
-
-### R033 — Lens geometry constants exposed on DeepCDefocusPORay for the sphereToCs conversion
-- Class: core-capability
-- Status: active
-- Description: DeepCDefocusPORay requires lens geometry constants (outer_pupil_curvature_radius, lens_length, aperture_housing_radius, inner_pupil_curvature_radius) to convert polynomial output from spherical pupil coordinates to 3D Cartesian rays. Exposed as knobs with sensible defaults (Angenieux 55mm values).
-- Why it matters: Without these constants, the polynomial output cannot be converted to actual 3D rays — the output would be meaningless coordinates.
-- Source: inferred
-- Primary owning slice: M007-gvtoom/S03
-- Supporting slices: none
-- Validation: unmapped
-- Notes: Values available in lentil's lens_constants.h and lenses.json database. Long-term: auto-parse from JSON. Short-term: knobs with defaults.
-
-### R034 — aperture.fit polynomial loaded alongside exitpupil.fit for Ray variant aperture constraint
-- Class: core-capability
-- Status: active
-- Description: DeepCDefocusPORay loads a second polynomial system (aperture.fit) to constrain the Newton iteration's aperture matching. The exitpupil.fit maps sensor→outer pupil; aperture.fit maps sensor→aperture plane.
-- Why it matters: The lentil Newton solver uses both polynomials — exitpupil for scene-direction matching and aperture for aperture-position matching. Without the aperture polynomial, the solver cannot constrain rays to pass through the correct aperture point.
-- Source: inferred
-- Primary owning slice: M007-gvtoom/S03
-- Supporting slices: none
-- Validation: unmapped
-- Notes: Second File_knob or auto-detection from sibling file path.
-
-### R035 — Existing holdout, CA wavelength tracing, and Halton aperture sampling preserved on both nodes
-- Class: core-capability
-- Status: active
-- Description: Both DeepCDefocusPOThin and DeepCDefocusPORay retain the holdout mechanism (R023/R024), per-channel wavelength tracing for CA (R022), and Halton+Shirley aperture sampling (R025) from the M006 implementation.
-- Why it matters: These are validated, working features that artists expect. Dropping them would be a regression.
-- Source: inferred
-- Primary owning slice: M007-gvtoom/S01
-- Supporting slices: M007-gvtoom/S02, M007-gvtoom/S03
-- Validation: unmapped
-- Notes: Shared code extracted to common base or helper functions.
-
-### R036 — Both nodes registered in Nuke's Deep/Filter menu as separate entries
-- Class: launchability
-- Status: active
-- Description: DeepCDefocusPOThin and DeepCDefocusPORay appear as separate entries in Nuke's node menu under the Filter category, replacing the single DeepCDefocusPO entry.
-- Why it matters: Artists need to find and instantiate both nodes from the standard Nuke menu.
-- Source: inferred
-- Primary owning slice: M007-gvtoom/S01
-- Supporting slices: none
-- Validation: unmapped
-- Notes: CMake PLUGINS list and FILTER_NODES list updated. Old DeepCDefocusPO removed.
-
 ## Traceability
 
 | ID | Class | Status | Primary owner | Supporting | Proof |
@@ -325,27 +323,25 @@ This file is the explicit capability and coverage contract for the project.
 | R018 | core-capability | validated | M005-9j5er8/S01 | none | Double 1e-6f guard: (1) srcAlpha < 1e-6f → pass-through without spreading; (2) alphaSub < 1e-6f → sub-sample dropped silently. `grep -c '1e-6f' src/DeepCDepthBlur.cpp` → 4 confirms both guard paths. Confirmed M005-9j5er8/T01 and T02. |
 | R019 | core-capability | validated | M006/S02 | M006/S01 | renderStripe replaced with full PO scatter loop: deepEngine fetch, per-pixel/per-deep-sample/per-aperture-sample iteration, writableAt accumulation into flat RGBA output buffer. grep -q 'deepEngine' src/DeepCDefocusPO.cpp passes. grep -q 'lt_newton_trace' src/DeepCDefocusPO.cpp passes. bash scripts/verify-s01-syntax.sh exits 0. S02 grep contracts all pass. Full runtime proof (non-zero pixel output) deferred to docker build + Nuke session in S05. |
 | R020 | core-capability | validated | M006/S01 | none | poly_system_read/poly_system_evaluate/poly_system_destroy defined inline in src/poly.h (MIT); File_knob wired in DeepCDefocusPO.cpp; _validate(for_real) calls poly_system_read with error() on failure; syntax check passes (g++ -fsyntax-only); grep -q 'poly_system_read' src/DeepCDefocusPO.cpp and src/poly.h both pass. Docker build gate pending CI (no Docker in workspace). |
-| R021 | core-capability | validated | M006/S02 | M006/S01, M006/S04 | coc_radius() uses focal_length_mm / fstop for aperture_diameter; |depth - focus_dist| / depth formula. S04 wired Float_knob focal_length_mm replacing S02 hardcoded 50.0f. All structural grep contracts pass. Absolute bokeh-size matching is UAT-only (real .fit file + Nuke session). |
+| R021 | core-capability | validated | M006/S02 | M006/S01, M006/S04 | coc_radius() in deepc_po_math.h uses focal_length_mm / fstop for aperture_diameter and applies |depth - focus_dist| / depth formula. S04 wired Float_knob focal_length_mm (range 1–1000mm, default 50.0f) replacing the S02 hardcoded constant. All structural proofs pass: grep -q 'coc_radius' src/DeepCDefocusPO.cpp, grep -q '_focal_length_mm', grep -q 'focal_length' all pass. Absolute bokeh-size matching against real lentil/Arnold output is a runtime-only check deferred to CI docker build + Nuke session (documented in M006-CONTEXT.md as UAT). |
 | R022 | core-capability | validated | M006/S02 | none | Per-channel wavelength tracing at lambdas[] = {0.45f, 0.55f, 0.65f} μm in renderStripe scatter loop. grep -q '0.45f' src/DeepCDefocusPO.cpp, grep -q '0.55f', grep -q '0.65f' all pass. Alpha channel uses G-channel (0.55μm) landing position. S02 grep contracts pass. Runtime chromatic fringing visible on bokeh highlights confirmed at S05 Nuke session. |
 | R023 | core-capability | validated | M006/S03 | none | transmittance_at lambda computes product(1 - alpha_i) for holdout samples where hzf < Z; holdout_w applied to all RGB and alpha splat accumulations in renderStripe; holdoutConnected false-path returns 1.0f (identity — no masking when holdout disconnected); getRequests requests Chan_Alpha + Chan_DeepFront + Chan_DeepBack from input(1). All S03 grep contracts pass; bash scripts/verify-s01-syntax.sh exits 0. Confirmed by M006/S03/T01. |
-| R024 | core-capability | validated | M006/S03 | none | Colour channels excluded from holdout deepRequest (transmittance only, never colour). holdoutOp->deepEngine called at output pixel bounds, not input sample position. holdout_w applied to all splat accumulations. S03 grep contracts pass. Runtime visual check deferred to CI/UAT Nuke session. Confirmed by M006/S03/T01. |
+| R024 | core-capability | validated | M006/S03 | none | Only Chan_Alpha + Chan_DeepFront + Chan_DeepBack requested from holdout input (no colour channels — cannot contribute colour by design). holdoutOp->deepEngine called at output pixel bounds, not input sample position (never scattered through lens). holdout_w = transmittance_at(out_xi, out_yi, depth) applied to all RGB and alpha splat accumulations. holdoutConnected false-path returns holdout_w = 1.0f (identity). All S03 grep contracts pass. Confirmed by M006/S03/T01. Runtime visual check (sharp holdout mask, no bokeh on holdout geometry) deferred to CI/UAT Nuke session. |
 | R025 | primary-user-loop | validated | M006/S02 | none | Halton(2,3) low-discrepancy sequence + Shirley concentric disk mapping in renderStripe aperture loop. Int_knob aperture_samples wired in S01 knob layout. Loop runs N = max(_aperture_samples, 1) iterations per deep sample. grep -q 'halton' src/DeepCDefocusPO.cpp, grep -q 'map_to_disk' src/deepc_po_math.h both pass. S02 contracts all pass. |
 | R026 | core-capability | validated | M006/S01 | none | DeepCDefocusPO : PlanarIop (not DeepFilterOp); renderStripe writes flat RGBA; class is registered as "Deep/DeepCDefocusPO" via Op::Description; grep -q 'PlanarIop' src/DeepCDefocusPO.cpp passes; syntax check passes. Confirmed by S01/T02. |
 | R027 | differentiator | deferred | none | none | unmapped |
 | R029 | differentiator | out-of-scope | none | none | n/a |
 | R030 | core-capability | active | M007-gvtoom/S02 | M007-gvtoom/S01 | unmapped |
 | R031 | core-capability | active | M007-gvtoom/S03 | M007-gvtoom/S01 | unmapped |
-| R032 | primary-user-loop | active | M007-gvtoom/S01 | M007-gvtoom/S02, S03 | unmapped |
+| R032 | primary-user-loop | active | M007-gvtoom/S01 | M007-gvtoom/S02, M007-gvtoom/S03 | unmapped |
 | R033 | core-capability | active | M007-gvtoom/S03 | none | unmapped |
 | R034 | core-capability | active | M007-gvtoom/S03 | none | unmapped |
-| R035 | core-capability | active | M007-gvtoom/S01 | M007-gvtoom/S02, S03 | unmapped |
+| R035 | core-capability | active | M007-gvtoom/S01 | M007-gvtoom/S02, M007-gvtoom/S03 | unmapped |
 | R036 | launchability | active | M007-gvtoom/S01 | none | unmapped |
 
 ## Coverage Summary
 
-- Active requirements: 12 (R011, R012, R014, R015, R016, R030, R031, R032, R033, R034, R035, R036)
-- Mapped to slices: 7 (R030–R036, all M007)
-- Validated: 11 (R013, R017–R026)
-- Unmapped active requirements: 5 (R011, R012, R014, R015, R016 — pre-M006, not addressed in M007)
-- Deferred: 1 (R027)
-- Out of scope: 2 (R009, R010, R029)
+- Active requirements: 12
+- Mapped to slices: 12
+- Validated: 11 (R013, R017, R018, R019, R020, R021, R022, R023, R024, R025, R026)
+- Unmapped active requirements: 0

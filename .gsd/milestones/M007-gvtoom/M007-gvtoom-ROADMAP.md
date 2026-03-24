@@ -47,7 +47,7 @@ This milestone is complete only when all are true:
 
 ## Slices
 
-- [ ] **S01: Shared infrastructure, max_degree knob, two-plugin scaffold** `risk:low` `depends:[]`
+- [x] **S01: Shared infrastructure, max_degree knob, two-plugin scaffold** `risk:low` `depends:[]`
   > After this: both DeepCDefocusPOThin and DeepCDefocusPORay load in Nuke, show all knobs including max_degree, compile via docker-build. No render output yet — renderStripe zeros the output.
 
 - [ ] **S02: DeepCDefocusPOThin scatter engine** `risk:medium` `depends:[S01]`

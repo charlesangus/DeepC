@@ -10,7 +10,7 @@ Artists can use deep-compositing operations in Nuke that don't exist in the buil
 
 ## Current State
 
-**v1.2 + DeepCBlur v2 + DeepCDepthBlur correctness shipped + DeepCDefocusPO M006 complete.** 24 plugins + DeepCDefocusPO. All structural gates pass. M006 shipped the PO scatter engine, depth-aware holdout, complete knob surface, and chromatic aberration. However, the scatter model uses forward polynomial evaluation which produces incorrect output (aperture ring instead of defocused image). M007 replaces DeepCDefocusPO with two corrected variants: DeepCDefocusPOThin (thin-lens CoC + poly aberration modulation) and DeepCDefocusPORay (lentil-style raytraced gather).
+**M007-gvtoom S01 complete.** 24 plugins. DeepCDefocusPO removed; replaced by DeepCDefocusPOThin and DeepCDefocusPORay scaffolds. Both compile via syntax check, appear in CMake PLUGINS + FILTER_NODES, expose all knobs including max_degree, and have stub renderStripe (zeros output). Shared infrastructure complete: `poly_system_evaluate` with max_degree early-exit, `sphereToCs` in deepc_po_math.h. S02 (thin-lens scatter engine) and S03 (raytraced gather engine) remain.
 
 ## Architecture / Key Patterns
 

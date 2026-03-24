@@ -296,3 +296,25 @@ There is a symlink from Nuke's plugin path into `build/local-linux/src/` (or sim
 **Context:** DeepCDefocusPO segfault root cause (Q6)
 
 `_validate` can be called by Nuke on the main thread while `renderStripe` is executing on a worker thread. Calling `poly_system_destroy` + `poly_system_read` from `_validate` frees and reallocates `_poly_sys.poly[k].term` pointers being concurrently read by `renderStripe` — a data race manifesting as `free(): invalid pointer` and heap corruption. Fix: move poly loading to `renderStripe` entry. `PlanarIop::renderStripe` is called sequentially (one stripe at a time, not re-entrant), so loading there is thread-safe without additional locking. `_validate` should only set `_poly_loaded = false` as a dirty flag when the file path changes.
+
+## DeepCDefocusPO Replacement — M007 S01 Patterns
+
+### poly_system_evaluate max_degree uses break, not continue
+**Context:** M007/S01 T01 — max_degree early-exit in poly.h
+
+`.fit` polynomial term arrays are sorted ascending by total degree. When `max_degree >= 0` and the current term's degree sum exceeds the limit, the correct control flow is `break`, not `continue`. Using `continue` would skip the current term but keep evaluating higher-degree terms that will also exceed the limit — wasting cycles with no effect on output. Using `break` correctly truncates evaluation for all remaining terms in a single check. This relies on the ascending-sort invariant in the lentil gencode output format.
+
+### Two-plugin scaffold pattern: Thin is base, Ray extends
+**Context:** M007/S01 T02 — DeepCDefocusPOThin and DeepCDefocusPORay scaffolds
+
+DeepCDefocusPOThin is the minimal scaffold: all shared knobs (poly_file, focal_length, focus_distance, fstop, aperture_samples, max_degree), holdout, CA wavelengths, Halton/Shirley, and one `poly_system_t _lens_sys`. DeepCDefocusPORay extends it by adding `aperture_file` File_knob, a second `poly_system_t _aperture_sys` with independent load/reload tracking and separate error messages, and 4 lens geometry Float_knobs in a closed group. The extension pattern avoids code drift: anything that applies to both nodes belongs in Thin's class body.
+
+### CA wavelengths as static constexpr class members
+**Context:** M007/S01 T02 — DeepCDefocusPOThin and DeepCDefocusPORay
+
+CA wavelengths (WL_B=0.45f, WL_G=0.55f, WL_R=0.65f) are declared as `static constexpr float` class members rather than local `const float` arrays in renderStripe. This makes them reachable from helper methods and lambda captures in S02/S03 without capturing by value or passing as parameters. Any S02/S03 scatter or gather loop that iterates over wavelengths should use `{WL_B, WL_G, WL_R}` directly.
+
+### S02/S03/S04 grep contracts removed from verify script — slices must add their own
+**Context:** M007/S01 T03 — scripts/verify-s01-syntax.sh contract cleanup
+
+When DeepCDefocusPO.cpp was deleted, all the verify script's S02/S03/S04 contract blocks that referenced that file were removed. They were specific to the old single-plugin architecture. S02 and S03 must add new contract blocks to `scripts/verify-s01-syntax.sh` when they implement their respective engines. The pattern: add a `# SXX contracts` block at the bottom of the script with grep checks that verify the new engine code in the Thin/Ray files.
