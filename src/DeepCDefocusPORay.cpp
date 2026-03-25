@@ -462,7 +462,13 @@ public:
         // ---- Scatter constants ----
         const int N = std::max(_aperture_samples, 1);
         const float inv_N = 1.0f / static_cast<float>(N);
-        const float ap_radius = _aperture_housing_radius;  // physical mm
+        // Normalised aperture radius — same coordinate system as the polynomial
+        // warp output. Must match DeepCDefocusPOThin's convention for consistent
+        // Option B landing computation.
+        const float ap_radius = 1.0f / (_fstop + 1e-6f);
+        // Physical aperture housing radius in mm — used only for vignetting test
+        // against the aperture polynomial output which operates in mm.
+        const float ap_housing_mm = _aperture_housing_radius;
 
         // Per-channel CA descriptor: {DDImage channel, wavelength}
         struct ChanWave { Channel chan; float lambda; };
@@ -532,7 +538,7 @@ public:
                                 const float apt_mag = std::sqrt(
                                     apt_out[0] * apt_out[0]
                                   + apt_out[1] * apt_out[1]);
-                                if (apt_mag > ap_radius)
+                                if (apt_mag > ap_housing_mm)
                                     continue;  // vignetted
                             }
 
