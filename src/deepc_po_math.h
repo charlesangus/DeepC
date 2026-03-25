@@ -242,6 +242,26 @@ inline float coc_radius(float focal_length_mm,
 //
 // Reference: lentil pota/src/lens.h:99 (sphereToCs)
 // ---------------------------------------------------------------------------
+// Direction-only sphere-to-camera-space conversion.
+// Computes normalized direction from sphere surface point (x, y) on sphere
+// of radius R to the sphere center. Used by the ray-trace loop.
+inline void sphereToCs(float x, float y, float R,
+                       float& out_x, float& out_y, float& out_z)
+{
+    const float r2 = x*x + y*y;
+    const float disc = R*R - r2;
+    if (disc < 0.0f) {
+        out_x = x; out_y = y; out_z = 0.0f;
+        return;
+    }
+    out_z = R - std::copysign(std::sqrt(disc), R);
+    const float len = std::sqrt(x*x + y*y + out_z*out_z);
+    if (len < 1e-9f) { out_x = 0; out_y = 0; out_z = 1; return; }
+    out_x = x / len;
+    out_y = y / len;
+    out_z = out_z / len;
+}
+
 inline void sphereToCs_full(float x, float y, float dx, float dy,
                              float center, float R,
                              float& ox, float& oy, float& oz,

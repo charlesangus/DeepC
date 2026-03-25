@@ -57,7 +57,7 @@
   - Verify: `grep -q 'sphereToCs_full' src/deepc_po_math.h && grep -q 'pt_sample_aperture' src/deepc_po_math.h && grep -q 'logarithmic_focus_search' src/deepc_po_math.h`
   - Done when: All three functions are implemented inline in deepc_po_math.h with correct signatures and algorithms matching the lentil reference.
 
-- [ ] **T03: Update verify-s01-syntax.sh with new mocks and contracts, verify all pass** `est:30m`
+- [x] **T03: Update verify-s01-syntax.sh with new mocks and contracts, verify all pass** `est:30m`
   - Why: The syntax-check script must compile both new source files and verify all S01 deliverables via grep contracts. This is the slice's objective stopping condition.
   - Files: `scripts/verify-s01-syntax.sh`
   - Do: (1) Update `DeepInfo` mock to add `const Format* format() const`. (2) Update `ImagePlane` mock to add `writableAt(int,int,int)` overload and `chanNo()` method. (3) Change syntax-check loop to compile `DeepCDefocusPOThin.cpp` and `DeepCDefocusPORay.cpp` (not old `DeepCDefocusPO.cpp`). (4) Add S01 grep contracts: _validate format fix in both files, 5 lens knob members, 3 math functions, poly.h max_degree, CMakeLists.txt Thin/Ray entries. (5) Remove old DeepCDefocusPO references. (6) Run `bash scripts/verify-s01-syntax.sh` and confirm exit 0.
