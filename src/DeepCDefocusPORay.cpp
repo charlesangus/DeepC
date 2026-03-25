@@ -430,11 +430,43 @@ public:
         deep_chans += Chan_DeepBack;
 
         // ---- CoC neighbourhood bound ----
-        const float max_coc_mm = coc_radius(_focal_length_mm, _fstop,
-                                            _focus_distance, 1.0f);
-        const int max_coc_px = static_cast<int>(
+        // Scan the deep input's actual depth range to compute a realistic
+        // worst-case CoC.  Using a fixed tiny depth (e.g. 1 mm) produced an
+        // astronomically large neighbourhood that caused the node to hang.
+        float min_depth = 1e30f, max_depth = 1e-30f;
+        {
+            const Box& scan_box = input0()->deepInfo().box();
+            DeepPlane scanPlane;
+            ChannelSet scan_chans;
+            scan_chans += Chan_DeepFront;
+            if (input0()->deepEngine(scan_box, scan_chans, scanPlane)) {
+                for (int sy = scan_box.y(); sy < scan_box.t(); ++sy) {
+                    for (int sx = scan_box.x(); sx < scan_box.r(); ++sx) {
+                        DeepPixel sp = scanPlane.getPixel(sy, sx);
+                        for (int si = 0; si < sp.getSampleCount(); ++si) {
+                            const float zf = sp.getUnorderedSample(si, Chan_DeepFront);
+                            if (zf > 0.0f) {
+                                min_depth = std::min(min_depth, zf);
+                                max_depth = std::max(max_depth, zf);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Pick whichever depth extreme produces the larger CoC
+        const float coc_near = (min_depth < 1e29f)
+            ? coc_radius(_focal_length_mm, _fstop, _focus_distance, min_depth)
+            : 0.0f;
+        const float coc_far = (max_depth > 1e-29f)
+            ? coc_radius(_focal_length_mm, _fstop, _focus_distance, max_depth)
+            : 0.0f;
+        const float max_coc_mm = std::max(coc_near, coc_far);
+        const int raw_coc_px = static_cast<int>(
             std::ceil(std::fabs(max_coc_mm)
                       / (_focal_length_mm * 0.5f + 1e-6f) * half_w)) + 1;
+        // Hard cap to prevent degenerate neighbourhood sizes
+        const int max_coc_px = std::min(raw_coc_px, 256);
 
         // ---- Expanded bounds for deep input fetch ----
         // DDImage::Box has no pad/intersect — manual expansion + clamp.
