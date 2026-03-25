@@ -429,53 +429,6 @@ public:
         deep_chans += Chan_DeepFront;
         deep_chans += Chan_DeepBack;
 
-        // ---- CoC neighbourhood bound ----
-        // Scan the deep input's actual depth range to compute a realistic
-        // worst-case CoC.  Using a fixed tiny depth (e.g. 1 mm) produced an
-        // astronomically large neighbourhood that caused the node to hang.
-        float min_depth = 1e30f, max_depth = 1e-30f;
-        {
-            const Box& scan_box = input0()->deepInfo().box();
-            DeepPlane scanPlane;
-            ChannelSet scan_chans;
-            scan_chans += Chan_DeepFront;
-            if (input0()->deepEngine(scan_box, scan_chans, scanPlane)) {
-                for (int sy = scan_box.y(); sy < scan_box.t(); ++sy) {
-                    for (int sx = scan_box.x(); sx < scan_box.r(); ++sx) {
-                        DeepPixel sp = scanPlane.getPixel(sy, sx);
-                        for (int si = 0; si < sp.getSampleCount(); ++si) {
-                            const float zf = sp.getUnorderedSample(si, Chan_DeepFront);
-                            if (zf > 0.0f) {
-                                min_depth = std::min(min_depth, zf);
-                                max_depth = std::max(max_depth, zf);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        // Pick whichever depth extreme produces the larger CoC
-        const float coc_near = (min_depth < 1e29f)
-            ? coc_radius(_focal_length_mm, _fstop, _focus_distance, min_depth)
-            : 0.0f;
-        const float coc_far = (max_depth > 1e-29f)
-            ? coc_radius(_focal_length_mm, _fstop, _focus_distance, max_depth)
-            : 0.0f;
-        const float max_coc_mm = std::max(coc_near, coc_far);
-        const int raw_coc_px = static_cast<int>(
-            std::ceil(std::fabs(max_coc_mm)
-                      / (_focal_length_mm * 0.5f + 1e-6f) * half_w)) + 1;
-        // Hard cap to prevent degenerate neighbourhood sizes
-        const int max_coc_px = std::min(raw_coc_px, 256);
-
-        // ---- Expanded bounds for deep input fetch ----
-        // DDImage::Box has no pad/intersect — manual expansion + clamp.
-        const Box& in_box = input0()->deepInfo().box();
-        Box expanded(std::max(in_box.x(), bounds.x() - max_coc_px),
-                     std::max(in_box.y(), bounds.y() - max_coc_px),
-                     std::min(in_box.r(), bounds.r() + max_coc_px),
-                     std::min(in_box.t(), bounds.t() + max_coc_px));
-
         // ---- Holdout fetch (over output bounds, not expanded) ----
         DeepPlane holdoutPlane;
         const bool has_holdout = (input1() != nullptr);
@@ -500,13 +453,13 @@ public:
             return transmit;
         };
 
-        // ---- Deep input fetch (expanded bounds) ----
+        // ---- Deep input fetch over stripe bounds ----
         DeepPlane deepPlane;
-        if (!input0()->deepEngine(expanded, deep_chans, deepPlane)) {
+        if (!input0()->deepEngine(bounds, deep_chans, deepPlane)) {
             return;  // already zeroed
         }
 
-        // ---- Gather constants ----
+        // ---- Scatter constants ----
         const int N = std::max(_aperture_samples, 1);
         const float inv_N = 1.0f / static_cast<float>(N);
         const float ap_radius = _aperture_housing_radius;  // physical mm
@@ -519,137 +472,138 @@ public:
             { Chan_Blue,  CA_LAMBDA_B },
         };
 
-        // ---- Gather loop: output pixels (outer), input neighbourhood (inner) ----
-        for (int oy = bounds.y(); oy < bounds.t(); ++oy) {
-            for (int ox = bounds.x(); ox < bounds.r(); ++ox) {
+        // ---- Scatter loop: input pixels → deep samples → aperture → land ----
+        //
+        // The previous "gather" architecture iterated every output pixel,
+        // searched a large neighbourhood, and rejected ~99.9% of candidates
+        // via the selectivity guard — O(output × neighbourhood² × N × 3).
+        // This scatter loop mirrors the Thin variant: iterate each input
+        // pixel's deep samples, trace aperture rays forward through both
+        // polynomial systems, and splat contributions to whichever output
+        // pixel the ray lands on.  Same result, O(input × samples × N × 3).
+        for (int y = bounds.y(); y < bounds.t(); ++y) {
+            for (int x = bounds.x(); x < bounds.r(); ++x) {
+                const float sx = (x + 0.5f - half_w) / half_w;
+                const float sy = (y + 0.5f - half_h) / half_h;
 
-                // Input neighbourhood bounded by max_coc_px
-                const int iy_lo = std::max(expanded.y(), oy - max_coc_px);
-                const int iy_hi = std::min(expanded.t(), oy + max_coc_px + 1);
-                const int ix_lo = std::max(expanded.x(), ox - max_coc_px);
-                const int ix_hi = std::min(expanded.r(), ox + max_coc_px + 1);
+                DeepPixel dp = deepPlane.getPixel(y, x);
+                const int sample_count = dp.getSampleCount();
 
-                for (int iy = iy_lo; iy < iy_hi; ++iy) {
-                    for (int ix = ix_lo; ix < ix_hi; ++ix) {
-                        const float sx_in = (ix + 0.5f - half_w) / half_w;
-                        const float sy_in = (iy + 0.5f - half_h) / half_h;
+                for (int s = 0; s < sample_count; ++s) {
+                    const float Z  = dp.getUnorderedSample(s, Chan_DeepFront);
+                    const float sR = dp.getUnorderedSample(s, Chan_Red);
+                    const float sG = dp.getUnorderedSample(s, Chan_Green);
+                    const float sB = dp.getUnorderedSample(s, Chan_Blue);
+                    const float sA = dp.getUnorderedSample(s, Chan_Alpha);
 
-                        DeepPixel dp = deepPlane.getPixel(iy, ix);
-                        const int sample_count = dp.getSampleCount();
+                    // Thin-lens CoC in normalised coords
+                    const float coc_mm = coc_radius(_focal_length_mm, _fstop,
+                                                    _focus_distance, Z);
+                    const float coc_norm = coc_mm / (_focal_length_mm * 0.5f + 1e-6f);
 
-                        for (int s = 0; s < sample_count; ++s) {
-                            const float Z  = dp.getUnorderedSample(s, Chan_DeepFront);
-                            const float sR = dp.getUnorderedSample(s, Chan_Red);
-                            const float sG = dp.getUnorderedSample(s, Chan_Green);
-                            const float sB = dp.getUnorderedSample(s, Chan_Blue);
-                            const float sA = dp.getUnorderedSample(s, Chan_Alpha);
+                    const float sample_colors[3] = { sR, sG, sB };
 
-                            const float coc_mm = coc_radius(_focal_length_mm, _fstop,
-                                                            _focus_distance, Z);
-                            const float coc_norm = coc_mm / (_focal_length_mm * 0.5f + 1e-6f);
+                    // Aperture sample loop
+                    for (int k = 0; k < N; ++k) {
+                        float ax_unit, ay_unit;
+                        map_to_disk(halton(k, 2), halton(k, 3),
+                                    ax_unit, ay_unit);
 
-                            const float sample_colors[3] = { sR, sG, sB };
+                        const float ax = ax_unit * ap_radius;
+                        const float ay = ay_unit * ap_radius;
 
-                            for (int k = 0; k < N; ++k) {
-                                float ax_unit, ay_unit;
-                                map_to_disk(halton(k, 2), halton(k, 3),
-                                            ax_unit, ay_unit);
+                        // Track green-channel landing for alpha
+                        int alpha_out_px = x, alpha_out_py = y;
+                        float alpha_transmit = 1.0f;
 
-                                const float ax = ax_unit * ap_radius;
-                                const float ay = ay_unit * ap_radius;
+                        for (int c = 0; c < 3; ++c) {
+                            const Channel chan = ca_table[c].chan;
+                            const float lambda = ca_table[c].lambda;
 
-                                // Track green-channel landing for alpha
-                                int alpha_out_px = ox, alpha_out_py = oy;
-                                float alpha_transmit = 1.0f;
+                            if (!chans.contains(chan)) continue;
 
-                                for (int c = 0; c < 3; ++c) {
-                                    const Channel chan = ca_table[c].chan;
-                                    const float lambda = ca_table[c].lambda;
+                            float in5[5] = { sx, sy, ax, ay, lambda };
 
-                                    if (!chans.contains(chan)) continue;
+                            // ---- Aperture vignetting ----
+                            if (_aperture_loaded) {
+                                float apt_out[2] = {};
+                                poly_system_evaluate(&_aperture_sys, in5,
+                                                     apt_out, 2, _max_degree);
+                                const float apt_mag = std::sqrt(
+                                    apt_out[0] * apt_out[0]
+                                  + apt_out[1] * apt_out[1]);
+                                if (apt_mag > ap_radius)
+                                    continue;  // vignetted
+                            }
 
-                                    float in5[5] = { sx_in, sy_in, ax, ay, lambda };
+                            // ---- Exitpupil forward trace ----
+                            float out5[5] = {};
+                            poly_system_evaluate(&_poly_sys, in5, out5, 5,
+                                                 _max_degree);
 
-                                    // ---- Aperture vignetting ----
-                                    if (_aperture_loaded) {
-                                        float apt_out[2] = {};
-                                        poly_system_evaluate(&_aperture_sys, in5,
-                                                             apt_out, 2, _max_degree);
-                                        const float apt_mag = std::sqrt(
-                                            apt_out[0] * apt_out[0]
-                                          + apt_out[1] * apt_out[1]);
-                                        if (apt_mag > ap_radius)
-                                            continue;  // vignetted
-                                    }
+                            const float transmit = std::max(0.0f,
+                                                   std::min(1.0f, out5[4]));
 
-                                    // ---- Exitpupil forward trace ----
-                                    float out5[5] = {};
-                                    poly_system_evaluate(&_poly_sys, in5, out5, 5,
-                                                         _max_degree);
+                            // ---- sphereToCs (R033 — physical ray direction) ----
+                            float rdx, rdy, rdz;
+                            sphereToCs(out5[2], out5[3],
+                                       _outer_pupil_curvature_radius,
+                                       rdx, rdy, rdz);
 
-                                    const float transmit = std::max(0.0f,
-                                                           std::min(1.0f, out5[4]));
+                            // ---- Option B landing (consistent with Thin) ----
+                            float wx = out5[0];
+                            float wy = out5[1];
+                            const float wmag = std::sqrt(wx * wx + wy * wy);
+                            if (wmag > ap_radius && wmag > 1e-9f) {
+                                wx *= ap_radius / wmag;
+                                wy *= ap_radius / wmag;
+                            }
 
-                                    // ---- sphereToCs (R033 — physical ray direction) ----
-                                    float rdx, rdy, rdz;
-                                    sphereToCs(out5[2], out5[3],
-                                               _outer_pupil_curvature_radius,
-                                               rdx, rdy, rdz);
+                            const float landing_x = sx + coc_norm * wx
+                                                    / (ap_radius + 1e-6f);
+                            const float landing_y = sy + coc_norm * wy
+                                                    / (ap_radius + 1e-6f);
 
-                                    // ---- Option B landing (consistent with Thin) ----
-                                    float wx = out5[0];
-                                    float wy = out5[1];
-                                    const float wmag = std::sqrt(wx * wx + wy * wy);
-                                    if (wmag > ap_radius && wmag > 1e-9f) {
-                                        wx *= ap_radius / wmag;
-                                        wy *= ap_radius / wmag;
-                                    }
+                            const float out_px_f = landing_x * half_w + half_w - 0.5f;
+                            const float out_py_f = landing_y * half_h + half_h - 0.5f;
+                            const int out_px_i = static_cast<int>(std::round(out_px_f));
+                            const int out_py_i = static_cast<int>(std::round(out_py_f));
 
-                                    const float landing_x = sx_in + coc_norm * wx
-                                                            / (ap_radius + 1e-6f);
-                                    const float landing_y = sy_in + coc_norm * wy
-                                                            / (ap_radius + 1e-6f);
+                            // Bounds check
+                            if (out_px_i < bounds.x() || out_px_i >= bounds.r() ||
+                                out_py_i < bounds.y() || out_py_i >= bounds.t())
+                                continue;
 
-                                    const float out_px_f = landing_x * half_w + half_w - 0.5f;
-                                    const float out_py_f = landing_y * half_h + half_h - 0.5f;
-                                    const int ox_land = static_cast<int>(std::round(out_px_f));
-                                    const int oy_land = static_cast<int>(std::round(out_py_f));
+                            const float holdout_t = transmittance_at(
+                                                        out_px_i, out_py_i, Z);
+                            const float weight = transmit * holdout_t * inv_N;
 
-                                    // ---- Gather selectivity guard ----
-                                    if (ox_land != ox || oy_land != oy)
-                                        continue;
+                            imagePlane.writableAt(out_px_i, out_py_i,
+                                imagePlane.chanNo(chan)) += sample_colors[c] * weight;
 
-                                    const float holdout_t = transmittance_at(ox, oy, Z);
-                                    const float weight = transmit * holdout_t * inv_N;
+                            // Track green-channel landing for alpha
+                            if (c == 1) {
+                                alpha_out_px = out_px_i;
+                                alpha_out_py = out_py_i;
+                                alpha_transmit = transmit;
+                            }
+                        }  // c (CA channels)
 
-                                    imagePlane.writableAt(ox, oy,
-                                        imagePlane.chanNo(chan)) += sample_colors[c] * weight;
-
-                                    // Track green-channel landing for alpha
-                                    if (c == 1) {
-                                        alpha_out_px = ox_land;
-                                        alpha_out_py = oy_land;
-                                        alpha_transmit = transmit;
-                                    }
-                                }  // c (CA channels)
-
-                                // ---- Alpha at green-channel landing position ----
-                                if (chans.contains(Chan_Alpha) &&
-                                    alpha_out_px >= bounds.x() && alpha_out_px < bounds.r() &&
-                                    alpha_out_py >= bounds.y() && alpha_out_py < bounds.t())
-                                {
-                                    const float holdout_t = transmittance_at(
-                                                                alpha_out_px, alpha_out_py, Z);
-                                    const float weight = alpha_transmit * holdout_t * inv_N;
-                                    imagePlane.writableAt(alpha_out_px, alpha_out_py,
-                                        imagePlane.chanNo(Chan_Alpha)) += sA * weight;
-                                }
-                            }  // k (aperture samples)
-                        }  // s (deep samples)
-                    }  // ix
-                }  // iy
-            }  // ox
-        }  // oy
+                        // ---- Alpha: use green-channel (0.55μm) landing position ----
+                        if (chans.contains(Chan_Alpha) &&
+                            alpha_out_px >= bounds.x() && alpha_out_px < bounds.r() &&
+                            alpha_out_py >= bounds.y() && alpha_out_py < bounds.t())
+                        {
+                            const float holdout_t = transmittance_at(
+                                                        alpha_out_px, alpha_out_py, Z);
+                            const float weight = alpha_transmit * holdout_t * inv_N;
+                            imagePlane.writableAt(alpha_out_px, alpha_out_py,
+                                imagePlane.chanNo(Chan_Alpha)) += sA * weight;
+                        }
+                    }  // k (aperture samples)
+                }  // s (deep samples)
+            }  // x
+        }  // y
     }
 
     // ------------------------------------------------------------------
