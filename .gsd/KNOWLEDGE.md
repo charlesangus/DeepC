@@ -399,3 +399,25 @@ Polynomial systems are loaded at `renderStripe` entry (not `_validate`) gated by
 **Context:** DeepCDefocusPORay (M007/S01, M007/S03)
 
 The Ray variant requires two .fit files: `exitpupil.fit` (poly_file knob) and `aperture.fit` (aperture_file knob). Each has independent loaded/reload flags and error reporting. A missing or invalid aperture_file silently produces black output because the vignetting guard rejects all samples. This dual-file pattern should be documented for artists.
+
+## Polynomial Optics — M008 Patterns
+
+### _validate format fix: info_.format(*di.format()) must follow info_.set(di.box())
+**Context:** DeepCDefocusPOThin and DeepCDefocusPORay _validate (S01, M008-y32v8w)
+
+Both PO nodes must call `info_.format(*di.format())` immediately after `info_.set(di.box())` in `_validate`. Without this, PlanarIop allocates the output at a stale default resolution instead of matching the Deep input's format. The mock headers in `verify-s01-syntax.sh` must include both `DeepInfo::format()` (returning `const Format*`) and `Info::format(const Format&)` (setter) for this one-liner to compile in the syntax check. Any future PlanarIop consuming a Deep input should apply this same fix.
+
+### sphereToCs vs sphereToCs_full: two coexisting variants in deepc_po_math.h
+**Context:** deepc_po_math.h (S01, M008-y32v8w)
+
+Two sphere-to-camera-space functions now coexist in `deepc_po_math.h`: `sphereToCs` (M007 original, returns direction only) and `sphereToCs_full` (M008 S01, returns 3D origin + direction via full tangent-frame construction). The direction-only variant is retained for backward compatibility with Ray's existing renderStripe (pre-S02). S02's path-trace engine must use `sphereToCs_full` — it is the correct lentil-equivalent for 3D ray generation. Once S02 fully migrates, the old `sphereToCs` may be removed if no other callers remain.
+
+### logarithmic_focus_search: quadratic spacing, housing_radius unused
+**Context:** deepc_po_math.h (S01, M008-y32v8w)
+
+Despite the lentil-inspired name "logarithmic_focus_search", the implementation uses quadratic spacing (not logarithmic) over 20001 steps in [-45mm, +45mm]. The `aperture_housing_radius` parameter is accepted for API compatibility but not used to bound the search. If pupil-edge vignetting during the focus search causes incorrect sensor_shift at extreme focus distances, S02 should add housing-radius clipping inside the search loop.
+
+### FD Jacobian in pt_sample_aperture couples dx/dy perturbation with sensor_shift
+**Context:** deepc_po_math.h pt_sample_aperture (S01, M008-y32v8w)
+
+The Newton solver in `pt_sample_aperture` computes its Jacobian by perturbing (dx, dy) and re-evaluating `poly_system_evaluate` with the shifted sensor position (`sensor_x + dx * sensor_shift, sensor_y + dy * sensor_shift`). The coupling between direction perturbation and sensor position is intentional — lentil's convention feeds the shifted sensor position as the polynomial input, not the raw sensor position. Removing this coupling (perturbing dx/dy alone) produces an incorrect Jacobian and breaks Newton convergence.

@@ -48,7 +48,7 @@ This milestone is complete only when all are true:
 
 ## Slices
 
-- [ ] **S01: Path-trace infrastructure + _validate format fix** `risk:medium` `depends:[]`
+- [x] **S01: Path-trace infrastructure + _validate format fix** `risk:medium` `depends:[]`
   > After this: both nodes output correct frame size. New lens constant knobs compile. pt_sample_aperture, full sphereToCs, and logarithmic_focus_search are implemented in deepc_po_math.h and pass syntax check. Ray's renderStripe still uses old scatter engine — infrastructure only, no engine swap yet.
 
 - [ ] **S02: Ray path-trace engine** `risk:high` `depends:[S01]`

@@ -10,7 +10,7 @@ Artists can use deep-compositing operations in Nuke that don't exist in the buil
 
 ## Current State
 
-**M007-gvtoom complete.** 24 plugins (old DeepCDefocusPO removed, replaced by DeepCDefocusPOThin + DeepCDefocusPORay). Both variants structurally complete with all 7 requirements (R030–R036) validated. DeepCDefocusPOThin: thin-lens CoC scatter engine. DeepCDefocusPORay: raytraced gather engine with CoC-bounded neighbourhood search, aperture vignetting, sphereToCs, gather selectivity guard, holdout, CA, Halton sampling, _max_degree truncation. Test scripts `test/test_thin.nk` and `test/test_ray.nk` at 128×72 with Angenieux 55mm. Runtime proof (docker build + `nuke -x`) deferred to CI. All structural verification contracts pass.
+**M008-y32v8w S01 complete.** Path-trace infrastructure delivered: `_validate` format fix in both PO nodes (R045); 5 new lens constant Float_knobs on Ray with Angenieux 55mm defaults (R043, R038); `pt_sample_aperture`, `sphereToCs_full`, and `logarithmic_focus_search` implemented inline in `deepc_po_math.h` (R039, R040, R042); `verify-s01-syntax.sh` with 13 structural contracts all passing. Ray's renderStripe still uses the M007 Option B scatter engine — S02 replaces it with the lentil-style path tracer. Requirements R038–R043, R045 validated at contract level.
 
 ## Architecture / Key Patterns
 
@@ -35,4 +35,4 @@ See `.gsd/REQUIREMENTS.md` for the explicit capability contract, requirement sta
 - [x] M005-9j5er8: DeepCDepthBlur correctness — Fix multiplicative alpha decomposition, zero-alpha filtering, input rename
 - [x] M006: DeepCDefocusPO — Polynomial optics defocus scaffold: Deep→flat, holdout, CA, .fit loader, knobs
 - [x] M007-gvtoom: DeepCDefocusPO correctness — Replace broken scatter with two correct variants: thin-lens + raytraced
-- [ ] M008-y32v8w: DeepCDefocusPORay path tracer — Replace scatter engine with lentil-style polynomial optics path tracing
+- [ ] M008-y32v8w: DeepCDefocusPORay path tracer — S01 complete (infrastructure + format fix); S02 replaces Ray's scatter engine with lentil-style path tracer
