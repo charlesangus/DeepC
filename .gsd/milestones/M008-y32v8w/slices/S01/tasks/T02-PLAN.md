@@ -122,3 +122,9 @@ These functions translate lentil's Eigen/C++ algorithms into our standalone math
 ## Expected Output
 
 - `src/deepc_po_math.h` — extended with sphereToCs_full, pt_sample_aperture, logarithmic_focus_search
+
+## Observability Impact
+
+- **Signals changed:** `deepc_po_math.h` exports three new inline functions consumed by S02's path-trace renderStripe. No runtime signals at this stage (header-only, no runtime until S02 integrates).
+- **Inspection:** `grep -c 'inline.*sphereToCs_full\|inline.*pt_sample_aperture\|inline.*logarithmic_focus_search' src/deepc_po_math.h` returns 3. Syntax compilation with poly.h included first produces zero errors.
+- **Failure state:** If any function has a syntax error, the T03 syntax-check script will emit g++ diagnostics with file:line. If a function is missing, the T03 grep contract will report FAIL with the missing function name.

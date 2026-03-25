@@ -26,6 +26,7 @@
 ## Verification
 
 - `bash scripts/verify-s01-syntax.sh` exits 0
+- `bash scripts/verify-s01-syntax.sh 2>&1 | grep -c FAIL` returns 0 (no failed contracts — diagnostic for identifying which specific contract broke)
 
 ## Observability / Diagnostics
 
@@ -49,7 +50,7 @@
   - Verify: `test -f src/DeepCDefocusPORay.cpp && test -f src/DeepCDefocusPOThin.cpp && ! test -f src/DeepCDefocusPO.cpp && grep -q 'info_\.format(' src/DeepCDefocusPORay.cpp && grep -q '_sensor_width' src/DeepCDefocusPORay.cpp`
   - Done when: Both Thin and Ray source files exist with _validate format fix, Ray has 5 new lens knobs, poly.h has max_degree, CMakeLists.txt targets Thin+Ray, test .nk files exist, old DeepCDefocusPO.cpp deleted.
 
-- [ ] **T02: Implement path-trace math functions in deepc_po_math.h** `est:45m`
+- [x] **T02: Implement path-trace math functions in deepc_po_math.h** `est:45m`
   - Why: S02's path-trace renderStripe depends on three new functions: Newton aperture match, full sphereToCs, and logarithmic focus search. These must be implemented now so S02 can consume them. Delivers R039, R040, R042.
   - Files: `src/deepc_po_math.h`
   - Do: (1) Add `sphereToCs_full(x, y, dx, dy, center, R, &ox, &oy, &oz, &odx, &ody, &odz)` — lentil-style tangent-frame construction: normal from sphere, ex/ey from cross products, transform tempDir into camera space, compute origin on sphere surface. (2) Add `pt_sample_aperture(sensor_x, sensor_y, &dx, &dy, target_ax, target_ay, lambda, sensor_shift, poly_sys, max_degree)` — Newton iteration (5 iters, tol 1e-4, EPS 1e-4, 0.72 damping) finding sensor direction that maps to target aperture point. Uses `poly_system_evaluate` with the shifted sensor position as input. (3) Add `logarithmic_focus_search(focal_distance_mm, ...)` — iterate ~20001 log-spaced sensor_shifts from [-45mm, +45mm], trace center ray through pt_sample_aperture + forward eval + sphereToCs_full, intersect y=0 plane, pick shift minimizing |distance - target|.
