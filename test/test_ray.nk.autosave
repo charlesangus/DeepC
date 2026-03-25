@@ -1,5 +1,5 @@
 #! /usr/local/Nuke16.0v6/libnuke-16.0.6.so -nx
-#write_info Write1 file:"./test_ray.exr" format:"128 72 1" chans:":rgba.red:rgba.green:rgba.blue:" framerange:"1 1" fps:"0" colorspace:"default" datatype:"16 bit half" transfer:"unknown" views:"main" colorManagement:"Nuke"
+#write_info Write1 file:"./test_ray.exr" format:"128 72 1" chans:":rgba.red:rgba.green:rgba.blue:" framerange:"1 1" fps:"0" colorspace:"default (linear)" datatype:"16 bit half" transfer:"unknown" views:"main" colorManagement:"Nuke"
 version 16.0 v6
 define_window_layout_xml {<?xml version="1.0" encoding="UTF-8"?>
 <layout version="1.0">
@@ -12,7 +12,7 @@ define_window_layout_xml {<?xml version="1.0" encoding="UTF-8"?>
             <split size="1256" stretch="1"/>
             <splitter orientation="2">
                 <split size="593"/>
-                <dock id="" activePageId="Viewer.1" focus="true">
+                <dock id="" activePageId="Viewer.1">
                     <page id="Viewer.1"/>
                 </dock>
                 <split size="417"/>
@@ -68,7 +68,7 @@ Grid {
  xpos 203
  ypos -389
 }
-set Nfdf0bf0 [stack 0]
+set N1a8e6c30 [stack 0]
 Dot {
  name Dot1
  xpos 467
@@ -86,7 +86,7 @@ Dot {
  xpos 467
  ypos -135
 }
-push $Nfdf0bf0
+push $N1a8e6c30
 Dilate {
  size {-2 0}
  name Dilate1
@@ -105,6 +105,7 @@ DeepFromImage {
  set_z true
  z 5000
  name DeepFromImage1
+ selected true
  xpos 203
  ypos -103
 }
@@ -112,13 +113,15 @@ DeepCDefocusPORay {
  poly_file /home/latuser/git/lentil/polynomial-optics/database/lenses/1953-angenieux-double-gauss/55/fitted/exitpupil.fit
  aperture_file /home/latuser/git/lentil/polynomial-optics/database/lenses/1953-angenieux-double-gauss/55/fitted/aperture.fit
  focal_length 55
- focus_distance 10000
- max_degree 3
+ focus_distance 8000
+ aperture_samples 11
+ max_degree 9
+ "Lens geometry" 1
  name DeepCDefocusPORay1
  xpos 203
  ypos -1
 }
-set N10261220 [stack 0]
+set N1acdb740 [stack 0]
 Write {
  file ./test_ray.exr
  file_type exr
@@ -130,14 +133,15 @@ Write {
  xpos 203
  ypos 68
 }
-push $N10261220
+push $N1acdb740
 Viewer {
  frame 1
  frame_range 1-1
+ gain 64
+ gamma 4
  monitorOutNDISenderName "Nuke - test_ray - Viewer1"
  monitorOutOutputTransform rec709
  name Viewer1
- selected true
  xpos 50
  ypos -11
 }

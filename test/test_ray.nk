@@ -1,5 +1,5 @@
 #! /usr/local/Nuke16.0v6/libnuke-16.0.6.so -nx
-#write_info Write1 file:"./test_ray.exr" format:"128 72 1" chans:":rgba.red:rgba.green:rgba.blue:" framerange:"1 1" fps:"0" colorspace:"default (linear)" datatype:"16 bit half" transfer:"unknown" views:"main" colorManagement:"Nuke"
+#write_info Write1 file:"./test_ray.exr" format:"128 72 1" chans:":rgba.red:rgba.green:rgba.blue:" framerange:"1 1" fps:"0" colorspace:"default" datatype:"16 bit half" transfer:"unknown" views:"main" colorManagement:"Nuke"
 version 16.0 v6
 define_window_layout_xml {<?xml version="1.0" encoding="UTF-8"?>
 <layout version="1.0">
@@ -68,7 +68,7 @@ Grid {
  xpos 203
  ypos -389
 }
-set N2aed2b60 [stack 0]
+set N1a8e6c30 [stack 0]
 Dot {
  name Dot1
  xpos 467
@@ -86,7 +86,7 @@ Dot {
  xpos 467
  ypos -135
 }
-push $N2aed2b60
+push $N1a8e6c30
 Dilate {
  size {-2 0}
  name Dilate1
@@ -108,7 +108,7 @@ DeepFromImage {
  xpos 203
  ypos -103
 }
-set N2b264650 [stack 0]
+set N1ac2b320 [stack 0]
 Viewer {
  frame 1
  frame_range 1-1
@@ -118,12 +118,15 @@ Viewer {
  xpos 50
  ypos -11
 }
-push $N2b264650
+push $N1ac2b320
 DeepCDefocusPORay {
  poly_file /home/latuser/git/lentil/polynomial-optics/database/lenses/1953-angenieux-double-gauss/55/fitted/exitpupil.fit
  aperture_file /home/latuser/git/lentil/polynomial-optics/database/lenses/1953-angenieux-double-gauss/55/fitted/aperture.fit
  focal_length 55
  focus_distance 10000
+ aperture_samples 1
+ max_degree 3
+ "Lens geometry" 1
  name DeepCDefocusPORay1
  xpos 203
  ypos -1
