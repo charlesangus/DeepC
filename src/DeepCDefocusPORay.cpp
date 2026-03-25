@@ -102,6 +102,13 @@ class DeepCDefocusPORay : public PlanarIop
     float       _aperture_housing_radius;
     float       _inner_pupil_curvature_radius;
 
+    // Lens constants — Angenieux 55mm defaults (from lentil lens_constants.h)
+    float       _sensor_width;                // full-frame 35mm sensor width
+    float       _back_focal_length;           // back focal length (mm)
+    float       _outer_pupil_radius;          // outer (exit) pupil radius (mm)
+    float       _inner_pupil_radius;          // inner (entrance) pupil radius (mm)
+    float       _aperture_pos;                // aperture position along optical axis (mm)
+
     // Exit-pupil polynomial system
     bool        _poly_loaded;      // true after poly_system_read succeeds
     bool        _reload_poly;      // set by knob_changed; cleared after reload
@@ -136,6 +143,11 @@ public:
         , _lens_length(100.89f)
         , _aperture_housing_radius(14.10f)
         , _inner_pupil_curvature_radius(-112.58f)
+        , _sensor_width(36.0f)
+        , _back_focal_length(30.829003f)
+        , _outer_pupil_radius(29.865562f)
+        , _inner_pupil_radius(19.357308f)
+        , _aperture_pos(35.445997f)
         , _poly_loaded(false)
         , _reload_poly(false)
         , _aperture_loaded(false)
@@ -250,6 +262,26 @@ public:
         Tooltip(f, "Curvature radius of the inner pupil surface (mm). "
                     "Angenieux 55mm default: -112.58.");
 
+        Float_knob(f, &_sensor_width, "sensor_width", "sensor width (mm)");
+        SetRange(f, 1.0f, 100.0f);
+        Tooltip(f, "Sensor width in mm. 36mm for full-frame 35mm.");
+
+        Float_knob(f, &_back_focal_length, "back_focal_length", "back focal length (mm)");
+        SetRange(f, 0.0f, 200.0f);
+        Tooltip(f, "Back focal length from lentil lens_constants.h.");
+
+        Float_knob(f, &_outer_pupil_radius, "outer_pupil_radius", "outer pupil radius (mm)");
+        SetRange(f, 0.1f, 100.0f);
+        Tooltip(f, "Outer (exit) pupil radius in mm.");
+
+        Float_knob(f, &_inner_pupil_radius, "inner_pupil_radius", "inner pupil radius (mm)");
+        SetRange(f, 0.1f, 100.0f);
+        Tooltip(f, "Inner (entrance) pupil radius in mm.");
+
+        Float_knob(f, &_aperture_pos, "aperture_pos", "aperture pos (mm)");
+        SetRange(f, 0.0f, 200.0f);
+        Tooltip(f, "Aperture position along optical axis from lentil lens_constants.h.");
+
         EndGroup(f);
     }
 
@@ -290,6 +322,7 @@ public:
         // Copy spatial format and channel set from the Deep input.
         const DeepInfo& di = in->deepInfo();
         info_.set(di.box());
+        info_.format(*di.format());
         info_.full_size_format(*di.fullSizeFormat());
         info_.channels(Mask_RGBA);
         set_out_channels(Mask_RGBA);
@@ -342,11 +375,23 @@ public:
                      int               count,
                      RequestOutput&    reqData) const override
     {
-        if (input0())
+        if (input0()) {
+            // Expand request by max CoC pixels so the gather engine can read
+            // deep pixels outside the output stripe.
+            const Format& fmt = info_.full_size_format();
+            const int pad = static_cast<int>(
+                std::ceil(_aperture_housing_radius / _sensor_width
+                          * fmt.width() * 2.0f)) + 2;
+            Box expanded(
+                std::max(box.x() - pad, 0),
+                std::max(box.y() - pad, 0),
+                std::min(box.r() + pad, fmt.width()),
+                std::min(box.t() + pad, fmt.height()));
             input0()->deepRequest(
-                box,
+                expanded,
                 channels + Chan_DeepFront + Chan_DeepBack + Chan_Alpha,
                 count);
+        }
 
         // Request depth+alpha from the holdout input (input 1) when connected.
         // Colour channels are intentionally excluded — holdout contributes
@@ -453,22 +498,39 @@ public:
             return transmit;
         };
 
-        // ---- Deep input fetch over stripe bounds ----
+        // ---- Gather path-trace engine setup ----
+
+        // Compute sensor_shift for focus via logarithmic_focus_search
+        const float sensor_shift = logarithmic_focus_search(
+            _focus_distance, 0.0f, 0.0f, CA_LAMBDA_G, &_poly_sys,
+            _outer_pupil_curvature_radius, -_outer_pupil_curvature_radius,
+            _aperture_housing_radius, _max_degree);
+
+        // Physical aperture radius (clamped to housing)
+        const float aperture_radius_mm = std::min(
+            _focal_length_mm / (2.0f * _fstop + 1e-6f),
+            _aperture_housing_radius);
+
+        // Focal length in pixels for ray-to-pixel projection
+        const float f_px = _focal_length_mm / _sensor_width * fmt.width();
+
+        // Expanded deep fetch
+        const int max_coc_px = static_cast<int>(
+            std::ceil(aperture_radius_mm / _sensor_width * fmt.width() * 2.0f)) + 2;
+        Box expanded(
+            std::max(bounds.x() - max_coc_px, 0),
+            std::max(bounds.y() - max_coc_px, 0),
+            std::min(bounds.r() + max_coc_px, fmt.width()),
+            std::min(bounds.t() + max_coc_px, fmt.height()));
+
         DeepPlane deepPlane;
-        if (!input0()->deepEngine(bounds, deep_chans, deepPlane)) {
+        if (!input0()->deepEngine(expanded, deep_chans, deepPlane)) {
             return;  // already zeroed
         }
 
-        // ---- Scatter constants ----
+        static const int VIGNETTING_RETRIES = 10;
         const int N = std::max(_aperture_samples, 1);
         const float inv_N = 1.0f / static_cast<float>(N);
-        // Normalised aperture radius — same coordinate system as the polynomial
-        // warp output. Must match DeepCDefocusPOThin's convention for consistent
-        // Option B landing computation.
-        const float ap_radius = 1.0f / (_fstop + 1e-6f);
-        // Physical aperture housing radius in mm — used only for vignetting test
-        // against the aperture polynomial output which operates in mm.
-        const float ap_housing_mm = _aperture_housing_radius;
 
         // Per-channel CA descriptor: {DDImage channel, wavelength}
         struct ChanWave { Channel chan; float lambda; };
@@ -478,138 +540,102 @@ public:
             { Chan_Blue,  CA_LAMBDA_B },
         };
 
-        // ---- Scatter loop: input pixels → deep samples → aperture → land ----
-        //
-        // The previous "gather" architecture iterated every output pixel,
-        // searched a large neighbourhood, and rejected ~99.9% of candidates
-        // via the selectivity guard — O(output × neighbourhood² × N × 3).
-        // This scatter loop mirrors the Thin variant: iterate each input
-        // pixel's deep samples, trace aperture rays forward through both
-        // polynomial systems, and splat contributions to whichever output
-        // pixel the ray lands on.  Same result, O(input × samples × N × 3).
-        for (int y = bounds.y(); y < bounds.t(); ++y) {
-            for (int x = bounds.x(); x < bounds.r(); ++x) {
-                const float sx = (x + 0.5f - half_w) / half_w;
-                const float sy = (y + 0.5f - half_h) / half_h;
+        // ---- Gather loop: output pixels → aperture samples → input pixels ----
+        for (int oy = bounds.y(); oy < bounds.t(); ++oy) {
+            for (int ox = bounds.x(); ox < bounds.r(); ++ox) {
+                // Sensor position in mm — CRITICAL: y uses half_w (not half_h)
+                const float sx = (ox + 0.5f - half_w) * _sensor_width / (2.0f * half_w);
+                const float sy = (oy + 0.5f - half_h) * _sensor_width / (2.0f * half_w);
 
-                DeepPixel dp = deepPlane.getPixel(y, x);
-                const int sample_count = dp.getSampleCount();
+                for (int k = 0; k < N; ++k) {
+                    bool sample_accepted = false;
+                    for (int retry = 0; retry <= VIGNETTING_RETRIES && !sample_accepted; ++retry) {
+                        const int idx = k + retry * N;
+                        float disk_x, disk_y;
+                        map_to_disk(halton(idx, 2), halton(idx, 3), disk_x, disk_y);
+                        const float ax = disk_x * aperture_radius_mm;
+                        const float ay = disk_y * aperture_radius_mm;
 
-                for (int s = 0; s < sample_count; ++s) {
-                    const float Z  = dp.getUnorderedSample(s, Chan_DeepFront);
-                    const float sR = dp.getUnorderedSample(s, Chan_Red);
-                    const float sG = dp.getUnorderedSample(s, Chan_Green);
-                    const float sB = dp.getUnorderedSample(s, Chan_Blue);
-                    const float sA = dp.getUnorderedSample(s, Chan_Alpha);
-
-                    // Thin-lens CoC in normalised coords
-                    const float coc_mm = coc_radius(_focal_length_mm, _fstop,
-                                                    _focus_distance, Z);
-                    const float coc_norm = coc_mm / (_focal_length_mm * 0.5f + 1e-6f);
-
-                    const float sample_colors[3] = { sR, sG, sB };
-
-                    // Aperture sample loop
-                    for (int k = 0; k < N; ++k) {
-                        float ax_unit, ay_unit;
-                        map_to_disk(halton(k, 2), halton(k, 3),
-                                    ax_unit, ay_unit);
-
-                        const float ax = ax_unit * ap_radius;
-                        const float ay = ay_unit * ap_radius;
-
-                        // Track green-channel landing for alpha
-                        int alpha_out_px = x, alpha_out_py = y;
-                        float alpha_transmit = 1.0f;
-
+                        // Per CA channel trace
+                        bool all_channels_ok = true;
                         for (int c = 0; c < 3; ++c) {
                             const Channel chan = ca_table[c].chan;
                             const float lambda = ca_table[c].lambda;
 
-                            if (!chans.contains(chan)) continue;
+                            float dx = 0.0f, dy = 0.0f;
+                            bool ok = pt_sample_aperture(sx, sy, dx, dy, ax, ay, lambda,
+                                                         sensor_shift, &_poly_sys, _max_degree);
+                            if (!ok) { all_channels_ok = false; break; }
 
-                            float in5[5] = { sx, sy, ax, ay, lambda };
-
-                            // ---- Aperture vignetting ----
-                            if (_aperture_loaded) {
-                                float apt_out[2] = {};
-                                poly_system_evaluate(&_aperture_sys, in5,
-                                                     apt_out, 2, _max_degree);
-                                const float apt_mag = std::sqrt(
-                                    apt_out[0] * apt_out[0]
-                                  + apt_out[1] * apt_out[1]);
-                                if (apt_mag > ap_housing_mm)
-                                    continue;  // vignetted
-                            }
-
-                            // ---- Exitpupil forward trace ----
+                            // Forward evaluate
+                            const float sx_sh = sx + dx * sensor_shift;
+                            const float sy_sh = sy + dy * sensor_shift;
+                            float in5[5] = { sx_sh, sy_sh, dx, dy, lambda };
                             float out5[5] = {};
-                            poly_system_evaluate(&_poly_sys, in5, out5, 5,
-                                                 _max_degree);
+                            poly_system_evaluate(&_poly_sys, in5, out5, 5, _max_degree);
 
-                            const float transmit = std::max(0.0f,
-                                                   std::min(1.0f, out5[4]));
+                            float transmit = std::max(0.0f, std::min(1.0f, out5[4]));
+                            if (transmit <= 0.0f) { all_channels_ok = false; break; }
 
-                            // ---- sphereToCs (R033 — physical ray direction) ----
-                            float rdx, rdy, rdz;
-                            sphereToCs(out5[2], out5[3],
-                                       _outer_pupil_curvature_radius,
-                                       rdx, rdy, rdz);
-
-                            // ---- Option B landing (consistent with Thin) ----
-                            float wx = out5[0];
-                            float wy = out5[1];
-                            const float wmag = std::sqrt(wx * wx + wy * wy);
-                            if (wmag > ap_radius && wmag > 1e-9f) {
-                                wx *= ap_radius / wmag;
-                                wy *= ap_radius / wmag;
+                            // Outer pupil cull
+                            if (out5[0]*out5[0] + out5[1]*out5[1] >
+                                _outer_pupil_radius*_outer_pupil_radius) {
+                                all_channels_ok = false; break;
                             }
 
-                            const float landing_x = sx + coc_norm * wx
-                                                    / (ap_radius + 1e-6f);
-                            const float landing_y = sy + coc_norm * wy
-                                                    / (ap_radius + 1e-6f);
+                            // Inner pupil cull
+                            float px_in = sx_sh + dx * _back_focal_length;
+                            float py_in = sy_sh + dy * _back_focal_length;
+                            if (px_in*px_in + py_in*py_in >
+                                _inner_pupil_radius*_inner_pupil_radius) {
+                                all_channels_ok = false; break;
+                            }
 
-                            const float out_px_f = landing_x * half_w + half_w - 0.5f;
-                            const float out_py_f = landing_y * half_h + half_h - 0.5f;
-                            const int out_px_i = static_cast<int>(std::round(out_px_f));
-                            const int out_py_i = static_cast<int>(std::round(out_py_f));
+                            // 3D ray via sphereToCs_full (center = -R convention)
+                            float ray_ox, ray_oy, ray_oz, ray_dx, ray_dy, ray_dz;
+                            sphereToCs_full(out5[0], out5[1], out5[2], out5[3],
+                                            -_outer_pupil_curvature_radius,
+                                            _outer_pupil_curvature_radius,
+                                            ray_ox, ray_oy, ray_oz,
+                                            ray_dx, ray_dy, ray_dz);
 
-                            // Bounds check
-                            if (out_px_i < bounds.x() || out_px_i >= bounds.r() ||
-                                out_py_i < bounds.y() || out_py_i >= bounds.t())
+                            if (std::fabs(ray_dz) < 1e-8f) continue;  // degenerate, skip channel
+
+                            // Pinhole projection to input pixel
+                            const float in_x = ray_dx / ray_dz * f_px + half_w - 0.5f;
+                            const float in_y = ray_dy / ray_dz * f_px + half_h - 0.5f;
+                            const int in_px = static_cast<int>(std::round(in_x));
+                            const int in_py = static_cast<int>(std::round(in_y));
+                            if (in_px < expanded.x() || in_px >= expanded.r() ||
+                                in_py < expanded.y() || in_py >= expanded.t())
                                 continue;
 
-                            const float holdout_t = transmittance_at(
-                                                        out_px_i, out_py_i, Z);
-                            const float weight = transmit * holdout_t * inv_N;
+                            sample_accepted = true;
 
-                            imagePlane.writableAt(out_px_i, out_py_i,
-                                imagePlane.chanNo(chan)) += sample_colors[c] * weight;
+                            // Deep column flatten (front-to-back)
+                            DeepPixel dp_in = deepPlane.getPixel(in_py, in_px);
+                            float flat_color = 0.0f, flat_alpha = 0.0f, transmit_accum = 1.0f;
+                            for (int ds = 0; ds < dp_in.getSampleCount(); ++ds) {
+                                float zf = dp_in.getUnorderedSample(ds, Chan_DeepFront);
+                                float holdout_t = transmittance_at(ox, oy, zf);
+                                float w = transmit * transmit_accum * holdout_t * inv_N;
+                                float sc = dp_in.getUnorderedSample(ds, chan);
+                                flat_color += sc * w;
+                                if (chan == Chan_Green) {
+                                    flat_alpha += dp_in.getUnorderedSample(ds, Chan_Alpha) * w;
+                                }
+                                transmit_accum *= (1.0f - dp_in.getUnorderedSample(ds, Chan_Alpha));
+                            }
 
-                            // Track green-channel landing for alpha
-                            if (c == 1) {
-                                alpha_out_px = out_px_i;
-                                alpha_out_py = out_py_i;
-                                alpha_transmit = transmit;
+                            imagePlane.writableAt(ox, oy, imagePlane.chanNo(chan)) += flat_color;
+                            if (chan == Chan_Green) {
+                                imagePlane.writableAt(ox, oy, imagePlane.chanNo(Chan_Alpha)) += flat_alpha;
                             }
                         }  // c (CA channels)
-
-                        // ---- Alpha: use green-channel (0.55μm) landing position ----
-                        if (chans.contains(Chan_Alpha) &&
-                            alpha_out_px >= bounds.x() && alpha_out_px < bounds.r() &&
-                            alpha_out_py >= bounds.y() && alpha_out_py < bounds.t())
-                        {
-                            const float holdout_t = transmittance_at(
-                                                        alpha_out_px, alpha_out_py, Z);
-                            const float weight = alpha_transmit * holdout_t * inv_N;
-                            imagePlane.writableAt(alpha_out_px, alpha_out_py,
-                                imagePlane.chanNo(Chan_Alpha)) += sA * weight;
-                        }
-                    }  // k (aperture samples)
-                }  // s (deep samples)
-            }  // x
-        }  // y
+                    }  // retry (vignetting)
+                }  // k (aperture samples)
+            }  // ox
+        }  // oy
     }
 
     // ------------------------------------------------------------------

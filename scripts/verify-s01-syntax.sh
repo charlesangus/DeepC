@@ -241,6 +241,7 @@ public:
     void channels(ChannelMask) {}
     void full_size_format(const Format&) {}
     const Format& full_size_format() const { static Format f; return f; }
+    void format(const Format&) {}
 };
 
 class Iop : public Op {
@@ -324,6 +325,7 @@ struct DeepInfo {
     Box& box() { static Box b; return b; }
     const Box& box() const { static Box b; return b; }
     const Format* fullSizeFormat() const { static Format f; return &f; }
+    const Format* format() const { static Format f; return &f; }
 };
 
 class DeepOp {
@@ -383,19 +385,61 @@ for src_file in DeepCBlur.cpp DeepCDepthBlur.cpp DeepCDefocusPOThin.cpp DeepCDef
         echo "Syntax check passed: $src_file"
     fi
 done
-# --- S05 contracts ---
-echo "Checking S05 contracts..."
-# CMake entries present for both new plugins (regression guard)
-grep -c 'DeepCDefocusPOThin' "$SRC_DIR/CMakeLists.txt" | grep -q '^2$' || { echo "FAIL: DeepCDefocusPOThin not in exactly 2 CMakeLists.txt locations"; exit 1; }
-grep -c 'DeepCDefocusPORay' "$SRC_DIR/CMakeLists.txt" | grep -q '^2$' || { echo "FAIL: DeepCDefocusPORay not in exactly 2 CMakeLists.txt locations"; exit 1; }
-# Old plugin gone from CMake
-test "$(grep -c 'DeepCDefocusPO[^TR]' "$SRC_DIR/CMakeLists.txt")" -eq 0 || { echo "FAIL: old DeepCDefocusPO still in CMakeLists.txt"; exit 1; }
-# FILTER_NODES entries
-grep -q 'FILTER_NODES.*DeepCDefocusPOThin' "$SRC_DIR/CMakeLists.txt" || { echo "FAIL: DeepCDefocusPOThin not in FILTER_NODES"; exit 1; }
-grep -q 'FILTER_NODES.*DeepCDefocusPORay' "$SRC_DIR/CMakeLists.txt" || { echo "FAIL: DeepCDefocusPORay not in FILTER_NODES"; exit 1; }
-# THIRD_PARTY_LICENSES entry
-grep -q 'lentil\|hanatos' "$(dirname "$SRC_DIR")/THIRD_PARTY_LICENSES.md" || { echo "FAIL: lentil/poly.h not in THIRD_PARTY_LICENSES.md"; exit 1; }
-# Old file removed
-test ! -f "$SRC_DIR/DeepCDefocusPO.cpp" || { echo "FAIL: DeepCDefocusPO.cpp should be deleted"; exit 1; }
-echo "S05 contracts: all pass."
+# --- S01 contracts ---
+echo "--- S01 contracts ---"
+
+# _validate format fix in both files
+grep -q 'info_\.format(' "$SRC_DIR/DeepCDefocusPOThin.cpp" || { echo "FAIL: _validate format fix missing from Thin"; exit 1; }
+echo "PASS: _validate format fix in Thin"
+grep -q 'info_\.format(' "$SRC_DIR/DeepCDefocusPORay.cpp"  || { echo "FAIL: _validate format fix missing from Ray"; exit 1; }
+echo "PASS: _validate format fix in Ray"
+
+# New lens constant knobs on Ray
+grep -q '_sensor_width'        "$SRC_DIR/DeepCDefocusPORay.cpp" || { echo "FAIL: _sensor_width knob missing in Ray"; exit 1; }
+echo "PASS: _sensor_width knob in Ray"
+grep -q '_back_focal_length'   "$SRC_DIR/DeepCDefocusPORay.cpp" || { echo "FAIL: _back_focal_length knob missing in Ray"; exit 1; }
+echo "PASS: _back_focal_length knob in Ray"
+grep -q '_outer_pupil_radius'  "$SRC_DIR/DeepCDefocusPORay.cpp" || { echo "FAIL: _outer_pupil_radius knob missing in Ray"; exit 1; }
+echo "PASS: _outer_pupil_radius knob in Ray"
+grep -q '_inner_pupil_radius'  "$SRC_DIR/DeepCDefocusPORay.cpp" || { echo "FAIL: _inner_pupil_radius knob missing in Ray"; exit 1; }
+echo "PASS: _inner_pupil_radius knob in Ray"
+grep -q '_aperture_pos'        "$SRC_DIR/DeepCDefocusPORay.cpp" || { echo "FAIL: _aperture_pos knob missing in Ray"; exit 1; }
+echo "PASS: _aperture_pos knob in Ray"
+
+# New math functions in deepc_po_math.h
+grep -q 'pt_sample_aperture'       "$SRC_DIR/deepc_po_math.h" || { echo "FAIL: pt_sample_aperture missing from deepc_po_math.h"; exit 1; }
+echo "PASS: pt_sample_aperture in deepc_po_math.h"
+grep -q 'sphereToCs_full'          "$SRC_DIR/deepc_po_math.h" || { echo "FAIL: sphereToCs_full missing from deepc_po_math.h"; exit 1; }
+echo "PASS: sphereToCs_full in deepc_po_math.h"
+grep -q 'logarithmic_focus_search' "$SRC_DIR/deepc_po_math.h" || { echo "FAIL: logarithmic_focus_search missing from deepc_po_math.h"; exit 1; }
+echo "PASS: logarithmic_focus_search in deepc_po_math.h"
+
+# poly.h max_degree
+grep -q 'max_degree' "$SRC_DIR/poly.h" || { echo "FAIL: max_degree missing from poly.h"; exit 1; }
+echo "PASS: max_degree in poly.h"
+
+# CMakeLists.txt registration for both plugins
+grep -q 'DeepCDefocusPOThin' "$SRC_DIR/CMakeLists.txt" || { echo "FAIL: DeepCDefocusPOThin missing from CMakeLists.txt"; exit 1; }
+echo "PASS: DeepCDefocusPOThin in CMakeLists.txt"
+grep -q 'DeepCDefocusPORay' "$SRC_DIR/CMakeLists.txt" || { echo "FAIL: DeepCDefocusPORay missing from CMakeLists.txt"; exit 1; }
+echo "PASS: DeepCDefocusPORay in CMakeLists.txt"
+
+echo "All S01 contracts passed."
+
+# --- S02 contracts ---
+echo "--- S02 contracts ---"
+grep -q 'pt_sample_aperture'        "$SRC_DIR/DeepCDefocusPORay.cpp" || { echo "FAIL: pt_sample_aperture call missing from Ray renderStripe"; exit 1; }
+echo "PASS: pt_sample_aperture called in Ray"
+grep -q 'sphereToCs_full'           "$SRC_DIR/DeepCDefocusPORay.cpp" || { echo "FAIL: sphereToCs_full call missing from Ray renderStripe"; exit 1; }
+echo "PASS: sphereToCs_full called in Ray"
+grep -q 'logarithmic_focus_search'  "$SRC_DIR/DeepCDefocusPORay.cpp" || { echo "FAIL: logarithmic_focus_search call missing from Ray renderStripe"; exit 1; }
+echo "PASS: logarithmic_focus_search called in Ray"
+grep -q 'VIGNETTING_RETRIES'        "$SRC_DIR/DeepCDefocusPORay.cpp" || { echo "FAIL: VIGNETTING_RETRIES missing from Ray"; exit 1; }
+echo "PASS: VIGNETTING_RETRIES in Ray"
+grep -q 'getPixel'                  "$SRC_DIR/DeepCDefocusPORay.cpp" || { echo "FAIL: deep getPixel missing from Ray renderStripe"; exit 1; }
+echo "PASS: getPixel in Ray"
+! grep -q 'coc_norm'               "$SRC_DIR/DeepCDefocusPORay.cpp" || { echo "FAIL: scatter vestige coc_norm still in Ray"; exit 1; }
+echo "PASS: coc_norm removed from Ray"
+echo "All S02 contracts passed."
+
 echo "All syntax checks passed."

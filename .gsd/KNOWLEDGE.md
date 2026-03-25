@@ -399,3 +399,42 @@ Polynomial systems are loaded at `renderStripe` entry (not `_validate`) gated by
 **Context:** DeepCDefocusPORay (M007/S01, M007/S03)
 
 The Ray variant requires two .fit files: `exitpupil.fit` (poly_file knob) and `aperture.fit` (aperture_file knob). Each has independent loaded/reload flags and error reporting. A missing or invalid aperture_file silently produces black output because the vignetting guard rejects all samples. This dual-file pattern should be documented for artists.
+
+## Polynomial Optics — M008 Patterns
+
+### _validate format fix: info_.format(*di.format()) must follow info_.set(di.box())
+**Context:** DeepCDefocusPOThin and DeepCDefocusPORay _validate (S01, M008-y32v8w)
+
+Both PO nodes must call `info_.format(*di.format())` immediately after `info_.set(di.box())` in `_validate`. Without this, PlanarIop allocates the output at a stale default resolution instead of matching the Deep input's format. The mock headers in `verify-s01-syntax.sh` must include both `DeepInfo::format()` (returning `const Format*`) and `Info::format(const Format&)` (setter) for this one-liner to compile in the syntax check. Any future PlanarIop consuming a Deep input should apply this same fix.
+
+### sphereToCs vs sphereToCs_full: two coexisting variants in deepc_po_math.h
+**Context:** deepc_po_math.h (S01, M008-y32v8w)
+
+Two sphere-to-camera-space functions now coexist in `deepc_po_math.h`: `sphereToCs` (M007 original, returns direction only) and `sphereToCs_full` (M008 S01, returns 3D origin + direction via full tangent-frame construction). The direction-only variant is retained for backward compatibility with Ray's existing renderStripe (pre-S02). S02's path-trace engine must use `sphereToCs_full` — it is the correct lentil-equivalent for 3D ray generation. Once S02 fully migrates, the old `sphereToCs` may be removed if no other callers remain.
+
+### logarithmic_focus_search: quadratic spacing, housing_radius unused
+**Context:** deepc_po_math.h (S01, M008-y32v8w)
+
+Despite the lentil-inspired name "logarithmic_focus_search", the implementation uses quadratic spacing (not logarithmic) over 20001 steps in [-45mm, +45mm]. The `aperture_housing_radius` parameter is accepted for API compatibility but not used to bound the search. If pupil-edge vignetting during the focus search causes incorrect sensor_shift at extreme focus distances, S02 should add housing-radius clipping inside the search loop.
+
+### FD Jacobian in pt_sample_aperture couples dx/dy perturbation with sensor_shift
+**Context:** deepc_po_math.h pt_sample_aperture (S01, M008-y32v8w)
+
+The Newton solver in `pt_sample_aperture` computes its Jacobian by perturbing (dx, dy) and re-evaluating `poly_system_evaluate` with the shifted sensor position (`sensor_x + dx * sensor_shift, sensor_y + dy * sensor_shift`). The coupling between direction perturbation and sensor position is intentional — lentil's convention feeds the shifted sensor position as the polynomial input, not the raw sensor position. Removing this coupling (perturbing dx/dy alone) produces an incorrect Jacobian and breaks Newton convergence.
+
+## DeepCDefocusPORay — Gather Engine Patterns (M008-y32v8w/S02)
+
+### Gather-style deep renderer requires expanded getRequests bounds
+**Context:** DeepCDefocusPORay getRequests + renderStripe (S02, M008-y32v8w)
+
+A scatter engine only needs deep input data for the input pixels it directly reads. A gather engine (output pixel → trace ray → project to input pixel) can land on input pixels far outside the current output stripe bounds. `getRequests` must pad the deep request box by the maximum possible pixel displacement: `max_coc_pixels = aperture_housing_radius / sensor_width * image_width * 2 + 2`. Without this expansion, `deepPlane.getPixel(in_py, in_px)` silently returns empty/zero for out-of-bounds pixels — visually: a black border that shrinks as the output stripe grows. Any future gather-style deep renderer must adopt this padding pattern in `getRequests`.
+
+### All-or-nothing CA channel policy prevents artefactual colour fringing
+**Context:** DeepCDefocusPORay gather engine CA loop (S02, M008-y32v8w)
+
+The gather engine traces R/G/B at 0.45/0.55/0.65 μm in an inner channel loop. If any channel fails Newton convergence or is clipped by the outer/inner pupil, an `all_channels_ok` flag causes the entire aperture sample to be rejected — no partial-channel RGBA is accumulated. Allowing partial accumulation (e.g. R lands, B is vignetted) produces colour fringing that is artefactual (wrong hue cast) rather than physical chromatic aberration. The retry loop recovers the energy: the rejected aperture sample is retried with a fresh Halton index. This policy must be preserved if the CA loop is ever refactored.
+
+### Sensor mm convention: y must use half_w as divisor (not half_h)
+**Context:** DeepCDefocusPORay renderStripe sensor coordinate computation (S02, M008-y32v8w)
+
+The .fit polynomial is fitted in a coordinate space where both x and y sensor positions are normalised by the same half-width value. The correct formula is: `sx = (ox - half_w) * sensor_width / (2 * half_w)`, `sy = (oy - half_h) * sensor_width / (2 * half_w)` — note `half_w` (not `half_h`) in the sy denominator. Using `half_h` for sy incorrectly scales y for non-square images, producing vertically-distorted bokeh shape. This matches lentil's convention and must be applied in any code that converts pixel coordinates to polynomial mm coordinates.

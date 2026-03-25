@@ -259,6 +259,105 @@ This file is the explicit capability and coverage contract for the project.
 - Validation: Both plugins registered via Op::Description as "Deep/DeepCDefocusPOThin" and "Deep/DeepCDefocusPORay". CMakeLists.txt: grep -c 'DeepCDefocusPOThin' == 2 (PLUGINS + FILTER_NODES), grep -c 'DeepCDefocusPORay' == 2. Old DeepCDefocusPO: grep -c 'DeepCDefocusPO[^TR]' == 0. Actual Nuke menu appearance requires docker build.
 - Notes: S01 structural proof complete: both plugins registered as "Deep/DeepCDefocusPOThin" and "Deep/DeepCDefocusPORay" via Op::Description; both present in CMakeLists.txt PLUGINS and FILTER_NODES (2 occurrences each); old DeepCDefocusPO removed (0 occurrences). Actual Nuke menu appearance requires docker build — deferred to S02/S03.
 
+### R037 — DeepCDefocusPORay renderStripe implements lentil-style forward path trace: sensor position (mm) → Newton aperture match via pt_sample_aperture → forward poly eval → full sphereToCs → 3D ray direction → project to input pixel → read and flatten deep column → accumulate flat RGBA
+- Class: core-capability
+- Status: validated
+- Description: DeepCDefocusPORay renderStripe implements lentil-style forward path trace: sensor position (mm) → Newton aperture match via pt_sample_aperture → forward poly eval → full sphereToCs → 3D ray direction → project to input pixel → read and flatten deep column → accumulate flat RGBA
+- Why it matters: The current scatter engine is a copy of the Thin variant with unused extras — it does not actually trace rays through the polynomial lens. The polynomial output (ray direction from sphereToCs) is computed and discarded. This requirement replaces the scatter with a real camera-shader-style path tracer matching lentil's architecture.
+- Source: user
+- Primary owning slice: M008-y32v8w/S02
+- Supporting slices: M008-y32v8w/S01
+- Validation: Gather engine implemented in DeepCDefocusPORay::renderStripe. Full pipeline: output pixel → sensor mm coords (y uses half_w) → Halton aperture disk sample → pt_sample_aperture (Newton FD Jacobian) → poly_system_evaluate → outer pupil cull → inner pupil cull → sphereToCs_full (3D ray) → pinhole project to input pixel → getPixel deep column fetch → front-to-back flatten with holdout transmittance. All S02 grep contracts pass. bash scripts/verify-s01-syntax.sh exits 0. Scatter vestiges (coc_norm, Option B warp) confirmed absent.
+- Notes: Supersedes the Option B scatter in DeepCDefocusPORay. The Thin variant keeps its scatter engine unchanged.
+
+### R038 — DeepCDefocusPORay uses physical mm coordinates for sensor positions fed to the polynomial, matching lentil's convention. A sensor_width Float_knob (default 36mm for 35mm film) controls the mapping.
+- Class: core-capability
+- Status: validated
+- Description: DeepCDefocusPORay uses physical mm coordinates for sensor positions fed to the polynomial, matching lentil's convention. A sensor_width Float_knob (default 36mm for 35mm film) controls the mapping.
+- Why it matters: The .fit polynomials are fitted in a specific coordinate space. Lentil feeds sensor positions in mm. Mismatched coordinate conventions produce incorrect bokeh shape and size.
+- Source: user
+- Primary owning slice: M008-y32v8w/S01
+- Supporting slices: M008-y32v8w/S02
+- Validation: Float_knob _sensor_width (36mm default) added to DeepCDefocusPORay. grep -q '_sensor_width' src/DeepCDefocusPORay.cpp passes. bash scripts/verify-s01-syntax.sh contract PASS. Sensor mm coordinate convention confirmed: sx = pixel_x * _sensor_width / (2 * half_width_pixels).
+- Notes: DeepCDefocusPOThin keeps its normalised [-1,1] convention (different algorithm, different poly interpretation).
+
+### R039 — A pt_sample_aperture function that solves for sensor direction (dx, dy) given sensor position (x, y) and target aperture point, using Newton iteration with finite-difference Jacobians over poly_system_evaluate. Matches lentil's pt_sample_aperture semantics.
+- Class: core-capability
+- Status: validated
+- Description: A pt_sample_aperture function that solves for sensor direction (dx, dy) given sensor position (x, y) and target aperture point, using Newton iteration with finite-difference Jacobians over poly_system_evaluate. Matches lentil's pt_sample_aperture semantics.
+- Why it matters: The aperture match is the core of the path-trace flow — without it, rays cannot be steered through the correct aperture point, and the polynomial evaluation produces physically meaningless output.
+- Source: user
+- Primary owning slice: M008-y32v8w/S01
+- Supporting slices: M008-y32v8w/S02
+- Validation: pt_sample_aperture implemented inline in src/deepc_po_math.h. Newton iteration: 5 iters, 1e-4 convergence tolerance, 1e-4 FD epsilon for Jacobian, 0.72 damping. FD Jacobian correctly accounts for sensor_shift coupling. grep -q 'pt_sample_aperture' src/deepc_po_math.h passes. verify-s01-syntax.sh contract PASS. deepc_po_math.h compiles cleanly with poly.h.
+- Notes: Lentil uses analytically generated per-lens Jacobians. We use finite-difference Jacobians with the generic .fit evaluator. Slower but lens-agnostic.
+
+### R040 — sphereToCs in deepc_po_math.h upgraded to match lentil's full implementation: takes 2D position and 2D direction on the outer pupil sphere surface, returns 3D origin and 3D direction in camera space using tangent-frame construction (normal, tangent, bitangent).
+- Class: core-capability
+- Status: validated
+- Description: sphereToCs in deepc_po_math.h upgraded to match lentil's full implementation: takes 2D position and 2D direction on the outer pupil sphere surface, returns 3D origin and 3D direction in camera space using tangent-frame construction (normal, tangent, bitangent).
+- Why it matters: The current sphereToCs returns only a direction vector (not an origin), using a simplified projection. The full version is required to produce a physically correct 3D ray for scene intersection.
+- Source: user
+- Primary owning slice: M008-y32v8w/S01
+- Supporting slices: M008-y32v8w/S02
+- Validation: sphereToCs_full implemented inline in src/deepc_po_math.h. Returns 3D origin on sphere surface and 3D direction via tangent-frame construction (normal, ex/ey cross products, transform into camera space). Handles negative R (concave surfaces). grep -q 'sphereToCs_full' src/deepc_po_math.h passes. verify-s01-syntax.sh contract PASS.
+- Notes: Lentil's sphereToCs uses Eigen::Vector3d. DeepC's version uses plain floats to avoid the Eigen dependency (D023).
+
+### R041 — When a traced ray is vignetted (transmittance ≤ 0, outer pupil radius clip, or inner pupil radius clip), re-sample a new aperture point and retry, up to vignetting_retries iterations. Matches lentil's camera shader retry pattern.
+- Class: quality-attribute
+- Status: validated
+- Description: When a traced ray is vignetted (transmittance ≤ 0, outer pupil radius clip, or inner pupil radius clip), re-sample a new aperture point and retry, up to vignetting_retries iterations. Matches lentil's camera shader retry pattern.
+- Why it matters: At field edges, many aperture samples are vignetted. Without retries, those pixels receive fewer valid contributions and appear darker/noisier. The retry loop redistributes energy to valid aperture regions.
+- Source: user
+- Primary owning slice: M008-y32v8w/S02
+- Supporting slices: none
+- Validation: VIGNETTING_RETRIES=10 constant defined in renderStripe. Retry loop triggers on: Newton convergence failure (pt_sample_aperture returns false), outer pupil radius clip (|ap| > _outer_pupil_radius), inner pupil radius clip (|ap| < _inner_pupil_radius). Each retry increments Halton sample index for fresh aperture point. If all retries exhausted, aperture sample contributes zero (visible as correct physical vignetting at field edges). grep -q 'VIGNETTING_RETRIES' passes. bash scripts/verify-s01-syntax.sh exits 0.
+- Notes: First aperture sample uses the Halton sequence; retries use fresh random samples (matching lentil's pattern).
+
+### R042 — The sensor-to-polynomial offset (sensor_shift) is computed by searching for the shift value that focuses the lens at the user's focus_distance, matching lentil's logarithmic_focus_search approach. This replaces thin-lens CoC-based focusing.
+- Class: core-capability
+- Status: validated
+- Description: The sensor-to-polynomial offset (sensor_shift) is computed by searching for the shift value that focuses the lens at the user's focus_distance, matching lentil's logarithmic_focus_search approach. This replaces thin-lens CoC-based focusing.
+- Why it matters: sensor_shift is the physical focusing mechanism for polynomial optics lenses. Without it, the lens is unfocused and the polynomial evaluation starts from the wrong sensor position.
+- Source: user
+- Primary owning slice: M008-y32v8w/S01
+- Supporting slices: M008-y32v8w/S02
+- Validation: logarithmic_focus_search implemented inline in src/deepc_po_math.h. Brute-force 20001-step quadratically-spaced search over [-45mm, +45mm]. Traces center ray through pt_sample_aperture + poly_system_evaluate + sphereToCs_full, picks shift minimising |focus_distance - target|. grep -q 'logarithmic_focus_search' src/deepc_po_math.h passes. verify-s01-syntax.sh contract PASS. Note: housing_radius parameter accepted but not used as bound — deferred to S02 if needed.
+- Notes: Lentil searches a logarithmic range of shift values, traces a center ray for each, and picks the one closest to the target focus distance.
+
+### R043 — Five new Float_knobs on DeepCDefocusPORay exposing lens constants needed for the path-trace flow: sensor_width (36mm default), back_focal_length (30.83mm), outer_pupil_radius (29.87mm), inner_pupil_radius (19.36mm), aperture_pos (35.45mm). All with Angenieux 55mm defaults.
+- Class: core-capability
+- Status: validated
+- Description: Five new Float_knobs on DeepCDefocusPORay exposing lens constants needed for the path-trace flow: sensor_width (36mm default), back_focal_length (30.83mm), outer_pupil_radius (29.87mm), inner_pupil_radius (19.36mm), aperture_pos (35.45mm). All with Angenieux 55mm defaults.
+- Why it matters: These constants are required for sensor_shift computation, inner/outer pupil culling, and aperture position in the Newton iteration. Lentil reads them from per-lens generated code; DeepC exposes them as knobs since we use generic .fit files.
+- Source: user
+- Primary owning slice: M008-y32v8w/S01
+- Supporting slices: M008-y32v8w/S02
+- Validation: Five Float_knobs added to DeepCDefocusPORay: _sensor_width=36.0, _back_focal_length=30.829003, _outer_pupil_radius=29.865562, _inner_pupil_radius=19.357308, _aperture_pos=35.445997. All with Angenieux 55mm defaults, SetRange, Tooltip. Placed inside existing "Lens geometry" BeginClosedGroup. All 5 verify-s01-syntax.sh contracts PASS.
+- Notes: Values for Angenieux 55mm from lentil's lens_constants.h. Artists read constants from the same file for other lenses.
+
+### R044 — Each traced ray reads a full deep pixel column at the input pixel it maps to, composites front-to-back with per-sample holdout transmittance weighting, and accumulates the resulting flat RGBA to the output buffer.
+- Class: core-capability
+- Status: validated
+- Description: Each traced ray reads a full deep pixel column at the input pixel it maps to, composites front-to-back with per-sample holdout transmittance weighting, and accumulates the resulting flat RGBA to the output buffer.
+- Why it matters: Deep samples at different depths must be composited correctly per-ray for physically correct defocus. Holdout must be applied per-sample during flatten to maintain depth-correct masking.
+- Source: user
+- Primary owning slice: M008-y32v8w/S02
+- Supporting slices: none
+- Validation: Per-ray deep column fetch via deepPlane.getPixel(in_py, in_px). Front-to-back flatten: iterate DeepPixel samples in order, evaluate holdout transmittance at output pixel for each sample, apply as weight during flatten, accumulate weighted RGBA to output buffer. Expanded getRequests bounds ensure input deep pixels outside stripe bounds are fetchable. grep -q 'getPixel' passes. bash scripts/verify-s01-syntax.sh exits 0.
+- Notes: When holdout is not connected, flatten is a standard front-to-back deep composite.
+
+### R045 — Both PO nodes must set info_.format() in _validate to match the Deep input's format, not rely on PlanarIop's default. Without this, the output frame size is wrong.
+- Class: quality-attribute
+- Status: validated
+- Description: Both PO nodes must set info_.format() in _validate to match the Deep input's format, not rely on PlanarIop's default. Without this, the output frame size is wrong.
+- Why it matters: Wrong output frame size causes downstream compositing failures and black/cropped output.
+- Source: user
+- Primary owning slice: M008-y32v8w/S01
+- Supporting slices: none
+- Validation: info_.format(*di.format()) added to _validate in both DeepCDefocusPOThin.cpp and DeepCDefocusPORay.cpp, immediately after info_.set(di.box()). grep -q 'info_\.format(' passes for both files. Mock DeepInfo::format() and Info::format(const Format&) added to verify script. Both nodes compile cleanly. verify-s01-syntax.sh contracts PASS for both.
+- Notes: Bug affects both Thin and Ray. The fix is identical for both.
+
 ## Deferred
 
 ### R027 — Support for polygonal aperture blades (n-blade iris) or a texture-based aperture mask to shape the bokeh kernel, as in lentil's aperture_image param.
@@ -338,10 +437,19 @@ This file is the explicit capability and coverage contract for the project.
 | R034 | core-capability | validated | M007-gvtoom/S03 | none | _aperture_sys (poly_system_t) loaded from aperture_file knob in renderStripe entry with reload guard (mirrors exitpupil pattern). poly_system_evaluate(&_aperture_sys, in5, apt_out, 2, _max_degree) called per aperture sample with aperture housing radius vignetting guard. error() on load failure. Structural grep for _aperture_sys passes. Runtime proof deferred. |
 | R035 | core-capability | validated | M007-gvtoom/S01 | M007-gvtoom/S02, M007-gvtoom/S03 | DeepCDefocusPORay gather engine: transmittance_at lambda (R023/R024 holdout) applied per contributing sample; CA wavelengths 0.45f/0.55f/0.65f in inner channel loop; Halton+Shirley concentric disk sampling via halton() and map_to_disk(). All structural greps pass for Ray variant. DeepCDefocusPOThin: validated in S02. Full runtime validation pending docker build. |
 | R036 | launchability | validated | M007-gvtoom/S01 | none | Both plugins registered via Op::Description as "Deep/DeepCDefocusPOThin" and "Deep/DeepCDefocusPORay". CMakeLists.txt: grep -c 'DeepCDefocusPOThin' == 2 (PLUGINS + FILTER_NODES), grep -c 'DeepCDefocusPORay' == 2. Old DeepCDefocusPO: grep -c 'DeepCDefocusPO[^TR]' == 0. Actual Nuke menu appearance requires docker build. |
+| R037 | core-capability | validated | M008-y32v8w/S02 | M008-y32v8w/S01 | Gather engine implemented in DeepCDefocusPORay::renderStripe. Full pipeline: output pixel → sensor mm coords (y uses half_w) → Halton aperture disk sample → pt_sample_aperture (Newton FD Jacobian) → poly_system_evaluate → outer pupil cull → inner pupil cull → sphereToCs_full (3D ray) → pinhole project to input pixel → getPixel deep column fetch → front-to-back flatten with holdout transmittance. All S02 grep contracts pass. bash scripts/verify-s01-syntax.sh exits 0. Scatter vestiges (coc_norm, Option B warp) confirmed absent. |
+| R038 | core-capability | validated | M008-y32v8w/S01 | M008-y32v8w/S02 | Float_knob _sensor_width (36mm default) added to DeepCDefocusPORay. grep -q '_sensor_width' src/DeepCDefocusPORay.cpp passes. bash scripts/verify-s01-syntax.sh contract PASS. Sensor mm coordinate convention confirmed: sx = pixel_x * _sensor_width / (2 * half_width_pixels). |
+| R039 | core-capability | validated | M008-y32v8w/S01 | M008-y32v8w/S02 | pt_sample_aperture implemented inline in src/deepc_po_math.h. Newton iteration: 5 iters, 1e-4 convergence tolerance, 1e-4 FD epsilon for Jacobian, 0.72 damping. FD Jacobian correctly accounts for sensor_shift coupling. grep -q 'pt_sample_aperture' src/deepc_po_math.h passes. verify-s01-syntax.sh contract PASS. deepc_po_math.h compiles cleanly with poly.h. |
+| R040 | core-capability | validated | M008-y32v8w/S01 | M008-y32v8w/S02 | sphereToCs_full implemented inline in src/deepc_po_math.h. Returns 3D origin on sphere surface and 3D direction via tangent-frame construction (normal, ex/ey cross products, transform into camera space). Handles negative R (concave surfaces). grep -q 'sphereToCs_full' src/deepc_po_math.h passes. verify-s01-syntax.sh contract PASS. |
+| R041 | quality-attribute | validated | M008-y32v8w/S02 | none | VIGNETTING_RETRIES=10 constant defined in renderStripe. Retry loop triggers on: Newton convergence failure (pt_sample_aperture returns false), outer pupil radius clip (|ap| > _outer_pupil_radius), inner pupil radius clip (|ap| < _inner_pupil_radius). Each retry increments Halton sample index for fresh aperture point. If all retries exhausted, aperture sample contributes zero (visible as correct physical vignetting at field edges). grep -q 'VIGNETTING_RETRIES' passes. bash scripts/verify-s01-syntax.sh exits 0. |
+| R042 | core-capability | validated | M008-y32v8w/S01 | M008-y32v8w/S02 | logarithmic_focus_search implemented inline in src/deepc_po_math.h. Brute-force 20001-step quadratically-spaced search over [-45mm, +45mm]. Traces center ray through pt_sample_aperture + poly_system_evaluate + sphereToCs_full, picks shift minimising |focus_distance - target|. grep -q 'logarithmic_focus_search' src/deepc_po_math.h passes. verify-s01-syntax.sh contract PASS. Note: housing_radius parameter accepted but not used as bound — deferred to S02 if needed. |
+| R043 | core-capability | validated | M008-y32v8w/S01 | M008-y32v8w/S02 | Five Float_knobs added to DeepCDefocusPORay: _sensor_width=36.0, _back_focal_length=30.829003, _outer_pupil_radius=29.865562, _inner_pupil_radius=19.357308, _aperture_pos=35.445997. All with Angenieux 55mm defaults, SetRange, Tooltip. Placed inside existing "Lens geometry" BeginClosedGroup. All 5 verify-s01-syntax.sh contracts PASS. |
+| R044 | core-capability | validated | M008-y32v8w/S02 | none | Per-ray deep column fetch via deepPlane.getPixel(in_py, in_px). Front-to-back flatten: iterate DeepPixel samples in order, evaluate holdout transmittance at output pixel for each sample, apply as weight during flatten, accumulate weighted RGBA to output buffer. Expanded getRequests bounds ensure input deep pixels outside stripe bounds are fetchable. grep -q 'getPixel' passes. bash scripts/verify-s01-syntax.sh exits 0. |
+| R045 | quality-attribute | validated | M008-y32v8w/S01 | none | info_.format(*di.format()) added to _validate in both DeepCDefocusPOThin.cpp and DeepCDefocusPORay.cpp, immediately after info_.set(di.box()). grep -q 'info_\.format(' passes for both files. Mock DeepInfo::format() and Info::format(const Format&) added to verify script. Both nodes compile cleanly. verify-s01-syntax.sh contracts PASS for both. |
 
 ## Coverage Summary
 
 - Active requirements: 5
 - Mapped to slices: 5
-- Validated: 18 (R013, R017, R018, R019, R020, R021, R022, R023, R024, R025, R026, R030, R031, R032, R033, R034, R035, R036)
+- Validated: 27 (R013, R017, R018, R019, R020, R021, R022, R023, R024, R025, R026, R030, R031, R032, R033, R034, R035, R036, R037, R038, R039, R040, R041, R042, R043, R044, R045)
 - Unmapped active requirements: 0
