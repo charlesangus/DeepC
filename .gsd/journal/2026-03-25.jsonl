@@ -38,3 +38,8 @@
 {"ts":"2026-03-25T12:15:15.076Z","flowId":"d3e02d20-cafa-400b-8941-55751464b339","seq":2,"eventType":"dispatch-match","rule":"planning (no research, not S01) → research-slice","data":{"unitType":"research-slice","unitId":"M008-y32v8w/S02"}}
 {"ts":"2026-03-25T12:15:15.077Z","flowId":"d3e02d20-cafa-400b-8941-55751464b339","seq":3,"eventType":"unit-start","data":{"unitType":"research-slice","unitId":"M008-y32v8w/S02"}}
 {"ts":"2026-03-25T12:34:12.096Z","flowId":"d3e02d20-cafa-400b-8941-55751464b339","seq":4,"eventType":"unit-end","data":{"unitType":"research-slice","unitId":"M008-y32v8w/S02","status":"completed","artifactVerified":true},"causedBy":{"flowId":"d3e02d20-cafa-400b-8941-55751464b339","seq":3}}
+{"ts":"2026-03-25T12:34:12.757Z","flowId":"d3e02d20-cafa-400b-8941-55751464b339","seq":5,"eventType":"iteration-end","data":{"iteration":7}}
+{"ts":"2026-03-25T12:34:12.757Z","flowId":"3418559e-417a-4b92-ba2e-481a9099891a","seq":1,"eventType":"iteration-start","data":{"iteration":8}}
+{"ts":"2026-03-25T12:34:12.794Z","flowId":"3418559e-417a-4b92-ba2e-481a9099891a","seq":2,"eventType":"dispatch-match","rule":"planning → plan-slice","data":{"unitType":"plan-slice","unitId":"M008-y32v8w/S02"}}
+{"ts":"2026-03-25T12:34:12.795Z","flowId":"3418559e-417a-4b92-ba2e-481a9099891a","seq":3,"eventType":"unit-start","data":{"unitType":"plan-slice","unitId":"M008-y32v8w/S02"}}
+{"ts":"2026-03-25T12:36:37.280Z","flowId":"3418559e-417a-4b92-ba2e-481a9099891a","seq":4,"eventType":"unit-end","data":{"unitType":"plan-slice","unitId":"M008-y32v8w/S02","status":"completed","artifactVerified":true},"causedBy":{"flowId":"3418559e-417a-4b92-ba2e-481a9099891a","seq":3}}
