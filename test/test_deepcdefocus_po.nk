@@ -1,11 +1,43 @@
 #! /usr/local/Nuke16.0v6/libnuke-16.0.6.so -nx
 version 16.0 v6
+define_window_layout_xml {<?xml version="1.0" encoding="UTF-8"?>
+<layout version="1.0">
+    <window x="0" y="0" w="1919" h="1052" screen="0">
+        <splitter orientation="1">
+            <split size="40"/>
+            <dock id="" hideTitles="1" activePageId="Toolbar.1">
+                <page id="Toolbar.1"/>
+            </dock>
+            <split size="1256" stretch="1"/>
+            <splitter orientation="2">
+                <split size="593"/>
+                <dock id="" activePageId="Viewer.1">
+                    <page id="Viewer.1"/>
+                </dock>
+                <split size="417"/>
+                <dock id="" activePageId="DAG.1" focus="true">
+                    <page id="DAG.1"/>
+                    <page id="Curve Editor.1"/>
+                    <page id="DopeSheet.1"/>
+                </dock>
+            </splitter>
+            <split size="615"/>
+            <dock id="" activePageId="Properties.1">
+                <page id="Properties.1"/>
+                <page id="Scenegraph.1"/>
+                <page id="uk.co.thefoundry.scripteditor.1"/>
+                <page id="com.nukediff.MergePanel"/>
+            </dock>
+        </splitter>
+    </window>
+</layout>
+}
 Root {
  inputs 0
  name /home/latuser/git/DeepC/test/test_deepcdefocus_po.nk
  project_directory "\[python \{nuke.script_directory()\}]"
  last_frame 1
- format "1280 720 0 0 1280 720 1 HD_720"
+ format "512 512 0 0 512 512 1 square_512"
  proxy_type scale
  proxy_format "1024 778 0 0 1024 778 1 1K_Super_35(full-ap)"
  colorManagement Nuke
@@ -17,43 +49,98 @@ Root {
  logLut Cineon
  floatLut linear
 }
-CheckerBoard2 {
+Grid {
  inputs 0
- format "1280 720 0 0 1280 720 1 HD_720"
- boxsize {64 64}
- color0 {0.1 0.1 0.1 1}
- color1 {0.8 0.6 0.2 1}
- color2 {0.3 0.5 0.7 1}
- color3 {0.9 0.2 0.4 1}
- centerlinewidth 0
- name CheckerBoard1
- xpos 203
- ypos -222
+ number 5
+ size 2
+ translate {{"(width / number) / 2"} {"(height / number) / 2"}}
+ name Grid1
+ xpos 193
+ ypos -696
+ addUserKnob {20 node_layout_tab l "Node Layout" +INVISIBLE}
+ addUserKnob {1 node_layout_state l "Node Layout State" +INVISIBLE}
+ node_layout_state "\{\"scheme\": \"normal\", \"mode\": \"vertical\", \"h_scale\": 1.0, \"v_scale\": 1.0, \"freeze_group\": null\}"
 }
-Reformat {
- type "to box"
- box_width 128
- box_height 72
- box_fixed true
- name Reformat1
- xpos 203
- ypos -150
+set N23cb9660 [stack 0]
+Dot {
+ name Dot1
+ xpos 457
+ ypos -563
+ hide_input true
+ addUserKnob {20 node_layout_tab l "Node Layout"}
+ addUserKnob {3 node_layout_diamond_dot l "Diamond Dot Marker"}
+ node_layout_diamond_dot 1
+ addUserKnob {1 node_layout_state l "Node Layout State" +INVISIBLE}
+ node_layout_state "\{\"scheme\": \"normal\", \"mode\": \"vertical\", \"h_scale\": 1.0, \"v_scale\": 1.0, \"freeze_group\": null\}"
+}
+Dilate {
+ size {0 {-parent.Grid1.size x1 -2}}
+ name Dilate2
+ xpos 423
+ ypos -545
+ addUserKnob {20 node_layout_tab l "Node Layout" +INVISIBLE}
+ addUserKnob {1 node_layout_state l "Node Layout State" +INVISIBLE}
+ node_layout_state "\{\"scheme\": \"normal\", \"mode\": \"vertical\", \"h_scale\": 1.0, \"v_scale\": 1.0, \"freeze_group\": null\}"
+}
+Dot {
+ name Dot3
+ xpos 457
+ ypos -428
+ addUserKnob {20 node_layout_tab l "Node Layout" +INVISIBLE}
+ addUserKnob {1 node_layout_state l "Node Layout State" +INVISIBLE}
+ node_layout_state "\{\"scheme\": \"normal\", \"mode\": \"vertical\", \"h_scale\": 1.0, \"v_scale\": 1.0, \"freeze_group\": null\}"
+}
+push $N23cb9660
+Dilate {
+ size {{-parent.Grid1.size} 0}
+ name Dilate1
+ xpos 193
+ ypos -672
+ addUserKnob {20 node_layout_tab l "Node Layout" +INVISIBLE}
+ addUserKnob {1 node_layout_state l "Node Layout State" +INVISIBLE}
+ node_layout_state "\{\"scheme\": \"normal\", \"mode\": \"vertical\", \"h_scale\": 1.0, \"v_scale\": 1.0, \"freeze_group\": null\}"
+}
+Merge2 {
+ inputs 2
+ operation mask
+ name Merge1
+ xpos 193
+ ypos -442
+ addUserKnob {20 node_layout_tab l "Node Layout" +INVISIBLE}
+ addUserKnob {1 node_layout_state l "Node Layout State" +INVISIBLE}
+ node_layout_state "\{\"scheme\": \"normal\", \"mode\": \"vertical\", \"h_scale\": 1.0, \"v_scale\": 1.0, \"freeze_group\": null\}"
 }
 DeepFromImage {
+ premult true
  set_z true
  z 5000
  name DeepFromImage1
- xpos 203
- ypos -80
+ xpos 193
+ ypos -181
+ addUserKnob {20 node_layout_tab l "Node Layout" +INVISIBLE}
+ addUserKnob {1 node_layout_state l "Node Layout State" +INVISIBLE}
+ node_layout_state "\{\"scheme\": \"normal\", \"mode\": \"vertical\", \"h_scale\": 1.0, \"v_scale\": 1.0, \"freeze_group\": null\}"
 }
-DeepCDefocusPO {
- poly_file /home/latuser/git/lentil/polynomial-optics/database/lenses/1953-angenieux-double-gauss/55/fitted/exitpupil.fit
- focus_distance 2000
- fstop 2.8
- aperture_samples 4
- name DeepCDefocusPO1
- xpos 203
- ypos -1
+set N23b7c8a0 [stack 0]
+Viewer {
+ frame_range 1-1
+ gain 19
+ monitorOutNDISenderName "Nuke - test_deepcdefocus_po - Viewer1"
+ monitorOutOutputTransform rec709
+ name Viewer1
+ xpos 550
+ ypos -140
+}
+push $N23b7c8a0
+DeepCDefocusPOThin {
+ poly_file /home/latuser/git/lentil/polynomial-optics/database/lenses/1953-angenieux-double-gauss/55/fitted/aperture.fit
+ max_degree 3
+ name DeepCDefocusPOThin1
+ xpos 193
+ ypos -79
+ addUserKnob {20 node_layout_tab l "Node Layout" +INVISIBLE}
+ addUserKnob {1 node_layout_state l "Node Layout State" +INVISIBLE}
+ node_layout_state "\{\"scheme\": \"normal\", \"mode\": \"vertical\", \"h_scale\": 1.0, \"v_scale\": 1.0, \"freeze_group\": null\}"
 }
 Write {
  file ./test.exr
@@ -65,4 +152,30 @@ Write {
  name Write1
  xpos 193
  ypos 23
+ addUserKnob {20 node_layout_tab l "Node Layout" +INVISIBLE}
+ addUserKnob {1 node_layout_state l "Node Layout State" +INVISIBLE}
+ node_layout_state "\{\"scheme\": \"normal\", \"mode\": \"vertical\", \"h_scale\": 1.0, \"v_scale\": 1.0, \"freeze_group\": null\}"
+}
+push $N23b7c8a0
+DeepCDefocusPORay {
+ max_degree 3
+ name DeepCDefocusPORay1
+ xpos 323
+ ypos -77
+}
+Write {
+ file ./test.exr
+ file_type exr
+ first_part rgba
+ in_colorspace scene_linear
+ out_colorspace scene_linear
+ ocioColorspace scene_linear
+ display default
+ view sRGB
+ name Write2
+ xpos 323
+ ypos 18
+ addUserKnob {20 node_layout_tab l "Node Layout" +INVISIBLE}
+ addUserKnob {1 node_layout_state l "Node Layout State" +INVISIBLE}
+ node_layout_state "\{\"scheme\": \"normal\", \"mode\": \"vertical\", \"h_scale\": 1.0, \"v_scale\": 1.0, \"freeze_group\": null\}"
 }
