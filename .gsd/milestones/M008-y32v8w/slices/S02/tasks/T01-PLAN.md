@@ -196,6 +196,13 @@ The existing scatter loop (lines ~516–650) iterates input pixels, computes thi
 - Output includes compilation success for all 4 source files
 - `grep -q 'coc_norm' src/DeepCDefocusPORay.cpp` returns non-zero (vestige removed)
 
+## Observability Impact
+
+- **New compile-time contracts**: S02 section added to verify-s01-syntax.sh provides structural grep checks for all key gather-engine functions and absence of scatter vestiges.
+- **Failure state visible**: Vignetted rays (all retries exhausted) contribute zero weight — visible as expected field-edge darkening. Degenerate rays (ray_dz ≈ 0) are silently skipped per channel, not per sample.
+- **Inspection**: Future agents can verify gather engine presence by running `bash scripts/verify-s01-syntax.sh` — all S02 contracts must pass. The `coc_norm` negative grep confirms scatter removal.
+- **No new runtime logging**: This is a Nuke plugin compiled against the NDK — runtime observability is via Nuke viewer output and the structural contracts.
+
 ## Inputs
 
 - `src/DeepCDefocusPORay.cpp` — existing scatter renderStripe to replace; contains all class members, knobs, _validate, getRequests

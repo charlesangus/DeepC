@@ -425,4 +425,21 @@ grep -q 'DeepCDefocusPORay' "$SRC_DIR/CMakeLists.txt" || { echo "FAIL: DeepCDefo
 echo "PASS: DeepCDefocusPORay in CMakeLists.txt"
 
 echo "All S01 contracts passed."
+
+# --- S02 contracts ---
+echo "--- S02 contracts ---"
+grep -q 'pt_sample_aperture'        "$SRC_DIR/DeepCDefocusPORay.cpp" || { echo "FAIL: pt_sample_aperture call missing from Ray renderStripe"; exit 1; }
+echo "PASS: pt_sample_aperture called in Ray"
+grep -q 'sphereToCs_full'           "$SRC_DIR/DeepCDefocusPORay.cpp" || { echo "FAIL: sphereToCs_full call missing from Ray renderStripe"; exit 1; }
+echo "PASS: sphereToCs_full called in Ray"
+grep -q 'logarithmic_focus_search'  "$SRC_DIR/DeepCDefocusPORay.cpp" || { echo "FAIL: logarithmic_focus_search call missing from Ray renderStripe"; exit 1; }
+echo "PASS: logarithmic_focus_search called in Ray"
+grep -q 'VIGNETTING_RETRIES'        "$SRC_DIR/DeepCDefocusPORay.cpp" || { echo "FAIL: VIGNETTING_RETRIES missing from Ray"; exit 1; }
+echo "PASS: VIGNETTING_RETRIES in Ray"
+grep -q 'getPixel'                  "$SRC_DIR/DeepCDefocusPORay.cpp" || { echo "FAIL: deep getPixel missing from Ray renderStripe"; exit 1; }
+echo "PASS: getPixel in Ray"
+! grep -q 'coc_norm'               "$SRC_DIR/DeepCDefocusPORay.cpp" || { echo "FAIL: scatter vestige coc_norm still in Ray"; exit 1; }
+echo "PASS: coc_norm removed from Ray"
+echo "All S02 contracts passed."
+
 echo "All syntax checks passed."

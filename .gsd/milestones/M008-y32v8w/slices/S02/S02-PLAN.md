@@ -26,6 +26,18 @@
 
 - `bash scripts/verify-s01-syntax.sh` exits 0 — all S01 contracts pass, all S02 contracts pass, all 4 source files compile
 
+## Observability / Diagnostics
+
+- **Compile-time contracts**: S02 grep contracts in `verify-s01-syntax.sh` verify structural presence of all key functions (pt_sample_aperture, sphereToCs_full, logarithmic_focus_search, VIGNETTING_RETRIES, getPixel) and absence of scatter vestiges (coc_norm).
+- **Failure visibility**: If a ray is vignetted at every retry, that aperture sample contributes zero — visible as darker field-edge pixels (expected physically correct vignetting). No silent data corruption.
+- **Runtime signals**: `sensor_shift` computed per renderStripe via `logarithmic_focus_search` — if focus_distance knob is wrong, output will be uniformly blurred (inspectable via Nuke viewer). Transmittance from holdout evaluated at output pixel prevents double-defocus artifacts.
+- **Inspection surfaces**: Deep column flatten per ray is front-to-back composited — sample ordering visible in DeepPixel iteration. Expanded bounds ensure no black-border artifacts from missing deep data.
+- **Redaction**: No secrets or credentials involved in this slice.
+
+## Verification (failure-path)
+
+- `grep -q 'coc_norm' src/DeepCDefocusPORay.cpp` returns non-zero — confirms scatter vestiges removed (failure: exit 1 if vestige found)
+
 ## Integration Closure
 
 - Upstream surfaces consumed: `src/deepc_po_math.h` (pt_sample_aperture, sphereToCs_full, logarithmic_focus_search), lens constant knobs on Ray class
@@ -34,7 +46,7 @@
 
 ## Tasks
 
-- [ ] **T01: Replace Ray scatter engine with path-trace gather loop + add S02 contracts** `est:2h`
+- [x] **T01: Replace Ray scatter engine with path-trace gather loop + add S02 contracts** `est:2h`
   - Why: This is the core S02 deliverable — R037 (renderStripe swap). The scatter loop is incorrect for polynomial optics (it uses thin-lens CoC warp); the gather loop traces real rays through the lens polynomial.
   - Files: `src/DeepCDefocusPORay.cpp`, `scripts/verify-s01-syntax.sh`
   - Do: (1) Replace getRequests to expand deep request by max CoC pixels using _aperture_housing_radius. (2) Replace renderStripe scatter loop with gather engine: compute sensor_shift via logarithmic_focus_search, compute aperture_radius_mm and f_px, iterate output pixels in mm coords (y uses half_w not half_h), sample aperture disk with Halton, call pt_sample_aperture for Newton match, forward poly_system_evaluate, outer/inner pupil culls, sphereToCs_full for 3D ray, pinhole project to input pixel, deep column flatten front-to-back with holdout, accumulate. Wrap aperture sampling in vignetting retry loop (VIGNETTING_RETRIES=10). (3) Remove scatter vestiges (coc_norm, coc_radius usage, Option B warp code). (4) Add S02 contracts section to verify-s01-syntax.sh: grep for pt_sample_aperture/sphereToCs_full/logarithmic_focus_search/VIGNETTING_RETRIES/getPixel in Ray.cpp, negative grep for coc_norm. (5) Run verify-s01-syntax.sh to confirm all contracts pass.
