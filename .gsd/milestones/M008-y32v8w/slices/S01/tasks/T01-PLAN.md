@@ -142,3 +142,9 @@ The worktree starts from the M006 baseline (commit `a9fe480`) which has a single
 - `src/CMakeLists.txt` — updated to target Thin + Ray
 - `test/test_thin.nk` — Nuke test script from M007
 - `test/test_ray.nk` — Nuke test script from M007
+
+## Observability Impact
+
+- **Signals changed:** The `_validate` format fix adds `info_.format(*di.format())` ensuring PlanarIop output resolution matches the Deep input. The 5 new lens constant knobs expose sensor/pupil/aperture parameters needed by S02's path-trace engine.
+- **Inspection:** `grep -q 'info_\.format(' src/DeepCDefocusPO{Thin,Ray}.cpp` confirms the format fix. `grep '_sensor_width\|_aperture_pos' src/DeepCDefocusPORay.cpp` confirms lens knobs.
+- **Failure visibility:** Missing format fix causes wrong output resolution at runtime. Missing lens knobs cause S02 compilation errors when the path-trace engine references them.

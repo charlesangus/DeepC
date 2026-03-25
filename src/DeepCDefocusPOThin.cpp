@@ -2,16 +2,15 @@
 //
 // ============================================================================
 //
-//  DeepCDefocusPO — Polynomial-Optics defocus for deep images
+//  DeepCDefocusPOThin — Thin-lens polynomial-optics defocus for deep images
 //
-//  Converts a Deep input stream to a flat RGBA output by scattering each
-//  deep sample's contribution through a polynomial lens system (.fit file).
+//  Thin-lens variant: traces rays through a single polynomial lens system
+//  (.fit file) to scatter each deep sample's contribution onto a flat RGBA
+//  output tile. Uses the thin-lens approximation with configurable
+//  max_degree truncation for speed/quality tradeoff.
 //
 //  Base class: PlanarIop — single-threaded renderStripe, no shared output
 //  buffer races (correct for stochastic aperture scatter). See D021.
-//
-//  Full implementation: PO scatter engine (S02), depth-aware holdout (S03),
-//  and focal-length knob (S04) are all complete.
 //
 //  Inputs:
 //    0 (required) — Deep stream to defocus
@@ -20,10 +19,11 @@
 //
 //  Knobs:
 //    poly_file        — path to lentil .fit polynomial lens file
+//    focal_length     — lens focal length in mm (default 50.0)
 //    focus_distance   — distance to focus plane, mm (default 200 mm = 2 m)
 //    fstop            — lens f-stop (default 2.8)
-//    focal_length_mm  — lens focal length in mm (default 50.0)
 //    aperture_samples — scatter samples per deep sample (default 64)
+//    max_degree       — polynomial truncation degree (default 11, range 1–11)
 //
 // ============================================================================
 
@@ -47,18 +47,20 @@ using namespace DD::Image;
 // Class identity strings
 // ---------------------------------------------------------------------------
 
-static const char* const CLASS = "DeepCDefocusPO";
+static const char* const CLASS = "DeepCDefocusPOThin";
 static const char* const HELP =
-    "Polynomial-optics defocus for deep images.\n\n"
-    "Scatters each deep sample through a lentil polynomial lens system "
-    "(.fit file) to produce a physically accurate bokeh on a flat RGBA "
-    "output tile.\n\n"
+    "Thin-lens polynomial-optics defocus for deep images.\n\n"
+    "Scatters each deep sample through a single lentil polynomial lens "
+    "system (.fit file) using the thin-lens approximation to produce "
+    "physically accurate bokeh on a flat RGBA output tile.\n\n"
     "poly_file — path to the lentil .fit binary polynomial lens file.\n"
     "focus_distance — distance from the lens to the focus plane (mm). "
     "Samples at this depth are not defocused.\n"
     "fstop — lens aperture. Lower values produce wider bokeh.\n"
     "aperture_samples — number of aperture points traced per deep sample. "
-    "Higher values reduce Monte Carlo noise.\n\n"
+    "Higher values reduce Monte Carlo noise.\n"
+    "max_degree — polynomial truncation degree (1–11). Lower values are "
+    "faster but less accurate.\n\n"
     "Input 0: Deep stream to defocus (required).\n"
     "Input 1 (holdout): Optional deep holdout mask. Evaluated at the "
     "output pixel position at the sample depth — not pre-applied before "
@@ -66,10 +68,10 @@ static const char* const HELP =
     "Part of the DeepC plugin collection.";
 
 // ---------------------------------------------------------------------------
-// DeepCDefocusPO — PlanarIop subclass
+// DeepCDefocusPOThin — PlanarIop subclass
 // ---------------------------------------------------------------------------
 
-class DeepCDefocusPO : public PlanarIop
+class DeepCDefocusPOThin : public PlanarIop
 {
     // ------------------------------------------------------------------
     // Member variables
@@ -80,24 +82,32 @@ class DeepCDefocusPO : public PlanarIop
     float       _fstop;            // lens f-stop
     int         _aperture_samples; // aperture scatter samples per deep sample
     float       _focal_length_mm;  // lens focal length in mm (knob-driven)
+    int         _max_degree;       // polynomial truncation degree (1–11)
 
     bool        _poly_loaded;      // true after poly_system_read succeeds
     bool        _reload_poly;      // set by knob_changed; cleared after reload
 
     poly_system_t _poly_sys;       // polynomial lens system (zeroed in ctor)
 
+    // Chromatic aberration wavelengths (μm): R, G, B channels (D025).
+    // Preserved from DeepCDefocusPO for use in S02 renderStripe.
+    static constexpr float CA_LAMBDA_R = 0.45f;
+    static constexpr float CA_LAMBDA_G = 0.55f;
+    static constexpr float CA_LAMBDA_B = 0.65f;
+
 public:
     // ------------------------------------------------------------------
     // Constructor
     // ------------------------------------------------------------------
 
-    DeepCDefocusPO(Node* node)
+    DeepCDefocusPOThin(Node* node)
         : PlanarIop(node)
         , _poly_file(nullptr)
         , _focus_distance(200.0f)
         , _fstop(2.8f)
         , _aperture_samples(64)
         , _focal_length_mm(50.0f)
+        , _max_degree(11)
         , _poly_loaded(false)
         , _reload_poly(false)
     {
@@ -111,7 +121,6 @@ public:
 
     const char* Class()     const override { return CLASS; }
     const char* node_help() const override { return HELP; }
-    Op*         op()              override { return this; }
 
     // ------------------------------------------------------------------
     // Input wiring — both inputs accept Deep streams
@@ -177,6 +186,11 @@ public:
         SetRange(f, 1, 4096);
         Tooltip(f, "Number of aperture sample positions traced per deep sample. "
                     "Higher values reduce Monte Carlo noise at the cost of render time.");
+
+        Int_knob(f, &_max_degree, "max_degree", "max degree");
+        SetRange(f, 1, 11);
+        Tooltip(f, "Maximum polynomial degree for lens evaluation. Lower values "
+                    "are faster but less accurate. Default 11 uses the full polynomial.");
     }
 
     // ------------------------------------------------------------------
@@ -212,7 +226,8 @@ public:
         // Copy spatial format and channel set from the Deep input.
         const DeepInfo& di = in->deepInfo();
         info_.set(di.box());
-        info_.full_size_format(*di.full_size_format());
+        info_.format(*di.format());
+        info_.full_size_format(*di.fullSizeFormat());
         info_.channels(Mask_RGBA);
         set_out_channels(Mask_RGBA);
 
@@ -269,220 +284,217 @@ public:
     }
 
     // ------------------------------------------------------------------
-    // renderStripe — PO scatter engine
+    // renderStripe — stub: zeros all output channels
     //
-    // For each output pixel in the stripe:
-    //   For each deep sample visible through that pixel:
-    //     For each aperture sample (Halton(2,3) + Shirley disk):
-    //       lt_newton_trace at 3 wavelengths → sensor hit → accumulate RGBA
-    //
-    // Fast path: if no poly is loaded or no Deep input is connected, the
-    // output stripe is zeroed immediately and the method returns.
+    // S02 will replace this with the full thin-lens PO scatter engine.
     // ------------------------------------------------------------------
 
     void renderStripe(ImagePlane& imagePlane) override
     {
         imagePlane.makeWritable();
-
         const Box& bounds = imagePlane.bounds();
         const ChannelSet& chans = imagePlane.channels();
+        const Format& fmt = info_.full_size_format();
+        const float half_w = fmt.width()  * 0.5f;
+        const float half_h = fmt.height() * 0.5f;
 
-        // Fast path: no poly loaded or no input — zero output.
-        if (!_poly_loaded || !input0()) {
-            foreach(z, chans)
+        // ---- zero_output lambda (used for early returns) ----
+        auto zero_output = [&]() {
+            foreach(z, chans) {
+                const int ci = imagePlane.chanNo(z);
                 for (int y = bounds.y(); y < bounds.t(); ++y)
                     for (int x = bounds.x(); x < bounds.r(); ++x)
-                        imagePlane.writableAt(x, y, z) = 0.0f;
-            return;
-        }
-
-        // 1. Fetch Deep input for this stripe.
-        DeepPlane deepPlane;
-        ChannelSet needed = Mask_RGBA;
-        needed += Chan_DeepFront;
-        needed += Chan_DeepBack;
-        if (!input0()->deepEngine(bounds, needed, deepPlane))
-            return;
-
-        // 1b. Fetch holdout plane at the same output bounds (R024: holdout is
-        //     evaluated at the *output* pixel position, not the input position).
-        //     If the holdout is not connected or fails, holdoutConnected stays
-        //     false, which causes transmittance_at() to return 1.0 (no masking).
-        DeepOp* holdoutOp = dynamic_cast<DeepOp*>(Op::input(1));
-        DeepPlane holdoutPlane;
-        bool holdoutConnected = false;
-        if (holdoutOp) {
-            ChannelSet hNeeded;
-            hNeeded += Chan_Alpha;
-            hNeeded += Chan_DeepFront;
-            hNeeded += Chan_DeepBack;
-            holdoutConnected = holdoutOp->deepEngine(bounds, hNeeded, holdoutPlane);
-        }
-
-        // transmittance_at — computes the holdout transmittance at output pixel
-        // (ox, oy) for a scatter contribution at scene depth Z.
-        //
-        // Formula (R023): T = product(1 - alpha_i) for all holdout samples where
-        // zFront_i < Z.  The product is order-independent (commutative), so
-        // getUnorderedSample is correct — no sort needed.
-        //
-        // Returns 1.0 when holdout is disconnected or the pixel has no samples.
-        auto transmittance_at = [&](int ox, int oy, float Z) -> float {
-            if (!holdoutConnected) return 1.0f;
-            DeepPixel hpx = holdoutPlane.getPixel(oy, ox);  // DDImage: y first
-            const int nH = hpx.getSampleCount();
-            if (nH == 0) return 1.0f;
-            float T = 1.0f;
-            for (int h = 0; h < nH; ++h) {
-                const float hzf = hpx.getUnorderedSample(h, Chan_DeepFront);
-                if (hzf >= Z) continue;  // sample is at or behind — skip
-                const float ha = hpx.getUnorderedSample(h, Chan_Alpha);
-                T *= (1.0f - ha);
+                        imagePlane.writableAt(x, y, ci) = 0.0f;
             }
-            return std::max(0.0f, T);
         };
 
-        // 2. Zero the output accumulation buffer.
-        foreach(z, chans)
-            for (int y = bounds.y(); y < bounds.t(); ++y)
-                for (int x = bounds.x(); x < bounds.r(); ++x)
-                    imagePlane.writableAt(x, y, z) = 0.0f;
+        // ---- Poly load/reload at renderStripe entry (M006 pattern) ----
+        if (_poly_file && _poly_file[0] && (!_poly_loaded || _reload_poly)) {
+            if (_poly_loaded) { poly_system_destroy(&_poly_sys); _poly_loaded = false; }
+            if (poly_system_read(&_poly_sys, _poly_file) != 0) {
+                error("Cannot open lens file: %s", _poly_file);
+                zero_output();
+                return;
+            }
+            _poly_loaded = true;
+            _reload_poly = false;
+        }
+        if (!_poly_loaded || !input0()) {
+            zero_output();
+            return;
+        }
 
-        // 3. Format dimensions for normalised coordinate conversion.
-        //    Sensor coordinates use [-1, 1] x [-1, 1] (normalised).
-        //    pix_per_norm = half-width in pixels; multiply norm offset by this
-        //    to get pixel offset.
-        const Format& fmt    = *info_.full_size_format();
-        const float   half_w = static_cast<float>(fmt.width())  * 0.5f;
-        const float   half_h = static_cast<float>(fmt.height()) * 0.5f;
+        // ---- Zero the output buffer before accumulation ----
+        zero_output();
 
-        // Aperture radius in normalised units: radius = 1 / fstop.
-        // (Larger aperture = smaller fstop = more defocus.)
-        const float ap_radius = 1.0f / std::max(_fstop, 0.1f);
+        // ---- Deep channels needed ----
+        ChannelSet deep_chans;
+        deep_chans += Chan_Red;
+        deep_chans += Chan_Green;
+        deep_chans += Chan_Blue;
+        deep_chans += Chan_Alpha;
+        deep_chans += Chan_DeepFront;
+        deep_chans += Chan_DeepBack;
 
-        // CoC culling uses the knob-driven focal length.
-        // This only affects whether a sample is culled early; wrong value = no
-        // crash, just slightly suboptimal culling.
-        const float focal_length_mm = _focal_length_mm;
+        // ---- Holdout fetch ----
+        DeepPlane holdoutPlane;
+        const bool has_holdout = (input1() != nullptr);
+        if (has_holdout) {
+            ChannelSet holdout_chans;
+            holdout_chans += Chan_Alpha;
+            holdout_chans += Chan_DeepFront;
+            holdout_chans += Chan_DeepBack;
+            input1()->deepEngine(bounds, holdout_chans, holdoutPlane);
+        }
 
+        auto transmittance_at = [&](int px, int py, float Z) -> float {
+            if (!has_holdout) return 1.0f;
+            // getPixel(y, x) — row-first DDImage convention
+            DeepPixel hp = holdoutPlane.getPixel(py, px);
+            float transmit = 1.0f;
+            for (int s = 0; s < hp.getSampleCount(); ++s) {
+                float hzf = hp.getUnorderedSample(s, Chan_DeepFront);
+                if (hzf >= Z) continue;  // skip samples at or behind scatter depth
+                float ha = hp.getUnorderedSample(s, Chan_Alpha);
+                transmit *= (1.0f - ha);
+            }
+            return transmit;
+        };
+
+        // ---- Deep input fetch ----
+        DeepPlane deepPlane;
+        if (!input0()->deepEngine(bounds, deep_chans, deepPlane)) {
+            return;  // already zeroed
+        }
+
+        // ---- Scatter constants ----
         const int N = std::max(_aperture_samples, 1);
+        const float inv_N = 1.0f / static_cast<float>(N);
+        const float ap_radius = 1.0f / (_fstop + 1e-6f);
 
-        // Per-channel wavelengths: R=0.45μm, G=0.55μm, B=0.65μm (D025).
-        const float lambdas[3]     = { 0.45f, 0.55f, 0.65f };
-        const Channel rgb_chans[3] = { Chan_Red, Chan_Green, Chan_Blue };
+        // Per-channel CA descriptor: {DDImage channel, wavelength}
+        struct ChanWave { Channel chan; float lambda; };
+        const ChanWave ca_table[3] = {
+            { Chan_Red,   CA_LAMBDA_R },
+            { Chan_Green, CA_LAMBDA_G },
+            { Chan_Blue,  CA_LAMBDA_B },
+        };
 
-        // 4. Scatter loop — per input pixel.
-        for (Box::iterator it = bounds.begin(); it != bounds.end(); ++it) {
-            if (Op::aborted()) return;
+        // ---- Per-pixel, per-sample, per-aperture scatter loop ----
+        for (int y = bounds.y(); y < bounds.t(); ++y) {
+            for (int x = bounds.x(); x < bounds.r(); ++x) {
+                // Normalised sensor coords for this pixel
+                const float sx = (x + 0.5f - half_w) / half_w;
+                const float sy = (y + 0.5f - half_h) / half_h;
 
-            const int px = it.x;
-            const int py = it.y;
+                DeepPixel dp = deepPlane.getPixel(y, x);
+                const int sample_count = dp.getSampleCount();
 
-            DeepPixel pixel = deepPlane.getPixel(it);
-            const int nSamples = pixel.getSampleCount();
-            if (nSamples == 0) continue;
+                for (int s = 0; s < sample_count; ++s) {
+                    const float Z = dp.getUnorderedSample(s, Chan_DeepFront);
+                    const float sR = dp.getUnorderedSample(s, Chan_Red);
+                    const float sG = dp.getUnorderedSample(s, Chan_Green);
+                    const float sB = dp.getUnorderedSample(s, Chan_Blue);
+                    const float sA = dp.getUnorderedSample(s, Chan_Alpha);
 
-            // 5. Per deep sample.
-            for (int s = 0; s < nSamples; ++s) {
-                const float z_front = pixel.getUnorderedSample(s, Chan_DeepFront);
-                const float z_back  = pixel.getUnorderedSample(s, Chan_DeepBack);
-                const float depth   = 0.5f * (z_front + z_back);
-                if (depth < 1e-6f) continue;
+                    // Thin-lens CoC in normalised coords
+                    const float coc_mm = coc_radius(_focal_length_mm, _fstop,
+                                                     _focus_distance, Z);
+                    const float coc_norm = coc_mm / (_focal_length_mm * 0.5f + 1e-6f);
 
-                const float alpha = pixel.getUnorderedSample(s, Chan_Alpha);
-                if (alpha < 1e-6f) continue;
+                    // Aperture sample loop
+                    for (int k = 0; k < N; ++k) {
+                        float ax_unit, ay_unit;
+                        map_to_disk(halton(k, 2), halton(k, 3), ax_unit, ay_unit);
 
-                // Ideal sensor position for this pixel in normalised [-1,1] coords.
-                const float sx0 = (static_cast<float>(px) + 0.5f - half_w) / half_w;
-                const float sy0 = (static_cast<float>(py) + 0.5f - half_h) / half_h;
+                        // ---- Per-channel CA: R, G, B ----
+                        const float sample_colors[3] = { sR, sG, sB };
 
-                // CoC-based early cull: skip if sample contributes nothing to stripe.
-                // (Performance guard only — not correctness-critical.)
-                const float coc = coc_radius(focal_length_mm, _fstop,
-                                             _focus_distance, depth);
-                // coc is in mm; convert to pixels via half_w / (focal_length_mm/2)
-                // approximation — good enough for culling.
-                const float coc_px   = coc * half_w / (focal_length_mm * 0.5f + 1e-6f);
-                const int   coc_px_i = static_cast<int>(coc_px) + 1;
-                if (py + coc_px_i < bounds.y() || py - coc_px_i >= bounds.t())
-                    continue;
+                        // We'll track the green-channel landing for alpha
+                        int alpha_out_px = x, alpha_out_py = y;
+                        float alpha_transmit = 1.0f;
 
-                // 6. Aperture sample loop.
-                for (int k = 0; k < N; ++k) {
-                    // Halton(2,3) low-discrepancy aperture sample (D026).
-                    const float u = halton(k, 2);
-                    const float v = halton(k, 3);
+                        for (int c = 0; c < 3; ++c) {
+                            const Channel chan = ca_table[c].chan;
+                            const float lambda = ca_table[c].lambda;
 
-                    // Map to unit disk, then scale to aperture radius.
-                    float ax_unit, ay_unit;
-                    map_to_disk(u, v, ax_unit, ay_unit);
-                    const float ax = ax_unit * ap_radius;
-                    const float ay = ay_unit * ap_radius;
+                            if (!chans.contains(chan)) continue;
 
-                    // 7. Trace each channel at its wavelength (D025).
-                    float landing_x[3], landing_y[3];
-                    float transmit[3];
+                            const float ax = ax_unit * ap_radius;
+                            const float ay = ay_unit * ap_radius;
 
-                    for (int c = 0; c < 3; ++c) {
-                        const float sensor_t[2] = { sx0, sy0 };
-                        const float ap[2]       = { ax, ay };
-                        Vec2 land = lt_newton_trace(sensor_t, ap, lambdas[c], &_poly_sys);
-                        landing_x[c] = static_cast<float>(land.x);
-                        landing_y[c] = static_cast<float>(land.y);
+                            float in5[5] = { sx, sy, ax, ay, lambda };
+                            float out5[5] = {};
+                            poly_system_evaluate(&_poly_sys, in5, out5, 5,
+                                                 _max_degree);
 
-                        // Transmittance from poly output[4].
-                        float in5[5]  = { sensor_t[0], sensor_t[1], ax, ay, lambdas[c] };
-                        float out5[5] = {};
-                        poly_system_evaluate(&_poly_sys, in5, out5, 5);
-                        transmit[c] = std::max(0.0f, std::min(1.0f, out5[4]));
-                    }
+                            const float transmit = std::max(0.0f,
+                                                   std::min(1.0f, out5[4]));
 
-                    // 8. Splat each channel to output pixel.
-                    // Normalised sensor position → output pixel index:
-                    //   out_x = landing_x * half_w + half_w - 0.5
-                    for (int c = 0; c < 3; ++c) {
-                        const float out_xf = landing_x[c] * half_w + half_w - 0.5f;
-                        const float out_yf = landing_y[c] * half_h + half_h - 0.5f;
-                        const int out_xi = static_cast<int>(std::floor(out_xf + 0.5f));
-                        const int out_yi = static_cast<int>(std::floor(out_yf + 0.5f));
+                            // Option B warp: out5[0:1] are warped aperture positions
+                            float wx = out5[0];
+                            float wy = out5[1];
+                            // Clamp magnitude to ap_radius
+                            const float wmag = std::sqrt(wx * wx + wy * wy);
+                            if (wmag > ap_radius && wmag > 1e-9f) {
+                                wx *= ap_radius / wmag;
+                                wy *= ap_radius / wmag;
+                            }
 
-                        // Discard contributions landing outside this stripe.
-                        // NOTE: this causes a seam for large bokeh discs at stripe
-                        // boundaries. Accepted limitation for S02 — see S02 research.
-                        if (out_xi < bounds.x() || out_xi >= bounds.r()) continue;
-                        if (out_yi < bounds.y() || out_yi >= bounds.t()) continue;
+                            // Scale warped position to CoC
+                            const float landing_x = sx + coc_norm * wx
+                                                    / (ap_radius + 1e-6f);
+                            const float landing_y = sy + coc_norm * wy
+                                                    / (ap_radius + 1e-6f);
 
-                        const float chan_val = pixel.getUnorderedSample(s, rgb_chans[c]);
-                        const float w = transmit[c] / static_cast<float>(N);
-                        const float holdout_w = transmittance_at(out_xi, out_yi, depth);
-                        imagePlane.writableAt(out_xi, out_yi, rgb_chans[c])
-                            += chan_val * alpha * w * holdout_w;
-                    }
+                            // Convert landing to pixel coords
+                            const float out_px_f = landing_x * half_w + half_w - 0.5f;
+                            const float out_py_f = landing_y * half_h + half_h - 0.5f;
+                            const int out_px_i = static_cast<int>(std::round(out_px_f));
+                            const int out_py_i = static_cast<int>(std::round(out_py_f));
 
-                    // Alpha: use G-channel (index 1) landing position.
-                    {
-                        const float out_xf = landing_x[1] * half_w + half_w - 0.5f;
-                        const float out_yf = landing_y[1] * half_h + half_h - 0.5f;
-                        const int out_xi = static_cast<int>(std::floor(out_xf + 0.5f));
-                        const int out_yi = static_cast<int>(std::floor(out_yf + 0.5f));
-                        if (out_xi >= bounds.x() && out_xi < bounds.r()
-                         && out_yi >= bounds.y() && out_yi < bounds.t()) {
-                            const float w = transmit[1] / static_cast<float>(N);
-                            const float holdout_w = transmittance_at(out_xi, out_yi, depth);
-                            imagePlane.writableAt(out_xi, out_yi, Chan_Alpha)
-                                += alpha * w * holdout_w;
+                            // Bounds check
+                            if (out_px_i < bounds.x() || out_px_i >= bounds.r() ||
+                                out_py_i < bounds.y() || out_py_i >= bounds.t())
+                                continue;
+
+                            const float holdout_t = transmittance_at(
+                                                        out_px_i, out_py_i, Z);
+                            const float weight = transmit * holdout_t * inv_N;
+
+                            imagePlane.writableAt(out_px_i, out_py_i,
+                                imagePlane.chanNo(chan)) += sample_colors[c] * weight;
+
+                            // Track green-channel landing for alpha
+                            if (c == 1) {
+                                alpha_out_px = out_px_i;
+                                alpha_out_py = out_py_i;
+                                alpha_transmit = transmit;
+                            }
                         }
-                    }
-                } // aperture samples
-            } // deep samples
-        } // pixels
+
+                        // ---- Alpha: use green-channel (0.55μm) landing position ----
+                        if (chans.contains(Chan_Alpha) &&
+                            alpha_out_px >= bounds.x() && alpha_out_px < bounds.r() &&
+                            alpha_out_py >= bounds.y() && alpha_out_py < bounds.t())
+                        {
+                            const float holdout_t = transmittance_at(
+                                                        alpha_out_px, alpha_out_py, Z);
+                            const float weight = alpha_transmit * holdout_t * inv_N;
+                            imagePlane.writableAt(alpha_out_px, alpha_out_py,
+                                imagePlane.chanNo(Chan_Alpha)) += sA * weight;
+                        }
+                    }  // k (aperture samples)
+                }  // s (deep samples)
+            }  // x
+        }  // y
     }
 
     // ------------------------------------------------------------------
     // Destructor — release poly system if loaded
     // ------------------------------------------------------------------
 
-    ~DeepCDefocusPO() override
+    ~DeepCDefocusPOThin() override
     {
         if (_poly_loaded) {
             poly_system_destroy(&_poly_sys);
@@ -514,5 +526,5 @@ public:
 // Op::Description — registers the node with Nuke's Op factory
 // ---------------------------------------------------------------------------
 
-static Op* build(Node* node) { return new DeepCDefocusPO(node); }
-const Op::Description DeepCDefocusPO::d(::CLASS, "Deep/DeepCDefocusPO", build);
+static Op* build(Node* node) { return new DeepCDefocusPOThin(node); }
+const Op::Description DeepCDefocusPOThin::d(::CLASS, "Deep/DeepCDefocusPOThin", build);

@@ -27,6 +27,13 @@
 
 - `bash scripts/verify-s01-syntax.sh` exits 0
 
+## Observability / Diagnostics
+
+- **Runtime signals:** The `_validate` format fix ensures `info_.format()` propagates Deep input resolution to the PlanarIop output — observable at runtime when the output frame matches the Deep input resolution instead of a stale default.
+- **Inspection surfaces:** `grep -q 'info_\.format(' src/DeepCDefocusPO*.cpp` confirms the fix is present in both nodes. `bash scripts/verify-s01-syntax.sh` provides a single structural contract gate for all S01 deliverables.
+- **Failure visibility:** The verify script prints per-contract PASS/FAIL lines and exits non-zero on first failure, making the exact missing contract immediately identifiable. Syntax compilation errors include full g++ diagnostics with line numbers.
+- **Failure-path verification:** `bash scripts/verify-s01-syntax.sh` includes grep contracts that fail with descriptive messages when expected patterns are absent (e.g. "FAIL: _sensor_width knob missing in Ray").
+
 ## Integration Closure
 
 - Upstream surfaces consumed: M007 branch code (`git show 89de100:src/...`), lentil algorithm reference
@@ -35,7 +42,7 @@
 
 ## Tasks
 
-- [ ] **T01: Port M007 split files, apply _validate format fix, and add lens constant knobs** `est:45m`
+- [x] **T01: Port M007 split files, apply _validate format fix, and add lens constant knobs** `est:45m`
   - Why: The worktree starts from M006 (single DeepCDefocusPO.cpp). Must port the M007 Thin/Ray split, fix the _validate format bug in both, add new lens knobs to Ray, update poly.h/CMakeLists.txt, and create test .nk files. Delivers R043, R045, and the file structure S02 needs.
   - Files: `src/DeepCDefocusPORay.cpp`, `src/DeepCDefocusPOThin.cpp`, `src/poly.h`, `src/CMakeLists.txt`, `test/test_thin.nk`, `test/test_ray.nk`, `src/DeepCDefocusPO.cpp`
   - Do: (1) Extract M007 versions of Ray, Thin, poly.h, CMakeLists.txt, test/*.nk from git commit 89de100 via `git show`. (2) Apply `info_.format(*di.format())` one-line addition to `_validate` in both Thin and Ray (line after `info_.set(di.box())`). (3) Add 5 new Float_knob member variables to Ray with Angenieux 55mm defaults: `_sensor_width=36.0`, `_back_focal_length=30.829003`, `_outer_pupil_radius=29.865562`, `_inner_pupil_radius=19.357308`, `_aperture_pos=35.445997`. Add corresponding `Float_knob`/`SetRange` calls in `knobs()`. (4) Delete `src/DeepCDefocusPO.cpp`.
