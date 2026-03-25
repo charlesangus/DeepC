@@ -51,7 +51,7 @@ This milestone is complete only when all are true:
 - [x] **S01: Path-trace infrastructure + _validate format fix** `risk:medium` `depends:[]`
   > After this: both nodes output correct frame size. New lens constant knobs compile. pt_sample_aperture, full sphereToCs, and logarithmic_focus_search are implemented in deepc_po_math.h and pass syntax check. Ray's renderStripe still uses old scatter engine — infrastructure only, no engine swap yet.
 
-- [ ] **S02: Ray path-trace engine** `risk:high` `depends:[S01]`
+- [x] **S02: Ray path-trace engine** `risk:high` `depends:[S01]`
   > After this: DeepCDefocusPORay traces real polynomial-optics rays for each output pixel. `nuke -x test/test_ray.nk` produces non-black defocused 128×72 EXR. Vignetting retry loop functional. Deep flatten per ray with per-sample holdout. CA wavelength tracing preserved.
 
 ## Boundary Map
