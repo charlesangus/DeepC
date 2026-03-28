@@ -13,6 +13,7 @@ set(PLUGINS
     DeepCBlur2
     DeepThinner
     DeepCDepthBlur
+    DeepCOpenDefocus
     )
 
 # DeepCWrapper 
@@ -49,7 +50,7 @@ DeepCHueShift DeepCInvert DeepCMatrix DeepCMultiply DeepCPosterize DeepCSaturati
 set(3D_NODES DeepCWorld)
 set(MERGE_NODES DeepCKeymix)
 set(Util_NODES DeepCAdjustBBox DeepCCopyBBox)
-set(FILTER_NODES DeepCBlur DeepCBlur2 DeepThinner DeepCDepthBlur)
+set(FILTER_NODES DeepCBlur DeepCBlur2 DeepThinner DeepCDepthBlur DeepCOpenDefocus)
 
 # add nuke plugin linked to ddimage lib
 function(add_nuke_plugin PLUGIN_NAME)
@@ -67,6 +68,22 @@ endfunction()
 
 # include directories
 include_directories(${NUKE_INCLUDE_DIRS})
+
+# ---------------------------------------------------------------------------
+# Rust static lib: opendefocus-deep
+# ---------------------------------------------------------------------------
+set(OPENDEFOCUS_DEEP_CRATE_DIR "${CMAKE_SOURCE_DIR}/crates/opendefocus-deep")
+set(OPENDEFOCUS_DEEP_LIB "${CMAKE_SOURCE_DIR}/target/release/libopendefocus_deep.a")
+
+add_custom_command(
+    OUTPUT "${OPENDEFOCUS_DEEP_LIB}"
+    COMMAND cargo build --release
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    COMMENT "Building opendefocus-deep Rust static lib"
+    VERBATIM
+)
+add_custom_target(opendefocus_deep_lib ALL DEPENDS "${OPENDEFOCUS_DEEP_LIB}")
+# ---------------------------------------------------------------------------
 
 # Qt6 — required for ShuffleMatrixKnob embedded Qt widget (Phase 03)
 # Qt 6.5.3 matches the version shipped with Nuke 16.x.
@@ -113,6 +130,11 @@ foreach(PLUGIN_NAME ${PLUGINS_MWRAPPED})
     target_sources(${PLUGIN_NAME} PRIVATE $<TARGET_OBJECTS:DeepCWrapper>)
     target_sources(${PLUGIN_NAME} PRIVATE $<TARGET_OBJECTS:DeepCMWrapper>)
 endforeach()
+
+# Link DeepCOpenDefocus against Rust static lib
+add_dependencies(DeepCOpenDefocus opendefocus_deep_lib)
+target_link_libraries(DeepCOpenDefocus PRIVATE "${OPENDEFOCUS_DEEP_LIB}" dl pthread m)
+target_include_directories(DeepCOpenDefocus PRIVATE "${CMAKE_SOURCE_DIR}/crates/opendefocus-deep/include")
 
 # Link FastNoise into DeepCPNoise
 target_include_directories(DeepCPNoise PRIVATE ${FASTNOISE_DIR})

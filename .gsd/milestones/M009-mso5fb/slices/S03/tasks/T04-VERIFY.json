@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "taskId": "T04",
+  "unitId": "M009-mso5fb/S03/T04",
+  "timestamp": 1774698106038,
+  "passed": false,
+  "discoverySource": "task-plan",
+  "checks": [
+    {
+      "command": "docker-build.sh exits 0. All 9 DoD items checked. scripts/verify-s01-syntax.sh passes. THIRD_PARTY_LICENSES.md grep confirms opendefocus EUPL-1.2 entry.",
+      "exitCode": 127,
+      "durationMs": 4,
+      "verdict": "fail"
+    }
+  ],
+  "retryAttempt": 1,
+  "maxRetries": 2
+}

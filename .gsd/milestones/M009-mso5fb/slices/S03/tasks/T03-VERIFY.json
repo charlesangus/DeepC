@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "taskId": "T03",
+  "unitId": "M009-mso5fb/S03/T03",
+  "timestamp": 1774697753788,
+  "passed": false,
+  "discoverySource": "task-plan",
+  "checks": [
+    {
+      "command": "ls icons/DeepCOpenDefocus.png returns file. file icons/DeepCOpenDefocus.png shows PNG data. grep -r DeepCOpenDefocus src/CMakeLists.txt confirms FILTER_NODES entry.",
+      "exitCode": 2,
+      "durationMs": 5,
+      "verdict": "fail"
+    }
+  ],
+  "retryAttempt": 1,
+  "maxRetries": 2
+}

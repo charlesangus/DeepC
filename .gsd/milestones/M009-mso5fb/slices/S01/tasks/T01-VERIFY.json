@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "taskId": "T01",
+  "unitId": "M009-mso5fb/S01/T01",
+  "timestamp": 1774530588864,
+  "passed": false,
+  "discoverySource": "task-plan",
+  "checks": [
+    {
+      "command": "cd crates/opendefocus-deep",
+      "exitCode": 0,
+      "durationMs": 4,
+      "verdict": "pass"
+    },
+    {
+      "command": "cargo build --release",
+      "exitCode": 101,
+      "durationMs": 37,
+      "verdict": "fail"
+    },
+    {
+      "command": "ls -la target/release/libopendefocus_deep.a",
+      "exitCode": 2,
+      "durationMs": 5,
+      "verdict": "fail"
+    }
+  ],
+  "retryAttempt": 1,
+  "maxRetries": 2
+}

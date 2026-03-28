@@ -156,3 +156,102 @@ The invariant `flatten(DeepCDepthBlur(input)) == flatten(input)` is guaranteed b
 **Context:** DeepCDepthBlur R017 partial coverage (S01, M005)
 
 R017 describes two things: (1) input label "ref" with main input unlabelled — **implemented and validated in M005**. (2) Depth-range gating: only spread samples whose Z range intersects a ref sample's range — **not implemented**, explicitly deferred. Future milestones implementing this feature need non-trivial additions to `doDeepEngine` to iterate ref samples per input sample.
+
+## DeepCOpenDefocus — S01/M009 Patterns
+
+### Root Cargo workspace changes staticlib artifact path
+**Context:** opendefocus-deep Rust staticlib build integration (T02, S01, M009)
+
+When a root `Cargo.toml` with `[workspace]` is present, `cargo build --release` run from the repo root produces the artifact at `target/release/libopendefocus_deep.a` (workspace root), NOT `crates/opendefocus-deep/target/release/libopendefocus_deep.a` (crate-local). CMake's `OPENDEFOCUS_DEEP_LIB` variable must point at `${CMAKE_SOURCE_DIR}/target/release/libopendefocus_deep.a`. If you run `cargo build --release` from the crate directory directly, the artifact appears in the crate-local `target/`. This discrepancy will cause CMake to fail to find the library at link time.
+
+### extern "C" over CXX crate is correct for S01 stub; upgrade to CXX in S02 if needed
+**Context:** opendefocus-deep FFI boundary (S01, M009, D026)
+
+The milestone architecture (D022) specified the CXX crate, but for S01's no-op stub the CXX crate adds non-trivial CMake complexity (build.rs, generated cxxbridge headers, compiling generated .cc). Plain `extern "C"` with a hand-written C header achieves the identical boundary with zero CMake friction. S02 should evaluate whether type-safe bidirectional CXX calls are genuinely needed for the GPU kernel integration before adding CXX.
+
+### PlanarIop mock headers for verify-s01-syntax.sh require six new headers
+**Context:** `scripts/verify-s01-syntax.sh` (T03/T04, S01, M009)
+
+Adding a `PlanarIop`-based plugin to the syntax script requires six new mock headers beyond the existing set: `DDImage/PlanarIop.h` (with `renderStripe`, `getRequirements`, `Descriptions`), `DDImage/CameraOp.h` (stub focalLength/fStop/focusDistance/aperture), `DDImage/DeepOp.h` (standalone class distinct from DeepFilterOp), `DDImage/Row.h` (minimal stub), `DDImage/ImagePlane.h` (bounds, makeWritable, writable, channels, stride, nChans), and `DDImage/Descriptions.h`. The existing `DDImage/Box.h` mock also needs `w()` and `h()` methods if not already present. Add `OPENDEFOCUS_INCLUDE=${SCRIPT_DIR}/../crates/opendefocus-deep/include` as an explicit script variable so the FFI header path is canonical and survives path refactors.
+
+### nukedockerbuild:16.0-linux needs cc symlink and protobuf-compiler for Rust builds
+**Context:** Docker cargo build verification (T04, S02, M009)
+
+The Rocky Linux 8 NukeDockerBuild image has `gcc` at `/usr/bin/gcc` but no `/usr/bin/cc` symlink. Rust's linker looks for `cc`, not `gcc`, so `cargo build` fails with "linker `cc` not found". Fix: `ln -sf /usr/bin/gcc /usr/local/bin/cc && export PATH="/usr/local/bin:$PATH"`.
+
+Additionally, the `circle-of-confusion` crate has a protobuf build script that requires `protoc`. The image doesn't include it by default but it's available via `dnf install -y protobuf-compiler`. Both fixes must be applied before `cargo build --release` can succeed inside the container.
+
+### opendefocus 0.1.10 uses proto-generated i32 fields for Quality/ResultMode/FilterMode/DefocusMode
+**Context:** opendefocus Settings API (T04, S02, M009)
+
+The `Settings` struct and its nested types are generated from Protocol Buffer `.proto` files. Enum fields like `quality`, `result_mode`, `filter.mode`, and `defocus.defocus_mode` are stored as `i32` in the generated Rust structs, NOT as the enum type directly. Assignments like `settings.render.quality = Quality::Low` will fail with type mismatch errors at compile time. Use `.into()`: `settings.render.quality = Quality::Low.into()`. The same applies to all proto-generated enum fields.
+
+### opendefocus CameraData has no focal_point field — use near_field/far_field + focal_plane
+**Context:** opendefocus CameraData struct (T04, S02, M009)
+
+The planner assumed `CameraData` had a `focal_point` field. The actual proto-generated struct has: `focal_length`, `f_stop`, `filmback: Filmback { width, height }`, `near_field`, `far_field`, `world_unit: WorldUnit`, `resolution: Resolution { width, height }`. The focus distance maps to the `focal_plane` field on the CoC Settings: `settings.defocus.circle_of_confusion.focal_plane = focus_distance`. The `camera_data` field itself is under `settings.defocus.circle_of_confusion.camera_data`, not directly on `settings.defocus`.
+
+### DD::Image::Descriptions does not exist in Nuke 16.0 SDK — do not override getRequirements
+**Context:** PlanarIop subclass compilation (T04, S02, M009)
+
+The planner's stub included a `void getRequirements(DD::Image::Descriptions& desc)` override. `DD::Image::Descriptions` does not exist in the real Nuke 16.0 DDImage SDK. The mock headers had a stub for it, but the real SDK's `PlanarIop.h` uses a different mechanism. Removing the `getRequirements` override entirely is the correct fix — it was a no-op pass-through anyway and the base class default suffices.
+
+### docker-build.sh must use `command -v` and dnf/apt-get detection for Rocky Linux 8 containers
+**Context:** docker-build.sh Linux build loop (S02, M009)
+
+The nukedockerbuild:16.0-linux container is Rocky Linux 8 which lacks the `which` command and uses `dnf`, not `apt-get`. The original docker-build.sh used `which curl || apt-get install -y curl` which fails with "bash: which: command not found" (exit 127). The correct pattern for cross-distro scripts in Docker containers:
+```
+if command -v dnf >/dev/null 2>&1; then
+    dnf install -y curl protobuf-compiler 2>/dev/null || true
+elif command -v apt-get >/dev/null 2>&1; then
+    apt-get install -y curl protobuf-compiler 2>/dev/null || true
+fi &&
+if ! command -v cc >/dev/null 2>&1; then
+    ln -sf $(command -v gcc) /usr/local/bin/cc
+fi
+```
+`command -v` is the POSIX-correct alternative to `which` and works on all distros. Also note that `which` is not installed in the Rocky Linux 8 container but IS available via the `which` RPM package if needed.
+
+## DDImage CameraOp API — Deprecated Method Names vs Real SDK
+
+## DeepCOpenDefocus — S03/M009 Patterns
+
+### Holdout DeepOp integration: request Chan_DeepFront + Chan_Alpha; post-FFI in renderStripe
+**Context:** DeepCOpenDefocus holdout attenuation (T01, S03, M009)
+
+The holdout attenuation must be applied *after* the FFI call returns the defocused flat RGBA buffer. Architecture: (1) `dynamic_cast<DeepOp*>(input(1))` guards the path — no holdout input means no-op. (2) Call `input1->deepEngine(output.bounds(), ..., {Chan_Alpha, Chan_DeepFront})` to get the `DeepPlane`. Requesting `Chan_DeepFront` alongside `Chan_Alpha` is required to properly initialise the deep plane — requesting only `Chan_Alpha` produces a malformed plane on some Deep source types. (3) The free function `computeHoldoutTransmittance(const DeepPixel&) -> float` computes T = ∏(1−clamp(αₛ, 0, 1)) — clamp is necessary because deep samples can have out-of-range alpha. (4) Multiply all four RGBA output channels by T (not just RGB) — coverage (alpha) must be attenuated alongside colour for correct compositing.
+
+### GSD verification gate: plan.verify strings are prose, not shell commands — avoid natural-language descriptions that look like commands
+**Context:** S03 T04 auto-fix failure (M009)
+
+The GSD verification gate attempts to execute the plan's `verify` field as a shell command. If that field is written as a prose description (e.g. `docker-build.sh exits 0. All 9 DoD items checked. scripts/verify-s01-syntax.sh passes.`), the gate tries to run it literally and fails with `command not found`. Write verify fields as actual runnable shell commands: `bash docker-build.sh --linux --versions 16.0 && bash scripts/verify-s01-syntax.sh`.
+
+## DDImage CameraOp API — Deprecated Method Names vs Real SDK
+
+### `projection_distance()` does not exist; use `focal_point()`
+**Context:** DeepCOpenDefocus camera link (M009 S03 T04)
+**Finding:** The Nuke DDImage SDK's `CameraOp` does NOT have a `projection_distance()` method. The correct deprecated accessor for focus distance is `focal_point()` (returns `double`). All legacy camera accessors (`focal_length()`, `fStop()`, `focal_point()`, `film_width()`) return `double`, not `float` — always `static_cast<float>(...)` when assigning to a `float` local to avoid narrowing-conversion compile errors.
+**Modern equivalents:** `focal_length()` → `focalLength()`, `focal_point()` → `focusDistance()`, `fstop()` → `fStop()` (from `ndk::MultiProjectionCamera`), `film_width()` → `horizontalAperture()`.
+**Rule:** Always test camera accessor names inside the real Docker build container — mock stubs won't catch wrong method names until the Docker build runs.
+
+## DeepCOpenDefocus — M009 Cross-Cutting Lessons
+
+### Never plan opendefocus API calls without a real cargo build to verify against the actual types
+**Context:** M009 S02 T04 — six API mismatches discovered at Docker build time
+
+opendefocus Settings types are generated from Protocol Buffer `.proto` files. Without running `cargo build` against the real crate, you cannot know: enum fields are `i32` (require `.into()`), nesting paths like `camera_data` (under `settings.defocus.circle_of_confusion.camera_data`, NOT `settings.defocus`), the difference between `CameraData` fields and `Settings` fields for focus distance (`focal_plane` on CoC Settings vs nonexistent `focal_point` on CameraData). Plan any opendefocus integration with explicit cargo-test tasks early, not at the end of the slice.
+
+### Static lib Rust+CMake+Docker pipeline: three-layer verification gate
+**Context:** M009 overall build strategy
+
+The three verification layers for a Rust staticlib linked by CMake in a Docker build:
+1. **`bash scripts/verify-s01-syntax.sh`** — runs in <5s, catches C++ syntax errors and FFI header inclusion with mock DDImage headers. Run after every .cpp change.
+2. **`cargo build --release` at repo root** — produces the .a; catches all Rust compilation and API errors. Can run locally if Rust is installed (avoid needing Docker for every Rust iteration).
+3. **`bash docker-build.sh --linux --versions 16.0`** — authoritative gate: real Nuke SDK, real linker, real container OS. Run after significant API changes, before marking any slice done.
+
+Skipping level 2 (local cargo build) forces level 3 to catch API errors inside Docker, which is slow and creates long feedback loops. Install Rust locally (`rustup`) for any future milestones involving Rust staticlibs.
+
+### Layer-peel GPU defocus: RENDERER singleton should be activated before production use
+**Context:** M009 S02/S03 opendefocus renderer lifecycle
+
+`lib.rs` creates a new opendefocus `Renderer` per FFI call (`opendefocus_deep_render`). The `RENDERER` static (using `once_cell::sync::Lazy`) is scaffolded but not activated — activating it requires calling `Renderer::new()` which is async (`block_on`). A new renderer per call works correctly for correctness testing, but creates a new GPU context every frame, which is ~100 ms overhead per render on first frame and may trigger GPU resource exhaustion on long renders. Before production use, activate the singleton: call `block_on(Renderer::new())` inside `once_cell::sync::Lazy::new(|| ...)` and store the result.

@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "taskId": "T04",
+  "unitId": "M009-mso5fb/S01/T04",
+  "timestamp": 1774531278915,
+  "passed": true,
+  "discoverySource": "task-plan",
+  "checks": [
+    {
+      "command": "bash scripts/verify-s01-syntax.sh",
+      "exitCode": 0,
+      "durationMs": 592,
+      "verdict": "pass"
+    },
+    {
+      "command": "grep -q 'EUPL-1.2' THIRD_PARTY_LICENSES.md",
+      "exitCode": 0,
+      "durationMs": 5,
+      "verdict": "pass"
+    },
+    {
+      "command": "echo 'All checks passed'",
+      "exitCode": 0,
+      "durationMs": 4,
+      "verdict": "pass"
+    }
+  ]
+}

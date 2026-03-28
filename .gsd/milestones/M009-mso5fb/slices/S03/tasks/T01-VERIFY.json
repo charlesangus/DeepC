@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "taskId": "T01",
+  "unitId": "M009-mso5fb/S03/T01",
+  "timestamp": 1774697463067,
+  "passed": false,
+  "discoverySource": "task-plan",
+  "checks": [
+    {
+      "command": "scripts/verify-s01-syntax.sh passes. Grep confirms computeHoldoutTransmittance in DeepCOpenDefocus.cpp. Grep confirms input(1) gated by dynamic_cast check.",
+      "exitCode": 2,
+      "durationMs": 4,
+      "verdict": "fail"
+    }
+  ],
+  "retryAttempt": 1,
+  "maxRetries": 2
+}

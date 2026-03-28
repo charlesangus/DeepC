@@ -1,12 +1,14 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # verify-s01-syntax.sh — Syntax-only compilation check for DeepC*.cpp
 # Uses mock DDImage headers (minimal stubs) to verify C++ syntax without
 # the full Nuke SDK. Exits 0 on success, 1 on failure.
+# Compatible with both /bin/sh and bash.
 
-set -euo pipefail
+set -eu
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC_DIR="${SCRIPT_DIR}/../src"
+OPENDEFOCUS_INCLUDE="${SCRIPT_DIR}/../crates/opendefocus-deep/include"
 
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
@@ -97,6 +99,8 @@ public:
     int y() const { return _y; }
     int r() const { return _r; }
     int t() const { return _t; }
+    int w() const { return _r - _x; }
+    int h() const { return _t - _y; }
     void set(int x, int y, int r, int t) { _x=x; _y=y; _r=r; _t=t; }
 
     struct iterator {
@@ -244,12 +248,162 @@ inline void EndGroup(Knob_Callback) {}
 }} // namespace DD::Image
 HEADER
 
+# --- DeepOp.h ---
+cat > "$TMPDIR/DDImage/DeepOp.h" << 'HEADER'
+#pragma once
+#include "Box.h"
+#include "Channel.h"
+#include "DeepPlane.h"
+#include "Op.h"
+namespace DD { namespace Image {
+
+class DeepOp : public Op {
+public:
+    DeepOp(Node* n = nullptr) : Op(n) {}
+    virtual bool deepEngine(const Box&, const ChannelSet&, DeepPlane&) { return true; }
+};
+
+}} // namespace DD::Image
+HEADER
+
+# --- CameraOp.h ---
+cat > "$TMPDIR/DDImage/CameraOp.h" << 'HEADER'
+#pragma once
+#include "Op.h"
+namespace DD { namespace Image {
+
+class CameraOp : public Op {
+public:
+    CameraOp(Node* n = nullptr) : Op(n) {}
+    virtual void validate(bool = true) {}
+    // Deprecated accessors still available in DDImage SDK (return double, not float)
+    virtual double focal_length() const { return 50.0; }
+    virtual double fStop() const { return 2.8; }
+    virtual double focal_point() const { return 5.0; }      // focus distance in scene units
+    virtual double film_width() const { return 3.6; }       // cm; 3.6 cm = 36 mm full-frame
+};
+
+}} // namespace DD::Image
+HEADER
+
+# --- Row.h ---
+cat > "$TMPDIR/DDImage/Row.h" << 'HEADER'
+#pragma once
+#include "Channel.h"
+namespace DD { namespace Image {
+
+class Row {
+public:
+    Row(int x, int r) {}
+    const float* operator[](Channel) const { return nullptr; }
+    float* writable(Channel) { return nullptr; }
+};
+
+}} // namespace DD::Image
+HEADER
+
+# --- ImagePlane.h (for PlanarIop) ---
+cat > "$TMPDIR/DDImage/ImagePlane.h" << 'HEADER'
+#pragma once
+#include "Box.h"
+#include "Channel.h"
+namespace DD { namespace Image {
+
+class ImagePlane {
+public:
+    ImagePlane() {}
+    const Box& bounds() const { static Box b; return b; }
+    int nComps() const { return 4; }
+    void makeWritable() {}
+    float* writable() { return nullptr; }
+    const ChannelSet& channels() const { static ChannelSet cs; return cs; }
+};
+
+}} // namespace DD::Image
+HEADER
+
+# --- Descriptions.h (for PlanarIop::getRequirements) ---
+cat > "$TMPDIR/DDImage/Descriptions.h" << 'HEADER'
+#pragma once
+namespace DD { namespace Image {
+class Descriptions {};
+}} // namespace DD::Image
+HEADER
+
+# --- PlanarIop.h ---
+cat > "$TMPDIR/DDImage/PlanarIop.h" << 'HEADER'
+#pragma once
+#include "Op.h"
+#include "Box.h"
+#include "Channel.h"
+#include "ImagePlane.h"
+#include "Descriptions.h"
+#include "Knobs.h"
+namespace DD { namespace Image {
+
+class Info2D {
+public:
+    void channels(const ChannelSet&) {}
+    Box& box() { static Box b; return b; }
+};
+
+class PlanarIop : public Op {
+public:
+    PlanarIop(Node* n = nullptr) : Op(n) {}
+    virtual ~PlanarIop() {}
+    virtual void _validate(bool) {}
+    virtual void getRequirements(Descriptions&) {}
+    virtual void renderStripe(ImagePlane&) {}
+protected:
+    Info2D info_;
+};
+
+}} // namespace DD::Image
+HEADER
+
 # --- Run syntax-only compilation ---
-for src_file in DeepCBlur.cpp DeepCDepthBlur.cpp; do
+for src_file in DeepCBlur.cpp DeepCDepthBlur.cpp DeepCOpenDefocus.cpp; do
     if [ -f "$SRC_DIR/$src_file" ]; then
-        echo "Running syntax check: g++ -std=c++17 -fsyntax-only -I$TMPDIR $SRC_DIR/$src_file"
-        g++ -std=c++17 -fsyntax-only -I"$TMPDIR" "$SRC_DIR/$src_file"
+        echo "Running syntax check: g++ -std=c++17 -fsyntax-only -I$TMPDIR -I${OPENDEFOCUS_INCLUDE} $SRC_DIR/$src_file"
+        g++ -std=c++17 -fsyntax-only -I"$TMPDIR" -I"${OPENDEFOCUS_INCLUDE}" "$SRC_DIR/$src_file"
         echo "Syntax check passed: $src_file"
     fi
 done
 echo "All syntax checks passed."
+
+# --- S02 additions: verify test artifacts exist ---
+NK_TEST="${SCRIPT_DIR}/../test/test_opendefocus.nk"
+if [ -f "$NK_TEST" ]; then
+    echo "test/test_opendefocus.nk exists — OK"
+else
+    echo "ERROR: test/test_opendefocus.nk not found" >&2
+    exit 1
+fi
+
+# --- Optional: clang header syntax check ---
+if command -v clang >/dev/null 2>&1; then
+    HEADER_FILE="${SCRIPT_DIR}/../crates/opendefocus-deep/include/opendefocus_deep.h"
+    if [ -f "$HEADER_FILE" ]; then
+        echo "Running clang syntax check on opendefocus_deep.h"
+        clang -fsyntax-only -x c-header "$HEADER_FILE" && echo "Header syntax OK"
+    fi
+fi
+
+echo "All S02 checks passed."
+
+# --- Docker-only note ---
+# Full cargo build verification (opendefocus 0.1.10 + wgpu deps) requires
+# the nukedockerbuild:16.0-linux Docker image. Run:
+#
+#   docker run --rm \
+#     -v "$(pwd):/nuke_build_directory" \
+#     nukedockerbuild:16.0-linux \
+#     bash -c 'ln -sf /usr/bin/gcc /usr/local/bin/cc && export PATH="/usr/local/bin:$PATH" && \
+#              dnf install -y protobuf-compiler && \
+#              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path && \
+#              export PATH="$HOME/.cargo/bin:$PATH" && \
+#              cargo build --release && cmake -S . -B build/docker -D Nuke_ROOT=/usr/local/nuke_install && \
+#              cmake --build build/docker --config Release'
+#
+# Confirms: cargo resolves opendefocus v0.1.10, Compiling opendefocus-deep,
+#           libopendefocus_deep.a produced, DeepCOpenDefocus.so linked.

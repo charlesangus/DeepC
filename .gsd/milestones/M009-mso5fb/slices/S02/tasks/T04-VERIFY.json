@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "taskId": "T04",
+  "unitId": "M009-mso5fb/S02/T04",
+  "timestamp": 1774696847549,
+  "passed": false,
+  "discoverySource": "task-plan",
+  "checks": [
+    {
+      "command": "docker-build.sh exits 0. DeepCOpenDefocus.so present in build output. cargo build --release log shows opendefocus dep resolved. Log contains 'Compiling opendefocus' and 'Compiling opendefocus-deep'.",
+      "exitCode": 127,
+      "durationMs": 8,
+      "verdict": "fail"
+    }
+  ],
+  "retryAttempt": 1,
+  "maxRetries": 2
+}

@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "taskId": "T02",
+  "unitId": "M009-mso5fb/S03/T02",
+  "timestamp": 1774697592502,
+  "passed": false,
+  "discoverySource": "task-plan",
+  "checks": [
+    {
+      "command": "scripts/verify-s01-syntax.sh passes. Grep confirms cam->focal_length() and cam->fStop() usage in DeepCOpenDefocus.cpp.",
+      "exitCode": 2,
+      "durationMs": 4,
+      "verdict": "fail"
+    }
+  ],
+  "retryAttempt": 1,
+  "maxRetries": 2
+}

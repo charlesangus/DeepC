@@ -208,6 +208,18 @@ for nuke_version in "${NUKE_VERSIONS[@]}"; do
             -v "${BASEDIR}:/nuke_build_directory" \
             "${NUKEDOCKERBUILD_IMAGE}:${nuke_version}-linux" \
             bash -c "
+                # Install prerequisites: curl, cc symlink, protobuf-compiler (needed by circle-of-confusion prost)
+                if command -v dnf >/dev/null 2>&1; then
+                    dnf install -y curl protobuf-compiler 2>/dev/null || true
+                elif command -v apt-get >/dev/null 2>&1; then
+                    apt-get install -y curl protobuf-compiler 2>/dev/null || true
+                fi &&
+                # Ensure cc symlink exists (Rocky Linux 8 has gcc but no cc)
+                if ! command -v cc >/dev/null 2>&1; then
+                    ln -sf \$(command -v gcc) /usr/local/bin/cc
+                fi &&
+                curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal --no-modify-path &&
+                export PATH=\"\$HOME/.cargo/bin:\$PATH\" &&
                 cmake -S /nuke_build_directory \
                       -B /nuke_build_directory/build/${nuke_version}-linux \
                       -D CMAKE_INSTALL_PREFIX=/nuke_build_directory/install/${nuke_version}-linux/DeepC \

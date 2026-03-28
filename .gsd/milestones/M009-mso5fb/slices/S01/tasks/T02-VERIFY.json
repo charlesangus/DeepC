@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "taskId": "T02",
+  "unitId": "M009-mso5fb/S01/T02",
+  "timestamp": 1774530774583,
+  "passed": true,
+  "discoverySource": "task-plan",
+  "checks": [
+    {
+      "command": "grep -n 'DeepCOpenDefocus' src/CMakeLists.txt",
+      "exitCode": 0,
+      "durationMs": 5,
+      "verdict": "pass"
+    },
+    {
+      "command": "grep -n 'rustup' docker-build.sh",
+      "exitCode": 0,
+      "durationMs": 4,
+      "verdict": "pass"
+    }
+  ]
+}

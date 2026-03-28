@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "taskId": "T01",
+  "unitId": "M009-mso5fb/S02/T01",
+  "timestamp": 1774695234518,
+  "passed": false,
+  "discoverySource": "task-plan",
+  "checks": [
+    {
+      "command": "scripts/verify-s01-syntax.sh passes (C++ side). nm on existing .a still shows opendefocus_deep_render (note: .a from S01 is for the old signature — full verification happens in T04 docker build).",
+      "exitCode": 2,
+      "durationMs": 4,
+      "verdict": "fail"
+    }
+  ],
+  "retryAttempt": 1,
+  "maxRetries": 2
+}

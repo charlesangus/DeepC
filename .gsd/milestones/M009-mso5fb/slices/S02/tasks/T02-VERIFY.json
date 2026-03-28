@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "taskId": "T02",
+  "unitId": "M009-mso5fb/S02/T02",
+  "timestamp": 1774695635224,
+  "passed": false,
+  "discoverySource": "task-plan",
+  "checks": [
+    {
+      "command": "cargo metadata --no-deps (inspect Cargo.toml is parseable). Rust source file well-formed (rustfmt --check if available). Full cargo build verified in T04.",
+      "exitCode": 2,
+      "durationMs": 3,
+      "verdict": "fail"
+    }
+  ],
+  "retryAttempt": 1,
+  "maxRetries": 2
+}

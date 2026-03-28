@@ -1,0 +1,3 @@
+[workspace]
+members = ["crates/opendefocus-deep"]
+resolver = "2"
