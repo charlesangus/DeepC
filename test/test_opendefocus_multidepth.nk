@@ -11,37 +11,37 @@ Root {
  format "128 72 0 0 128 72 1 DeepTest128x72"
 }
 
-DeepConstant {
+DeepCConstant {
  inputs 0
- name DeepConstant_near
+ name DeepCConstant_near
  xpos 0
  ypos 0
  format "128 72 0 0 128 72 1 DeepTest128x72"
- color {0.8 0.2 0.2 1.0}
- deep_front 2.0
- deep_back 2.5
+ color_front {0.8 0.2 0.2 1.0}
+ front 2.0
+ back 2.5
 }
 
-DeepConstant {
+DeepCConstant {
  inputs 0
- name DeepConstant_mid
+ name DeepCConstant_mid
  xpos 150
  ypos 0
  format "128 72 0 0 128 72 1 DeepTest128x72"
- color {0.2 0.8 0.2 1.0}
- deep_front 5.0
- deep_back 5.5
+ color_front {0.2 0.8 0.2 1.0}
+ front 5.0
+ back 5.5
 }
 
-DeepConstant {
+DeepCConstant {
  inputs 0
- name DeepConstant_far
+ name DeepCConstant_far
  xpos 300
  ypos 0
  format "128 72 0 0 128 72 1 DeepTest128x72"
- color {0.2 0.2 0.8 1.0}
- deep_front 10.0
- deep_back 10.5
+ color_front {0.2 0.2 0.8 1.0}
+ front 10.0
+ back 10.5
 }
 
 DeepMerge {
@@ -49,7 +49,7 @@ DeepMerge {
  name DeepMerge1
  xpos 150
  ypos 100
- operation plus
+ operation combine
 }
 
 DeepCOpenDefocus {
@@ -70,6 +70,6 @@ Write {
  ypos 300
  file test/output/multidepth.exr
  file_type exr
- first_frame 1
- last_frame 1
+ first 1
+ last 1
 }

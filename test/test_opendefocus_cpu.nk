@@ -1,5 +1,5 @@
 # Nuke script — DeepCOpenDefocus CPU-only integration test (R063)
-# Forces CPU renderer via use_gpu false knob.
+# Forces CPU renderer via use_gpu 0 knob.
 # Run with: nuke -x test/test_opendefocus_cpu.nk
 
 Root {
@@ -11,15 +11,15 @@ Root {
  format "128 72 0 0 128 72 1 DeepTest128x72"
 }
 
-DeepConstant {
+DeepCConstant {
  inputs 0
- name DeepConstant1
+ name DeepCConstant1
  xpos 0
  ypos 0
  format "128 72 0 0 128 72 1 DeepTest128x72"
- color {0.5 0.5 0.5 1.0}
- deep_front 5.0
- deep_back 5.5
+ color_front {0.5 0.5 0.5 1.0}
+ front 5.0
+ back 5.5
 }
 
 DeepCOpenDefocus {
@@ -31,7 +31,7 @@ DeepCOpenDefocus {
  fstop 2.8
  focus_distance 5.0
  sensor_size_mm 36
- use_gpu false
+ use_gpu 0
 }
 
 Write {
@@ -41,6 +41,6 @@ Write {
  ypos 200
  file test/output/cpu.exr
  file_type exr
- first_frame 1
- last_frame 1
+ first 1
+ last 1
 }

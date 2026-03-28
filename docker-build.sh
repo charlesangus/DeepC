@@ -220,6 +220,7 @@ for nuke_version in "${NUKE_VERSIONS[@]}"; do
                 fi &&
                 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal --no-modify-path &&
                 export PATH=\"\$HOME/.cargo/bin:\$PATH\" &&
+                cargo clean -p opendefocus-deep --release 2>/dev/null || true &&
                 cmake -S /nuke_build_directory \
                       -B /nuke_build_directory/build/${nuke_version}-linux \
                       -D CMAKE_INSTALL_PREFIX=/nuke_build_directory/install/${nuke_version}-linux/DeepC \

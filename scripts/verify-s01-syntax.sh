@@ -27,6 +27,7 @@ class Node;
 class Knob;
 
 class Knob;
+class ChannelSet;
 typedef void (*Knob_Callback)(void);
 
 class Op {
@@ -40,6 +41,8 @@ public:
     virtual const char* node_help() const { return ""; }
     virtual void knobs(Knob_Callback) {}
     virtual Op* op() { return this; }
+    virtual void validate(bool = true) {}
+    virtual void request(int, int, int, int, const ChannelSet&, int) {}
     void inputs(int) {}
     Op* input(int) const { return nullptr; }
     virtual int minimum_inputs() const { return 1; }
@@ -257,10 +260,22 @@ cat > "$TMPDIR/DDImage/DeepOp.h" << 'HEADER'
 #include "Op.h"
 namespace DD { namespace Image {
 
+class Format {
+public:
+    Format() {}
+};
+
+class DeepInfo {
+public:
+    const Format* format() const { static Format f; return &f; }
+    const Box& box() const { static Box b; return b; }
+};
+
 class DeepOp : public Op {
 public:
     DeepOp(Node* n = nullptr) : Op(n) {}
     virtual bool deepEngine(const Box&, const ChannelSet&, DeepPlane&) { return true; }
+    const DeepInfo& deepInfo() const { static DeepInfo di; return di; }
 };
 
 }} // namespace DD::Image
@@ -305,6 +320,7 @@ HEADER
 # --- ImagePlane.h (for PlanarIop) ---
 cat > "$TMPDIR/DDImage/ImagePlane.h" << 'HEADER'
 #pragma once
+#include <cstdint>
 #include "Box.h"
 #include "Channel.h"
 namespace DD { namespace Image {
@@ -317,6 +333,9 @@ public:
     void makeWritable() {}
     float* writable() { return nullptr; }
     const ChannelSet& channels() const { static ChannelSet cs; return cs; }
+    int colStride() const { return 4; }
+    int rowStride() const { return 0; }
+    int64_t chanStride() const { return 1; }
 };
 
 }} // namespace DD::Image
@@ -341,18 +360,27 @@ cat > "$TMPDIR/DDImage/PlanarIop.h" << 'HEADER'
 #include "Knobs.h"
 namespace DD { namespace Image {
 
+class Format;
+
 class Info2D {
 public:
     void channels(const ChannelSet&) {}
+    void format(const Format&) {}
+    void full_size_format(const Format&) {}
+    void set(const Box&) {}
     Box& box() { static Box b; return b; }
 };
+
+class RequestOutput {};
 
 class PlanarIop : public Op {
 public:
     PlanarIop(Node* n = nullptr) : Op(n) {}
     virtual ~PlanarIop() {}
     virtual void _validate(bool) {}
+    virtual void _request(int, int, int, int, ChannelSet, int) {}
     virtual void getRequirements(Descriptions&) {}
+    virtual void getRequests(const Box&, const ChannelSet&, int, RequestOutput&) const {}
     virtual void renderStripe(ImagePlane&) {}
 protected:
     Info2D info_;

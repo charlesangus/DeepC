@@ -1,6 +1,6 @@
-# Nuke script — DeepCOpenDefocus bokeh disc integration test (R066)
-# Single bright pixel converted to deep via DeepFromImage; exercises
-# bokeh disc spread shape at a controlled defocus distance.
+# Nuke script — DeepCOpenDefocus bokeh disc integration test
+# Single bright deep pixel exercises bokeh disc spread shape at
+# a controlled defocus distance (focus at depth 10, sample at depth 1).
 # Run with: nuke -x test/test_opendefocus_bokeh.nk
 
 Root {
@@ -9,40 +9,25 @@ Root {
  first_frame 1
  last_frame 1
  fps 24
- format "256 256 0 0 256 256 1 DeepTest256x256"
+ format "128 72 0 0 128 72 1 DeepTest128x72"
 }
 
-Constant {
+DeepCConstant {
  inputs 0
- name Constant1
+ name DeepCConstant1
  xpos 0
  ypos 0
- color {1 1 1 1}
- format "256 256 0 0 256 256 1 DeepTest256x256"
-}
-
-Crop {
- inputs 1
- name Crop1
- xpos 0
- ypos 100
- box {127 127 128 128}
-}
-
-DeepFromImage {
- inputs 1
- name DeepFromImage1
- xpos 0
- ypos 200
- set_z true
- z 1.0
+ format "128 72 0 0 128 72 1 DeepTest128x72"
+ color_front {1 1 1 1}
+ front 1.0
+ back 1.5
 }
 
 DeepCOpenDefocus {
  inputs 1
  name DeepCOpenDefocus1
  xpos 0
- ypos 300
+ ypos 100
  focal_length 50
  fstop 2.8
  focus_distance 10
@@ -53,9 +38,9 @@ Write {
  inputs 1
  name Write1
  xpos 0
- ypos 400
+ ypos 200
  file test/output/bokeh.exr
  file_type exr
- first_frame 1
- last_frame 1
+ first 1
+ last 1
 }

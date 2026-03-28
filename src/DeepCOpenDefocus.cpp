@@ -160,7 +160,25 @@ public:
     // ------------------------------------------------------------------
     void _validate(bool for_real) override
     {
-        PlanarIop::_validate(for_real);
+        // PlanarIop::_validate calls copy_info(0) which expects an Iop at
+        // input 0.  Our input 0 is a DeepOp (not an Iop), so calling
+        // Iop::input() would trigger asIop() which asserts.  We must use
+        // Op::input() to bypass the Iop cast, then validate the deep input
+        // directly and set up our output info manually.
+
+        Op* in0 = Op::input(0);
+        if (in0) {
+            in0->validate(for_real);
+        }
+
+        // Derive output format and bbox from the deep input's deepInfo.
+        DeepOp* deepIn = dynamic_cast<DeepOp*>(in0);
+        if (deepIn) {
+            const DeepInfo& di = deepIn->deepInfo();
+            info_.format(*di.format());
+            info_.full_size_format(*di.format());
+            info_.set(di.box());
+        }
 
         ChannelSet rgba;
         rgba += Chan_Red;
@@ -168,6 +186,24 @@ public:
         rgba += Chan_Blue;
         rgba += Chan_Alpha;
         info_.channels(rgba);
+    }
+
+    // ------------------------------------------------------------------
+    // Override request/getRequests to prevent PlanarIop base from calling
+    // input0() / asIop() — our inputs are DeepOps, not Iops.
+    // Deep data is pulled on-demand in renderStripe via deepEngine().
+    // ------------------------------------------------------------------
+    void getRequests(const Box& box, const ChannelSet& channels,
+                     int count, RequestOutput& reqData) const override
+    {
+        // Deep inputs handle their own data flow via deepEngine().
+        // We still need to validate the deep input so its upstream
+        // chain is ready when renderStripe calls deepEngine().
+        // Validation is idempotent and safe to call here.
+        Op* in0 = const_cast<DeepCOpenDefocus*>(this)->Op::input(0);
+        if (in0) {
+            in0->validate(true);
+        }
     }
 
     // ------------------------------------------------------------------
@@ -190,7 +226,7 @@ public:
         const int  height = bounds.h();
 
         // Guard: if no deep input, write black and return
-        DeepOp* deepIn = dynamic_cast<DeepOp*>(input(0));
+        DeepOp* deepIn = dynamic_cast<DeepOp*>(Op::input(0));
         if (!deepIn || width <= 0 || height <= 0) {
             output.makeWritable();
             std::memset(output.writable(), 0,
@@ -268,7 +304,7 @@ public:
         float fd  = _focus_distance;
         float ssz = _sensor_size_mm;
 
-        CameraOp* cam = dynamic_cast<CameraOp*>(input(2));
+        CameraOp* cam = dynamic_cast<CameraOp*>(Op::input(2));
         if (cam) {
             cam->validate(false);
             fl  = static_cast<float>(cam->focal_length());
@@ -306,7 +342,7 @@ public:
         // holdout geometry are attenuated proportionally to the holdout alpha
         // coverage.  The holdout deep input is never defocused itself.
         // -------------------------------------------------------------------
-        DeepOp* holdoutIn = dynamic_cast<DeepOp*>(input(1));
+        DeepOp* holdoutIn = dynamic_cast<DeepOp*>(Op::input(1));
         if (holdoutIn) {
             ChannelSet holdoutChans;
             holdoutChans += Chan_Alpha;
@@ -337,17 +373,43 @@ public:
         }
 
         // -------------------------------------------------------------------
-        // Copy output_buf to the output ImagePlane
+        // Copy output_buf (interleaved RGBA) to the output ImagePlane.
+        //
+        // ImagePlane can be packed (interleaved RGBARGBA) or unpacked
+        // (planar RRRR...GGGG...).  Use the stride accessors to handle
+        // both layouts correctly.
         // -------------------------------------------------------------------
         output.makeWritable();
         float* dst = output.writable();
+        const int rowStride  = output.rowStride();
+        const int colStride  = output.colStride();
+        const int64_t chanStride = output.chanStride();
+        const int nComps = output.nComps();
         if (dst && !output_buf.empty()) {
-            std::memcpy(dst, output_buf.data(),
-                        output_buf.size() * sizeof(float));
+            if (chanStride == 1 && colStride == nComps) {
+                // Packed layout (RGBARGBA...) — matches output_buf exactly
+                const size_t totalBytes = static_cast<size_t>(width) * height * nComps * sizeof(float);
+                std::memcpy(dst, output_buf.data(),
+                            std::min(totalBytes, output_buf.size() * sizeof(float)));
+            } else {
+                // Unpacked / planar layout — de-interleave
+                int pixIdx = 0;
+                for (int y = 0; y < height; ++y) {
+                    for (int x = 0; x < width; ++x) {
+                        const int srcBase = pixIdx * 4;
+                        const int64_t dstBase = static_cast<int64_t>(y) * rowStride
+                                              + static_cast<int64_t>(x) * colStride;
+                        for (int c = 0; c < std::min(nComps, 4); ++c) {
+                            dst[dstBase + c * chanStride] = output_buf[srcBase + c];
+                        }
+                        ++pixIdx;
+                    }
+                }
+            }
         } else if (dst) {
             std::memset(dst, 0,
                         static_cast<size_t>(width) * static_cast<size_t>(height) *
-                        static_cast<size_t>(output.nComps()) * sizeof(float));
+                        static_cast<size_t>(nComps) * sizeof(float));
         }
     }
 
