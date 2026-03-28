@@ -1,0 +1,75 @@
+# Nuke script — DeepCOpenDefocus multi-depth integration test (R060)
+# Merges 3 DeepConstant layers at deep_front 2/5/10 and defocuses.
+# Run with: nuke -x test/test_opendefocus_multidepth.nk
+
+Root {
+ inputs 0
+ name test_opendefocus_multidepth
+ first_frame 1
+ last_frame 1
+ fps 24
+ format "128 72 0 0 128 72 1 DeepTest128x72"
+}
+
+DeepConstant {
+ inputs 0
+ name DeepConstant_near
+ xpos 0
+ ypos 0
+ format "128 72 0 0 128 72 1 DeepTest128x72"
+ color {0.8 0.2 0.2 1.0}
+ deep_front 2.0
+ deep_back 2.5
+}
+
+DeepConstant {
+ inputs 0
+ name DeepConstant_mid
+ xpos 150
+ ypos 0
+ format "128 72 0 0 128 72 1 DeepTest128x72"
+ color {0.2 0.8 0.2 1.0}
+ deep_front 5.0
+ deep_back 5.5
+}
+
+DeepConstant {
+ inputs 0
+ name DeepConstant_far
+ xpos 300
+ ypos 0
+ format "128 72 0 0 128 72 1 DeepTest128x72"
+ color {0.2 0.2 0.8 1.0}
+ deep_front 10.0
+ deep_back 10.5
+}
+
+DeepMerge {
+ inputs 3
+ name DeepMerge1
+ xpos 150
+ ypos 100
+ operation plus
+}
+
+DeepCOpenDefocus {
+ inputs 1
+ name DeepCOpenDefocus1
+ xpos 150
+ ypos 200
+ focal_length 50
+ fstop 2.8
+ focus_distance 5.0
+ sensor_size_mm 36
+}
+
+Write {
+ inputs 1
+ name Write1
+ xpos 150
+ ypos 300
+ file test/output/multidepth.exr
+ file_type exr
+ first_frame 1
+ last_frame 1
+}

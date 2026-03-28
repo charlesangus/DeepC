@@ -255,3 +255,42 @@ Skipping level 2 (local cargo build) forces level 3 to catch API errors inside D
 **Context:** M009 S02/S03 opendefocus renderer lifecycle
 
 `lib.rs` creates a new opendefocus `Renderer` per FFI call (`opendefocus_deep_render`). The `RENDERER` static (using `once_cell::sync::Lazy`) is scaffolded but not activated — activating it requires calling `Renderer::new()` which is async (`block_on`). A new renderer per call works correctly for correctness testing, but creates a new GPU context every frame, which is ~100 ms overhead per render on first frame and may trigger GPU resource exhaustion on long renders. Before production use, activate the singleton: call `block_on(Renderer::new())` inside `once_cell::sync::Lazy::new(|| ...)` and store the result.
+
+## DeepCOpenDefocus Integration Test Patterns — M010-zkt9ww
+
+### verify-s01-syntax.sh for-loop pattern is the canonical way to extend .nk existence checks
+**Context:** `scripts/verify-s01-syntax.sh` S02 section (T03, S01, M010)
+
+The S02 section uses a `for`-loop over a whitespace-separated list of `.nk` filenames. To add a new integration test script, append its filename to the list — no new check block required. Do not regress to per-file hardcoded blocks; the loop form is intentionally extensible.
+
+```sh
+for nk_file in test_opendefocus.nk test_opendefocus_multidepth.nk ...; do
+    [ -f "test/$nk_file" ] || { echo "MISSING: test/$nk_file"; FAILED=1; }
+    echo "test/$nk_file exists — OK"
+done
+```
+
+### use_gpu Bool_knob name is canonical — future .nk scripts must use `use_gpu false` exactly
+**Context:** DeepCOpenDefocus CPU-only path (T01, S01, M010)
+
+The `Bool_knob` is registered in C++ as `Bool_knob(f, &_use_gpu, "use_gpu", "Use GPU")`. The knob name string `"use_gpu"` is what Nuke serialises to .nk format. Future .nk scripts that want to force CPU-only execution must write `use_gpu false` — any other capitalisation or spelling will silently use the default (GPU).
+
+### push 0 is the Nuke stack idiom for a null/unconnected input in a multi-input node
+**Context:** `test_opendefocus_camera.nk` holdout slot (T02, S01, M010)
+
+When a Nuke node has multiple inputs and only some are connected, `push 0` writes a null entry to the node's input stack. In `test_opendefocus_camera.nk`, the holdout input (slot 1) is null and the camera input (slot 2) is Camera2 — so the stack reads `push 0` (null holdout), then `Camera2` (camera). This is the canonical Nuke .nk convention; do not omit the `push 0` or slot ordering breaks.
+
+### DeepFromImage set_z true / z 1.0 converts a flat image to a single deep sample per pixel
+**Context:** `test_opendefocus_bokeh.nk` (T02, S01, M010)
+
+To create a minimal Deep input from a flat Constant node for bokeh disc testing: feed Constant → Crop → `DeepFromImage` with knobs `set_z true` and `z 1.0`. This places a single deep sample at depth 1.0 per pixel. Without `set_z true`, `DeepFromImage` produces deep samples with no depth information, which may result in no CoC being computed by `DeepCOpenDefocus`. The `z 1.0` value is arbitrary for a test — use a value within the focus distance range for visible defocus.
+
+### test/output/.gitignore co-located with test data is cleaner than root .gitignore
+**Context:** EXR output gitignore strategy (T02, S01, M010)
+
+Placing `*.exr\n*.tmp` in `test/output/.gitignore` (not the root `.gitignore`) keeps the ignore rule co-located with the directory it governs. This is preferable because: the root `.gitignore` doesn't need to know about test output details; the scope is explicit; removing `test/output/` removes the ignore rule too. Apply the same pattern in future milestones that add new output directories.
+
+### DeepMerge operation plus provides additive compositing for discrete-depth multi-layer tests
+**Context:** `test_opendefocus_multidepth.nk` (T02, S01, M010)
+
+For multi-depth layer peel testing, `DeepMerge` with `operation plus` (additive) is the correct operation to combine discrete depth layers that don't overlap. Using the default `over` operation would composite the layers by alpha, collapsing depth ordering information. For testing the layer-peel algorithm specifically, additive compositing preserves each layer's full RGBA at its discrete depth.

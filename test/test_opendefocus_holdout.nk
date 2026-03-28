@@ -1,0 +1,56 @@
+# Nuke script — DeepCOpenDefocus holdout integration test (R061)
+# Two deep layers: holdout (alpha 0.5, front 3.0) and subject (front 5.0).
+# Run with: nuke -x test/test_opendefocus_holdout.nk
+
+Root {
+ inputs 0
+ name test_opendefocus_holdout
+ first_frame 1
+ last_frame 1
+ fps 24
+ format "128 72 0 0 128 72 1 DeepTest128x72"
+}
+
+DeepConstant {
+ inputs 0
+ name DeepConstant_holdout
+ xpos 0
+ ypos 0
+ format "128 72 0 0 128 72 1 DeepTest128x72"
+ color {0.0 0.0 0.0 0.5}
+ deep_front 3.0
+ deep_back 3.5
+}
+
+DeepConstant {
+ inputs 0
+ name DeepConstant_subject
+ xpos 150
+ ypos 0
+ format "128 72 0 0 128 72 1 DeepTest128x72"
+ color {0.5 0.5 0.5 1.0}
+ deep_front 5.0
+ deep_back 5.5
+}
+
+DeepCOpenDefocus {
+ inputs 2
+ name DeepCOpenDefocus1
+ xpos 75
+ ypos 100
+ focal_length 50
+ fstop 2.8
+ focus_distance 5.0
+ sensor_size_mm 36
+}
+
+Write {
+ inputs 1
+ name Write1
+ xpos 75
+ ypos 200
+ file test/output/holdout.exr
+ file_type exr
+ first_frame 1
+ last_frame 1
+}

@@ -1,10 +1,10 @@
-# Nuke script — DeepCOpenDefocus integration test
-# Produces a 128x72 defocused EXR from a synthetic deep constant image.
-# Run with: nuke -x test/test_opendefocus.nk
+# Nuke script — DeepCOpenDefocus empty input integration test (R064)
+# Transparent deep layer (color {0 0 0 0}) exercises the zero-alpha path.
+# Run with: nuke -x test/test_opendefocus_empty.nk
 
 Root {
  inputs 0
- name test_opendefocus
+ name test_opendefocus_empty
  first_frame 1
  last_frame 1
  fps 24
@@ -17,7 +17,7 @@ DeepConstant {
  xpos 0
  ypos 0
  format "128 72 0 0 128 72 1 DeepTest128x72"
- color {0.5 0.5 0.5 1.0}
+ color {0 0 0 0}
  deep_front 5.0
  deep_back 5.5
 }
@@ -38,7 +38,7 @@ Write {
  name Write1
  xpos 0
  ypos 200
- file test/output/test_opendefocus.exr
+ file test/output/empty.exr
  file_type exr
  first_frame 1
  last_frame 1

@@ -59,6 +59,83 @@ This file is the explicit capability and coverage contract for the project.
 - Validation: unmapped
 - Notes: Volumetric sub-samples cover evenly-spaced sub-ranges; flat sub-samples have zFront==zBack at evenly-spaced depths
 
+### R060 — Multi-depth layer-peel integration test: DeepMerge of 3+ DeepConstants at different depths through DeepCOpenDefocus produces non-black EXR output
+- Class: quality-attribute
+- Status: active
+- Description: A nuke -x test script merges three DeepConstant nodes at depths 2, 5, and 10, runs them through DeepCOpenDefocus, and writes a non-black EXR to test/output/
+- Why it matters: Proves the layer-peel algorithm correctly handles multiple depth layers in a real Nuke environment
+- Source: inferred
+- Primary owning slice: M010-zkt9ww/S01
+- Supporting slices: none
+- Validation: unmapped
+- Notes: Validates R049 (layer-peel) end-to-end in Nuke
+
+### R061 — Holdout attenuation integration test: holdout DeepConstant on input 1 attenuates output pixel values relative to non-holdout baseline
+- Class: quality-attribute
+- Status: active
+- Description: A nuke -x test script connects a semi-transparent DeepConstant to the holdout input and writes EXR; pixel values should be lower than without holdout
+- Why it matters: Proves holdout transmittance attenuation works in a real Nuke render, not just in docker compilation
+- Source: inferred
+- Primary owning slice: M010-zkt9ww/S01
+- Supporting slices: none
+- Validation: unmapped
+- Notes: Validates R048 (holdout) end-to-end in Nuke
+
+### R062 — Camera link integration test: Camera2 node on input 2 overrides manual knob values
+- Class: quality-attribute
+- Status: active
+- Description: A nuke -x test script connects a Camera2 with non-default lens params and writes EXR; output should differ from default-knobs render
+- Why it matters: Proves CameraOp link actually overrides knobs at render time
+- Source: inferred
+- Primary owning slice: M010-zkt9ww/S01
+- Supporting slices: none
+- Validation: unmapped
+- Notes: Validates R052 (camera link) end-to-end in Nuke
+
+### R063 — CPU-only mode integration test: use_gpu false produces non-black EXR output
+- Class: quality-attribute
+- Status: active
+- Description: A nuke -x test script sets use_gpu false and produces non-black output, proving the CPU (rayon) fallback path works
+- Why it matters: Proves the GPU toggle added in quick task 1 actually works at render time
+- Source: inferred
+- Primary owning slice: M010-zkt9ww/S01
+- Supporting slices: none
+- Validation: unmapped
+- Notes: CPU fallback is critical for headless / GPU-less render farms
+
+### R064 — Empty input edge case test: DeepCOpenDefocus with zero-sample deep input writes black EXR without crashing
+- Class: quality-attribute
+- Status: active
+- Description: A nuke -x test script feeds an empty deep stream (zero samples) through DeepCOpenDefocus; node writes black EXR and exits 0
+- Why it matters: Guards against null-pointer or division-by-zero crashes on empty input
+- Source: inferred
+- Primary owning slice: M010-zkt9ww/S01
+- Supporting slices: none
+- Validation: unmapped
+- Notes: Edge case safety net
+
+### R065 — All test .nk scripts parse and execute without error under nuke -x, writing EXR files to test/output/
+- Class: quality-attribute
+- Status: active
+- Description: Every .nk file in test/ can be batch-rendered with nuke -x; all EXRs land in gitignored test/output/ directory
+- Why it matters: Test scripts must actually be runnable, not just syntactically valid .nk
+- Source: inferred
+- Primary owning slice: M010-zkt9ww/S01
+- Supporting slices: none
+- Validation: unmapped
+- Notes: test/output/ added to .gitignore
+
+### R066 — Single-pixel bokeh disc test: Constant(1,1,1,1) → Crop to 1px center → DeepFromImage(z=1) → DeepCOpenDefocus(focus_distance=10) renders a visible circle/disc in output EXR
+- Class: quality-attribute
+- Status: active
+- Description: A single bright pixel at depth 1 with focus plane at depth 10 should produce a visible bokeh disc in the output, proving the defocus kernel is spatially spreading energy
+- Why it matters: The most visually meaningful test — proves the convolution kernel actually works, not just that the node doesn't crash
+- Source: user
+- Primary owning slice: M010-zkt9ww/S01
+- Supporting slices: none
+- Validation: unmapped
+- Notes: Use larger format (e.g. 256x256) so the disc is visible; strong defocus (wide aperture, large focus distance offset)
+
 ## Validated
 
 ### R013 — `flatten(DeepCDepthBlur(input)) == flatten(input)` — sub-sample alphas computed via `α_sub = 1 - (1-α)^w` so that `1 - ∏(1-α_sub_i) = α_original`; premultiplied channels scale as `c * (α_sub / α)`. The node redistributes each sample's alpha across sub-samples using multiplicative decomposition, not additive scaling.
@@ -314,10 +391,17 @@ This file is the explicit capability and coverage contract for the project.
 | R057 | constraint | validated | M009-mso5fb/S01 | none | THIRD_PARTY_LICENSES.md contains: author Gilles Vink, source codeberg.org/gillesvink/opendefocus, EUPL-1.2 identifier, full EUPL-1.2 English license text. grep -c 'EUPL-1.2' THIRD_PARTY_LICENSES.md = 1. File size 17K confirms full text present. |
 | R058 | core-capability | validated | M009-mso5fb/S02 | none | Front-to-back alpha composite formula out_rgba[i] = layer[i] + (1 - layer_alpha) * accum[i] implemented in crates/opendefocus-deep/src/lib.rs. docker build exit 0; nm T opendefocus_deep_render; depth order from per-pixel sample sorting. |
 | R059 | anti-feature | out-of-scope | none | none | n/a |
+| R060 | quality-attribute | active | M010-zkt9ww/S01 | none | unmapped |
+| R061 | quality-attribute | active | M010-zkt9ww/S01 | none | unmapped |
+| R062 | quality-attribute | active | M010-zkt9ww/S01 | none | unmapped |
+| R063 | quality-attribute | active | M010-zkt9ww/S01 | none | unmapped |
+| R064 | quality-attribute | active | M010-zkt9ww/S01 | none | unmapped |
+| R065 | quality-attribute | active | M010-zkt9ww/S01 | none | unmapped |
+| R066 | quality-attribute | active | M010-zkt9ww/S01 | none | unmapped |
 
 ## Coverage Summary
 
-- Active requirements: 5
-- Mapped to slices: 5
+- Active requirements: 12
+- Mapped to slices: 12
 - Validated: 16 (R013, R017, R018, R046, R047, R048, R049, R050, R051, R052, R053, R054, R055, R056, R057, R058)
 - Unmapped active requirements: 0

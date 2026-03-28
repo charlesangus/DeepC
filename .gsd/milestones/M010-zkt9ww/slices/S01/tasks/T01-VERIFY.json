@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "taskId": "T01",
+  "unitId": "M010-zkt9ww/S01/T01",
+  "timestamp": 1774714644273,
+  "passed": true,
+  "discoverySource": "task-plan",
+  "checks": [
+    {
+      "command": "sh scripts/verify-s01-syntax.sh",
+      "exitCode": 0,
+      "durationMs": 738,
+      "verdict": "pass"
+    }
+  ]
+}

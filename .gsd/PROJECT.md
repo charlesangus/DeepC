@@ -33,3 +33,4 @@ See `.gsd/REQUIREMENTS.md` for the explicit capability contract, requirement sta
 - [x] M004-ks4br0: DeepCBlur correctness + DeepCDepthBlur — Fix premult colour comparison and overlap tidy in optimizer; new Z-axis depth spread node
 - [x] M005-9j5er8: DeepCDepthBlur correctness — Fix multiplicative alpha decomposition, zero-alpha filtering, input rename
 - [x] M009-mso5fb: DeepCOpenDefocus — GPU-accelerated deep defocus using forked opendefocus library, with holdout input and non-uniform bokeh artifacts
+- [x] M010-zkt9ww: DeepCOpenDefocus integration tests — 7 syntax-verified .nk test scripts covering multi-depth, holdout, camera link, CPU-only, empty input, and bokeh disc; use_gpu Bool_knob wired through full C++/FFI/Rust stack

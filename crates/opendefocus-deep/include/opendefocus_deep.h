@@ -54,12 +54,14 @@ extern "C" {
  * @param width        Image width in pixels.
  * @param height       Image height in pixels.
  * @param lens         Lens parameters for CoC computation; must be non-null.
+ * @param use_gpu      Non-zero to attempt GPU backend; 0 forces CPU-only path.
  */
 void opendefocus_deep_render(const DeepSampleData* data,
                              float*                output_rgba,
                              uint32_t              width,
                              uint32_t              height,
-                             const LensParams*     lens);
+                             const LensParams*     lens,
+                             int                   use_gpu);
 
 #ifdef __cplusplus
 }

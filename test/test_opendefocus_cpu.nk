@@ -1,10 +1,10 @@
-# Nuke script — DeepCOpenDefocus integration test
-# Produces a 128x72 defocused EXR from a synthetic deep constant image.
-# Run with: nuke -x test/test_opendefocus.nk
+# Nuke script — DeepCOpenDefocus CPU-only integration test (R063)
+# Forces CPU renderer via use_gpu false knob.
+# Run with: nuke -x test/test_opendefocus_cpu.nk
 
 Root {
  inputs 0
- name test_opendefocus
+ name test_opendefocus_cpu
  first_frame 1
  last_frame 1
  fps 24
@@ -31,6 +31,7 @@ DeepCOpenDefocus {
  fstop 2.8
  focus_distance 5.0
  sensor_size_mm 36
+ use_gpu false
 }
 
 Write {
@@ -38,7 +39,7 @@ Write {
  name Write1
  xpos 0
  ypos 200
- file test/output/test_opendefocus.exr
+ file test/output/cpu.exr
  file_type exr
  first_frame 1
  last_frame 1

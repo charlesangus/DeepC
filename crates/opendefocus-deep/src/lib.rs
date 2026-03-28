@@ -14,11 +14,8 @@
 //        e. Alpha-composite ("over") the rendered layer onto the accumulator.
 //   4. Write the accumulator to output_rgba.
 
-use std::sync::Mutex;
-
 use futures::executor::block_on;
 use ndarray::{Array2, Array3};
-use once_cell::sync::Lazy;
 use opendefocus::{
     OpenDefocusRenderer,
     datamodel::{
@@ -28,36 +25,6 @@ use opendefocus::{
         render::{FilterMode, Quality, RenderSpecs, ResultMode},
     },
 };
-
-// ---------------------------------------------------------------------------
-// Singleton renderer — initialised once, reused across all renderStripe calls.
-// Initialisation is async; we block the first call with block_on().
-// ---------------------------------------------------------------------------
-
-static RENDERER: Lazy<Mutex<Option<OpenDefocusRenderer>>> = Lazy::new(|| Mutex::new(None));
-
-fn get_renderer() -> OpenDefocusRenderer {
-    // We create a fresh renderer per call rather than storing inside a Lazy
-    // to avoid poisoning issues and because GPU init is cheap after the first
-    // wgpu instance is created in-process.  A per-frame singleton would
-    // require Arc<Mutex<…>> and is deferred to S03 optimisation.
-    let mut settings = Settings::default();
-    match block_on(OpenDefocusRenderer::new(true, &mut settings)) {
-        Ok(r) => {
-            if r.is_gpu() {
-                eprintln!("[opendefocus-deep] GPU backend active");
-            } else {
-                eprintln!("[opendefocus-deep] CPU fallback: rayon");
-            }
-            r
-        }
-        Err(e) => {
-            eprintln!("[opendefocus-deep] renderer init error: {e} — retrying CPU-only");
-            block_on(OpenDefocusRenderer::new(false, &mut settings))
-                .expect("OpenDefocusRenderer CPU init must not fail")
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // FFI types — must stay in sync with include/opendefocus_deep.h
@@ -123,6 +90,7 @@ pub extern "C" fn opendefocus_deep_render(
     width: u32,
     height: u32,
     lens: *const LensParams,
+    use_gpu: i32,
 ) {
     // -----------------------------------------------------------------------
     // 0. Null-guard + early-out for empty images.
@@ -210,9 +178,30 @@ pub extern "C" fn opendefocus_deep_render(
     let mut accum: Vec<f32> = vec![0.0f32; h * w * 4];
 
     // -----------------------------------------------------------------------
-    // 5. Initialise renderer (GPU with CPU fallback).
+    // 5. Initialise renderer — GPU if use_gpu != 0, CPU-only otherwise.
     // -----------------------------------------------------------------------
-    let renderer = get_renderer();
+    let mut settings_init = Settings::default();
+    let renderer = if use_gpu != 0 {
+        match block_on(OpenDefocusRenderer::new(true, &mut settings_init)) {
+            Ok(r) => {
+                if r.is_gpu() {
+                    eprintln!("[opendefocus-deep] GPU backend active");
+                } else {
+                    eprintln!("[opendefocus-deep] GPU requested but unavailable — CPU fallback");
+                }
+                r
+            }
+            Err(e) => {
+                eprintln!("[opendefocus-deep] GPU init error: {e} — falling back to CPU");
+                block_on(OpenDefocusRenderer::new(false, &mut settings_init))
+                    .expect("OpenDefocusRenderer CPU init must not fail")
+            }
+        }
+    } else {
+        eprintln!("[opendefocus-deep] use_gpu=0 — CPU-only path");
+        block_on(OpenDefocusRenderer::new(false, &mut settings_init))
+            .expect("OpenDefocusRenderer CPU init must not fail")
+    };
 
     // -----------------------------------------------------------------------
     // 6. Layer-peel loop.

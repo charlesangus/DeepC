@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "taskId": "T02",
+  "unitId": "M010-zkt9ww/S01/T02",
+  "timestamp": 1774714805085,
+  "passed": true,
+  "discoverySource": "task-plan",
+  "checks": [
+    {
+      "command": "ls test/test_opendefocus.nk test/test_opendefocus_multidepth.nk test/test_opendefocus_holdout.nk test/test_opendefocus_camera.nk test/test_opendefocus_cpu.nk test/test_opendefocus_empty.nk test/test_opendefocus_bokeh.nk",
+      "exitCode": 0,
+      "durationMs": 5,
+      "verdict": "pass"
+    },
+    {
+      "command": "grep 'test/output/' test/test_opendefocus.nk",
+      "exitCode": 0,
+      "durationMs": 5,
+      "verdict": "pass"
+    },
+    {
+      "command": "cat test/output/.gitignore",
+      "exitCode": 0,
+      "durationMs": 5,
+      "verdict": "pass"
+    }
+  ]
+}

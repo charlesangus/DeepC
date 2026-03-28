@@ -83,6 +83,7 @@ class DeepCOpenDefocus : public PlanarIop
     float _fstop;           ///< default 2.8
     float _focus_distance;  ///< scene units, default 5.0
     float _sensor_size_mm;  ///< mm, default 36
+    bool  _use_gpu;         ///< true = attempt GPU backend (default); false = force CPU
 
 public:
     DeepCOpenDefocus(Node* node)
@@ -90,7 +91,8 @@ public:
           _focal_length(50.0f),
           _fstop(2.8f),
           _focus_distance(5.0f),
-          _sensor_size_mm(36.0f)
+          _sensor_size_mm(36.0f),
+          _use_gpu(true)
     {
         inputs(3);
     }
@@ -147,6 +149,10 @@ public:
         Float_knob(f, &_sensor_size_mm, "sensor_size_mm", "Sensor Size (mm)");
         Tooltip(f, "Sensor width in millimetres (full-frame = 36 mm). "
                    "Overridden by a connected Camera node on input 2 (film_width × 10).");
+
+        Bool_knob(f, &_use_gpu, "use_gpu", "Use GPU");
+        Tooltip(f, "Enable GPU-accelerated defocus (default: on). "
+                   "Disable to force CPU-only path (slower but useful for debugging or headless renders).");
     }
 
     // ------------------------------------------------------------------
@@ -288,7 +294,8 @@ public:
                                 output_buf.data(),
                                 static_cast<uint32_t>(width),
                                 static_cast<uint32_t>(height),
-                                &lensParams);
+                                &lensParams,
+                                (int)_use_gpu);
 
         // -------------------------------------------------------------------
         // S03: Holdout transmittance attenuation

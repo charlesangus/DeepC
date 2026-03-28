@@ -372,13 +372,23 @@ done
 echo "All syntax checks passed."
 
 # --- S02 additions: verify test artifacts exist ---
-NK_TEST="${SCRIPT_DIR}/../test/test_opendefocus.nk"
-if [ -f "$NK_TEST" ]; then
-    echo "test/test_opendefocus.nk exists — OK"
-else
-    echo "ERROR: test/test_opendefocus.nk not found" >&2
-    exit 1
-fi
+for nk_file in \
+    test_opendefocus.nk \
+    test_opendefocus_multidepth.nk \
+    test_opendefocus_holdout.nk \
+    test_opendefocus_camera.nk \
+    test_opendefocus_cpu.nk \
+    test_opendefocus_empty.nk \
+    test_opendefocus_bokeh.nk
+do
+    NK_TEST="${SCRIPT_DIR}/../test/${nk_file}"
+    if [ -f "$NK_TEST" ]; then
+        echo "test/${nk_file} exists — OK"
+    else
+        echo "ERROR: test/${nk_file} not found" >&2
+        exit 1
+    fi
+done
 
 # --- Optional: clang header syntax check ---
 if command -v clang >/dev/null 2>&1; then

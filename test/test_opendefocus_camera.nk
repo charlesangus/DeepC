@@ -1,20 +1,33 @@
-# Nuke script — DeepCOpenDefocus integration test
-# Produces a 128x72 defocused EXR from a synthetic deep constant image.
-# Run with: nuke -x test/test_opendefocus.nk
+# Nuke script — DeepCOpenDefocus camera link integration test (R062)
+# Camera2 drives focal/fstop/focus_distance; null holdout via push 0.
+# Run with: nuke -x test/test_opendefocus_camera.nk
 
 Root {
  inputs 0
- name test_opendefocus
+ name test_opendefocus_camera
  first_frame 1
  last_frame 1
  fps 24
  format "128 72 0 0 128 72 1 DeepTest128x72"
 }
 
+Camera2 {
+ inputs 0
+ name Camera1
+ xpos 0
+ ypos 0
+ focal 35
+ haperture 2.4
+ fstop 1.4
+ focal_point 200
+}
+
+push 0
+
 DeepConstant {
  inputs 0
  name DeepConstant1
- xpos 0
+ xpos 150
  ypos 0
  format "128 72 0 0 128 72 1 DeepTest128x72"
  color {0.5 0.5 0.5 1.0}
@@ -23,9 +36,9 @@ DeepConstant {
 }
 
 DeepCOpenDefocus {
- inputs 1
+ inputs 3
  name DeepCOpenDefocus1
- xpos 0
+ xpos 75
  ypos 100
  focal_length 50
  fstop 2.8
@@ -36,9 +49,9 @@ DeepCOpenDefocus {
 Write {
  inputs 1
  name Write1
- xpos 0
+ xpos 75
  ypos 200
- file test/output/test_opendefocus.exr
+ file test/output/camera.exr
  file_type exr
  first_frame 1
  last_frame 1
