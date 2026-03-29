@@ -38,6 +38,28 @@ typedef struct DeepSampleData {
     uint32_t        total_samples;
 } DeepSampleData;
 
+/**
+ * HoldoutData — holdout transmittance map.
+ *
+ * Each pixel i encodes two (depth, T) breakpoints:
+ *   data[i*4 + 0] = d0   (near depth breakpoint)
+ *   data[i*4 + 1] = T0   (transmittance at d0)
+ *   data[i*4 + 2] = d1   (far depth breakpoint)
+ *   data[i*4 + 3] = T1   (transmittance beyond d1)
+ *
+ * Pixels with no holdout should encode [0.0, 1.0, 0.0, 1.0] (T=1 everywhere).
+ * A null data pointer with len=0 means no holdout (equivalent to T=1 for all).
+ *
+ * The layout MUST stay in sync with `src/lib.rs`.
+ */
+typedef struct HoldoutData {
+    /** Flat float array: width*height*4 values encoding (d0,T0,d1,T1) per pixel.
+     *  May be null when len is 0. */
+    const float* data;
+    /** Number of floats in data; must be width*height*4 or 0. */
+    uint32_t     len;
+} HoldoutData;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -62,6 +84,30 @@ void opendefocus_deep_render(const DeepSampleData* data,
                              uint32_t              height,
                              const LensParams*     lens,
                              int                   use_gpu);
+
+/**
+ * Render deep-defocus with holdout transmittance attenuation.
+ *
+ * Identical to opendefocus_deep_render but applies per-pixel holdout
+ * transmittance from the holdout map to attenuate gathered samples, enabling
+ * depth-correct compositing with holdout mattes.
+ *
+ * @param data         Valid pointer to DeepSampleData (same as opendefocus_deep_render).
+ * @param output_rgba  Output buffer; at least width * height * 4 floats.
+ * @param width        Image width in pixels.
+ * @param height       Image height in pixels.
+ * @param lens         Lens parameters for CoC computation; must be non-null.
+ * @param use_gpu      Non-zero to attempt GPU backend; 0 forces CPU-only path.
+ * @param holdout      Holdout transmittance map; may be null (equivalent to no holdout).
+ *                     When non-null, holdout->len must be width*height*4 or 0.
+ */
+void opendefocus_deep_render_holdout(const DeepSampleData* data,
+                                     float*                output_rgba,
+                                     uint32_t              width,
+                                     uint32_t              height,
+                                     const LensParams*     lens,
+                                     int                   use_gpu,
+                                     const HoldoutData*    holdout);
 
 #ifdef __cplusplus
 }

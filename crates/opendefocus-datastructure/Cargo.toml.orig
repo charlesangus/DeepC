@@ -1,0 +1,42 @@
+[package]
+name = "opendefocus-datastructure"
+description = "OpenDefocus protobuf datastructure"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+documentation.workspace = true
+homepage.workspace = true
+categories.workspace = true
+publish = true
+readme = "README.md"
+
+[features]
+std = ["glam/default"]
+libm = ["glam/libm"]
+documented = ["dep:documented"]
+protobuf-vendored = ["dep:protobuf-src", "bokeh-creator/protobuf-vendored", "circle-of-confusion/protobuf-vendored"]
+
+[dependencies]
+bytemuck = { version = "1.24", features = ["derive"] }
+glam = { version = "0.30", default-features = false, features = ["bytemuck"] }
+prost = { version = ">=0.14, < 0.15" }
+prost-types = { version = ">=0.14, < 0.15" }
+documented = { version = "0.9", optional = true }
+
+circle-of-confusion = { version = "0.2.7"}
+bokeh-creator = { version = "0.1.17", default-features = false}
+
+opendefocus-shared = { path = "../opendefocus-shared", version = "=0.1.10" }
+
+[lints]
+workspace = true
+
+
+[build-dependencies]
+cargo_metadata = "0.23.1"
+prost-build = "0.14.1"
+protobuf-src = {version = "2", optional = true}
+duct = "1.1.1"

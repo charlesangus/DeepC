@@ -1,0 +1,257 @@
+
+syntax = "proto2";
+
+package opendefocus;
+
+import "circle_of_confusion.proto";
+import "bokeh_creator.proto";
+
+
+// Vector containing 4 i32's
+message IVector4 {
+  // x
+  required int32 x = 10;
+  // y
+  required int32 y = 20;
+  // z
+  required int32 z = 30;
+  // w
+  required int32 w = 40;
+}
+
+// Vector containing 2 u32's
+message UVector2 {
+  // x
+  required uint32 x = 10;
+  // y
+  required uint32 y = 20;
+}
+
+// Vector containing 2 floats
+message Vector2 {
+  // x
+  required float x = 10;
+  // y
+  required float y = 20;
+}
+
+message Defocus {
+
+
+  enum DefocusMode {
+    // Simple 2d convolution
+    TWOD = 0;
+    // Convolution by distance
+    DEPTH = 1;
+  }
+
+  // Settings that define the defocus calculation.
+  message Settings {
+    // Render 2d or use depth
+    required DefocusMode defocus_mode = 20 [default = TWOD];
+    // Circle of confusion settings
+    required circle_of_confusion.Settings circle_of_confusion = 30;
+    // Flag indicating whether to show the image
+    required bool show_image = 40 [ default = false ];
+    // Maximum size for camera-based defocus
+    required float camera_max_size = 50 [ default = 10.0 ];
+    // Flag indicating whether to use camera focal distance
+    required bool use_camera_focal = 60 [ default = true ];
+    // Flag indicating wheter to directly use the input depth
+    required bool use_direct_math = 70 [default = false];
+    // Flag indicating whether to use camera focal distance
+    required float focal_plane_offset = 80 [ default = 0.0 ];
+    // Size multiplier for defocus
+    required float size_multiplier = 90 [ default = 1.0 ];
+    // Proxy scale factor
+    optional float proxy_scale = 100 [ default = 1.0 ];
+    // Gamma correction to boost bokehs
+    required float gamma_correction = 110 [ default = 1.0 ];
+  }
+}
+
+message NonUniform {
+
+  // Artifact that causes the bokeh shape to be cut by the distance to the
+  // center of the lens.
+  message Catseye {
+    // Flag indicating whether the catseye effect is enabled
+    required bool enable = 10 [ default = false ];
+    // Amount of the catseye effect
+    required float amount = 20 [ default = 0.5 ];
+    // Gamma correction for the effect
+    required float gamma = 30 [ default = 1.0 ];
+    // Softness of the effect edges
+    required float softness = 40 [ default = 0.2 ];
+    // Flag indicating whether to invert the effect
+    required bool inverse = 50 [ default = false ];
+    // Flag indicating whether to invert the effect for foreground
+    required bool inverse_foreground = 60 [ default = true ];
+    // Flag indicating whether the effect should be relative to screen size
+    required bool relative_to_screen = 70 [ default = false ];
+  }
+
+  // Color combination for axial aberration.
+  enum AxialAberrationType {
+    // Red and blue color combination
+    RED_BLUE = 0;
+    // Blue and yellow color combination
+    BLUE_YELLOW = 1;
+    // Green and purple color combination
+    GREEN_PURPLE = 2;
+  }
+
+  // Artifact that is caused by the light rays entering the lens at a different
+  // rate at different focal distances.
+  message AxialAberration {
+    // Flag indicating whether axial aberration is enabled
+    required bool enable = 10 [ default = false ];
+    // Amount of the axial aberration effect
+    required float amount = 20 [ default = 0.5 ];
+    // Color type for the aberration
+    required AxialAberrationType color_type = 30;
+  }
+
+  // Artifact that is caused by light being blocked on the lens by matte boxes.
+  //
+  // This struct represents barndoors, which simulates physical obstacles
+  // that partially block light from reaching the lens.
+  message Barndoors {
+    // Flag indicating whether barndoors are enabled
+    required bool enable = 10 [ default = false ];
+    // Amount of the barndoors effect
+    required float amount = 20 [ default = 0.5 ];
+    // Gamma correction for the effect
+    required float gamma = 30 [ default = 1.0 ];
+    // Flag indicating whether to invert the effect
+    required bool inverse = 40 [ default = false ];
+    // Flag indicating whether to invert the effect for foreground
+    required bool inverse_foreground = 50 [ default = true ];
+    // Top position of the barndoors
+    required float top = 60 [ default = 100.0 ];
+    // Bottom position of the barndoors
+    required float bottom = 70 [ default = 100.0 ];
+    // Left position of the barndoors
+    required float left = 80 [ default = 100.0 ];
+    // Right position of the barndoors
+    required float right = 90 [ default = 100.0 ];
+  }
+
+  // Artifact that causes the kernel shape to be stretched more towards the edge
+  // of the image.
+  message Astigmatism {
+    // Flag indicating whether astigmatism is enabled
+    required bool enable = 10 [ default = false ];
+    // Amount of the astigmatism effect
+    required float amount = 20 [ default = 0.5 ];
+    // Gamma correction for the effect
+    required float gamma = 30 [ default = 1.0 ];
+  }
+
+  // Combination struct of all non uniform settings.
+  //
+  // These artifacts replicate unique artifacts,
+  // that are different according to the position of the convolution.
+  message Settings {
+    // Catseye effect settings
+    required Catseye catseye = 10;
+    // Axial aberration settings
+    required AxialAberration axial_aberration = 20;
+    // Astigmatism settings
+    required Astigmatism astigmatism = 30;
+    // Barndoors settings
+    required Barndoors barndoors = 40;
+    // Flag indicating whether to invert effects for foreground
+    required bool inverse_foreground = 50 [ default = true ];
+  }
+}
+
+message Render {
+
+  // Quality level for rendering
+  enum Quality {
+    // Low quality (fastest, lowest quality)
+    LOW = 0;
+    // Medium quality (balanced performance and quality)
+    MEDIUM = 1;
+    // High quality (slowest, highest quality)
+    HIGH = 2;
+    // Custom quality (user-defined settings)
+    CUSTOM = 3;
+  }
+
+  enum FilterMode {
+    // Simple is the most lightweight, as its calculated without much effort on the fly
+    SIMPLE = 0;
+    // Generate using the bokeh creator
+    BOKEH_CREATOR = 1;
+    // Image mode that uses the input image for convolution filter
+    IMAGE = 3;
+  }
+
+  // Filter settings
+  message Filter {
+    // Render the filter only
+    required bool preview = 1 [ default = false ];
+    // Filter resolution
+    required uint32 resolution = 3 [ default = 256 ];
+    // Filter mode that will be used as convolution filter.
+    required FilterMode mode = 4 [default = SIMPLE];
+  }
+
+  // Render mode to use as output
+  enum ResultMode {
+    // Standard defocus result
+    RESULT = 0;
+    // Focal plane setup visualization
+    FOCAL_PLANE_SETUP = 1;
+  }
+
+  // Rendering settings
+  message Settings {
+      // Render mode to use as output
+    required ResultMode result_mode = 10;
+    // Resolution of the render (width, height)
+    required UVector2 resolution = 20;
+    // Center point of the render
+    required Vector2 center = 30;
+    // Quality level for rendering
+    required Quality quality = 40 [ default = LOW ];
+    // Quality level for farm rendering (background processing)
+    required Quality farm_quality = 50 [ default = HIGH ];
+    // Number of samples to use for rendering
+    required int32 samples = 60 [ default = 20 ];
+    // Flag indicating whether GUI components should be used
+    required bool gui = 70 [ default = true ];
+    // Flag indicating whether to invert the Y axis
+    required bool inverse_y = 80 [ default = false ];
+    // Flag indicating whether to use GPU if available
+    required bool use_gpu_if_available = 90 [ default = true ];
+    // Settings to specify how to render the filter
+    required Filter filter = 100;
+    // Stop rendering after this time
+    optional uint32 timeout = 110 [default = 60];
+    // Device name used for rendering
+    optional string device_name = 120 [default = "CPU - Native"];
+  }
+
+  // Rendering specifications
+  message RenderSpecs {
+    // Full region to be processed (x, y, width, height)
+    required IVector4 full_region = 10;
+    // Region to be rendered (x, y, width, height)
+    required IVector4 render_region = 20;
+  }
+}
+
+// Settings object that contains all OpenDefocus settings.
+message Settings {
+  // Bokeh settings
+  required bokeh_creator.Settings bokeh = 10;
+  // Defocus settings
+  required Defocus.Settings defocus = 20;
+  // Non-uniform defocus settings
+  required NonUniform.Settings non_uniform = 30;
+  // Rendering settings
+  required Render.Settings render = 40;
+}

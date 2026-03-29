@@ -1,5 +1,18 @@
-# Nuke script — DeepCOpenDefocus holdout integration test (R061)
-# Two deep layers: holdout (alpha 0.5, front 3.0) and subject (front 5.0).
+# Nuke script — DeepCOpenDefocus holdout integration test (depth-selective)
+# Three deep layers:
+#   holdout  — black, alpha=0.5, front=3.0 (the holdout layer)
+#   back     — red,   alpha=1.0, front=5.0 (behind holdout → attenuated by T≈0.5)
+#   front    — green, alpha=1.0, front=2.0 (in front of holdout → passes through uncut)
+#
+# Stack LIFO ordering:
+#   DeepCConstant_holdout  (pushed first)
+#   DeepCConstant_back     (pushed second)
+#   DeepCConstant_front    (pushed third)
+#   DeepMerge { inputs 2 } — consumes front (input0) and back (input1)
+#                            stack after: [merge, holdout]
+#   DeepCOpenDefocus { inputs 2 } — merge=input0, holdout=input1
+#   Write { inputs 1 }     → test/output/holdout_depth_selective.exr
+#
 # Run with: nuke -x test/test_opendefocus_holdout.nk
 
 Root {
@@ -24,20 +37,38 @@ DeepCConstant {
 
 DeepCConstant {
  inputs 0
- name DeepCConstant_subject
+ name DeepCConstant_back
  xpos 150
  ypos 0
  format "128 72 0 0 128 72 1 DeepTest128x72"
- color_front {0.5 0.5 0.5 1.0}
+ color_front {1.0 0.0 0.0 1.0}
  front 5.0
  back 5.5
+}
+
+DeepCConstant {
+ inputs 0
+ name DeepCConstant_front
+ xpos 300
+ ypos 0
+ format "128 72 0 0 128 72 1 DeepTest128x72"
+ color_front {0.0 1.0 0.0 1.0}
+ front 2.0
+ back 2.5
+}
+
+DeepMerge {
+ inputs 2
+ name DeepMerge1
+ xpos 225
+ ypos 100
 }
 
 DeepCOpenDefocus {
  inputs 2
  name DeepCOpenDefocus1
- xpos 75
- ypos 100
+ xpos 112
+ ypos 200
  focal_length 50
  fstop 2.8
  focus_distance 5.0
@@ -47,9 +78,9 @@ DeepCOpenDefocus {
 Write {
  inputs 1
  name Write1
- xpos 75
- ypos 200
- file test/output/holdout.exr
+ xpos 112
+ ypos 300
+ file test/output/holdout_depth_selective.exr
  file_type exr
  first 1
  last 1

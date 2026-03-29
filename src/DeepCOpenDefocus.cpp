@@ -16,10 +16,10 @@
 //
 //  Pipeline (renderStripe):
 //    1. Flatten input 0 deep samples to C arrays.
-//    2. Call opendefocus_deep_render() → fills output_buf with flat RGBA.
-//    3. [S03] If input 1 connected: apply holdout transmittance attenuation
-//       in-place on output_buf.
-//    4. Copy output_buf to the output ImagePlane.
+//    2a. If input 1 connected: build HoldoutData via buildHoldoutData(),
+//        call opendefocus_deep_render_holdout() — depth-correct holdout.
+//    2b. If input 1 not connected: call opendefocus_deep_render() unchanged.
+//    3. Copy output_buf to the output ImagePlane.
 //
 //  Knobs:
 //    focal_length   — lens focal length (mm); overridden by camera link
@@ -55,25 +55,72 @@ static const char* const HELP  =
     "Part of the DeepC plugin collection.";
 
 // ---------------------------------------------------------------------------
-// Compute holdout transmittance for a single pixel's deep samples.
+// Build a flat HoldoutData buffer from a deep plane.
 //
-// T = product of (1 - alpha_s) for each sample in the DeepPixel, regardless
-// of depth order.  Returns a value in [0, 1]: 0 means fully occluded,
-// 1 means fully transparent (no holdout geometry).
+// Iterates pixels in y-outer × x-inner scan order (matching the sample
+// flatten loop in renderStripe).  For each pixel sorts samples front-to-back
+// by Chan_DeepFront, computes transmittance T = product(1 - clamp(alpha,0,1)),
+// and encodes as [d_front, T, d_back, T] into the result vector.
+// Pixels with no samples encode [0.0, 1.0, 0.0, 1.0] (fully transparent).
 //
-// Exposed as a free function for unit-testability without a live render.
+// Returns a flat float vector of size width * height * 4, ready to wrap in
+// a HoldoutData FFI struct.
 // ---------------------------------------------------------------------------
-static float computeHoldoutTransmittance(const DD::Image::DeepPixel& dp)
+static std::vector<float> buildHoldoutData(
+    const DD::Image::DeepPlane& plane,
+    const DD::Image::Box&       bounds,
+    int w, int h)
 {
-    float T = 1.0f;
-    const int nSamples = dp.getSampleCount();
-    for (int s = 0; s < nSamples; ++s) {
-        const float alpha = dp.getUnorderedSample(s, DD::Image::Chan_Alpha);
-        // clamp to [0, 1] to guard against over-bright / negative samples
-        const float a = (alpha < 0.0f) ? 0.0f : (alpha > 1.0f ? 1.0f : alpha);
-        T *= (1.0f - a);
+    std::vector<float> result;
+    result.reserve(static_cast<size_t>(w) * static_cast<size_t>(h) * 4u);
+
+    for (int y = bounds.y(); y < bounds.t(); ++y) {
+        for (int x = bounds.x(); x < bounds.r(); ++x) {
+            DD::Image::DeepPixel px = plane.getPixel(y, x);
+            const int nSamples = px.getSampleCount();
+
+            if (nSamples == 0) {
+                // No holdout geometry at this pixel — T=1 everywhere
+                result.push_back(0.0f);
+                result.push_back(1.0f);
+                result.push_back(0.0f);
+                result.push_back(1.0f);
+                continue;
+            }
+
+            // Build (depth, alpha) pairs sorted front-to-back
+            std::vector<std::pair<float, float>> samples;
+            samples.reserve(static_cast<size_t>(nSamples));
+            for (int s = 0; s < nSamples; ++s) {
+                const float d = px.getUnorderedSample(s, DD::Image::Chan_DeepFront);
+                const float a = px.getUnorderedSample(s, DD::Image::Chan_Alpha);
+                samples.push_back({d, a});
+            }
+            std::sort(samples.begin(), samples.end(),
+                      [](const std::pair<float,float>& lhs,
+                         const std::pair<float,float>& rhs) {
+                          return lhs.first < rhs.first;
+                      });
+
+            // Accumulate transmittance front-to-back
+            float T = 1.0f;
+            for (const auto& s : samples) {
+                const float a = (s.second < 0.0f) ? 0.0f
+                              : (s.second > 1.0f  ? 1.0f : s.second);
+                T *= (1.0f - a);
+            }
+
+            const float d_front = samples.front().first;
+            const float d_back  = samples.back().first;
+
+            result.push_back(d_front);
+            result.push_back(T);
+            result.push_back(d_back);
+            result.push_back(T);
+        }
     }
-    return T;
+
+    return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -214,10 +261,12 @@ public:
     //   2. Request RGBA + DeepFront deep plane for the output bounds.
     //   3. Flatten per-pixel sample data into three contiguous arrays
     //      (sample_counts, rgba_flat, depth_flat) required by the FFI struct.
-    //   4. Call opendefocus_deep_render() — GPU layer-peel defocus via Rust.
-    //   5. [S03] If input 1 (holdout) is connected: apply per-pixel holdout
-    //      transmittance attenuation to the defocused output_buf in-place.
-    //   6. Copy output_buf to the output ImagePlane.
+    //   4a. If input 1 (holdout) is connected: build a HoldoutData buffer via
+    //       buildHoldoutData() and call opendefocus_deep_render_holdout() for
+    //       depth-correct holdout — GPU layer-peel defocus via Rust.
+    //   4b. If input 1 is not connected: call opendefocus_deep_render()
+    //       unchanged.
+    //   5. Copy output_buf to the output ImagePlane.
     // ------------------------------------------------------------------
     void renderStripe(ImagePlane& output) override
     {
@@ -325,51 +374,35 @@ public:
         lensParams.focus_distance  = fd;
         lensParams.sensor_size_mm  = ssz;
 
-        // Call Rust FFI — GPU layer-peel defocus; fills output_buf with flat RGBA
-        opendefocus_deep_render(&sampleData,
-                                output_buf.data(),
-                                static_cast<uint32_t>(width),
-                                static_cast<uint32_t>(height),
-                                &lensParams,
-                                (int)_use_gpu);
-
-        // -------------------------------------------------------------------
-        // S03: Holdout transmittance attenuation
-        //
-        // If input 1 is a connected DeepOp, fetch its deep plane and compute
-        // per-pixel transmittance T = product(1 - alpha_s).  Multiply all
-        // four channels of the defocused output by T so that pixels behind
-        // holdout geometry are attenuated proportionally to the holdout alpha
-        // coverage.  The holdout deep input is never defocused itself.
-        // -------------------------------------------------------------------
+        // Call Rust FFI — GPU layer-peel defocus; fills output_buf with flat RGBA.
+        // If a holdout input is connected, use the depth-correct holdout path.
         DeepOp* holdoutIn = dynamic_cast<DeepOp*>(Op::input(1));
         if (holdoutIn) {
             ChannelSet holdoutChans;
             holdoutChans += Chan_Alpha;
-            holdoutChans += Chan_DeepFront;  // needed by deepEngine for ordering
+            holdoutChans += Chan_DeepFront;  // required for depth ordering
 
             DeepPlane holdoutPlane;
             holdoutIn->deepEngine(bounds, holdoutChans, holdoutPlane);
 
-            int pixIdx = 0;
-            for (int y = bounds.y(); y < bounds.t(); ++y) {
-                for (int x = bounds.x(); x < bounds.r(); ++x) {
-                    DeepPixel hp = holdoutPlane.getPixel(y, x);
-                    const float T = computeHoldoutTransmittance(hp);
+            std::vector<float> holdout_flat = buildHoldoutData(holdoutPlane, bounds, width, height);
+            HoldoutData holdout_ffi;
+            holdout_ffi.data = holdout_flat.data();
+            holdout_ffi.len  = static_cast<uint32_t>(holdout_flat.size());
 
-                    // output_buf layout: R G B A per pixel, 4 floats each
-                    const int base = pixIdx * 4;
-                    output_buf[base + 0] *= T;
-                    output_buf[base + 1] *= T;
-                    output_buf[base + 2] *= T;
-                    output_buf[base + 3] *= T;
-
-                    ++pixIdx;
-                }
-            }
+            opendefocus_deep_render_holdout(&sampleData, output_buf.data(),
+                static_cast<uint32_t>(width), static_cast<uint32_t>(height),
+                &lensParams, (int)_use_gpu, &holdout_ffi);
 
             fprintf(stderr, "DeepCOpenDefocus: holdout attenuation applied (%d pixels)\n",
                     static_cast<int>(pixelCount));
+        } else {
+            opendefocus_deep_render(&sampleData,
+                                    output_buf.data(),
+                                    static_cast<uint32_t>(width),
+                                    static_cast<uint32_t>(height),
+                                    &lensParams,
+                                    (int)_use_gpu);
         }
 
         // -------------------------------------------------------------------

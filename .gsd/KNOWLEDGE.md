@@ -294,3 +294,52 @@ Placing `*.exr\n*.tmp` in `test/output/.gitignore` (not the root `.gitignore`) k
 **Context:** `test_opendefocus_multidepth.nk` (T02, S01, M010)
 
 For multi-depth layer peel testing, `DeepMerge` with `operation plus` (additive) is the correct operation to combine discrete depth layers that don't overlap. Using the default `over` operation would composite the layers by alpha, collapsing depth ordering information. For testing the layer-peel algorithm specifically, additive compositing preserves each layer's full RGBA at its discrete depth.
+
+## opendefocus Fork Setup — M011-qa62vv Patterns
+
+### [patch.crates-io] is the cleanest way to redirect published crates to local paths
+**Context:** T01, S01, M011-qa62vv
+
+When forking a family of published crates to workspace path dependencies, use `[patch.crates-io]` in the workspace root `Cargo.toml` rather than editing each crate's normalized manifest. This preserves the extracted manifests exactly as published and keeps the workspace redirect in one place. The `[patch]` section redirects all consumers of the registry dep to the local path automatically — no per-dep `path = ".."` changes needed in each manifest.
+
+### Rust 1.94.1 required; system Rust 1.75 fails on edition 2024 manifests in transitive deps
+**Context:** T01, S01, M011-qa62vv
+
+System Rust 1.75 in this environment cannot parse `edition = "2024"` manifests that appear in transitive dependencies downloaded at `cargo check` time. Installing Rust 1.94.1 via rustup is required before running any cargo command against the opendefocus crate family. Install with: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.94.1`. The PATH must include `$HOME/.cargo/bin` on every subsequent cargo invocation.
+
+### PROTOC env var is required for every cargo command touching opendefocus-datastructure
+**Context:** T01, S01, M011-qa62vv
+
+`opendefocus-datastructure` uses `prost-build` which requires a `protoc` binary. The system package manager cannot install it without root. Fetch from GitHub releases: `curl -L https://github.com/protocolbuffers/protobuf/releases/download/v29.3/protoc-29.3-linux-x86_64.zip -o /tmp/protoc.zip && unzip -q /tmp/protoc.zip -d /tmp/protoc_dir`. Then prefix every cargo command: `PROTOC=/tmp/protoc_dir/bin/protoc cargo ...`. The binary lives in `/tmp` and must be re-fetched if `/tmp` is cleared. Consider adding it to a persistent location.
+
+### Holdout breakpoints are scene depths; kernel gather loop uses CoC pixels — never compare them directly
+**Context:** T04, S01, M011-qa62vv — critical bug discovered and fixed
+
+The initial T02 implementation placed holdout attenuation inside `calculate_ring` (the kernel gather loop) using `sample.coc` as the depth proxy. This is wrong: `sample.coc` is a circle-of-confusion radius in pixels, but holdout breakpoints are encoded as real scene depths (e.g. `d0 = 3.0` units). Comparing them produces no attenuation whatsoever — the bug is silent. The fix: apply holdout transmittance in `render_impl` during the layer-peel loop (before samples are handed to the renderer), where both sample `z` values and holdout breakpoints are in scene-depth space. The kernel's `apply_holdout_attenuation` code in `ring.rs` is now effectively dead when called from `opendefocus-deep` (it always receives an empty holdout slice). Do NOT resurrect it for depth-correct holdout without first resolving the CoC-vs-scene-depth unit mismatch.
+
+### Double-attenuation hazard: pass empty holdout to render_stripe when already applying in render_impl
+**Context:** T04, S01, M011-qa62vv
+
+`render_impl` applies holdout transmittance during layer extraction, then calls `render_stripe` with `holdout: &[]` (empty). If you ever change `render_stripe` to accept and use a non-empty holdout, both paths will attenuate the same samples twice, silently halving or squaring the transmittance. The architecture is: exactly one layer applies holdout — currently `render_impl`. Document this invariant in code comments when modifying either site.
+
+## opendefocus Holdout C++ Integration — M011-qa62vv Patterns
+
+### buildHoldoutData() scan order must match the Rust kernel flatten loop scan order
+**Context:** T01, S02, M011-qa62vv
+
+`buildHoldoutData()` in `DeepCOpenDefocus.cpp` iterates pixels in y-outer × x-inner scan order to pack per-pixel `[d_front, T, d_back, T]` quads into the `HoldoutData` array. This order **must** match the flatten loop scan order used inside the Rust `render_impl` to index into the holdout slice. If the scan orders diverge (e.g. one iterates x-outer and the other y-outer), the wrong holdout values are silently assigned to wrong pixels — no crash, incorrect attenuation. Always keep both sides in sync when refactoring either loop.
+
+### HoldoutData FFI layout: T is scalar transmittance duplicated at indices 1 and 3
+**Context:** T01, S02, M011-qa62vv
+
+`HoldoutData` packs `[d_front, T, d_back, T]` quads per pixel. T at index 1 and T at index 3 are identical (duplicated). The Rust `holdout_transmittance()` function reads index 1 as the scalar transmittance for the whole pixel. The duplication is an implementation detail of the FFI layout — do not assign different T values to indices 1 and 3 unless you change the Rust reader to use them separately.
+
+### Post-defocus scalar multiply is wrong for holdout; pre-render dispatch is required
+**Context:** T01, S02, M011-qa62vv — replaced an architecturally incorrect pattern
+
+The pre-M011 `renderStripe()` applied holdout as a post-defocus scalar multiply on the output RGBA. This is wrong: the opendefocus gather loop had already scattered samples across the full bokeh disc without knowledge of holdout geometry. The result: holdout edges are blurred by the bokeh spread. Correct approach: call `buildHoldoutData()` + `opendefocus_deep_render_holdout()` **before** the gather loop runs, so each gathered sample is attenuated by T(output_pixel, sample_depth) at collection time. The Rust kernel then accumulates already-attenuated samples — producing sharp holdout edges even for large CoC discs.
+
+### Nuke stack ordering is LIFO: push holdout first for [merge, holdout] DeepCOpenDefocus inputs
+**Context:** T02, S02, M011-qa62vv
+
+In Nuke `.nk` files, node inputs are assigned in LIFO (last-pushed = input 0). To produce `DeepCOpenDefocus` with input 0 = deep merge result and input 1 = holdout, push nodes in this order: (1) holdout node, (2) red/back subject, (3) green/front subject. `DeepMerge {inputs 2}` then consumes the top two (back and front), leaving `[merge_result, holdout]` on the stack for the subsequent `DeepCOpenDefocus {inputs 2}`. Wrong stack ordering silently produces wrong input wire assignments.

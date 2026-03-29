@@ -1,0 +1,86 @@
+[package]
+name = "opendefocus"
+description = "An advanced open-source convolution library for image post-processing"
+version.workspace = true
+readme.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+documentation.workspace = true
+homepage.workspace = true
+categories.workspace = true
+publish = true
+
+[lib]
+name = "opendefocus"
+path = "src/lib.rs"
+crate-type = ["staticlib", "dylib", "rlib"]
+
+[features]
+default = ["std", "wgpu"]
+documented = [
+    "opendefocus-datastructure/documented",
+    "bokeh-creator/documented",
+    "circle-of-confusion/documented",
+]
+std = [
+    "glam/default",
+    "num-traits/std",
+    "opendefocus-shared/std",
+    "opendefocus-kernel/std",
+    "opendefocus-datastructure/std",
+]
+libm = [
+    "glam/libm",
+    "num-traits/libm",
+    "opendefocus-shared/libm",
+    "opendefocus-kernel/libm",
+    "opendefocus-datastructure/libm",
+]
+wgpu = ["dep:wgpu", "std"]
+protobuf-vendored = ["opendefocus-datastructure/protobuf-vendored"]
+
+[dependencies]
+bytemuck = { version = "1.24", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["rayon"] }
+libc = "0.2"
+ndarray = { version = "0.16", features = ["rayon"] }
+glam = { version = "0.30", default-features = false, features = ["bytemuck"] }
+log = "0.4"
+rayon = "1.10"
+resize = "0.8"
+thiserror = "2.0"
+wgpu = { version = "28", default-features = false, features = [
+    "metal",
+    "vulkan",
+    "wgsl",
+    "spirv",
+    "vulkan-portability",
+], optional = true }
+circle-of-confusion = { version = "0.2" }
+bokeh-creator = { version = ">=0.1.15, < 0.2", default-features = false, features = [
+    "image",
+] }
+inpaint = { version = ">=0.1.7, < 0.2" }
+image-ndarray = ">= 0.1.4, < 0.2"
+
+opendefocus-shared = { path = "../opendefocus-shared", version = "=0.1.10" }
+opendefocus-kernel = { path = "../opendefocus-kernel", version = "=0.1.10" }
+opendefocus-datastructure = { path = "../opendefocus-datastructure", version = "=0.1.10" }
+num-traits = { version = "0.2", default-features = false }
+rgb = "0.8"
+prost = { version = ">=0.14, < 0.15" }
+serde = { version = ">=1.0, < 1.1", features = ["derive"], optional = true }
+futures = "0.3"
+
+
+[dev-dependencies]
+assert_approx_eq = "1.1"
+image-compare = "0.4"
+rstest = "0.26"
+image = { version = "0.25", features = ["rayon"] }
+tokio  = {version = "1.0", features = ["full"]}
+tokio-test = "0.4.4"
+anyhow = "1.0"

@@ -1,3 +1,15 @@
 [workspace]
-members = ["crates/opendefocus-deep"]
+members = [
+    "crates/opendefocus-deep",
+    "crates/opendefocus-kernel",
+    "crates/opendefocus",
+    "crates/opendefocus-shared",
+    "crates/opendefocus-datastructure",
+]
 resolver = "2"
+
+[patch.crates-io]
+opendefocus-kernel        = { path = "crates/opendefocus-kernel" }
+opendefocus               = { path = "crates/opendefocus" }
+opendefocus-shared        = { path = "crates/opendefocus-shared" }
+opendefocus-datastructure = { path = "crates/opendefocus-datastructure" }

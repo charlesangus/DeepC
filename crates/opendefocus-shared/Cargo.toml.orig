@@ -1,0 +1,42 @@
+[package]
+name = "opendefocus-shared"
+description = "OpenDefocus shared crate for kernel and core crate"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+documentation.workspace = true
+homepage.workspace = true
+categories.workspace = true
+publish = true
+readme = "README.md"
+
+[features]
+default = ["std"]
+std = ["glam/default", "bitflags/std"]
+libm = ["dep:libm", "num-traits/libm", "glam/libm"]
+
+[dependencies]
+bytemuck = { version = "1.24", features = ["derive"] }
+glam = { version = "0.30", default-features = false, features = ["bytemuck"] }
+libm = { version = "0.2", default-features = false, optional = true }
+num-traits = { version = "0.2", default-features = false }
+bitflags = { version = "2.10.0", default-features = false, features = [
+    "bytemuck",
+] }
+
+[target.'cfg(not(any(target_arch = "spirv")))'.dependencies]
+image = { version = "0.25", default-features = false }
+
+[build-dependencies]
+cargo_metadata = "0.23.1"
+prost-build = "0.14.1"
+protobuf-src = { version = "2.1.1", optional = true }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+rstest = "0.26"

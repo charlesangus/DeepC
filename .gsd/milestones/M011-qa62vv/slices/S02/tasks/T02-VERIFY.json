@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "taskId": "T02",
+  "unitId": "M011-qa62vv/S02/T02",
+  "timestamp": 1774785042489,
+  "passed": true,
+  "discoverySource": "task-plan",
+  "checks": [
+    {
+      "command": "grep -q 'DeepMerge' test/test_opendefocus_holdout.nk",
+      "exitCode": 0,
+      "durationMs": 6,
+      "verdict": "pass"
+    },
+    {
+      "command": "grep -q 'holdout_depth_selective.exr' test/test_opendefocus_holdout.nk",
+      "exitCode": 0,
+      "durationMs": 5,
+      "verdict": "pass"
+    },
+    {
+      "command": "grep -q '2.0' test/test_opendefocus_holdout.nk",
+      "exitCode": 0,
+      "durationMs": 6,
+      "verdict": "pass"
+    },
+    {
+      "command": "grep -q '5.0' test/test_opendefocus_holdout.nk",
+      "exitCode": 0,
+      "durationMs": 6,
+      "verdict": "pass"
+    }
+  ]
+}

@@ -65,10 +65,26 @@ pub struct DeepSampleData {
     pub total_samples: u32,
 }
 
-// SAFETY: raw pointers.  Callers guarantee the pointed-to data outlives the
-// function call and is not mutated concurrently (single-threaded renderStripe).
-unsafe impl Send for DeepSampleData {}
-unsafe impl Sync for DeepSampleData {}
+/// HoldoutData — holdout transmittance map passed from the caller.
+///
+/// Each pixel `i` encodes two (depth, T) breakpoints as `data[i*4..i*4+4]` =
+/// `[d0, T0, d1, T1]`.  Pixels with no holdout use `[0.0, 1.0, 0.0, 1.0]`
+/// (T = 1.0 at all depths).  An empty slice (`len = 0`) means no holdout.
+///
+/// Layout must remain in sync with `include/opendefocus_deep.h`.
+#[repr(C)]
+pub struct HoldoutData {
+    /// Flat f32 array: `width * height * 4` values encoding `(d0, T0, d1, T1)`
+    /// per pixel.  May be null when `len` is 0.
+    pub data: *const f32,
+    /// Number of `f32` values in `data`; must be `width * height * 4` or 0.
+    pub len: u32,
+}
+
+// SAFETY: raw pointer.  Callers guarantee validity for the duration of the call.
+unsafe impl Send for HoldoutData {}
+unsafe impl Sync for HoldoutData {}
+
 
 // ---------------------------------------------------------------------------
 // Public FFI entry point
@@ -91,6 +107,94 @@ pub extern "C" fn opendefocus_deep_render(
     height: u32,
     lens: *const LensParams,
     use_gpu: i32,
+) {
+    render_impl(data, output_rgba, width, height, lens, use_gpu, &[]);
+}
+
+/// Render entry point with holdout transmittance map.
+///
+/// Identical to `opendefocus_deep_render` but accepts a holdout map that
+/// attenuates gathered samples by per-pixel transmittance, enabling correct
+/// depth-aware compositing with holdout mattes.
+///
+/// # Safety
+/// All safety requirements of `opendefocus_deep_render` apply.  Additionally:
+/// - If `holdout` is non-null, `holdout->data` must be non-null when
+///   `holdout->len > 0`, and `holdout->len` must equal `width * height * 4`.
+#[no_mangle]
+pub extern "C" fn opendefocus_deep_render_holdout(
+    data: *const DeepSampleData,
+    output_rgba: *mut f32,
+    width: u32,
+    height: u32,
+    lens: *const LensParams,
+    use_gpu: i32,
+    holdout: *const HoldoutData,
+) {
+    // Build the holdout slice from the FFI struct (null → empty slice).
+    let holdout_slice: &[f32] = if holdout.is_null() {
+        &[]
+    } else {
+        // SAFETY: caller guarantees holdout points to a valid HoldoutData.
+        let h = unsafe { &*holdout };
+        if h.len == 0 || h.data.is_null() {
+            &[]
+        } else {
+            // SAFETY: data is non-null and len floats are valid per caller contract.
+            unsafe { std::slice::from_raw_parts(h.data, h.len as usize) }
+        }
+    };
+
+    render_impl(data, output_rgba, width, height, lens, use_gpu, holdout_slice);
+}
+
+// ---------------------------------------------------------------------------
+// Holdout transmittance lookup (scene-depth space)
+// ---------------------------------------------------------------------------
+
+/// Look up cumulative transmittance for a sample at scene depth `z` in the
+/// holdout map.  Returns 1.0 (no attenuation) when holdout is empty or the
+/// pixel is out of bounds.
+///
+/// Encoding: `holdout[pixel_idx * 4 .. +4]` = `(d0, T0, d1, T1)`.
+/// - `z > d1` → T1
+/// - `z > d0` → T0
+/// - otherwise → 1.0
+fn holdout_transmittance(holdout: &[f32], pixel_idx: usize, z: f32) -> f32 {
+    if holdout.is_empty() {
+        return 1.0;
+    }
+    let base = pixel_idx * 4;
+    if holdout.len() < base + 4 {
+        return 1.0;
+    }
+    let d0 = holdout[base];
+    let t0 = holdout[base + 1];
+    let d1 = holdout[base + 2];
+    let t1 = holdout[base + 3];
+    if z > d1 {
+        t1
+    } else if z > d0 {
+        t0
+    } else {
+        1.0
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Internal render implementation
+// ---------------------------------------------------------------------------
+
+/// Shared implementation for both FFI entry points.  `holdout` is a flat
+/// `width * height * 4` f32 slice (or empty → no holdout attenuation).
+fn render_impl(
+    data: *const DeepSampleData,
+    output_rgba: *mut f32,
+    width: u32,
+    height: u32,
+    lens: *const LensParams,
+    use_gpu: i32,
+    holdout: &[f32],
 ) {
     // -----------------------------------------------------------------------
     // 0. Null-guard + early-out for empty images.
@@ -216,10 +320,15 @@ pub extern "C" fn opendefocus_deep_render(
                 let pixel_idx = py * w + px;
                 let base = pixel_idx * 4;
                 if let Some(&(r, g, b, a, z)) = pixels[pixel_idx].get(layer_idx) {
-                    layer_rgba[base] = r;
-                    layer_rgba[base + 1] = g;
-                    layer_rgba[base + 2] = b;
-                    layer_rgba[base + 3] = a;
+                    // Apply holdout transmittance in scene-depth space before
+                    // the kernel converts depths to CoC.  The holdout slice
+                    // encodes (d0, T0, d1, T1) per pixel; T is cumulative
+                    // transmittance at the given depth breakpoint.
+                    let t = holdout_transmittance(holdout, pixel_idx, z);
+                    layer_rgba[base] = r * t;
+                    layer_rgba[base + 1] = g * t;
+                    layer_rgba[base + 2] = b * t;
+                    layer_rgba[base + 3] = a * t;
                     layer_depth[pixel_idx] = z;
                 }
                 // pixels without this layer stay at (0,0,0,0) / depth 0.0
@@ -302,6 +411,9 @@ pub extern "C" fn opendefocus_deep_render(
 
         // ── 6e. Render layer. render_stripe takes ownership of depth ──
         //        and a mutable view into the image array.
+        //        Holdout attenuation was already applied in scene-depth space
+        //        (step 6a) — pass empty slice to avoid double-attenuation in
+        //        the kernel's CoC-space apply_holdout_attenuation.
         let mut rendered = image_array;
         let render_result = block_on(renderer.render_stripe(
             render_specs,
@@ -309,6 +421,7 @@ pub extern "C" fn opendefocus_deep_render(
             rendered.view_mut(),
             Some(depth_array),
             None,
+            &[],
         ));
 
         if let Err(e) = render_result {
@@ -338,4 +451,103 @@ pub extern "C" fn opendefocus_deep_render(
     // -----------------------------------------------------------------------
     let out = unsafe { std::slice::from_raw_parts_mut(output_rgba, pixel_count * 4) };
     out.copy_from_slice(&accum);
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Prove that holdout transmittance attenuates background samples.
+    ///
+    /// 3×1 image:
+    ///   pixel 0: red   at depth 5.0 (behind holdout at z=3.0 → T=0.1)
+    ///   pixel 1: green at depth 2.0 (in front of holdout → T=1.0)
+    ///   pixel 2: blue  at depth 5.0 (behind holdout at z=3.0 → T=0.1)
+    ///
+    /// After render, green (unattenuated) must exceed red and blue
+    /// (attenuated by T≈0.1).
+    #[test]
+    fn test_holdout_attenuates_background_samples() {
+        let width: u32 = 3;
+        let height: u32 = 1;
+
+        // One sample per pixel.
+        let sample_counts: [u32; 3] = [1, 1, 1];
+
+        // Premultiplied RGBA: red, green, blue — all fully opaque.
+        let rgba: [f32; 12] = [
+            1.0, 0.0, 0.0, 1.0, // pixel 0: red
+            0.0, 1.0, 0.0, 1.0, // pixel 1: green
+            0.0, 0.0, 1.0, 1.0, // pixel 2: blue
+        ];
+
+        // Depths: pixel 0 and 2 behind holdout (5.0 > 3.0), pixel 1 in front (2.0 < 3.0).
+        let depth: [f32; 3] = [5.0, 2.0, 5.0];
+
+        let lens = LensParams {
+            focal_length_mm: 50.0,
+            fstop: 8.0,
+            focus_distance: 100.0,
+            sensor_size_mm: 36.0,
+        };
+
+        // Holdout: 4 floats per pixel = (d0, T0, d1, T1).
+        // Surface at z=3.0 with T=0.1 for samples behind it.
+        let holdout_data: [f32; 12] = [
+            3.0, 0.1, 3.0, 0.1, // pixel 0
+            3.0, 0.1, 3.0, 0.1, // pixel 1
+            3.0, 0.1, 3.0, 0.1, // pixel 2
+        ];
+
+        let holdout = HoldoutData {
+            data: holdout_data.as_ptr(),
+            len: 12,
+        };
+
+        let deep_data = DeepSampleData {
+            sample_counts: sample_counts.as_ptr(),
+            rgba: rgba.as_ptr(),
+            depth: depth.as_ptr(),
+            pixel_count: 3,
+            total_samples: 3,
+        };
+
+        let mut output_rgba: [f32; 12] = [0.0; 12];
+
+        // Render via CPU path (use_gpu=0).
+        opendefocus_deep_render_holdout(
+            &deep_data as *const DeepSampleData,
+            output_rgba.as_mut_ptr(),
+            width,
+            height,
+            &lens as *const LensParams,
+            0, // CPU only
+            &holdout as *const HoldoutData,
+        );
+
+        // Output layout: [R0 G0 B0 A0  R1 G1 B1 A1  R2 G2 B2 A2]
+        let px0_red = output_rgba[0];   // pixel 0, red channel
+        let px1_green = output_rgba[5]; // pixel 1, green channel
+        let px2_blue = output_rgba[10]; // pixel 2, blue channel
+
+        eprintln!(
+            "[test] px0_red={px0_red:.4} px1_green={px1_green:.4} px2_blue={px2_blue:.4}"
+        );
+        eprintln!("[test] full output: {:?}", output_rgba);
+
+        // Green (in front of holdout, unattenuated) must exceed red and blue
+        // (behind holdout, attenuated by T≈0.1).
+        assert!(
+            px1_green > px0_red,
+            "green (front of holdout) {px1_green} should exceed attenuated red {px0_red}"
+        );
+        assert!(
+            px1_green > px2_blue,
+            "green (front of holdout) {px1_green} should exceed attenuated blue {px2_blue}"
+        );
+    }
 }

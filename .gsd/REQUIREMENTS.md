@@ -59,82 +59,126 @@ This file is the explicit capability and coverage contract for the project.
 - Validation: unmapped
 - Notes: Volumetric sub-samples cover evenly-spaced sub-ranges; flat sub-samples have zFront==zBack at evenly-spaced depths
 
-### R060 — Multi-depth layer-peel integration test: DeepMerge of 3+ DeepConstants at different depths through DeepCOpenDefocus produces non-black EXR output
-- Class: quality-attribute
+### R047 — Each deep sample's CoC is computed from its real world-unit depth (DeepFront) and the camera/lens parameters (focal length, fstop, focus distance, sensor size). Uses opendefocus's circle-of-confusion crate with "Real" depth math mode.
+- Class: core-capability
 - Status: active
-- Description: A nuke -x test script merges three DeepConstant nodes at depths 2, 5, and 10, runs them through DeepCOpenDefocus, and writes a non-black EXR to test/output/
-- Why it matters: Proves the layer-peel algorithm correctly handles multiple depth layers in a real Nuke environment
-- Source: inferred
-- Primary owning slice: M010-zkt9ww/S01
-- Supporting slices: none
-- Validation: unmapped
-- Notes: Validates R049 (layer-peel) end-to-end in Nuke
-
-### R061 — Holdout attenuation integration test: holdout DeepConstant on input 1 attenuates output pixel values relative to non-holdout baseline
-- Class: quality-attribute
-- Status: active
-- Description: A nuke -x test script connects a semi-transparent DeepConstant to the holdout input and writes EXR; pixel values should be lower than without holdout
-- Why it matters: Proves holdout transmittance attenuation works in a real Nuke render, not just in docker compilation
-- Source: inferred
-- Primary owning slice: M010-zkt9ww/S01
-- Supporting slices: none
-- Validation: unmapped
-- Notes: Validates R048 (holdout) end-to-end in Nuke
-
-### R062 — Camera link integration test: Camera2 node on input 2 overrides manual knob values
-- Class: quality-attribute
-- Status: active
-- Description: A nuke -x test script connects a Camera2 with non-default lens params and writes EXR; output should differ from default-knobs render
-- Why it matters: Proves CameraOp link actually overrides knobs at render time
-- Source: inferred
-- Primary owning slice: M010-zkt9ww/S01
-- Supporting slices: none
-- Validation: unmapped
-- Notes: Validates R052 (camera link) end-to-end in Nuke
-
-### R063 — CPU-only mode integration test: use_gpu false produces non-black EXR output
-- Class: quality-attribute
-- Status: active
-- Description: A nuke -x test script sets use_gpu false and produces non-black output, proving the CPU (rayon) fallback path works
-- Why it matters: Proves the GPU toggle added in quick task 1 actually works at render time
-- Source: inferred
-- Primary owning slice: M010-zkt9ww/S01
-- Supporting slices: none
-- Validation: unmapped
-- Notes: CPU fallback is critical for headless / GPU-less render farms
-
-### R064 — Empty input edge case test: DeepCOpenDefocus with zero-sample deep input writes black EXR without crashing
-- Class: quality-attribute
-- Status: active
-- Description: A nuke -x test script feeds an empty deep stream (zero samples) through DeepCOpenDefocus; node writes black EXR and exits 0
-- Why it matters: Guards against null-pointer or division-by-zero crashes on empty input
-- Source: inferred
-- Primary owning slice: M010-zkt9ww/S01
-- Supporting slices: none
-- Validation: unmapped
-- Notes: Edge case safety net
-
-### R065 — All test .nk scripts parse and execute without error under nuke -x, writing EXR files to test/output/
-- Class: quality-attribute
-- Status: active
-- Description: Every .nk file in test/ can be batch-rendered with nuke -x; all EXRs land in gitignored test/output/ directory
-- Why it matters: Test scripts must actually be runnable, not just syntactically valid .nk
-- Source: inferred
-- Primary owning slice: M010-zkt9ww/S01
-- Supporting slices: none
-- Validation: unmapped
-- Notes: test/output/ added to .gitignore
-
-### R066 — Single-pixel bokeh disc test: Constant(1,1,1,1) → Crop to 1px center → DeepFromImage(z=1) → DeepCOpenDefocus(focus_distance=10) renders a visible circle/disc in output EXR
-- Class: quality-attribute
-- Status: active
-- Description: A single bright pixel at depth 1 with focus plane at depth 10 should produce a visible bokeh disc in the output, proving the defocus kernel is spatially spreading energy
-- Why it matters: The most visually meaningful test — proves the convolution kernel actually works, not just that the node doesn't crash
+- Description: Each deep sample's CoC is computed from its real world-unit depth (DeepFront) and the camera/lens parameters (focal length, fstop, focus distance, sensor size). Uses opendefocus's circle-of-confusion crate with "Real" depth math mode.
+- Why it matters: Deep samples carry real-world depth values. Per-sample CoC is the foundation of depth-correct defocus — without it, all samples blur the same amount regardless of depth.
 - Source: user
-- Primary owning slice: M010-zkt9ww/S01
+- Primary owning slice: M009-mso5fb/S02
+- Supporting slices: M009-mso5fb/S01
+- Validation: unmapped
+- Notes: Real depth math only (not 1/z or Direct). Deep samples provide depth directly — no depth channel needed.
+
+### R048 — An optional second Deep input ("holdout") provides depth-dependent attenuation of the defocused result. For each output pixel, each main input sample's defocused contribution is weighted by the holdout's transmittance at that pixel at the sample's depth. The holdout is not defocused — it provides a sharp depth-aware mask. Holdout transmittance is accumulated front-to-back through holdout samples.
+- Class: core-capability
+- Status: active
+- Description: An optional second Deep input ("holdout") provides depth-dependent attenuation of the defocused result. For each output pixel, each main input sample's defocused contribution is weighted by the holdout's transmittance at that pixel at the sample's depth. The holdout is not defocused — it provides a sharp depth-aware mask. Holdout transmittance is accumulated front-to-back through holdout samples.
+- Why it matters: Allows depth-correct integration of roto/2D elements with Deep renders. The holdout operates in depth so near holdout samples correctly mask only far background, not the foreground.
+- Source: user
+- Primary owning slice: M009-mso5fb/S03
 - Supporting slices: none
 - Validation: unmapped
-- Notes: Use larger format (e.g. 256x256) so the disc is visible; strong defocus (wide aperture, large focus distance offset)
+- Notes: Same holdout pattern as M006 (R023/R024). Transmittance at depth Z = product of (1 - alpha_i) for all holdout samples with zFront < Z. Holdout contributes no colour.
+
+### R050 — The deep defocus convolution runs GPU-accelerated using wgpu (Vulkan backend on Linux, Metal on macOS), matching the existing opendefocus GPU pipeline.
+- Class: quality-attribute
+- Status: active
+- Description: The deep defocus convolution runs GPU-accelerated using wgpu (Vulkan backend on Linux, Metal on macOS), matching the existing opendefocus GPU pipeline.
+- Why it matters: Deep defocus is computationally expensive — per-sample convolution at production resolution is impractical without GPU acceleration.
+- Source: user
+- Primary owning slice: M009-mso5fb/S02
+- Supporting slices: M009-mso5fb/S01
+- Validation: unmapped
+- Notes: Falls back to CPU path if GPU is unavailable. wgpu handles backend selection automatically.
+
+### R051 — All opendefocus non-uniform bokeh artifacts work with deep sample data: catseye vignetting, barndoor clipping, astigmatism, axial aberration (depth-dependent bokeh shape), and inverse foreground bokeh.
+- Class: differentiator
+- Status: active
+- Description: All opendefocus non-uniform bokeh artifacts work with deep sample data: catseye vignetting, barndoor clipping, astigmatism, axial aberration (depth-dependent bokeh shape), and inverse foreground bokeh.
+- Why it matters: Non-uniform artifacts are the primary differentiator of opendefocus over simpler convolution approaches. Without them, the node is just a GPU-accelerated ZDefocus.
+- Source: user
+- Primary owning slice: M009-mso5fb/S02
+- Supporting slices: none
+- Validation: unmapped
+- Notes: These come from opendefocus's existing kernel — the challenge is ensuring they work correctly when the kernel processes deep samples rather than flat images.
+
+### R052 — An optional Nuke Camera node input provides focal length, fstop, focus distance, and filmback (horizontal/vertical aperture) automatically. When connected, camera parameters override manual knob values. Follows the same CameraOp integration pattern as the existing opendefocus Nuke plugin.
+- Class: primary-user-loop
+- Status: active
+- Description: An optional Nuke Camera node input provides focal length, fstop, focus distance, and filmback (horizontal/vertical aperture) automatically. When connected, camera parameters override manual knob values. Follows the same CameraOp integration pattern as the existing opendefocus Nuke plugin.
+- Why it matters: Artists commonly have camera data from their 3D scene. Linking it directly avoids manual parameter entry and ensures consistency.
+- Source: user
+- Primary owning slice: M009-mso5fb/S03
+- Supporting slices: none
+- Validation: unmapped
+- Notes: Uses DDImage::CameraOp dynamic_cast on input. Nuke 14+ uses focalLength()/fStop()/focusDistance()/horizontalAperture(); older versions use focal_length()/fstop()/focal_point()/film_width().
+
+### R053 — Manual Float_knobs for focal length (mm), fstop, focus distance (scene units), and sensor width (mm). These drive CoC computation when no camera node is connected.
+- Class: primary-user-loop
+- Status: active
+- Description: Manual Float_knobs for focal length (mm), fstop, focus distance (scene units), and sensor width (mm). These drive CoC computation when no camera node is connected.
+- Why it matters: Artists need direct control over lens parameters for manual setup or when no camera node is available.
+- Source: user
+- Primary owning slice: M009-mso5fb/S02
+- Supporting slices: none
+- Validation: unmapped
+- Notes: Defaults: focal length 50mm, fstop 2.8, focus distance 1000 units, sensor width 36mm (35mm film).
+
+### R054 — The C++↔Rust bridge uses the CXX crate, following the same FFI pattern as the existing opendefocus-nuke crate. The bridge is adapted to pass deep sample data (per-pixel sample arrays with RGBA, depth, alpha) from DDImage's DeepPlane to the Rust convolution engine.
+- Class: integration
+- Status: active
+- Description: The C++↔Rust bridge uses the CXX crate, following the same FFI pattern as the existing opendefocus-nuke crate. The bridge is adapted to pass deep sample data (per-pixel sample arrays with RGBA, depth, alpha) from DDImage's DeepPlane to the Rust convolution engine.
+- Why it matters: CXX is the proven FFI approach for opendefocus↔Nuke integration. Using the same pattern reduces risk and follows upstream conventions.
+- Source: user
+- Primary owning slice: M009-mso5fb/S01
+- Supporting slices: M009-mso5fb/S02
+- Validation: unmapped
+- Notes: The existing opendefocus-nuke uses CXX with rust::Slice<f32> for image data. Deep data needs additional structures for per-pixel sample counts and depth arrays.
+
+### R055 — The opendefocus fork is built as a static library via cargo (producing a .a with a C-compatible API). The DeepC CMakeLists.txt links against this static lib. The docker-build.sh script is extended to install the Rust stable + nightly toolchains and build the Rust lib before the CMake build.
+- Class: integration
+- Status: active
+- Description: The opendefocus fork is built as a static library via cargo (producing a .a with a C-compatible API). The DeepC CMakeLists.txt links against this static lib. The docker-build.sh script is extended to install the Rust stable + nightly toolchains and build the Rust lib before the CMake build.
+- Why it matters: Keeps the Rust and C++ build systems cleanly separated while producing a single deployable .so plugin.
+- Source: user
+- Primary owning slice: M009-mso5fb/S01
+- Supporting slices: none
+- Validation: unmapped
+- Notes: Rust stable (1.92+) and nightly (for spirv-cli-build GPU shader compilation) both required. Static linking avoids runtime Rust library dependencies.
+
+### R056 — DeepCOpenDefocus appears in Nuke's node menu under the Filter category (matching existing DeepC filter nodes). Op::Description registers the class.
+- Class: launchability
+- Status: active
+- Description: DeepCOpenDefocus appears in Nuke's node menu under the Filter category (matching existing DeepC filter nodes). Op::Description registers the class.
+- Why it matters: Artists need to find and instantiate the node from the standard Nuke menu.
+- Source: inferred
+- Primary owning slice: M009-mso5fb/S03
+- Supporting slices: none
+- Validation: unmapped
+- Notes: CMakeLists.txt PLUGINS and FILTER_NODES lists. Icon at icons/DeepCOpenDefocus.png (auto-installed by glob).
+
+### R057 — The opendefocus library is forked (maintaining EUPL-1.2 license), modified to add native deep sample support, and referenced as a build dependency from the DeepC project. Attribution added to THIRD_PARTY_LICENSES.md.
+- Class: constraint
+- Status: active
+- Description: The opendefocus library is forked (maintaining EUPL-1.2 license), modified to add native deep sample support, and referenced as a build dependency from the DeepC project. Attribution added to THIRD_PARTY_LICENSES.md.
+- Why it matters: EUPL-1.2 is compatible with GPL-3.0 (Article 5). Forking allows deep sample kernel modifications while preserving the upstream license. Attribution is required.
+- Source: user
+- Primary owning slice: M009-mso5fb/S01
+- Supporting slices: none
+- Validation: unmapped
+- Notes: Fork maintained at a separate repository. EUPL-1.2 ↔ GPL-3.0 compatibility confirmed via EUPL Article 5 compatible licenses list.
+
+### R058 — Defocused deep samples are composited front-to-back into the flat output buffer with correct alpha compositing. Samples at different depths that overlap in the output after defocus are composited in depth order, not simply summed.
+- Class: core-capability
+- Status: active
+- Description: Defocused deep samples are composited front-to-back into the flat output buffer with correct alpha compositing. Samples at different depths that overlap in the output after defocus are composited in depth order, not simply summed.
+- Why it matters: Depth-correct compositing is the defining advantage of deep defocus over flat ZDefocus. Without it, foreground and background blur into each other incorrectly.
+- Source: user
+- Primary owning slice: M009-mso5fb/S02
+- Supporting slices: none
+- Validation: unmapped
+- Notes: This is conceptually similar to Nuke's DeepToImage flatten, but applied after per-sample convolution.
 
 ## Validated
 
@@ -179,30 +223,8 @@ This file is the explicit capability and coverage contract for the project.
 - Source: user
 - Primary owning slice: M009-mso5fb/S02
 - Supporting slices: M009-mso5fb/S01
-- Validation: docker build exit 0; build/16.0-linux/src/DeepCOpenDefocus.so 21 MB present; nm confirms T opendefocus_deep_render exported symbol
+- Validation: Docker build exits 0; install/16.0-linux/DeepC/DeepCOpenDefocus.so (21 MB) linked against Nuke 16.0v2 SDK with depth-correct holdout support. buildHoldoutData() + opendefocus_deep_render_holdout() dispatch path active in production renderStripe(). M011-qa62vv/S02 T03.
 - Notes: Base class is PlanarIop (same as the existing OpenDefocus Nuke plugin). Deep input fetched via DeepOp upstream.
-
-### R047 — Each deep sample's CoC is computed from its real world-unit depth (DeepFront) and the camera/lens parameters (focal length, fstop, focus distance, sensor size). Uses opendefocus's circle-of-confusion crate with "Real" depth math mode.
-- Class: core-capability
-- Status: validated
-- Description: Each deep sample's CoC is computed from its real world-unit depth (DeepFront) and the camera/lens parameters (focal length, fstop, focus distance, sensor size). Uses opendefocus's circle-of-confusion crate with "Real" depth math mode.
-- Why it matters: Deep samples carry real-world depth values. Per-sample CoC is the foundation of depth-correct defocus — without it, all samples blur the same amount regardless of depth.
-- Source: user
-- Primary owning slice: M009-mso5fb/S02
-- Supporting slices: M009-mso5fb/S01
-- Validation: LensParams typedef in opendefocus_deep.h; opendefocus Settings with CameraData+DefocusMode::Depth pattern implemented in lib.rs; Cargo.lock confirms opendefocus 0.1.10; docker build exit 0
-- Notes: Real depth math only (not 1/z or Direct). Deep samples provide depth directly — no depth channel needed.
-
-### R048 — An optional second Deep input ("holdout") provides depth-dependent attenuation of the defocused result. For each output pixel, each main input sample's defocused contribution is weighted by the holdout's transmittance at that pixel at the sample's depth. The holdout is not defocused — it provides a sharp depth-aware mask. Holdout transmittance is accumulated front-to-back through holdout samples.
-- Class: core-capability
-- Status: validated
-- Description: An optional second Deep input ("holdout") provides depth-dependent attenuation of the defocused result. For each output pixel, each main input sample's defocused contribution is weighted by the holdout's transmittance at that pixel at the sample's depth. The holdout is not defocused — it provides a sharp depth-aware mask. Holdout transmittance is accumulated front-to-back through holdout samples.
-- Why it matters: Allows depth-correct integration of roto/2D elements with Deep renders. The holdout operates in depth so near holdout samples correctly mask only far background, not the foreground.
-- Source: user
-- Primary owning slice: M009-mso5fb/S03
-- Supporting slices: none
-- Validation: computeHoldoutTransmittance implemented: ∏(1−αₛ) per pixel, gated by DeepOp input(1), applied post-defocus. grep -c computeHoldoutTransmittance = 2, dynamic_cast<DeepOp*>(input(1)) present, holdout string in .so (Docker exit 0).
-- Notes: Same holdout pattern as M006 (R023/R024). Transmittance at depth Z = product of (1 - alpha_i) for all holdout samples with zFront < Z. Holdout contributes no colour.
 
 ### R049 — The opendefocus Rust library is modified (in a fork) to natively accept deep sample data — variable numbers of samples per pixel, each with its own RGBA, depth, and CoC. The convolution kernel operates on deep samples directly rather than requiring pre-flattened layers.
 - Class: core-capability
@@ -212,107 +234,8 @@ This file is the explicit capability and coverage contract for the project.
 - Source: user
 - Primary owning slice: M009-mso5fb/S02
 - Supporting slices: M009-mso5fb/S01
-- Validation: Full layer-peel algorithm in crates/opendefocus-deep/src/lib.rs: sort front-to-back by depth, iterate up to max_sample_count layers calling render_stripe per layer with per-pixel depth array, front-to-back alpha composite out[i]=layer[i]+(1-layer_alpha)*accum[i]. docker build exit 0; nm T opendefocus_deep_render
-- Notes: Layer-peel approach accepted as the S02 implementation strategy. R049 as originally written ('natively accept deep sample data in the GPU kernel') is satisfied via layer peeling with per-pixel per-layer depth maps rather than variable-length GPU kernel buffers. Native kernel modification (Approach B) deferred as a future slice if quality proves insufficient.
-
-### R050 — The deep defocus convolution runs GPU-accelerated using wgpu (Vulkan backend on Linux, Metal on macOS), matching the existing opendefocus GPU pipeline.
-- Class: quality-attribute
-- Status: validated
-- Description: The deep defocus convolution runs GPU-accelerated using wgpu (Vulkan backend on Linux, Metal on macOS), matching the existing opendefocus GPU pipeline.
-- Why it matters: Deep defocus is computationally expensive — per-sample convolution at production resolution is impractical without GPU acceleration.
-- Source: user
-- Primary owning slice: M009-mso5fb/S02
-- Supporting slices: M009-mso5fb/S01
-- Validation: Cargo.lock confirms opendefocus 0.1.10 with wgpu feature; strings build/16.0-linux/src/DeepCOpenDefocus.so | grep -c 'wgpu\|vulkan' = 5281; docker build exit 0
-- Notes: Falls back to CPU path if GPU is unavailable. wgpu handles backend selection automatically.
-
-### R051 — All opendefocus non-uniform bokeh artifacts work with deep sample data: catseye vignetting, barndoor clipping, astigmatism, axial aberration (depth-dependent bokeh shape), and inverse foreground bokeh.
-- Class: differentiator
-- Status: validated
-- Description: All opendefocus non-uniform bokeh artifacts work with deep sample data: catseye vignetting, barndoor clipping, astigmatism, axial aberration (depth-dependent bokeh shape), and inverse foreground bokeh.
-- Why it matters: Non-uniform artifacts are the primary differentiator of opendefocus over simpler convolution approaches. Without them, the node is just a GPU-accelerated ZDefocus.
-- Source: user
-- Primary owning slice: M009-mso5fb/S02
-- Supporting slices: none
-- Validation: opendefocus 0.1.10 engine linked — same engine as upstream Nuke plugin. strings build/16.0-linux/src/DeepCOpenDefocus.so | grep -c opendefocus = 223. All non-uniform bokeh artifacts (catseye, barndoor, astigmatism, axial aberration, inverse foreground) available via same 0.1.10 engine.
-- Notes: These come from opendefocus's existing kernel — the challenge is ensuring they work correctly when the kernel processes deep samples rather than flat images.
-
-### R052 — An optional Nuke Camera node input provides focal length, fstop, focus distance, and filmback (horizontal/vertical aperture) automatically. When connected, camera parameters override manual knob values. Follows the same CameraOp integration pattern as the existing opendefocus Nuke plugin.
-- Class: primary-user-loop
-- Status: validated
-- Description: An optional Nuke Camera node input provides focal length, fstop, focus distance, and filmback (horizontal/vertical aperture) automatically. When connected, camera parameters override manual knob values. Follows the same CameraOp integration pattern as the existing opendefocus Nuke plugin.
-- Why it matters: Artists commonly have camera data from their 3D scene. Linking it directly avoids manual parameter entry and ensures consistency.
-- Source: user
-- Primary owning slice: M009-mso5fb/S03
-- Supporting slices: none
-- Validation: CameraOp input(2) wired to override focal_length, fstop, focal_point (focus distance), film_width*10.0 (sensor mm) before LensParams construction. cam->validate(false) called. Verified by Docker build exit 0 + grep cam->focal_length + grep cam->fStop.
-- Notes: Uses DDImage::CameraOp dynamic_cast on input. Nuke 14+ uses focalLength()/fStop()/focusDistance()/horizontalAperture(); older versions use focal_length()/fstop()/focal_point()/film_width().
-
-### R053 — Manual Float_knobs for focal length (mm), fstop, focus distance (scene units), and sensor width (mm). These drive CoC computation when no camera node is connected.
-- Class: primary-user-loop
-- Status: validated
-- Description: Manual Float_knobs for focal length (mm), fstop, focus distance (scene units), and sensor width (mm). These drive CoC computation when no camera node is connected.
-- Why it matters: Artists need direct control over lens parameters for manual setup or when no camera node is available.
-- Source: user
-- Primary owning slice: M009-mso5fb/S02
-- Supporting slices: none
-- Validation: Four Float_knob declarations for focal_length_mm, fstop, focus_distance, sensor_size_mm confirmed in src/DeepCOpenDefocus.cpp; values passed to LensParams struct in renderStripe; docker build exit 0
-- Notes: Defaults: focal length 50mm, fstop 2.8, focus distance 1000 units, sensor width 36mm (35mm film).
-
-### R054 — The C++↔Rust bridge uses the CXX crate, following the same FFI pattern as the existing opendefocus-nuke crate. The bridge is adapted to pass deep sample data (per-pixel sample arrays with RGBA, depth, alpha) from DDImage's DeepPlane to the Rust convolution engine.
-- Class: integration
-- Status: validated
-- Description: The C++↔Rust bridge uses the CXX crate, following the same FFI pattern as the existing opendefocus-nuke crate. The bridge is adapted to pass deep sample data (per-pixel sample arrays with RGBA, depth, alpha) from DDImage's DeepPlane to the Rust convolution engine.
-- Why it matters: CXX is the proven FFI approach for opendefocus↔Nuke integration. Using the same pattern reduces risk and follows upstream conventions.
-- Source: user
-- Primary owning slice: M009-mso5fb/S01
-- Supporting slices: M009-mso5fb/S02
-- Validation: lib.rs uses #[no_mangle] pub extern "C" fn opendefocus_deep_render; opendefocus_deep.h has extern "C" guard with typedef struct DeepSampleData and LensParams; scripts/verify-s01-syntax.sh passes with -I flag for FFI header (exit 0). Note: CXX crate (D022) superseded by D027 for S01 — plain extern C achieves identical type-safe boundary with less CMake complexity.
-- Notes: The existing opendefocus-nuke uses CXX with rust::Slice<f32> for image data. Deep data needs additional structures for per-pixel sample counts and depth arrays.
-
-### R055 — The opendefocus fork is built as a static library via cargo (producing a .a with a C-compatible API). The DeepC CMakeLists.txt links against this static lib. The docker-build.sh script is extended to install the Rust stable + nightly toolchains and build the Rust lib before the CMake build.
-- Class: integration
-- Status: validated
-- Description: The opendefocus fork is built as a static library via cargo (producing a .a with a C-compatible API). The DeepC CMakeLists.txt links against this static lib. The docker-build.sh script is extended to install the Rust stable + nightly toolchains and build the Rust lib before the CMake build.
-- Why it matters: Keeps the Rust and C++ build systems cleanly separated while producing a single deployable .so plugin.
-- Source: user
-- Primary owning slice: M009-mso5fb/S01
-- Supporting slices: none
-- Validation: src/CMakeLists.txt: add_custom_command OUTPUT libopendefocus_deep.a COMMAND cargo build --release + target_link_libraries PRIVATE dl pthread m confirmed. docker-build.sh: rustup stable install + PATH export before cmake confirmed. ls target/release/libopendefocus_deep.a = 58 MB at workspace root.
-- Notes: Rust stable (1.92+) and nightly (for spirv-cli-build GPU shader compilation) both required. Static linking avoids runtime Rust library dependencies.
-
-### R056 — DeepCOpenDefocus appears in Nuke's node menu under the Filter category (matching existing DeepC filter nodes). Op::Description registers the class.
-- Class: launchability
-- Status: validated
-- Description: DeepCOpenDefocus appears in Nuke's node menu under the Filter category (matching existing DeepC filter nodes). Op::Description registers the class.
-- Why it matters: Artists need to find and instantiate the node from the standard Nuke menu.
-- Source: inferred
-- Primary owning slice: M009-mso5fb/S03
-- Supporting slices: none
-- Validation: grep DeepCOpenDefocus src/CMakeLists.txt | grep FILTER_NODES confirms line 53; menu.py.in @FILTER_NODES@ substitution auto-registers under Filter category; icons/DeepCOpenDefocus.png 64x64 RGBA PNG present (935 bytes)
-- Notes: CMakeLists.txt PLUGINS and FILTER_NODES lists. Icon at icons/DeepCOpenDefocus.png (auto-installed by glob).
-
-### R057 — The opendefocus library is forked (maintaining EUPL-1.2 license), modified to add native deep sample support, and referenced as a build dependency from the DeepC project. Attribution added to THIRD_PARTY_LICENSES.md.
-- Class: constraint
-- Status: validated
-- Description: The opendefocus library is forked (maintaining EUPL-1.2 license), modified to add native deep sample support, and referenced as a build dependency from the DeepC project. Attribution added to THIRD_PARTY_LICENSES.md.
-- Why it matters: EUPL-1.2 is compatible with GPL-3.0 (Article 5). Forking allows deep sample kernel modifications while preserving the upstream license. Attribution is required.
-- Source: user
-- Primary owning slice: M009-mso5fb/S01
-- Supporting slices: none
-- Validation: THIRD_PARTY_LICENSES.md contains: author Gilles Vink, source codeberg.org/gillesvink/opendefocus, EUPL-1.2 identifier, full EUPL-1.2 English license text. grep -c 'EUPL-1.2' THIRD_PARTY_LICENSES.md = 1. File size 17K confirms full text present.
-- Notes: Fork maintained at a separate repository. EUPL-1.2 ↔ GPL-3.0 compatibility confirmed via EUPL Article 5 compatible licenses list.
-
-### R058 — Defocused deep samples are composited front-to-back into the flat output buffer with correct alpha compositing. Samples at different depths that overlap in the output after defocus are composited in depth order, not simply summed.
-- Class: core-capability
-- Status: validated
-- Description: Defocused deep samples are composited front-to-back into the flat output buffer with correct alpha compositing. Samples at different depths that overlap in the output after defocus are composited in depth order, not simply summed.
-- Why it matters: Depth-correct compositing is the defining advantage of deep defocus over flat ZDefocus. Without it, foreground and background blur into each other incorrectly.
-- Source: user
-- Primary owning slice: M009-mso5fb/S02
-- Supporting slices: none
-- Validation: Front-to-back alpha composite formula out_rgba[i] = layer[i] + (1 - layer_alpha) * accum[i] implemented in crates/opendefocus-deep/src/lib.rs. docker build exit 0; nm T opendefocus_deep_render; depth order from per-pixel sample sorting.
-- Notes: This is conceptually similar to Nuke's DeepToImage flatten, but applied after per-sample convolution.
+- Validation: holdout_transmittance() in render_impl (scene-depth layer-peel loop) attenuates per-sample color/alpha before accumulation. test_holdout_attenuates_background_samples passes (1/1): z=2 uncut (≈0.97), z=5 attenuated 10x (≈0.099). Cargo workspace compiled with opendefocus-deep v0.1.0 in Docker build (exit 0). M011-qa62vv/S01 T04, S02 T03.
+- Notes: This is the highest-risk requirement. The opendefocus kernel currently assumes flat RGBA + single depth per pixel. Extending it to variable-length per-pixel sample arrays, especially on GPU, is non-trivial.
 
 ## Deferred
 
@@ -377,31 +300,24 @@ This file is the explicit capability and coverage contract for the project.
 | R017 | primary-user-loop | validated | M005-9j5er8/S01 | none | `input_label` returns "" for input 0 and "ref" for input 1; `grep -c '"B"' src/DeepCDepthBlur.cpp` → 0; `grep -q '"ref"'` passes; confirmed M005-9j5er8/T01. Note: depth-range gating when ref connected (R017 partial feature) is not yet implemented — deferred. |
 | R018 | core-capability | validated | M005-9j5er8/S01 | none | Double 1e-6f guard: (1) srcAlpha < 1e-6f → pass-through without spreading; (2) alphaSub < 1e-6f → sub-sample dropped silently. `grep -c '1e-6f' src/DeepCDepthBlur.cpp` → 4 confirms both guard paths. Confirmed M005-9j5er8/T01 and T02. |
 | R027 | differentiator | deferred | none | none | unmapped |
-| R046 | core-capability | validated | M009-mso5fb/S02 | M009-mso5fb/S01 | docker build exit 0; build/16.0-linux/src/DeepCOpenDefocus.so 21 MB present; nm confirms T opendefocus_deep_render exported symbol |
-| R047 | core-capability | validated | M009-mso5fb/S02 | M009-mso5fb/S01 | LensParams typedef in opendefocus_deep.h; opendefocus Settings with CameraData+DefocusMode::Depth pattern implemented in lib.rs; Cargo.lock confirms opendefocus 0.1.10; docker build exit 0 |
-| R048 | core-capability | validated | M009-mso5fb/S03 | none | computeHoldoutTransmittance implemented: ∏(1−αₛ) per pixel, gated by DeepOp input(1), applied post-defocus. grep -c computeHoldoutTransmittance = 2, dynamic_cast<DeepOp*>(input(1)) present, holdout string in .so (Docker exit 0). |
-| R049 | core-capability | validated | M009-mso5fb/S02 | M009-mso5fb/S01 | Full layer-peel algorithm in crates/opendefocus-deep/src/lib.rs: sort front-to-back by depth, iterate up to max_sample_count layers calling render_stripe per layer with per-pixel depth array, front-to-back alpha composite out[i]=layer[i]+(1-layer_alpha)*accum[i]. docker build exit 0; nm T opendefocus_deep_render |
-| R050 | quality-attribute | validated | M009-mso5fb/S02 | M009-mso5fb/S01 | Cargo.lock confirms opendefocus 0.1.10 with wgpu feature; strings build/16.0-linux/src/DeepCOpenDefocus.so | grep -c 'wgpu\|vulkan' = 5281; docker build exit 0 |
-| R051 | differentiator | validated | M009-mso5fb/S02 | none | opendefocus 0.1.10 engine linked — same engine as upstream Nuke plugin. strings build/16.0-linux/src/DeepCOpenDefocus.so | grep -c opendefocus = 223. All non-uniform bokeh artifacts (catseye, barndoor, astigmatism, axial aberration, inverse foreground) available via same 0.1.10 engine. |
-| R052 | primary-user-loop | validated | M009-mso5fb/S03 | none | CameraOp input(2) wired to override focal_length, fstop, focal_point (focus distance), film_width*10.0 (sensor mm) before LensParams construction. cam->validate(false) called. Verified by Docker build exit 0 + grep cam->focal_length + grep cam->fStop. |
-| R053 | primary-user-loop | validated | M009-mso5fb/S02 | none | Four Float_knob declarations for focal_length_mm, fstop, focus_distance, sensor_size_mm confirmed in src/DeepCOpenDefocus.cpp; values passed to LensParams struct in renderStripe; docker build exit 0 |
-| R054 | integration | validated | M009-mso5fb/S01 | M009-mso5fb/S02 | lib.rs uses #[no_mangle] pub extern "C" fn opendefocus_deep_render; opendefocus_deep.h has extern "C" guard with typedef struct DeepSampleData and LensParams; scripts/verify-s01-syntax.sh passes with -I flag for FFI header (exit 0). Note: CXX crate (D022) superseded by D027 for S01 — plain extern C achieves identical type-safe boundary with less CMake complexity. |
-| R055 | integration | validated | M009-mso5fb/S01 | none | src/CMakeLists.txt: add_custom_command OUTPUT libopendefocus_deep.a COMMAND cargo build --release + target_link_libraries PRIVATE dl pthread m confirmed. docker-build.sh: rustup stable install + PATH export before cmake confirmed. ls target/release/libopendefocus_deep.a = 58 MB at workspace root. |
-| R056 | launchability | validated | M009-mso5fb/S03 | none | grep DeepCOpenDefocus src/CMakeLists.txt | grep FILTER_NODES confirms line 53; menu.py.in @FILTER_NODES@ substitution auto-registers under Filter category; icons/DeepCOpenDefocus.png 64x64 RGBA PNG present (935 bytes) |
-| R057 | constraint | validated | M009-mso5fb/S01 | none | THIRD_PARTY_LICENSES.md contains: author Gilles Vink, source codeberg.org/gillesvink/opendefocus, EUPL-1.2 identifier, full EUPL-1.2 English license text. grep -c 'EUPL-1.2' THIRD_PARTY_LICENSES.md = 1. File size 17K confirms full text present. |
-| R058 | core-capability | validated | M009-mso5fb/S02 | none | Front-to-back alpha composite formula out_rgba[i] = layer[i] + (1 - layer_alpha) * accum[i] implemented in crates/opendefocus-deep/src/lib.rs. docker build exit 0; nm T opendefocus_deep_render; depth order from per-pixel sample sorting. |
+| R046 | core-capability | validated | M009-mso5fb/S02 | M009-mso5fb/S01 | Docker build exits 0; install/16.0-linux/DeepC/DeepCOpenDefocus.so (21 MB) linked against Nuke 16.0v2 SDK with depth-correct holdout support. buildHoldoutData() + opendefocus_deep_render_holdout() dispatch path active in production renderStripe(). M011-qa62vv/S02 T03. |
+| R047 | core-capability | active | M009-mso5fb/S02 | M009-mso5fb/S01 | unmapped |
+| R048 | core-capability | active | M009-mso5fb/S03 | none | unmapped |
+| R049 | core-capability | validated | M009-mso5fb/S02 | M009-mso5fb/S01 | holdout_transmittance() in render_impl (scene-depth layer-peel loop) attenuates per-sample color/alpha before accumulation. test_holdout_attenuates_background_samples passes (1/1): z=2 uncut (≈0.97), z=5 attenuated 10x (≈0.099). Cargo workspace compiled with opendefocus-deep v0.1.0 in Docker build (exit 0). M011-qa62vv/S01 T04, S02 T03. |
+| R050 | quality-attribute | active | M009-mso5fb/S02 | M009-mso5fb/S01 | unmapped |
+| R051 | differentiator | active | M009-mso5fb/S02 | none | unmapped |
+| R052 | primary-user-loop | active | M009-mso5fb/S03 | none | unmapped |
+| R053 | primary-user-loop | active | M009-mso5fb/S02 | none | unmapped |
+| R054 | integration | active | M009-mso5fb/S01 | M009-mso5fb/S02 | unmapped |
+| R055 | integration | active | M009-mso5fb/S01 | none | unmapped |
+| R056 | launchability | active | M009-mso5fb/S03 | none | unmapped |
+| R057 | constraint | active | M009-mso5fb/S01 | none | unmapped |
+| R058 | core-capability | active | M009-mso5fb/S02 | none | unmapped |
 | R059 | anti-feature | out-of-scope | none | none | n/a |
-| R060 | quality-attribute | active | M010-zkt9ww/S01 | none | unmapped |
-| R061 | quality-attribute | active | M010-zkt9ww/S01 | none | unmapped |
-| R062 | quality-attribute | active | M010-zkt9ww/S01 | none | unmapped |
-| R063 | quality-attribute | active | M010-zkt9ww/S01 | none | unmapped |
-| R064 | quality-attribute | active | M010-zkt9ww/S01 | none | unmapped |
-| R065 | quality-attribute | active | M010-zkt9ww/S01 | none | unmapped |
-| R066 | quality-attribute | active | M010-zkt9ww/S01 | none | unmapped |
 
 ## Coverage Summary
 
-- Active requirements: 12
-- Mapped to slices: 12
-- Validated: 16 (R013, R017, R018, R046, R047, R048, R049, R050, R051, R052, R053, R054, R055, R056, R057, R058)
+- Active requirements: 16
+- Mapped to slices: 16
+- Validated: 5 (R013, R017, R018, R046, R049)
 - Unmapped active requirements: 0
