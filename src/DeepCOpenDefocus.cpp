@@ -15,17 +15,31 @@
 //            focus_distance, and sensor_size_mm knobs when connected.
 //
 //  Pipeline (renderStripe):
-//    1. Flatten input 0 deep samples to C arrays.
-//    2a. If input 1 connected: build HoldoutData via buildHoldoutData(),
-//        call opendefocus_deep_render_holdout() — depth-correct holdout.
-//    2b. If input 1 not connected: call opendefocus_deep_render() unchanged.
-//    3. Copy output_buf to the output ImagePlane.
+//    1. On the first stripe per frame/param-set: render the FULL image via
+//       Rust FFI (non-local convolution requires the full domain).
+//    2. Cache the full-image result in _cachedRGBA (invalidated in _validate).
+//    3. Serve every subsequent stripe from the cache — one FFI call per frame.
+//
+//  Full-image cache:
+//    _cacheValid   — invalidated by _validate() on every knob/upstream change.
+//    _cacheMutex   — guards reads and writes to _cacheValid / _cachedRGBA.
+//    Cache key     — (fl, fs, fd, ssz, quality, use_gpu).
+//    Concurrency   — the slow Rust render runs outside the lock; two threads
+//                    racing on a cache miss each do a full render but the
+//                    second write is harmless (idempotent result, no deadlock).
+//
+//  Holdout branch:
+//    2a. If input 1 connected: build HoldoutData via buildHoldoutData() for
+//        the full image, call opendefocus_deep_render_holdout().
+//    2b. If input 1 not connected: call opendefocus_deep_render().
 //
 //  Knobs:
 //    focal_length   — lens focal length (mm); overridden by camera link
 //    fstop          — lens aperture f-stop; overridden by camera link
 //    focus_distance — focus plane distance (scene units); camera link
 //    sensor_size_mm — sensor width (mm, full-frame = 36); camera link
+//    use_gpu        — attempt GPU backend (default on)
+//    quality        — Low / Medium / High render quality
 //
 // ============================================================================
 
@@ -37,6 +51,7 @@
 #include "DDImage/Row.h"
 #include "../crates/opendefocus-deep/include/opendefocus_deep.h"
 #include <algorithm>
+#include <mutex>
 #include <utility>
 #include <vector>
 #include <cstring>
@@ -123,6 +138,8 @@ static std::vector<float> buildHoldoutData(
     return result;
 }
 
+static const char* const kQualityEntries[] = {"Low", "Medium", "High", nullptr};
+
 // ---------------------------------------------------------------------------
 class DeepCOpenDefocus : public PlanarIop
 {
@@ -131,6 +148,30 @@ class DeepCOpenDefocus : public PlanarIop
     float _focus_distance;  ///< scene units, default 5.0
     float _sensor_size_mm;  ///< mm, default 36
     bool  _use_gpu;         ///< true = attempt GPU backend (default); false = force CPU
+    int   _quality;         ///< 0=Low, 1=Medium, 2=High
+
+    // Full-image render cache.
+    //
+    // _cachedRGBA holds width*height*4 interleaved floats for the full image
+    // (fullBox coordinates, row-major).  _cacheValid is set false by
+    // _validate() on every upstream/knob change, and set true after a
+    // successful full-image render.
+    //
+    // Cache key: (fl, fs, fd, ssz, quality, use_gpu).
+    //
+    // _cacheMutex is mutable so the hit-check can be done inside a
+    // conceptually-read-only renderStripe.  std::mutex is non-copyable —
+    // this is fine because DeepCOpenDefocus is always heap-allocated via
+    // new (see build() at the bottom of this file).
+    std::vector<float>  _cachedRGBA;
+    bool                _cacheValid   = false;
+    float               _cacheFL      = 0.f;
+    float               _cacheFS      = 0.f;
+    float               _cacheFD      = 0.f;
+    float               _cacheSSZ     = 0.f;
+    int                 _cacheQuality = -1;
+    int                 _cacheUseGpu  = -1;
+    mutable std::mutex  _cacheMutex;
 
 public:
     DeepCOpenDefocus(Node* node)
@@ -139,7 +180,8 @@ public:
           _fstop(2.8f),
           _focus_distance(5.0f),
           _sensor_size_mm(36.0f),
-          _use_gpu(true)
+          _use_gpu(true),
+          _quality(0)
     {
         inputs(3);
     }
@@ -200,10 +242,18 @@ public:
         Bool_knob(f, &_use_gpu, "use_gpu", "Use GPU");
         Tooltip(f, "Enable GPU-accelerated defocus (default: on). "
                    "Disable to force CPU-only path (slower but useful for debugging or headless renders).");
+
+        Enumeration_knob(f, &_quality, kQualityEntries, "quality", "Quality");
+        Tooltip(f, "Render quality level. Low = fastest, High = best quality.");
     }
 
     // ------------------------------------------------------------------
-    // _validate — declare RGBA output channels
+    // _validate — declare RGBA output channels; invalidate full-image cache.
+    //
+    // Cache invalidation is unconditional: any knob edit, upstream change,
+    // or frame change triggers _validate before the next renderStripe, so
+    // setting _cacheValid = false here ensures stale cache data is never
+    // served.
     // ------------------------------------------------------------------
     void _validate(bool for_real) override
     {
@@ -233,6 +283,10 @@ public:
         rgba += Chan_Blue;
         rgba += Chan_Alpha;
         info_.channels(rgba);
+
+        // Invalidate the full-image cache: any validate call means knobs,
+        // upstream data, or frame has changed — the cached render is stale.
+        _cacheValid = false;
     }
 
     // ------------------------------------------------------------------
@@ -256,97 +310,39 @@ public:
     // ------------------------------------------------------------------
     // renderStripe
     //
-    // Pipeline:
-    //   1. Obtain deep input (input 0).
-    //   2. Request RGBA + DeepFront deep plane for the output bounds.
-    //   3. Flatten per-pixel sample data into three contiguous arrays
-    //      (sample_counts, rgba_flat, depth_flat) required by the FFI struct.
-    //   4a. If input 1 (holdout) is connected: build a HoldoutData buffer via
-    //       buildHoldoutData() and call opendefocus_deep_render_holdout() for
-    //       depth-correct holdout — GPU layer-peel defocus via Rust.
-    //   4b. If input 1 is not connected: call opendefocus_deep_render()
-    //       unchanged.
-    //   5. Copy output_buf to the output ImagePlane.
+    // Full-image cache strategy:
+    //   • On cache miss: render the complete image (fullBox = info_.box())
+    //     via Rust FFI, store in _cachedRGBA, then copy the requested stripe
+    //     sub-region to the output ImagePlane.
+    //   • On cache hit: copy the stripe sub-region from _cachedRGBA directly.
+    //
+    // This ensures at most one Rust FFI call per frame/param-set regardless
+    // of how many stripes Nuke's PlanarIop scheduler dispatches.
+    //
+    // Concurrency note: the slow Rust render runs outside _cacheMutex.
+    // Two threads racing on the same cache miss each perform a full render;
+    // the second cache write is harmless (identical result, no deadlock).
     // ------------------------------------------------------------------
     void renderStripe(ImagePlane& output) override
     {
         const Box& bounds = output.bounds();
-        const int  width  = bounds.w();
-        const int  height = bounds.h();
 
         // Guard: if no deep input, write black and return
         DeepOp* deepIn = dynamic_cast<DeepOp*>(Op::input(0));
-        if (!deepIn || width <= 0 || height <= 0) {
+        if (!deepIn || bounds.w() <= 0 || bounds.h() <= 0) {
             output.makeWritable();
-            std::memset(output.writable(), 0,
-                        static_cast<size_t>(width) * static_cast<size_t>(height) *
-                        static_cast<size_t>(output.nComps()) * sizeof(float));
+            float* dst0 = output.writable();
+            if (dst0) {
+                std::memset(dst0, 0,
+                            static_cast<size_t>(bounds.w()) *
+                            static_cast<size_t>(bounds.h()) *
+                            static_cast<size_t>(output.nComps()) * sizeof(float));
+            }
             return;
         }
 
-        // Request RGBA + depth channels from the deep input
-        ChannelSet requestChans;
-        requestChans += Chan_Red;
-        requestChans += Chan_Green;
-        requestChans += Chan_Blue;
-        requestChans += Chan_Alpha;
-        requestChans += Chan_DeepFront;
-
-        DeepPlane deepPlane;
-        deepIn->deepEngine(bounds, requestChans, deepPlane);
-
         // -------------------------------------------------------------------
-        // Flatten deep samples into contiguous C arrays for the FFI struct
-        // -------------------------------------------------------------------
-        std::vector<uint32_t> sampleCounts;
-        sampleCounts.reserve(static_cast<size_t>(width) * static_cast<size_t>(height));
-
-        std::vector<float> rgba_flat;
-        std::vector<float> depth_flat;
-
-        for (int y = bounds.y(); y < bounds.t(); ++y) {
-            for (int x = bounds.x(); x < bounds.r(); ++x) {
-                DeepPixel px = deepPlane.getPixel(y, x);
-                const int nSamples = px.getSampleCount();
-                sampleCounts.push_back(static_cast<uint32_t>(nSamples));
-
-                for (int s = 0; s < nSamples; ++s) {
-                    rgba_flat.push_back(px.getUnorderedSample(s, Chan_Red));
-                    rgba_flat.push_back(px.getUnorderedSample(s, Chan_Green));
-                    rgba_flat.push_back(px.getUnorderedSample(s, Chan_Blue));
-                    rgba_flat.push_back(px.getUnorderedSample(s, Chan_Alpha));
-                    depth_flat.push_back(px.getUnorderedSample(s, Chan_DeepFront));
-                }
-            }
-        }
-
-        const uint32_t pixelCount   = static_cast<uint32_t>(width) *
-                                      static_cast<uint32_t>(height);
-        const uint32_t totalSamples = static_cast<uint32_t>(depth_flat.size());
-
-        DeepSampleData sampleData;
-        sampleData.sample_counts = sampleCounts.data();
-        sampleData.rgba          = rgba_flat.empty()  ? nullptr : rgba_flat.data();
-        sampleData.depth         = depth_flat.empty() ? nullptr : depth_flat.data();
-        sampleData.pixel_count   = pixelCount;
-        sampleData.total_samples = totalSamples;
-
-        // Output buffer — filled by the Rust GPU defocus kernel
-        std::vector<float> output_buf(
-            static_cast<size_t>(width) * static_cast<size_t>(height) * 4u, 0.0f);
-
-        // -------------------------------------------------------------------
-        // Camera link override (input 2)
-        //
-        // If a CameraOp is connected, read its scene properties and use them
-        // instead of the manual knob values.  This keeps the knobs as a
-        // visible fallback/reference but the live camera always takes priority.
-        //
-        // Unit conversions:
-        //   focal_length()       → mm (Nuke stores as mm)
-        //   fStop()              → dimensionless f-stop number
-        //   focal_point()        → scene units (focus distance; deprecated alias for focusDistance())
-        //   film_width()         → cm; multiply by 10 to get mm
+        // Compute effective lens params (camera override logic unchanged)
         // -------------------------------------------------------------------
         float fl  = _focal_length;
         float fs  = _fstop;
@@ -367,15 +363,138 @@ public:
             fprintf(stderr, "DeepCOpenDefocus: camera link inactive (using knobs)\n");
         }
 
-        // Build LensParams — either from camera or from knob values above
+        // -------------------------------------------------------------------
+        // Cache hit check (lock, compare key, copy stripe, return)
+        // -------------------------------------------------------------------
+        {
+            std::unique_lock<std::mutex> lock(_cacheMutex);
+            if (_cacheValid &&
+                _cacheFL      == fl  &&
+                _cacheFS      == fs  &&
+                _cacheFD      == fd  &&
+                _cacheSSZ     == ssz &&
+                _cacheQuality == static_cast<int>(_quality) &&
+                _cacheUseGpu  == static_cast<int>(_use_gpu))
+            {
+                // Full-image cache hit — serve the stripe from _cachedRGBA.
+                const Box& fullBox = info_.box();
+                const int  fullW   = fullBox.w();
+
+                output.makeWritable();
+                float* dst         = output.writable();
+                const int rowStride      = output.rowStride();
+                const int colStride      = output.colStride();
+                const int64_t chanStride = output.chanStride();
+                const int nComps         = output.nComps();
+
+                if (dst) {
+                    for (int y = bounds.y(); y < bounds.t(); ++y) {
+                        const int localY = y - bounds.y();
+                        for (int x = bounds.x(); x < bounds.r(); ++x) {
+                            const int localX    = x - bounds.x();
+                            const int fullPix   = (y - fullBox.y()) * fullW +
+                                                  (x - fullBox.x());
+                            const int srcBase   = fullPix * 4;
+                            const int64_t dstBase =
+                                static_cast<int64_t>(localY) * rowStride +
+                                static_cast<int64_t>(localX) * colStride;
+                            for (int c = 0; c < std::min(nComps, 4); ++c) {
+                                dst[dstBase + static_cast<int64_t>(c) * chanStride] =
+                                    _cachedRGBA[srcBase + c];
+                            }
+                        }
+                    }
+                }
+                fprintf(stderr,
+                        "DeepCOpenDefocus: cache hit — stripe y=[%d,%d)\n",
+                        bounds.y(), bounds.t());
+                return;
+            }
+            // Cache miss — release lock before the expensive render.
+        }
+
+        // -------------------------------------------------------------------
+        // Cache miss: fetch and render the FULL image
+        // -------------------------------------------------------------------
+        const Box& fullBox = info_.box();
+        const int  fullW   = fullBox.w();
+        const int  fullH   = fullBox.h();
+
+        // Guard degenerate full image (should not happen after _validate)
+        if (fullW <= 0 || fullH <= 0) {
+            output.makeWritable();
+            float* dst0 = output.writable();
+            if (dst0) {
+                std::memset(dst0, 0,
+                            static_cast<size_t>(bounds.w()) *
+                            static_cast<size_t>(bounds.h()) *
+                            static_cast<size_t>(output.nComps()) * sizeof(float));
+            }
+            return;
+        }
+
+        // Request RGBA + depth channels for the FULL image
+        ChannelSet requestChans;
+        requestChans += Chan_Red;
+        requestChans += Chan_Green;
+        requestChans += Chan_Blue;
+        requestChans += Chan_Alpha;
+        requestChans += Chan_DeepFront;
+
+        DeepPlane deepPlane;
+        deepIn->deepEngine(fullBox, requestChans, deepPlane);
+
+        // -------------------------------------------------------------------
+        // Flatten deep samples for the full image into contiguous C arrays
+        // -------------------------------------------------------------------
+        std::vector<uint32_t> sampleCounts;
+        sampleCounts.reserve(static_cast<size_t>(fullW) * static_cast<size_t>(fullH));
+
+        std::vector<float> rgba_flat;
+        std::vector<float> depth_flat;
+
+        for (int y = fullBox.y(); y < fullBox.t(); ++y) {
+            for (int x = fullBox.x(); x < fullBox.r(); ++x) {
+                DeepPixel px = deepPlane.getPixel(y, x);
+                const int nSamples = px.getSampleCount();
+                sampleCounts.push_back(static_cast<uint32_t>(nSamples));
+
+                for (int s = 0; s < nSamples; ++s) {
+                    rgba_flat.push_back(px.getUnorderedSample(s, Chan_Red));
+                    rgba_flat.push_back(px.getUnorderedSample(s, Chan_Green));
+                    rgba_flat.push_back(px.getUnorderedSample(s, Chan_Blue));
+                    rgba_flat.push_back(px.getUnorderedSample(s, Chan_Alpha));
+                    depth_flat.push_back(px.getUnorderedSample(s, Chan_DeepFront));
+                }
+            }
+        }
+
+        const uint32_t pixelCount   = static_cast<uint32_t>(fullW) *
+                                      static_cast<uint32_t>(fullH);
+        const uint32_t totalSamples = static_cast<uint32_t>(depth_flat.size());
+
+        DeepSampleData sampleData;
+        sampleData.sample_counts = sampleCounts.data();
+        sampleData.rgba          = rgba_flat.empty()  ? nullptr : rgba_flat.data();
+        sampleData.depth         = depth_flat.empty() ? nullptr : depth_flat.data();
+        sampleData.pixel_count   = pixelCount;
+        sampleData.total_samples = totalSamples;
+
+        // Output buffer — full image, filled by Rust FFI
+        std::vector<float> output_buf(
+            static_cast<size_t>(fullW) * static_cast<size_t>(fullH) * 4u, 0.0f);
+
+        // Build LensParams
         LensParams lensParams;
         lensParams.focal_length_mm = fl;
         lensParams.fstop           = fs;
         lensParams.focus_distance  = fd;
         lensParams.sensor_size_mm  = ssz;
 
-        // Call Rust FFI — GPU layer-peel defocus; fills output_buf with flat RGBA.
-        // If a holdout input is connected, use the depth-correct holdout path.
+        // -------------------------------------------------------------------
+        // Call Rust FFI — outside lock (see concurrency note above).
+        // Holdout branch: fetch holdout deep plane for full image too.
+        // -------------------------------------------------------------------
         DeepOp* holdoutIn = dynamic_cast<DeepOp*>(Op::input(1));
         if (holdoutIn) {
             ChannelSet holdoutChans;
@@ -383,66 +502,82 @@ public:
             holdoutChans += Chan_DeepFront;  // required for depth ordering
 
             DeepPlane holdoutPlane;
-            holdoutIn->deepEngine(bounds, holdoutChans, holdoutPlane);
+            holdoutIn->deepEngine(fullBox, holdoutChans, holdoutPlane);
 
-            std::vector<float> holdout_flat = buildHoldoutData(holdoutPlane, bounds, width, height);
+            std::vector<float> holdout_flat =
+                buildHoldoutData(holdoutPlane, fullBox, fullW, fullH);
             HoldoutData holdout_ffi;
             holdout_ffi.data = holdout_flat.data();
             holdout_ffi.len  = static_cast<uint32_t>(holdout_flat.size());
 
             opendefocus_deep_render_holdout(&sampleData, output_buf.data(),
-                static_cast<uint32_t>(width), static_cast<uint32_t>(height),
-                &lensParams, (int)_use_gpu, &holdout_ffi);
+                static_cast<uint32_t>(fullW), static_cast<uint32_t>(fullH),
+                &lensParams, (int)_use_gpu, &holdout_ffi, (int)_quality);
 
-            fprintf(stderr, "DeepCOpenDefocus: holdout attenuation applied (%d pixels)\n",
-                    static_cast<int>(pixelCount));
+            fprintf(stderr,
+                    "DeepCOpenDefocus: holdout attenuation applied (%u pixels)\n",
+                    pixelCount);
         } else {
             opendefocus_deep_render(&sampleData,
                                     output_buf.data(),
-                                    static_cast<uint32_t>(width),
-                                    static_cast<uint32_t>(height),
+                                    static_cast<uint32_t>(fullW),
+                                    static_cast<uint32_t>(fullH),
                                     &lensParams,
-                                    (int)_use_gpu);
+                                    (int)_use_gpu,
+                                    (int)_quality);
+        }
+
+        fprintf(stderr,
+                "DeepCOpenDefocus: rendered full image %dx%d, serving stripe y=[%d,%d)\n",
+                fullW, fullH, bounds.y(), bounds.t());
+
+        // -------------------------------------------------------------------
+        // Cache write — lock, store full image, update key, release.
+        // -------------------------------------------------------------------
+        {
+            std::lock_guard<std::mutex> lock(_cacheMutex);
+            _cachedRGBA   = output_buf;          // deep copy into cache
+            _cacheFL      = fl;
+            _cacheFS      = fs;
+            _cacheFD      = fd;
+            _cacheSSZ     = ssz;
+            _cacheQuality = static_cast<int>(_quality);
+            _cacheUseGpu  = static_cast<int>(_use_gpu);
+            _cacheValid   = true;
         }
 
         // -------------------------------------------------------------------
-        // Copy output_buf (interleaved RGBA) to the output ImagePlane.
+        // Copy stripe sub-region from output_buf to the output ImagePlane.
         //
-        // ImagePlane can be packed (interleaved RGBARGBA) or unpacked
-        // (planar RRRR...GGGG...).  Use the stride accessors to handle
-        // both layouts correctly.
+        // output_buf is stored row-major for the full image:
+        //   index = (y - fullBox.y()) * fullW + (x - fullBox.x())
+        //
+        // The output ImagePlane uses local (0-based) row/col addressing:
+        //   dstBase = localY * rowStride + localX * colStride
         // -------------------------------------------------------------------
         output.makeWritable();
-        float* dst = output.writable();
-        const int rowStride  = output.rowStride();
-        const int colStride  = output.colStride();
+        float* dst               = output.writable();
+        const int rowStride      = output.rowStride();
+        const int colStride      = output.colStride();
         const int64_t chanStride = output.chanStride();
-        const int nComps = output.nComps();
-        if (dst && !output_buf.empty()) {
-            if (chanStride == 1 && colStride == nComps) {
-                // Packed layout (RGBARGBA...) — matches output_buf exactly
-                const size_t totalBytes = static_cast<size_t>(width) * height * nComps * sizeof(float);
-                std::memcpy(dst, output_buf.data(),
-                            std::min(totalBytes, output_buf.size() * sizeof(float)));
-            } else {
-                // Unpacked / planar layout — de-interleave
-                int pixIdx = 0;
-                for (int y = 0; y < height; ++y) {
-                    for (int x = 0; x < width; ++x) {
-                        const int srcBase = pixIdx * 4;
-                        const int64_t dstBase = static_cast<int64_t>(y) * rowStride
-                                              + static_cast<int64_t>(x) * colStride;
-                        for (int c = 0; c < std::min(nComps, 4); ++c) {
-                            dst[dstBase + c * chanStride] = output_buf[srcBase + c];
-                        }
-                        ++pixIdx;
+        const int nComps         = output.nComps();
+
+        if (dst) {
+            for (int y = bounds.y(); y < bounds.t(); ++y) {
+                const int localY = y - bounds.y();
+                for (int x = bounds.x(); x < bounds.r(); ++x) {
+                    const int localX  = x - bounds.x();
+                    const int fullPix = (y - fullBox.y()) * fullW + (x - fullBox.x());
+                    const int srcBase = fullPix * 4;
+                    const int64_t dstBase =
+                        static_cast<int64_t>(localY) * rowStride +
+                        static_cast<int64_t>(localX) * colStride;
+                    for (int c = 0; c < std::min(nComps, 4); ++c) {
+                        dst[dstBase + static_cast<int64_t>(c) * chanStride] =
+                            output_buf[srcBase + c];
                     }
                 }
             }
-        } else if (dst) {
-            std::memset(dst, 0,
-                        static_cast<size_t>(width) * static_cast<size_t>(height) *
-                        static_cast<size_t>(nComps) * sizeof(float));
         }
     }
 

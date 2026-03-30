@@ -77,13 +77,15 @@ extern "C" {
  * @param height       Image height in pixels.
  * @param lens         Lens parameters for CoC computation; must be non-null.
  * @param use_gpu      Non-zero to attempt GPU backend; 0 forces CPU-only path.
+ * @param quality      Render quality level: 0 = Low, 1 = Medium, 2 = High.
  */
 void opendefocus_deep_render(const DeepSampleData* data,
                              float*                output_rgba,
                              uint32_t              width,
                              uint32_t              height,
                              const LensParams*     lens,
-                             int                   use_gpu);
+                             int                   use_gpu,
+                             int                   quality);
 
 /**
  * Render deep-defocus with holdout transmittance attenuation.
@@ -100,6 +102,7 @@ void opendefocus_deep_render(const DeepSampleData* data,
  * @param use_gpu      Non-zero to attempt GPU backend; 0 forces CPU-only path.
  * @param holdout      Holdout transmittance map; may be null (equivalent to no holdout).
  *                     When non-null, holdout->len must be width*height*4 or 0.
+ * @param quality      Render quality level: 0 = Low, 1 = Medium, 2 = High.
  */
 void opendefocus_deep_render_holdout(const DeepSampleData* data,
                                      float*                output_rgba,
@@ -107,7 +110,8 @@ void opendefocus_deep_render_holdout(const DeepSampleData* data,
                                      uint32_t              height,
                                      const LensParams*     lens,
                                      int                   use_gpu,
-                                     const HoldoutData*    holdout);
+                                     const HoldoutData*    holdout,
+                                     int                   quality);
 
 #ifdef __cplusplus
 }

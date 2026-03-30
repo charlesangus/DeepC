@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "taskId": "T04",
+  "unitId": "M012-kho2ui/S01/T04",
+  "timestamp": 1774912110884,
+  "passed": true,
+  "discoverySource": "task-plan",
+  "checks": [
+    {
+      "command": "grep -q 'test_render_timing' crates/opendefocus-deep/src/lib.rs",
+      "exitCode": 0,
+      "durationMs": 5,
+      "verdict": "pass"
+    },
+    {
+      "command": "grep -q 'test_holdout_timing' crates/opendefocus-deep/src/lib.rs",
+      "exitCode": 0,
+      "durationMs": 5,
+      "verdict": "pass"
+    },
+    {
+      "command": "bash scripts/verify-s01-syntax.sh",
+      "exitCode": 0,
+      "durationMs": 641,
+      "verdict": "pass"
+    }
+  ]
+}

@@ -16,7 +16,7 @@ use opendefocus_datastructure::defocus::DefocusMode;
 use opendefocus_datastructure::render::{FilterMode, RenderSpecs};
 use opendefocus_datastructure::{Settings, render::ResultMode};
 use resize::Type;
-const MINIMUM_FILTER_SIZE: u32 = 8;
+pub(crate) const MINIMUM_FILTER_SIZE: u32 = 8;
 const ALPHA_CHANNEL: usize = 4;
 const PROCESSING_CHANNEL_COUNT: usize = 4;
 
@@ -125,6 +125,75 @@ impl RenderEngine {
         Ok(())
     }
 
+    /// Like `render`, but accepts pre-built filter mipmaps so the
+    /// filter-prep + mipmap chain is not repeated per layer.
+    ///
+    /// `prepare_depth_map` is still called here because depth settings
+    /// (focal_plane, camera_data) differ per layer.
+    ///
+    /// The Telea inpaint step is **skipped**: instead, we construct an all-zero
+    /// `inpaint_image` and a depth-array with duplicate channels `(d, d)`, which
+    /// is equivalent to the 2-D code path.  This is correct for the deep-image
+    /// layer-peeling use-case where each layer already has a valid alpha channel.
+    pub(crate) async fn render_with_prebuilt_mipmaps<'image, T: TraitBounds>(
+        &self,
+        runner: &SharedRunner,
+        mut image: ArrayViewMut3<'image, T>,
+        depth: Array2<T>,
+        filter_mipmaps: &MipmapBuffer<f32>,
+        holdout: &[f32],
+    ) -> Result<()> {
+        if self.settings.render.filter.preview {
+            render_preview_bokeh(image, &self.settings)?;
+            return Ok(());
+        }
+
+        let depth_image = prepare_depth_map(depth, &self.settings)?;
+        if self.settings.render.result_mode() == ResultMode::FocalPlaneSetup
+            && self.settings.defocus.defocus_mode() != DefocusMode::Twod
+        {
+            render_focal_plane_preview(
+                image,
+                depth_image.view(),
+                !self.settings.defocus.show_image,
+            )?;
+            return Ok(());
+        }
+
+        if get_aborted() {
+            return Ok(());
+        }
+
+        let chunks = ChunkHandler::new(
+            &self.render_specs,
+            self.settings.defocus.get_padding() as i32,
+        );
+        for chunk in chunks.get_render_specs() {
+            let image = image.slice_mut(s![
+                (chunk.full_region.y - self.render_specs.full_region.y)
+                    ..(chunk.full_region.w - self.render_specs.full_region.y),
+                (chunk.full_region.x - self.render_specs.full_region.x)
+                    ..(chunk.full_region.z - self.render_specs.full_region.x),
+                ..
+            ]);
+            let depth_view = if self.settings.defocus.defocus_mode() == DefocusMode::Twod {
+                depth_image.view()
+            } else {
+                depth_image.slice(s![
+                    (chunk.full_region.y - self.render_specs.full_region.y)
+                        ..(chunk.full_region.w - self.render_specs.full_region.y),
+                    (chunk.full_region.x - self.render_specs.full_region.x)
+                        ..(chunk.full_region.z - self.render_specs.full_region.x),
+                ])
+            };
+
+            self.render_convolve_prepped(image, runner, &chunk, filter_mipmaps, depth_view, holdout)
+                .await?;
+        }
+
+        Ok(())
+    }
+
     async fn render_convolve<'image, 'depth, T: TraitBounds>(
         &self,
         mut image: ArrayViewMut3<'image, T>,
@@ -164,6 +233,59 @@ impl RenderEngine {
                 )?;
                 (inpaint_image, depth_array)
             };
+
+        runner
+            .convolve(
+                output_image_data.as_slice_mut().ok_or(Error::OutputSlice)?,
+                original_image.view(),
+                inpaint_image,
+                filter_mipmaps,
+                depth_array,
+                render_specs,
+                &self.settings,
+                holdout,
+            )
+            .await?;
+
+        Zip::indexed(&mut image).par_for_each(|(y, x, channel), value| {
+            let alpha = output_image_data[[y, x, ALPHA_CHANNEL]];
+            *value = output_image_data[[y, x, channel]]
+                + original_image[[y, x, channel]]
+                    * (T::from_f32_normalized(1.0).unwrap_or_default() - alpha);
+        });
+
+        Ok(())
+    }
+
+    /// Like `render_convolve`, but uses pre-built filter mipmaps and skips the
+    /// Telea inpaint step.  The inpaint image is zeroed and depth channels are
+    /// duplicated `(d, d)`, matching the 2-D code path.
+    async fn render_convolve_prepped<'image, 'depth, T: TraitBounds>(
+        &self,
+        mut image: ArrayViewMut3<'image, T>,
+        runner: &SharedRunner,
+        render_specs: &RenderSpecs,
+        filter_mipmaps: &MipmapBuffer<f32>,
+        depth: ArrayView2<'depth, f32>,
+        holdout: &[f32],
+    ) -> Result<()> {
+        let original_image = resize_array_dimensions(image.view(), 4)?;
+
+        let mut output_image_data = Array3::zeros((
+            original_image.dim().0,
+            original_image.dim().1,
+            OUTPUT_CHANNELS,
+        ));
+
+        // Skip Telea inpaint — use zero inpaint image and duplicate-channel depth.
+        let inpaint_image = Array3::zeros(original_image.dim());
+        let depth_array = Array3::from_shape_vec(
+            (depth.dim().0, depth.dim().1, 2),
+            depth
+                .iter()
+                .flat_map(|&x| vec![x, x])
+                .collect(),
+        )?;
 
         runner
             .convolve(

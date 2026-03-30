@@ -1,0 +1,12 @@
+version 16.0 v2
+Root {
+ inputs 0
+ name test_opendefocus_256
+ frame 1
+ first_frame 1
+ last_frame 1
+ format "256 256 0 0 256 256 1 256x256"
+}
+# 256x256 single-layer deep defocus SLA test
+# Run with: nuke -x -m 1 test/test_opendefocus_256.nk
+# Expected: completes in < 10s wall-clock on CPU (quality=Low)

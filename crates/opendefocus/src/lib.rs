@@ -15,6 +15,8 @@ pub mod datamodel {
     pub use opendefocus_datastructure::*;
 }
 
+pub use renders::resize::MipmapBuffer;
+
 use crate::{error::Error, runners::ConvolveRunner, traits::TraitBounds};
 use datamodel::{
     IVector4, UVector2,
@@ -23,7 +25,7 @@ use datamodel::{
 };
 use error::Result;
 use ndarray::{Array2, Array3, ArrayViewMut3};
-use worker::engine::RenderEngine;
+use worker::engine::{MINIMUM_FILTER_SIZE, RenderEngine};
 
 use crate::runners::shared_runner::SharedRunner;
 
@@ -180,6 +182,116 @@ impl OpenDefocusRenderer {
                 image,
                 depth.unwrap_or(Array2::zeros((1, 1))),
                 filter,
+                holdout,
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Build filter mipmaps once so they can be reused across multiple layers.
+    ///
+    /// The result is identical to the mipmap chain produced inside
+    /// `engine.render`, but computed once and returned as a `MipmapBuffer<f32>`
+    /// that the caller may pass to [`render_stripe_prepped`].
+    ///
+    /// `channels` should match the channel count of the images that will be
+    /// rendered (typically 4 for RGBA).
+    ///
+    /// [`render_stripe_prepped`]: #method.render_stripe_prepped
+    pub async fn prepare_filter_mipmaps(
+        &self,
+        settings: &datamodel::Settings,
+        channels: usize,
+    ) -> Result<MipmapBuffer<f32>> {
+        use renders::resize::create_mipmaps;
+
+        let max_size = settings
+            .defocus
+            .get_padding()
+            .max(MINIMUM_FILTER_SIZE);
+
+        // Replicate the filter-prep path from engine.rs::render().
+        let filter_image = {
+            use renders::resize::resize_by_scale;
+            use resize::Type;
+
+            let channels_count = channels;
+            let image: Array3<f32> = if settings.render.filter.mode() == FilterMode::Simple {
+                Array3::zeros((
+                    MINIMUM_FILTER_SIZE as usize,
+                    MINIMUM_FILTER_SIZE as usize,
+                    channels_count,
+                ))
+            } else {
+                let resolution = settings
+                    .render
+                    .filter
+                    .calculate_filter_box(settings.bokeh.aspect_ratio);
+                let resolution = glam::UVec2::new(
+                    resolution[2] - resolution[0],
+                    resolution[3] - resolution[1],
+                )
+                .as_usizevec2();
+                let mut img = Array3::<f32>::zeros((resolution.y, resolution.x, channels_count));
+                bokeh_creator::Renderer::render_to_array(settings.bokeh, &mut img.view_mut());
+                img
+            };
+
+            // Downscale to max_size.
+            let (height, width, _) = image.dim();
+            let scale_factor = height.max(width) as f32;
+            resize_by_scale(image.view(), max_size as f32 / scale_factor, Type::Mitchell)?
+        };
+
+        // Normalise to f32 (already f32 after the above path) and build mipmaps.
+        let filter_mipmaps = if settings.defocus.defocus_mode() == DefocusMode::Twod {
+            vec![filter_image]
+        } else {
+            create_mipmaps(filter_image)?
+        };
+
+        let filter_mipmaps: Vec<Array3<f32>> = filter_mipmaps;
+        MipmapBuffer::from_vec(filter_mipmaps)
+    }
+
+    /// Render a stripe using pre-built filter mipmaps.
+    ///
+    /// Identical to [`render_stripe`] but skips the filter-prep + mipmap
+    /// construction step (and the Telea inpaint step) by accepting a
+    /// `MipmapBuffer<f32>` built via [`prepare_filter_mipmaps`].  This is
+    /// the hot path for deep-image rendering where many layers share the same
+    /// filter shape.
+    ///
+    /// [`render_stripe`]: #method.render_stripe
+    /// [`prepare_filter_mipmaps`]: #method.prepare_filter_mipmaps
+    pub async fn render_stripe_prepped<'image, T: TraitBounds>(
+        &self,
+        render_specs: datamodel::render::RenderSpecs,
+        settings: datamodel::Settings,
+        image: ArrayViewMut3<'image, T>,
+        depth: Array2<T>,
+        filter_mipmaps: &MipmapBuffer<f32>,
+        holdout: &[f32],
+    ) -> Result<()> {
+        // validate with None filter (filter is already baked into mipmaps).
+        let filter_none: Option<Array3<T>> = None;
+        let depth_opt = Some(depth);
+        // We only validate defocus mode / result mode constraints here — skip
+        // the filter-presence check by converting to the optional form first.
+        if settings.render.filter.mode() == FilterMode::Image {
+            // Image-filter mode requires a filter; but in prepped path the
+            // filter is already in the MipmapBuffer — no need to error.
+            // Fall through to render.
+        } else {
+            self.validate(&settings, &depth_opt, &filter_none)?;
+        }
+        let engine = RenderEngine::new(settings, render_specs);
+        engine
+            .render_with_prebuilt_mipmaps(
+                &self.runner,
+                image,
+                depth_opt.unwrap(),
+                filter_mipmaps,
                 holdout,
             )
             .await?;

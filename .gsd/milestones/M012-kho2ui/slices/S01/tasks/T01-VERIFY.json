@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "taskId": "T01",
+  "unitId": "M012-kho2ui/S01/T01",
+  "timestamp": 1774911264029,
+  "passed": true,
+  "discoverySource": "task-plan",
+  "checks": [
+    {
+      "command": "grep -q 'OnceLock' crates/opendefocus-deep/src/lib.rs",
+      "exitCode": 0,
+      "durationMs": 6,
+      "verdict": "pass"
+    },
+    {
+      "command": "grep -q 'test_singleton_reuse' crates/opendefocus-deep/src/lib.rs",
+      "exitCode": 0,
+      "durationMs": 7,
+      "verdict": "pass"
+    }
+  ]
+}

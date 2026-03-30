@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "taskId": "T01",
+  "unitId": "M012-kho2ui/S02/T01",
+  "timestamp": 1774913345206,
+  "passed": true,
+  "discoverySource": "task-plan",
+  "checks": [
+    {
+      "command": "bash scripts/verify-s01-syntax.sh",
+      "exitCode": 0,
+      "durationMs": 682,
+      "verdict": "pass"
+    },
+    {
+      "command": "grep -q '_cacheValid' src/DeepCOpenDefocus.cpp",
+      "exitCode": 0,
+      "durationMs": 5,
+      "verdict": "pass"
+    },
+    {
+      "command": "grep -q '_cacheMutex' src/DeepCOpenDefocus.cpp",
+      "exitCode": 0,
+      "durationMs": 5,
+      "verdict": "pass"
+    },
+    {
+      "command": "grep -q 'info_.box()' src/DeepCOpenDefocus.cpp",
+      "exitCode": 0,
+      "durationMs": 5,
+      "verdict": "pass"
+    },
+    {
+      "command": "test -f test/test_opendefocus_256.nk",
+      "exitCode": 0,
+      "durationMs": 4,
+      "verdict": "pass"
+    }
+  ]
+}

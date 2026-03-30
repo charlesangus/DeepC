@@ -343,3 +343,61 @@ The pre-M011 `renderStripe()` applied holdout as a post-defocus scalar multiply 
 **Context:** T02, S02, M011-qa62vv
 
 In Nuke `.nk` files, node inputs are assigned in LIFO (last-pushed = input 0). To produce `DeepCOpenDefocus` with input 0 = deep merge result and input 1 = holdout, push nodes in this order: (1) holdout node, (2) red/back subject, (3) green/front subject. `DeepMerge {inputs 2}` then consumes the top two (back and front), leaving `[merge_result, holdout]` on the stack for the subsequent `DeepCOpenDefocus {inputs 2}`. Wrong stack ordering silently produces wrong input wire assignments.
+
+## DeepCOpenDefocus Performance — M012-kho2ui/S01 Patterns
+
+### OnceLock singleton: lock once per render_impl, hold for full layer loop
+**Context:** opendefocus-deep renderer singleton (T01, S01, M012)
+
+`RENDERER: OnceLock<Arc<Mutex<OpenDefocusRenderer>>>` is initialised on first call via `get_or_init`. The `MutexGuard` is acquired once at the top of `render_impl` and held for the entire layer loop — not per-layer. This is correct because `render_stripe` / `render_stripe_prepped` take `&self` (immutable), so the guard deref chain composes cleanly. Acquiring per-layer would be wasteful and could allow interleaving on a future multi-threaded call path. Do NOT move the lock acquisition inside the layer loop.
+
+### prepare_filter_mipmaps: filter shape is constant across layers, settings differ
+**Context:** opendefocus-deep layer-peel hoisting (T02, S01, M012)
+
+Filter/mipmap prep depends on the filter shape (bokeh disc, aperture mask, blur radius) from `Settings`, but NOT on per-layer depth values (`focal_plane`, `camera_data`). Hoisting `prepare_filter_mipmaps` above the layer loop uses the first layer's settings. Per-layer `render_stripe_prepped` still receives a fresh `Settings` built per layer (focal_plane, camera_data differ). This is the key split: filter shape is a rendering constant; depth is a per-layer variable.
+
+### render_convolve_prepped skips Telea inpaint — correct for layer-peel
+**Context:** opendefocus RenderEngine (T02, S01, M012)
+
+The standard `render_convolve` path runs Telea inpaint on the input image to fill unknown regions before convolution. In the layer-peel approach, each extracted layer already has a valid alpha channel with no unknown regions — the layer is exactly the set of pixels at that depth. `render_convolve_prepped` replaces the inpaint step with a zero `inpaint_image` and duplicate-channel depth, which matches the existing 2-D flatten code path. Do NOT re-introduce Telea inpaint in the prepped path without revisiting layer validity guarantees.
+
+### quality.into() works directly on i32 for proto-generated enum fields
+**Context:** opendefocus Settings quality knob wiring (T03, S01, M012)
+
+`settings.render.quality = quality.into()` where `quality: i32` maps directly to the proto-generated field. No named `Quality` enum constant is needed at the call site. The `use opendefocus::Quality` import can be dropped entirely when this pattern is adopted. (Prior code used `Quality::Low.into()` which required the import — the new pattern is cleaner and parameterisable.)
+
+### Enumeration_knob kQualityEntries must be file-scope static, null-terminated
+**Context:** DeepCOpenDefocus quality knob (T03, S01, M012)
+
+`Enumeration_knob(f, &_quality, kQualityEntries, "quality", "Quality")` requires a null-terminated `const char* const[]`. Define `kQualityEntries` as a file-scope static BEFORE the class definition to keep the null-terminator convention visible and avoid accidental double-registration if the knobs() method is refactored. The `grep -c 'Enumeration_knob'` contract requires exactly 1 occurrence (code only, not comments).
+
+### Timing tests: loose 5000 ms warm assertion guards regression, not speedup ratio
+**Context:** opendefocus-deep unit test timing (T04, S01, M012)
+
+`test_render_timing` and `test_holdout_timing` assert only `warm_ms < 5000` on a 4×4 CPU image. They do NOT assert a speedup ratio because the singleton + mipmap-hoisting optimisation is not measurable at 4×4. The tests serve two purposes: (1) document that warm calls exist and are fast, (2) guard against catastrophic regression (e.g. re-introducing per-call renderer init that would cause seconds of overhead even at 4×4). Any tighter SLA should come from a Docker timing benchmark at 256×256.
+
+## DeepCOpenDefocus — S02/M012 PlanarIop Cache Patterns
+
+### Full-image cache: render outside mutex, write inside mutex
+**Context:** DeepCOpenDefocus PlanarIop render cache (S02, M012)
+
+The Rust FFI render runs **outside** `_cacheMutex` to avoid serializing all of Nuke's concurrent tile threads for the duration of the defocus computation. Only the cache metadata read (hit check) and cache write are locked. Two concurrent cache misses will each perform the full render; the second write is harmless because same inputs always produce identical outputs. Pattern: lock → check hit → unlock → render (slow) → lock → write cache → unlock → copy stripe.
+
+### PlanarIop cache invalidation: _validate() resets _cacheValid, renderStripe() checks key
+**Context:** DeepCOpenDefocus PlanarIop render cache (S02, M012)
+
+Two complementary guards prevent stale cache reads:
+1. `_validate()` sets `_cacheValid = false` unconditionally — fires on every upstream change, knob edit, or frame change.
+2. `renderStripe()` checks a 6-field cache key (fl, fs, fd, ssz, quality, use_gpu) before serving from cache.
+
+The `_validate()` invalidation is conservative: it always marks the cache dirty regardless of whether the change actually affected lens params. This is correct because `_validate()` is cheap. Future code that adds new render-affecting parameters must add those fields to the cache key in `renderStripe()`.
+
+### holdout branch and deepEngine must both use fullBox (info_.box())
+**Context:** DeepCOpenDefocus PlanarIop render cache (S02, M012)
+
+Both the normal and holdout branches call `deepIn->deepEngine(fullBox, ...)` / `holdoutIn->deepEngine(fullBox, ...)` where `fullBox = info_.box()`. Using the stripe bounds here would fetch incomplete deep data for a non-local convolution — defocus needs to gather samples from the entire image, not just the current stripe. `info_.box()` is safe because it is always set by `_validate()` before `renderStripe()` is called.
+
+### Stripe copy index arithmetic: fullBox-relative row-major
+**Context:** DeepCOpenDefocus stripe copy from cache (S02, M012)
+
+The cache buffer is indexed as `_cachedRGBA[(y - fullBox.y()) * fullW * 4 + (x - fullBox.x()) * 4 + c]`. Both `y` and `x` are absolute pixel coordinates; subtracting `fullBox.y()` and `fullBox.x()` respectively gives the zero-based row/col index into the cache. After the full render, the stripe copy loop iterates over `output.bounds()` (the stripe region), not the full box — this is what makes the PlanarIop approach correct.

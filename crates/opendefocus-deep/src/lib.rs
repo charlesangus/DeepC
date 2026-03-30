@@ -17,14 +17,66 @@
 use futures::executor::block_on;
 use ndarray::{Array2, Array3};
 use opendefocus::{
+    MipmapBuffer,
     OpenDefocusRenderer,
     datamodel::{
         IVector4, Settings, UVector2,
         circle_of_confusion::{CameraData, Filmback, Resolution, WorldUnit},
         defocus::DefocusMode,
-        render::{FilterMode, Quality, RenderSpecs, ResultMode},
+        render::{FilterMode, RenderSpecs, ResultMode},
     },
 };
+use std::sync::{Arc, Mutex, OnceLock};
+
+// ---------------------------------------------------------------------------
+// Static singleton renderer — initialised once on first FFI call.
+// ---------------------------------------------------------------------------
+
+/// Global renderer singleton.  Initialised on the first `render_impl` call
+/// using the caller's `use_gpu` flag.  All subsequent calls reuse the same
+/// underlying `OpenDefocusRenderer` instance, eliminating the per-call
+/// async-init overhead.
+static RENDERER: OnceLock<Arc<Mutex<OpenDefocusRenderer>>> = OnceLock::new();
+
+/// Acquire (or lazily initialise) the singleton renderer.
+///
+/// If the `OnceLock` is not yet populated the renderer is created with
+/// `prefer_gpu = use_gpu != 0`.  If GPU init fails the function falls back
+/// to CPU and still stores the result, so subsequent callers always get a
+/// valid renderer regardless of `use_gpu`.
+fn get_or_init_renderer(use_gpu: i32) -> Arc<Mutex<OpenDefocusRenderer>> {
+    RENDERER
+        .get_or_init(|| {
+            let mut settings_init = Settings::default();
+            let renderer = if use_gpu != 0 {
+                match block_on(OpenDefocusRenderer::new(true, &mut settings_init)) {
+                    Ok(r) => {
+                        if r.is_gpu() {
+                            eprintln!("[opendefocus-deep] singleton: GPU backend active");
+                        } else {
+                            eprintln!(
+                                "[opendefocus-deep] singleton: GPU requested but unavailable — CPU fallback"
+                            );
+                        }
+                        r
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[opendefocus-deep] singleton: GPU init error: {e} — falling back to CPU"
+                        );
+                        block_on(OpenDefocusRenderer::new(false, &mut settings_init))
+                            .expect("OpenDefocusRenderer CPU init must not fail")
+                    }
+                }
+            } else {
+                eprintln!("[opendefocus-deep] singleton: use_gpu=0 — CPU-only path");
+                block_on(OpenDefocusRenderer::new(false, &mut settings_init))
+                    .expect("OpenDefocusRenderer CPU init must not fail")
+            };
+            Arc::new(Mutex::new(renderer))
+        })
+        .clone()
+}
 
 // ---------------------------------------------------------------------------
 // FFI types — must stay in sync with include/opendefocus_deep.h
@@ -107,8 +159,9 @@ pub extern "C" fn opendefocus_deep_render(
     height: u32,
     lens: *const LensParams,
     use_gpu: i32,
+    quality: i32,
 ) {
-    render_impl(data, output_rgba, width, height, lens, use_gpu, &[]);
+    render_impl(data, output_rgba, width, height, lens, use_gpu, &[], quality);
 }
 
 /// Render entry point with holdout transmittance map.
@@ -130,6 +183,7 @@ pub extern "C" fn opendefocus_deep_render_holdout(
     lens: *const LensParams,
     use_gpu: i32,
     holdout: *const HoldoutData,
+    quality: i32,
 ) {
     // Build the holdout slice from the FFI struct (null → empty slice).
     let holdout_slice: &[f32] = if holdout.is_null() {
@@ -145,7 +199,7 @@ pub extern "C" fn opendefocus_deep_render_holdout(
         }
     };
 
-    render_impl(data, output_rgba, width, height, lens, use_gpu, holdout_slice);
+    render_impl(data, output_rgba, width, height, lens, use_gpu, holdout_slice, quality);
 }
 
 // ---------------------------------------------------------------------------
@@ -195,6 +249,7 @@ fn render_impl(
     lens: *const LensParams,
     use_gpu: i32,
     holdout: &[f32],
+    quality: i32,
 ) {
     // -----------------------------------------------------------------------
     // 0. Null-guard + early-out for empty images.
@@ -282,30 +337,30 @@ fn render_impl(
     let mut accum: Vec<f32> = vec![0.0f32; h * w * 4];
 
     // -----------------------------------------------------------------------
-    // 5. Initialise renderer — GPU if use_gpu != 0, CPU-only otherwise.
+    // 5. Acquire the singleton renderer (init on first call, reuse thereafter).
     // -----------------------------------------------------------------------
-    let mut settings_init = Settings::default();
-    let renderer = if use_gpu != 0 {
-        match block_on(OpenDefocusRenderer::new(true, &mut settings_init)) {
-            Ok(r) => {
-                if r.is_gpu() {
-                    eprintln!("[opendefocus-deep] GPU backend active");
-                } else {
-                    eprintln!("[opendefocus-deep] GPU requested but unavailable — CPU fallback");
-                }
-                r
-            }
-            Err(e) => {
-                eprintln!("[opendefocus-deep] GPU init error: {e} — falling back to CPU");
-                block_on(OpenDefocusRenderer::new(false, &mut settings_init))
-                    .expect("OpenDefocusRenderer CPU init must not fail")
-            }
-        }
-    } else {
-        eprintln!("[opendefocus-deep] use_gpu=0 — CPU-only path");
-        block_on(OpenDefocusRenderer::new(false, &mut settings_init))
-            .expect("OpenDefocusRenderer CPU init must not fail")
+    let renderer_arc = get_or_init_renderer(use_gpu);
+    let renderer_guard = renderer_arc.lock().expect("renderer mutex must not be poisoned");
+
+    // -----------------------------------------------------------------------
+    // 5a. Hoist filter/mipmap preparation outside the layer loop.
+    //
+    //     The filter shape (FilterMode::Simple with the given resolution) is
+    //     constant across all layers — only depth/focal-plane settings differ.
+    //     Build a template Settings just for filter prep.
+    // -----------------------------------------------------------------------
+    let filter_prep_settings = {
+        let mut s = Settings::default();
+        s.render.resolution = UVector2 { x: w as u32, y: h as u32 };
+        s.render.filter.mode = FilterMode::Simple.into();
+        s.defocus.defocus_mode = DefocusMode::Depth.into();
+        s
     };
+    let filter_mipmaps: MipmapBuffer<f32> = block_on(renderer_guard.prepare_filter_mipmaps(
+        &filter_prep_settings,
+        4, // RGBA
+    ))
+    .expect("[opendefocus-deep] prepare_filter_mipmaps must not fail");
 
     // -----------------------------------------------------------------------
     // 6. Layer-peel loop.
@@ -348,7 +403,7 @@ fn render_impl(
             y: h as f32 / 2.0,
         };
         // Proto-generated enums are stored as i32 — use .into() to convert.
-        settings.render.quality = Quality::Low.into();
+        settings.render.quality = quality.into();
         settings.render.result_mode = ResultMode::Result.into();
         settings.render.filter.mode = FilterMode::Simple.into();
         settings.render.gui = false;
@@ -409,18 +464,18 @@ fn render_impl(
             },
         };
 
-        // ── 6e. Render layer. render_stripe takes ownership of depth ──
-        //        and a mutable view into the image array.
+        // ── 6e. Render layer using pre-built filter mipmaps (no per-layer
+        //        filter/mipmap prep or Telea inpaint).
         //        Holdout attenuation was already applied in scene-depth space
         //        (step 6a) — pass empty slice to avoid double-attenuation in
         //        the kernel's CoC-space apply_holdout_attenuation.
         let mut rendered = image_array;
-        let render_result = block_on(renderer.render_stripe(
+        let render_result = block_on(renderer_guard.render_stripe_prepped(
             render_specs,
             settings,
             rendered.view_mut(),
-            Some(depth_array),
-            None,
+            depth_array,
+            &filter_mipmaps,
             &[],
         ));
 
@@ -527,6 +582,7 @@ mod tests {
             &lens as *const LensParams,
             0, // CPU only
             &holdout as *const HoldoutData,
+            0, // Quality::Low
         );
 
         // Output layout: [R0 G0 B0 A0  R1 G1 B1 A1  R2 G2 B2 A2]
@@ -549,5 +605,263 @@ mod tests {
             px1_green > px2_blue,
             "green (front of holdout) {px1_green} should exceed attenuated blue {px2_blue}"
         );
+    }
+
+    /// Document singleton + prep hoisting speedup via wall-clock timing.
+    ///
+    /// Calls `opendefocus_deep_render` twice on a minimal 4×4 single-sample
+    /// image.  The first call is "cold" (may initialise the singleton if this
+    /// test runs before all others); the second call is "warm" (singleton and
+    /// filter mipmaps are already built).  Both elapsed times are printed with
+    /// `eprintln!` (visible under `--nocapture`).
+    ///
+    /// The only hard assertion is that the warm call completes in under 5 000 ms
+    /// — a loose regression guard, not a tight SLA.
+    #[test]
+    fn test_render_timing() {
+        let width: u32 = 4;
+        let height: u32 = 4;
+        let pixel_count: usize = (width * height) as usize;
+
+        // One sample per pixel.
+        let sample_counts: [u32; 16] = [1; 16];
+
+        // Mid-grey, fully opaque.
+        let mut rgba = vec![0.0f32; pixel_count * 4];
+        for i in 0..pixel_count {
+            rgba[i * 4]     = 0.5;
+            rgba[i * 4 + 1] = 0.5;
+            rgba[i * 4 + 2] = 0.5;
+            rgba[i * 4 + 3] = 1.0;
+        }
+
+        // Uniform depth.
+        let depth: [f32; 16] = [2.0; 16];
+
+        let lens = LensParams {
+            focal_length_mm: 50.0,
+            fstop: 8.0,
+            focus_distance: 5.0,
+            sensor_size_mm: 36.0,
+        };
+
+        let deep_data = DeepSampleData {
+            sample_counts: sample_counts.as_ptr(),
+            rgba: rgba.as_ptr(),
+            depth: depth.as_ptr(),
+            pixel_count: pixel_count as u32,
+            total_samples: pixel_count as u32,
+        };
+
+        let mut output1 = vec![0.0f32; pixel_count * 4];
+        let mut output2 = vec![0.0f32; pixel_count * 4];
+
+        // ── Cold call (may init the singleton). ──
+        let t0 = std::time::Instant::now();
+        opendefocus_deep_render(
+            &deep_data as *const DeepSampleData,
+            output1.as_mut_ptr(),
+            width,
+            height,
+            &lens as *const LensParams,
+            0, // CPU only
+            0, // Quality::Low
+        );
+        let cold_ms = t0.elapsed().as_millis();
+
+        // ── Warm call (singleton already initialised). ──
+        let t1 = std::time::Instant::now();
+        opendefocus_deep_render(
+            &deep_data as *const DeepSampleData,
+            output2.as_mut_ptr(),
+            width,
+            height,
+            &lens as *const LensParams,
+            0, // CPU only
+            0, // Quality::Low
+        );
+        let warm_ms = t1.elapsed().as_millis();
+
+        eprintln!(
+            "[test_render_timing] cold={cold_ms}ms  warm={warm_ms}ms"
+        );
+
+        // Loose regression guard — not a tight SLA.
+        assert!(
+            warm_ms < 5000,
+            "warm render took {warm_ms}ms (> 5000ms regression threshold)"
+        );
+    }
+
+    /// Document holdout-path timing — singleton + prep hoisting speedup.
+    ///
+    /// Calls `opendefocus_deep_render_holdout` twice on a minimal 4×4
+    /// single-sample image with a trivial holdout slice (T=1.0 everywhere, i.e.
+    /// no attenuation).  Cold and warm elapsed times are printed; the warm call
+    /// must complete in under 5 000 ms.
+    #[test]
+    fn test_holdout_timing() {
+        let width: u32 = 4;
+        let height: u32 = 4;
+        let pixel_count: usize = (width * height) as usize;
+
+        // One sample per pixel.
+        let sample_counts: [u32; 16] = [1; 16];
+
+        // Mid-grey, fully opaque.
+        let mut rgba = vec![0.0f32; pixel_count * 4];
+        for i in 0..pixel_count {
+            rgba[i * 4]     = 0.5;
+            rgba[i * 4 + 1] = 0.5;
+            rgba[i * 4 + 2] = 0.5;
+            rgba[i * 4 + 3] = 1.0;
+        }
+
+        // Uniform depth.
+        let depth: [f32; 16] = [2.0; 16];
+
+        let lens = LensParams {
+            focal_length_mm: 50.0,
+            fstop: 8.0,
+            focus_distance: 5.0,
+            sensor_size_mm: 36.0,
+        };
+
+        // Minimal holdout: T=1.0 at all depths (no attenuation).
+        // Encoding: (d0=0.0, T0=1.0, d1=0.0, T1=1.0) per pixel.
+        let holdout_raw: Vec<f32> = {
+            let mut v = vec![0.0f32; pixel_count * 4];
+            for i in 0..pixel_count {
+                v[i * 4 + 1] = 1.0; // T0
+                v[i * 4 + 3] = 1.0; // T1
+            }
+            v
+        };
+
+        let holdout = HoldoutData {
+            data: holdout_raw.as_ptr(),
+            len: (pixel_count * 4) as u32,
+        };
+
+        let deep_data = DeepSampleData {
+            sample_counts: sample_counts.as_ptr(),
+            rgba: rgba.as_ptr(),
+            depth: depth.as_ptr(),
+            pixel_count: pixel_count as u32,
+            total_samples: pixel_count as u32,
+        };
+
+        let mut output1 = vec![0.0f32; pixel_count * 4];
+        let mut output2 = vec![0.0f32; pixel_count * 4];
+
+        // ── Cold call. ──
+        let t0 = std::time::Instant::now();
+        opendefocus_deep_render_holdout(
+            &deep_data as *const DeepSampleData,
+            output1.as_mut_ptr(),
+            width,
+            height,
+            &lens as *const LensParams,
+            0, // CPU only
+            &holdout as *const HoldoutData,
+            0, // Quality::Low
+        );
+        let cold_ms = t0.elapsed().as_millis();
+
+        // ── Warm call. ──
+        let t1 = std::time::Instant::now();
+        opendefocus_deep_render_holdout(
+            &deep_data as *const DeepSampleData,
+            output2.as_mut_ptr(),
+            width,
+            height,
+            &lens as *const LensParams,
+            0, // CPU only
+            &holdout as *const HoldoutData,
+            0, // Quality::Low
+        );
+        let warm_ms = t1.elapsed().as_millis();
+
+        eprintln!(
+            "[test_holdout_timing] cold={cold_ms}ms  warm={warm_ms}ms"
+        );
+
+        // Loose regression guard.
+        assert!(
+            warm_ms < 5000,
+            "warm holdout render took {warm_ms}ms (> 5000ms regression threshold)"
+        );
+    }
+
+    /// Verify that `opendefocus_deep_render` can be called twice without panic.
+    ///
+    /// This proves the singleton is reused correctly: the first call initialises
+    /// the static `OnceLock`; the second call must not re-initialise or deadlock.
+    /// Uses a 2×2 single-sample image on the CPU path.
+    #[test]
+    fn test_singleton_reuse() {
+        let width: u32 = 2;
+        let height: u32 = 2;
+
+        // One sample per pixel, four pixels.
+        let sample_counts: [u32; 4] = [1, 1, 1, 1];
+        let rgba: [f32; 16] = [
+            0.5, 0.5, 0.5, 1.0, // pixel 0
+            0.5, 0.5, 0.5, 1.0, // pixel 1
+            0.5, 0.5, 0.5, 1.0, // pixel 2
+            0.5, 0.5, 0.5, 1.0, // pixel 3
+        ];
+        let depth: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+
+        let lens = LensParams {
+            focal_length_mm: 50.0,
+            fstop: 8.0,
+            focus_distance: 5.0,
+            sensor_size_mm: 36.0,
+        };
+
+        let deep_data = DeepSampleData {
+            sample_counts: sample_counts.as_ptr(),
+            rgba: rgba.as_ptr(),
+            depth: depth.as_ptr(),
+            pixel_count: 4,
+            total_samples: 4,
+        };
+
+        let mut output1: [f32; 16] = [0.0; 16];
+        let mut output2: [f32; 16] = [0.0; 16];
+
+        // First call — initialises the singleton.
+        opendefocus_deep_render(
+            &deep_data as *const DeepSampleData,
+            output1.as_mut_ptr(),
+            width,
+            height,
+            &lens as *const LensParams,
+            0, // CPU only
+            0, // Quality::Low
+        );
+
+        // Second call — must reuse the singleton without panic or deadlock.
+        opendefocus_deep_render(
+            &deep_data as *const DeepSampleData,
+            output2.as_mut_ptr(),
+            width,
+            height,
+            &lens as *const LensParams,
+            0, // CPU only
+            0, // Quality::Low
+        );
+
+        // Both calls should produce valid (non-NaN) output.
+        for (i, &v) in output1.iter().enumerate() {
+            assert!(!v.is_nan(), "output1[{i}] is NaN");
+        }
+        for (i, &v) in output2.iter().enumerate() {
+            assert!(!v.is_nan(), "output2[{i}] is NaN");
+        }
+
+        eprintln!("[test_singleton_reuse] call 1: {:?}", &output1[..4]);
+        eprintln!("[test_singleton_reuse] call 2: {:?}", &output2[..4]);
     }
 }

@@ -407,7 +407,8 @@ for nk_file in \
     test_opendefocus_camera.nk \
     test_opendefocus_cpu.nk \
     test_opendefocus_empty.nk \
-    test_opendefocus_bokeh.nk
+    test_opendefocus_bokeh.nk \
+    test_opendefocus_256.nk
 do
     NK_TEST="${SCRIPT_DIR}/../test/${nk_file}"
     if [ -f "$NK_TEST" ]; then

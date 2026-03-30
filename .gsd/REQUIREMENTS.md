@@ -180,6 +180,61 @@ This file is the explicit capability and coverage contract for the project.
 - Validation: unmapped
 - Notes: This is conceptually similar to Nuke's DeepToImage flatten, but applied after per-sample convolution.
 
+### R063 — Singleton CPU renderer — OpenDefocusRenderer created once and reused across all FFI calls
+- Class: quality-attribute
+- Status: active
+- Description: OpenDefocusRenderer created once and reused across all FFI calls, not re-initialized per renderStripe invocation
+- Why it matters: Creating a new renderer per call wastes ~100ms on initialization (thread pool, settings validation) and prevents any cross-call caching
+- Source: execution
+- Primary owning slice: M012-kho2ui/S01
+- Supporting slices: none
+- Validation: unmapped
+- Notes: Use once_cell::sync::Lazy or std::sync::OnceLock for the static singleton
+
+### R064 — Per-layer overhead eliminated — shared prep across layer-peel iterations
+- Class: quality-attribute
+- Status: active
+- Description: Bokeh filter image, mipmaps, depth map preparation, and inpaint preprocessing computed once per render call and reused across all layer-peel iterations
+- Why it matters: For N-layer deep images, these currently run N times despite being identical across layers (same lens params, same resolution). This is the dominant CPU cost multiplier.
+- Source: execution
+- Primary owning slice: M012-kho2ui/S01
+- Supporting slices: none
+- Validation: unmapped
+- Notes: Requires modifying the forked opendefocus crate to expose lower-level APIs that separate preparation from per-layer dispatch
+
+### R065 — Full-image render with PlanarIop cache
+- Class: quality-attribute
+- Status: active
+- Description: DeepCOpenDefocus renders the full deep image bounds in one renderStripe call and caches the result; subsequent PlanarIop stripe requests copy from the cache instead of re-rendering
+- Why it matters: PlanarIop may call renderStripe multiple times for different plane regions; without caching, each call re-flattens and re-renders the entire deep image
+- Source: execution
+- Primary owning slice: M012-kho2ui/S02
+- Supporting slices: none
+- Validation: unmapped
+- Notes: Cache must be invalidated when knobs change or input topology changes
+
+### R066 — Quality knob exposed to user
+- Class: primary-user-loop
+- Status: active
+- Description: User-facing Enumeration_knob on DeepCOpenDefocus that maps to opendefocus Quality::Low/Medium/High, giving artists control over the speed/quality tradeoff
+- Why it matters: Artists need to preview quickly at low quality and render final at high quality — hardcoding Quality::Low removes that choice
+- Source: user
+- Primary owning slice: M012-kho2ui/S02
+- Supporting slices: none
+- Validation: unmapped
+- Notes: Pass through FFI as an int; map in Rust to the proto enum
+
+### R067 — 256×256 single-layer renders under 10 seconds on CPU
+- Class: quality-attribute
+- Status: active
+- Description: A 256×256 single-layer DeepCConstant rendered through DeepCOpenDefocus on CPU completes in under 10 seconds wall-clock time
+- Why it matters: This is the user's stated upper bound for interactive usability on trivial test scenes
+- Source: user
+- Primary owning slice: M012-kho2ui/S02
+- Supporting slices: M012-kho2ui/S01
+- Validation: unmapped
+- Notes: Measured via nuke -x with -m 1; must include full renderStripe overhead
+
 ## Validated
 
 ### R013 — `flatten(DeepCDepthBlur(input)) == flatten(input)` — sub-sample alphas computed via `α_sub = 1 - (1-α)^w` so that `1 - ∏(1-α_sub_i) = α_original`; premultiplied channels scale as `c * (α_sub / α)`. The node redistributes each sample's alpha across sub-samples using multiplicative decomposition, not additive scaling.
@@ -314,10 +369,15 @@ This file is the explicit capability and coverage contract for the project.
 | R057 | constraint | active | M009-mso5fb/S01 | none | unmapped |
 | R058 | core-capability | active | M009-mso5fb/S02 | none | unmapped |
 | R059 | anti-feature | out-of-scope | none | none | n/a |
+| R063 | quality-attribute | active | M012-kho2ui/S01 | none | unmapped |
+| R064 | quality-attribute | active | M012-kho2ui/S01 | none | unmapped |
+| R065 | quality-attribute | active | M012-kho2ui/S02 | none | unmapped |
+| R066 | primary-user-loop | active | M012-kho2ui/S02 | none | unmapped |
+| R067 | quality-attribute | active | M012-kho2ui/S02 | M012-kho2ui/S01 | unmapped |
 
 ## Coverage Summary
 
-- Active requirements: 16
-- Mapped to slices: 16
+- Active requirements: 21
+- Mapped to slices: 21
 - Validated: 5 (R013, R017, R018, R046, R049)
 - Unmapped active requirements: 0
