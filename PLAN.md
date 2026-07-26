@@ -1,8 +1,8 @@
 ---
 title: DeepCDefocus — deep-input, flat-output defocus node
 status: running
-current: M1.P3.T1
-pm_heartbeat: 2026-07-26T14:52:00-04:00
+current: M1.P3.T6
+pm_heartbeat: 2026-07-26T16:30:00-04:00
 ship: pr-per-milestone
 ---
 
@@ -60,7 +60,7 @@ node; v3 (Milestone 3) adds a CUDA backend behind the seams v1/v2 leave in place
   `cmake -S . -B build/local -D Nuke_ROOT=/usr/local/Nuke17.0v3 && cmake --build build/local`
   (verified: builds the existing repo clean, warnings only). Milestone 1's Phase 1.0 sets this
   up formally; every later task's "docker compile gate" language should be read as "this local
-  build" for day-to-day iteration in this environment. `./docker-build.sh --linux`/`--windows`
+  build" for day-to-day iteration in this environment.
   Headless Nuke also works here (verified at M1.P2.T1):
   `NUKE_PATH=<dir> /usr/local/Nuke17.0v3/Nuke17.0 -t <script.py>` loads a locally-built plugin with
   no GUI and no licensing obstacle, so every in-Nuke verification in this plan can be scripted

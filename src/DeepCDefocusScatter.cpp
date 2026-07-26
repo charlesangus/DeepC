@@ -1,0 +1,642 @@
+// SPDX-License-Identifier: MIT
+//
+// ============================================================================
+//
+//  DeepCDefocusScatter — SoA flattening of deep samples (M1.P3.T1)
+//
+//  See DeepCDefocusScatter.h for the API and for why nothing in this
+//  translation unit may include a DDImage/NDK header.
+//
+// ============================================================================
+
+#include "DeepCDefocusScatter.h"
+
+#include <algorithm>
+#include <cmath>
+
+namespace deepc {
+
+// ---------------------------------------------------------------------------
+// SampleSoA
+// ---------------------------------------------------------------------------
+
+std::size_t SampleSoA::sizeBytes() const
+{
+    return x.sizeBytes() + y.sizeBytes()
+         + radius.sizeBytes() + depth.sizeBytes() + alpha.sizeBytes()
+         + bucketIndex0.sizeBytes() + bucketIndex1.sizeBytes()
+         + bucketAlpha0.sizeBytes() + bucketAlpha1.sizeBytes()
+         + colorScale0.sizeBytes() + colorScale1.sizeBytes()
+         + boundaryIndex.sizeBytes() + boundaryFrac.sizeBytes()
+         + kind.sizeBytes() + color.sizeBytes();
+}
+
+void SampleSoA::clear()
+{
+    x.clear();
+    y.clear();
+    radius.clear();
+    depth.clear();
+    alpha.clear();
+    bucketIndex0.clear();
+    bucketIndex1.clear();
+    bucketAlpha0.clear();
+    bucketAlpha1.clear();
+    colorScale0.clear();
+    colorScale1.clear();
+    boundaryIndex.clear();
+    boundaryFrac.clear();
+    kind.clear();
+    color.clear();
+}
+
+void SampleSoA::release()
+{
+    x.release();
+    y.release();
+    radius.release();
+    depth.release();
+    alpha.release();
+    bucketIndex0.release();
+    bucketIndex1.release();
+    bucketAlpha0.release();
+    bucketAlpha1.release();
+    colorScale0.release();
+    colorScale1.release();
+    boundaryIndex.release();
+    boundaryFrac.release();
+    kind.release();
+    color.release();
+}
+
+void SampleSoA::begin(int channelCountIn, const ChannelGroups& groupsIn)
+{
+    channelCount = (channelCountIn > 0) ? channelCountIn : 0;
+    groups       = groupsIn;
+    clear();
+}
+
+void SampleSoA::reserveFragments(std::size_t count)
+{
+    x.reserve(count);
+    y.reserve(count);
+    radius.reserve(count);
+    depth.reserve(count);
+    alpha.reserve(count);
+    bucketIndex0.reserve(count);
+    bucketIndex1.reserve(count);
+    bucketAlpha0.reserve(count);
+    bucketAlpha1.reserve(count);
+    colorScale0.reserve(count);
+    colorScale1.reserve(count);
+    boundaryIndex.reserve(count);
+    boundaryFrac.reserve(count);
+    kind.reserve(count);
+    color.reserve(count * static_cast<std::size_t>(channelCount));
+}
+
+void SampleSoA::appendFragment(const FragmentRecord& f, const float* __restrict__ channels)
+{
+    const std::size_t n = fragmentCount();
+    const std::size_t next = n + 1;
+
+    // growForAppend() is geometric, so the amortised cost of an append is a
+    // handful of stores; resize() then only bumps the size.
+    x.growForAppend(next);
+    y.growForAppend(next);
+    radius.growForAppend(next);
+    depth.growForAppend(next);
+    alpha.growForAppend(next);
+    bucketIndex0.growForAppend(next);
+    bucketIndex1.growForAppend(next);
+    bucketAlpha0.growForAppend(next);
+    bucketAlpha1.growForAppend(next);
+    colorScale0.growForAppend(next);
+    colorScale1.growForAppend(next);
+    boundaryIndex.growForAppend(next);
+    boundaryFrac.growForAppend(next);
+    kind.growForAppend(next);
+    color.growForAppend(next * static_cast<std::size_t>(channelCount));
+
+    x.resize(next);
+    y.resize(next);
+    radius.resize(next);
+    depth.resize(next);
+    alpha.resize(next);
+    bucketIndex0.resize(next);
+    bucketIndex1.resize(next);
+    bucketAlpha0.resize(next);
+    bucketAlpha1.resize(next);
+    colorScale0.resize(next);
+    colorScale1.resize(next);
+    boundaryIndex.resize(next);
+    boundaryFrac.resize(next);
+    kind.resize(next);
+    color.resize(next * static_cast<std::size_t>(channelCount));
+
+    x[n]             = static_cast<std::int32_t>(f.x);
+    y[n]             = static_cast<std::int32_t>(f.y);
+    radius[n]        = f.radius;
+    depth[n]         = f.depth;
+    alpha[n]         = f.alpha;
+    bucketIndex0[n]  = static_cast<std::int32_t>(f.deposit.index0);
+    bucketIndex1[n]  = static_cast<std::int32_t>(f.deposit.index1);
+    bucketAlpha0[n]  = f.deposit.alpha0;
+    bucketAlpha1[n]  = f.deposit.alpha1;
+    colorScale0[n]   = f.deposit.colorScale0;
+    colorScale1[n]   = f.deposit.colorScale1;
+    boundaryIndex[n] = static_cast<std::int32_t>(f.boundary.index);
+    boundaryFrac[n]  = f.boundary.frac;
+    kind[n]          = static_cast<std::uint8_t>(f.kind);
+
+    if (channelCount > 0) {
+        float* __restrict__ dst = colorOf(n);
+        for (int c = 0; c < channelCount; ++c)
+            dst[c] = channels[c];
+    }
+}
+
+// ---------------------------------------------------------------------------
+// applyProxyScale
+// ---------------------------------------------------------------------------
+
+void applyProxyScale(CocParams& p, float proxyScale)
+{
+    if (!(proxyScale > 0.0f) || !std::isfinite(proxyScale) || proxyScale == 1.0f)
+        return;
+
+    p._maxRadiusPx *= proxyScale;
+    p._size        *= proxyScale;   // Manual mode's radius-at-infinity, in px
+    p.recomputeDerived();
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+namespace {
+
+// Only NON-FINITE depths are rewritten here, and they must be: a NaN in the
+// list makes tidyOverlapping()'s and our own std::sort comparators a
+// non-strict-weak ordering, which is undefined behaviour long before the value
+// could reach the CoC math.
+//
+//   NaN, -inf -> 0.0f            (reads as "invalid depth" everywhere:
+//                                 signedCocPixels() answers 0, i.e. sharp, and
+//                                 bucketOf()/locateBoundary() clamp onto the
+//                                 first bucket)
+//   +inf      -> kMaxDepth       (a real far-field sample; keeping it finite
+//                                 avoids inf-inf in span arithmetic while the
+//                                 inverse-depth CoC form treats 1e12 as the
+//                                 far-field limit anyway)
+//
+// Finite non-positive depths are deliberately left alone: signedCocPixels()
+// already specifies d <= 0 -> radius 0, and rewriting them would turn a
+// behind-camera sample into a near-field one clamped to max_radius.
+inline float sanitizeSampleDepth(float v)
+{
+    if (std::isfinite(v))
+        return v;
+    return (v > 0.0f) ? DepthBuckets::kMaxDepth : 0.0f;
+}
+
+// The containing bucket, used as the pre-merge grouping key so a merge can
+// never span a bucket boundary (which would change which plane the fragment
+// lands in, and therefore the composite).
+inline int containingBucket(const DepthBuckets& buckets, float depth)
+{
+    if (buckets.bucketCount() <= 0)
+        return 0;
+    return clampi(buckets.locateBoundary(depth).index, 0, buckets.bucketCount() - 1);
+}
+
+// -----------------------------------------------------------------------
+// emitFragment — THE COMPOSITION CONTRACT, enforced at its single site
+//
+// This is the only place in the node that turns a depth into a bucket
+// assignment, and it has exactly one if/else:
+//
+//   Volumetric (the piece came out of splitSpanAtBoundaries())
+//        -> bucketOfContaining(): whole weight, frac 0, no second bucket
+//   Point      (never span-split)
+//        -> bucketOf(): the fractional two-bucket partition of unity
+//
+// There is no path through this function that applies both, and the caller
+// derives `kind` once from `zBack > zFront` rather than writing it separately
+// per branch — so the +8.3% double-count regression (DeepCDefocusMath.h,
+// splitSpanAtBoundaries()'s composition contract) cannot be reached by a change
+// to the assignment logic alone.  It CAN still be reached by mislabelling a
+// fragment, and checkCompositionContract() cannot see that, because it audits
+// against the same `kind` this branch reads.  See FragmentKind in the header.
+//
+// Note that fragmentDeposit() serves both branches unchanged: for frac == 0 it
+// produces (index0, alpha 0, colorScale 0) as the second deposit, so the
+// scatter can deposit twice unconditionally and stay in bounds.
+// -----------------------------------------------------------------------
+inline void emitFragment(const FlattenParams& params,
+                         const DepthBuckets&  buckets,
+                         int                  x,
+                         int                  y,
+                         float                zFront,
+                         float                zBack,
+                         float                alpha,
+                         FragmentKind         kind,
+                         const float* __restrict__ channels,
+                         SampleSoA&           out,
+                         FlattenStats*        stats)
+{
+    const float depth = sampleMidDepth(zFront, zBack);
+
+    FragmentRecord f;
+    f.x      = x;
+    f.y      = y;
+    f.depth  = depth;
+    f.radius = radiusPixels(params.coc, depth);
+    f.alpha  = clampf(alpha, 0.0f, 1.0f);
+    f.kind   = kind;
+
+    const BucketWeight bw = (kind == FragmentKind::Volumetric)
+                          ? buckets.bucketOfContaining(depth)
+                          : buckets.bucketOf(depth);
+
+    f.deposit  = fragmentDeposit(bw, f.alpha);
+    f.boundary = buckets.locateBoundary(depth);
+
+    out.appendFragment(f, channels);
+
+    if (stats != nullptr)
+        ++stats->emittedFragments;
+}
+
+// Staging slot allocator: grows the scratch vector but never shrinks it, so
+// each slot's channel vector keeps its capacity across pixels and the
+// per-pixel path allocates nothing once warmed up.
+inline FlattenScratch::Staged& nextStaged(FlattenScratch& scratch)
+{
+    if (scratch.stagedCount >= scratch.staged.size())
+        scratch.staged.resize(scratch.stagedCount + 1);
+    return scratch.staged[scratch.stagedCount++];
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// flattenPixelToSoA
+// ---------------------------------------------------------------------------
+
+void flattenPixelToSoA(const FlattenParams& params,
+                       const DepthBuckets&  buckets,
+                       int                  x,
+                       int                  y,
+                       std::vector<SampleRecord>& samples,
+                       FlattenScratch&      scratch,
+                       SampleSoA&           out,
+                       FlattenStats*        stats)
+{
+    // The SoA's own channel count is authoritative, NOT params.channelCount.
+    // appendFragment() copies exactly out.channelCount floats out of the
+    // staging buffer, so sizing the staging buffers from params instead would
+    // read past the end of them whenever a caller's FlattenParams and its
+    // SampleSoA::begin() disagree — verified as a heap-buffer-overflow under
+    // ASAN at params=2 / SoA=8.  Sizing from the SoA makes the mismatch a
+    // (harmless) dropped-channel instead of undefined behaviour.  The two
+    // should of course be set from the same place; this is the safety net.
+    const int nChan = (out.channelCount > 0) ? out.channelCount : 0;
+
+    if (samples.empty())
+        return;
+
+    if (stats != nullptr) {
+        ++stats->pixels;
+        stats->inputSamples += samples.size();
+        if (samples.size() > stats->maxSamplesInPixel)
+            stats->maxSamplesInPixel = samples.size();
+    }
+
+    // --- 1/2. sanitise, and optionally convert ray distance to Z ------------
+    // The ray-distance correction is per PIXEL (it depends on the pixel's
+    // radial filmback offset) but applies to every sample's endpoints, so it
+    // is folded into the same pass.  It scales both endpoints by one positive
+    // factor, so it is monotone and cannot reorder the list.
+    float rayScale = 1.0f;
+    if (params.depthIsRayDistance) {
+        const float rMm = filmbackRadiusMm(static_cast<float>(x) + 0.5f,
+                                           static_cast<float>(y) + 0.5f,
+                                           params.coc._formatWidthPx,
+                                           params.formatHeightPx,
+                                           params.coc._filmbackWidthMm,
+                                           params.coc._pixelAspect);
+        rayScale = rayDistanceToZ(1.0f, params.coc._focalLengthMm, rMm);
+        if (!(rayScale > 0.0f) || !std::isfinite(rayScale))
+            rayScale = 1.0f;
+    }
+
+    for (std::size_t i = 0; i < samples.size(); ++i) {
+        SampleRecord& s = samples[i];
+
+        float zf = sanitizeSampleDepth(s.zFront) * rayScale;
+        float zb = sanitizeSampleDepth(s.zBack) * rayScale;
+        if (!(zb > zf))
+            zb = zf;                    // also rejects a back-before-front span
+
+        s.zFront = zf;
+        s.zBack  = zb;
+        s.alpha  = clampf(s.alpha, 0.0f, 1.0f);   // NaN -> 0
+        s.channels.resize(static_cast<std::size_t>(nChan), 0.0f);
+    }
+
+    // --- 3. tidy pre-pass (always on, correctness-required) ----------------
+    // Splits partially overlapping spans and merges coincident ones by the
+    // OpenEXR mixture rule.  Without it, coincident same-pixel samples would be
+    // ADDED by the scatter's within-bucket accumulation instead of composited,
+    // and size-0 parity with DeepToImage would be unachievable.
+    if (samples.size() > 1)
+        tidyOverlapping(samples);
+
+    // tidyOverlapping() only sorts when it has 2+ samples, so sort
+    // unconditionally: the staging order below must be front-to-back for the
+    // pre-merge's over-composite to be correct.
+    std::sort(samples.begin(), samples.end(),
+        [](const SampleRecord& a, const SampleRecord& b) {
+            return (a.zFront != b.zFront) ? a.zFront < b.zFront
+                                          : a.zBack  < b.zBack;
+        });
+
+    if (stats != nullptr)
+        stats->tidiedSamples += samples.size();
+
+    // --- 4. sample -> fragments (THE COMPOSITION CONTRACT) -----------------
+    scratch.stagedCount = 0;
+
+    // Caller-owned stack buffer for the span split: K+2 parts at the knob's
+    // maximum K, ~2.6KB.  Declared once per pixel rather than per sample (same
+    // stack slot either way) and never heap-allocated, per the brief.
+    SpanSplitPart parts[kMaxSpanSplitParts];
+
+    for (std::size_t i = 0; i < samples.size(); ++i) {
+        const SampleRecord& s = samples[i];
+
+        // Zero-alpha early-out.  This matches DD::Image::CompositeSamples (and
+        // therefore this node's bit-exact DeepToImage parity gate): a
+        // premultiplied sample with alpha 0 contributes nothing there, so
+        // scattering its colour would be a visible divergence, not an ULP one.
+        // The cost is that a purely emissive alpha-0 sample is invisible —
+        // deliberate, and the same choice the flatten path already shipped.
+        if (!(s.alpha > 0.0f))
+            continue;
+
+        // THE ONE DECISION.  `kind` is derived here, once, from the same
+        // `zBack > zFront` test that selects the split — it is deliberately
+        // NOT written independently in the two branches below, so that the
+        // label emitFragment() branches on and the split a sample actually
+        // received cannot drift apart in a later edit.
+        const bool         volumetric = (s.zBack > s.zFront);
+        const FragmentKind kind       = volumetric ? FragmentKind::Volumetric
+                                                   : FragmentKind::Point;
+
+        if (!volumetric) {
+            // ---- POINT SAMPLE: no span split.  emitFragment() will use
+            // bucketOf() + fragmentDeposit() (the fractional two-bucket
+            // partition of unity).
+            FlattenScratch::Staged& st = nextStaged(scratch);
+            st.zFront = s.zFront;
+            st.zBack  = s.zBack;
+            st.alpha  = s.alpha;
+            st.kind   = kind;
+            st.channels.assign(s.channels.begin(), s.channels.end());
+            st.depth  = sampleMidDepth(st.zFront, st.zBack);
+            st.radius = radiusPixels(params.coc, st.depth);
+            st.bucket = containingBucket(buckets, st.depth);
+            continue;
+        }
+
+        // ---- VOLUMETRIC SAMPLE: split at the bucket boundaries.  Its pieces
+        // are already graded across depth by their own thickness fraction, so
+        // emitFragment() will use bucketOfContaining() (whole weight) — never
+        // bucketOf() as well, which is the +8.3% double-count.
+        const int nParts = splitSpanAtBoundaries(buckets, s.zFront, s.zBack,
+                                                 s.alpha, parts, kMaxSpanSplitParts);
+        if (stats != nullptr)
+            stats->splitParts += static_cast<std::size_t>(nParts);
+
+        // Parts of ONE parent are cut AT the boundaries, so they normally land
+        // in distinct buckets and the scatter's additive within-bucket
+        // accumulation never sees two of them at once.  That invariant has one
+        // hole: a span reaching outside the measured range [depthMin, depthMax]
+        // produces a head part below boundary(0) (or a tail above boundary(K))
+        // whose containing bucket CLAMPS onto the first (last) in-range part's.
+        // Those two would then be ADDED rather than `over`-composited — the
+        // same failure mode as the double split, measured at +11.5% on alpha
+        // for a [0.2, 400] span against a [1, 100] range at K=16.  The
+        // pre-merge below does not rescue it: its radius tolerance (0.25px by
+        // default) is far smaller than one bucket's ΔCoC step, and it is a
+        // knob that can be turned off.
+        //
+        // So consecutive parts of one parent that share a containing bucket are
+        // over-composited HERE, unconditionally.  That is exactly lossless —
+        // the transmittance split's parts are built to reproduce their union
+        // under front-to-back `over`, for alpha and for premultiplied colour —
+        // and it restores "one parent's parts occupy distinct buckets" as an
+        // invariant of the staged list rather than an assumption about the
+        // measured range.
+        bool haveParentPart = false;
+
+        for (int p = 0; p < nParts; ++p) {
+            const SpanSplitPart& part = parts[p];
+
+            // A zero-thickness piece carries neither alpha nor colour.  Do NOT
+            // test part.alpha here: a thin fog piece legitimately has alpha
+            // underflowing to 0 while its colorScale is still non-zero.
+            if (!(part.t > 0.0f))
+                continue;
+
+            const float partDepth  = sampleMidDepth(part.zFront, part.zBack);
+            const int   partBucket = containingBucket(buckets, partDepth);
+
+            if (haveParentPart) {
+                FlattenScratch::Staged& prev = scratch.staged[scratch.stagedCount - 1];
+                if (prev.bucket == partBucket) {
+                    const float w = 1.0f - prev.alpha;
+                    for (int c = 0; c < nChan; ++c)
+                        prev.channels[static_cast<std::size_t>(c)] +=
+                            s.channels[static_cast<std::size_t>(c)] * part.colorScale * w;
+                    prev.alpha += part.alpha * w;
+                    prev.zBack  = part.zBack;       // parts are consecutive
+                    prev.depth  = sampleMidDepth(prev.zFront, prev.zBack);
+                    prev.radius = radiusPixels(params.coc, prev.depth);
+                    prev.bucket = containingBucket(buckets, prev.depth);
+                    continue;
+                }
+            }
+
+            FlattenScratch::Staged& st = nextStaged(scratch);
+            st.zFront = part.zFront;
+            st.zBack  = part.zBack;
+            st.alpha  = part.alpha;
+            st.kind   = kind;
+
+            // Premultiplied colour scales by alpha_piece/alpha_parent, so the
+            // front-to-back over of the pieces reproduces the parent exactly.
+            st.channels.resize(static_cast<std::size_t>(nChan));
+            for (int c = 0; c < nChan; ++c)
+                st.channels[static_cast<std::size_t>(c)] =
+                    s.channels[static_cast<std::size_t>(c)] * part.colorScale;
+
+            st.depth  = partDepth;
+            st.radius = radiusPixels(params.coc, st.depth);
+            st.bucket = partBucket;
+            haveParentPart = true;
+        }
+    }
+
+    const std::size_t staged = scratch.stagedCount;
+    if (stats != nullptr)
+        stats->stagedFragments += staged;
+    if (staged == 0)
+        return;
+
+    // --- 5/6. pre-merge, then append -------------------------------------
+    //
+    // PRE-MERGE (Perf > pre_merge / merge_tolerance, default on / 0.25px).
+    // Adjacent fragments are grouped and over-composited when all three hold:
+    //
+    //   * same FragmentKind — merging a point into a span would change which
+    //     half of the composition contract the result takes;
+    //   * same containing bucket — a merge across a boundary would move energy
+    //     into a different accumulation plane;
+    //   * |radius - radius(group start)| <= merge_tolerance.
+    //
+    // UNIT NOTE: the tolerance is in CoC-RADIUS PIXELS, not depth.  That is the
+    // only reading under which the knob table's "0.25px, range 0-2px" and the
+    // design reference's "lossless when radii are equal" are both true — a
+    // depth tolerance would be 0.25 scene units (metres, by default), and
+    // equality of radii would be irrelevant to it.  Merging fragments that
+    // share a bucket and a kernel radius is exactly lossless for the scatter
+    // (identical kernel, identical destination plane); the residual for a
+    // non-zero tolerance is bounded by the tolerance in kernel radius, plus the
+    // shift of the group's holdout depth to the merged span's midpoint.
+    //
+    // The over-composite itself is the same front-to-back
+    //   acc_c += c_i * (1 - alphaAcc);  alphaAcc += alpha_i * (1 - alphaAcc)
+    // as deepc::optimizeSamples()'s merge pass (DeepSampleOptimizer.h), down to
+    // the early-out at full opacity and the zFront=min / zBack=max span union.
+    // It is written out here rather than called because optimizeSamples() picks
+    // its groups by zFront distance, and this node has to pick them by radius
+    // and bucket for the reasons above; the composite arithmetic is unchanged.
+    const bool  merging = params.preMerge && (params.mergeTolerancePx > 0.0f);
+    const float tol     = params.mergeTolerancePx;
+
+    std::size_t i = 0;
+    while (i < staged) {
+        const FlattenScratch::Staged& head = scratch.staged[i];
+
+        std::size_t j = i + 1;
+        if (merging) {
+            while (j < staged) {
+                const FlattenScratch::Staged& cand = scratch.staged[j];
+                if (cand.kind != head.kind || cand.bucket != head.bucket)
+                    break;
+                if (!(std::fabs(cand.radius - head.radius) <= tol))
+                    break;
+                ++j;
+            }
+        }
+
+        if (j - i == 1) {
+            emitFragment(params, buckets, x, y,
+                         head.zFront, head.zBack, head.alpha, head.kind,
+                         head.channels.data(), out, stats);
+            i = j;
+            continue;
+        }
+
+        scratch.mergeAccum.assign(static_cast<std::size_t>(nChan), 0.0f);
+
+        float zf       = head.zFront;
+        float zb       = head.zBack;
+        float alphaAcc = 0.0f;
+
+        for (std::size_t s = i; s < j; ++s) {
+            const FlattenScratch::Staged& src = scratch.staged[s];
+            const float w = 1.0f - alphaAcc;
+            if (w <= 0.0f)
+                break;
+
+            zf = std::min(zf, src.zFront);
+            zb = std::max(zb, src.zBack);
+
+            for (int c = 0; c < nChan; ++c)
+                scratch.mergeAccum[static_cast<std::size_t>(c)] +=
+                    src.channels[static_cast<std::size_t>(c)] * w;
+
+            alphaAcc += src.alpha * w;
+        }
+
+        emitFragment(params, buckets, x, y, zf, zb, alphaAcc, head.kind,
+                     scratch.mergeAccum.data(), out, stats);
+        i = j;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// checkCompositionContract
+// ---------------------------------------------------------------------------
+
+bool checkCompositionContract(const SampleSoA& soa,
+                              const DepthBuckets& buckets,
+                              std::size_t* firstBadFragment)
+{
+    const std::size_t n = soa.fragmentCount();
+    const int         k = buckets.bucketCount();
+    const int         lastBucket = (k > 0) ? (k - 1) : 0;
+
+    for (std::size_t i = 0; i < n; ++i) {
+        bool ok = true;
+
+        const float a  = soa.alpha[i];
+        const float a0 = soa.bucketAlpha0[i];
+        const float a1 = soa.bucketAlpha1[i];
+        const float s0 = soa.colorScale0[i];
+        const float s1 = soa.colorScale1[i];
+
+        ok = ok && std::isfinite(soa.radius[i]) && soa.radius[i] >= 0.0f;
+        ok = ok && std::isfinite(soa.depth[i]);
+        ok = ok && std::isfinite(a) && a >= 0.0f && a <= 1.0f;
+        ok = ok && std::isfinite(a0) && a0 >= 0.0f && a0 <= 1.0f;
+        ok = ok && std::isfinite(a1) && a1 >= 0.0f && a1 <= 1.0f;
+        ok = ok && std::isfinite(s0) && s0 >= 0.0f && s0 <= 1.0f;
+        ok = ok && std::isfinite(s1) && s1 >= 0.0f && s1 <= 1.0f;
+
+        const int i0 = static_cast<int>(soa.bucketIndex0[i]);
+        const int i1 = static_cast<int>(soa.bucketIndex1[i]);
+        const int ib = static_cast<int>(soa.boundaryIndex[i]);
+        ok = ok && i0 >= 0 && i0 <= lastBucket;
+        ok = ok && i1 >= 0 && i1 <= lastBucket;
+        ok = ok && (i1 == i0 || i1 == i0 + 1);
+        ok = ok && ib >= 0 && ib <= lastBucket;
+        ok = ok && std::isfinite(soa.boundaryFrac[i])
+                && soa.boundaryFrac[i] >= 0.0f && soa.boundaryFrac[i] <= 1.0f;
+
+        // The contract itself: a span-split piece must carry NO fractional
+        // spill into a second bucket.  Both splits applied to one sample is
+        // the measured +8.3% double-count.
+        if (static_cast<FragmentKind>(soa.kind[i]) == FragmentKind::Volumetric) {
+            ok = ok && (i1 == i0);
+            ok = ok && (a1 == 0.0f);
+            ok = ok && (s1 == 0.0f);
+        }
+
+        // The deposits must reconstruct the fragment's own alpha under `over`.
+        const float reconstructed = 1.0f - (1.0f - a0) * (1.0f - a1);
+        ok = ok && (std::fabs(reconstructed - a) <= 1e-5f);
+
+        if (!ok) {
+            if (firstBadFragment != nullptr)
+                *firstBadFragment = i;
+            return false;
+        }
+    }
+
+    return true;
+}
+
+} // namespace deepc

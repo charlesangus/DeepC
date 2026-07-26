@@ -60,7 +60,9 @@ compute). `scatterBandCPU` stays thread-agnostic so unit tests can drive it dire
   a whole-frame SoA would cost ~4GB at 4K/20spp/4ch).
 - The depth-range pass stays eager (cheap full-frame read, `DeepFront`/`DeepBack`/`Alpha` only),
   run once under the same lock on first `engine()` — bucket boundaries are global.
-- Memory-limit knob caps **concurrent in-flight bands**, not workers:
+- Memory-limit knob caps **concurrent in-flight bands**, not workers. NOTE the formula below counts
+  only the bucket planes; M1.P3.T1 measured the SoA fragment buffers at 69 B/fragment (~1.49GB for a
+  4K band at 20spp), which dominates them — budget on the combined total, see Decisions:
   `scratch/band = K·W·B·(C+2)·4 bytes` (color + alpha + weight plane; ~100MB at K=16,C=4,W=4096,
   B=64; ~800MB at K=128). Cap floors at 1 concurrent band, then shrinks B — never deadlocks at 0.
 - `Op::aborted()` checked per source row; an aborted band resets to `Dirty` (never `Done`),
@@ -173,7 +175,7 @@ disocclusion fill; aberrations (M2); GPU (M3).
 | Output | `output_holdout_matte` | Bool + Channel | false / none | flattened holdout coverage AOV; the channel deliberately defaults to none (`Chan_Black`) so ticking the bool can't silently overwrite the node's own alpha — the user picks or creates one |
 | Perf | `max_radius` | Int px | 100 | 1–500; bounds bbox pad + LUT |
 | Perf | `depth_layers` | Int | 16 | 4–128 (K buckets; memory scales with K) |
-| Perf | `pre_merge` + `merge_tolerance` | Bool + Float | true / 0.25px | 0–2px (tidy pass itself always on) |
+| Perf | `pre_merge` + `merge_tolerance` | Bool + Float | true / 0.25px | 0–2px, in **CoC-radius pixels** (tidy pass itself always on) |
 | Perf | `memory_limit` | Float GB | 4.0 | 1–64; caps concurrent in-flight bands (floor 1, then shrink B) |
 
 Holdout itself has no enable knob — connection presence enables it.
@@ -230,6 +232,8 @@ l. small-CoC transition: shallow depth ramp crossing 0–2px CoC ⇒ no chatter/
 | NDK signature drift | Low | Licensed Nuke SDKs are installed locally (`/usr/local/Nuke{16.0v9,16.1v3,17.0v3}`, Phase 1.0) with full NDK headers, so every NDK-facing task compiles locally as it's written, not just at a periodic gate; `docker-build.sh` remains the pre-merge parity check against the release toolchain |
 | Lock/abort UX during full-frame precompute | Med | `Op::aborted()` per row; abort invalidates hash-keyed cache, erased rows stay black. Verified at M1.P2.T2: an aborted cook leaves the frame fully black, publishes nothing, and the next cook is bit-exact |
 | Upstream deep failure cached as a valid black frame | Med | The NDK does **not** propagate an upstream `doDeepEngine()` failure — `DeepOp::deepEngine()` returns *true* with an empty plane, so the defensive bool check can never fire and a silently-empty upstream is published as a valid all-black cache until the hash changes (stock `DeepToImage` has the same blind spot but no cache, so it recovers next cook). Only `Op::aborted()` is a real signal. Found at M1.P2.T2's review; revisit when M1.P4.T1 rebuilds the cache |
+| `tidyOverlapping()` split pass is superlinear | High | Measured ≈O(n³·⁷) — 9.96ms/pixel at 32 mutually overlapping spans, which makes a fog frame unrenderable rather than merely slow. Rewritten single-pass at M1.P3.T6, before T5's scenes need it |
+| SoA fragment memory outside the `memory_limit` formula | Med | 113 B/fragment resident ⇒ ~2.4GB for one 4K band at 20spp, dwarfing the bucket planes. Formula extended at M1.P3.T1 (see Decisions); `reserveFragments()` collapses the capacity slack |
 | Non-terminating sample tidying on volumetric input | High | `deepc::tidyOverlapping()` looped forever on *any* overlapping volumetric pair — fixed during M1.P2.T2 (see Decisions); termination fuzz test added at M1.P3.T4 |
 | Request/engine channel divergence | Low | Single `neededDeepChannels()` helper |
 | Edge darkening at bbox borders | Low | Output bbox padded by `max_radius` so scattered energy is retained |
@@ -382,7 +386,7 @@ verified.
     builds SoA flattening on top of the tidy pass, and before M1.P3.T5's correctness gate.
   - size: M
 
-- [ ] M1.P3.T1 — `PodBuffer<T>`, `DEEPC_HD`, and SoA flattening
+- [x] M1.P3.T1 — `PodBuffer<T>`, `DEEPC_HD`, and SoA flattening
   - files: `src/DeepCDefocusScatter.h` (new), `src/DeepCDefocusScatter.cpp` (new)
   - approach: define `PodBuffer<T>` (thin owning wrapper over aligned host allocation) in this
     header (the POD boundary that becomes the M3 CUDA seam); the `DEEPC_HD` macro is NOT defined
@@ -446,6 +450,14 @@ verified.
     flat-opaque-across-buckets identity (conditional on the bucket-composite decision, so it is
     written here once M1.P3.T2 has both candidates). Mutation-test any new cases the way T4's
     review did — a suite that survives a deliberately broken header is the defect to avoid.
+    **Add a parent-reconstruction test for the composition contract**: accumulate a volumetric
+    sample's deposits, composite them front-to-back, and compare against the parent sample. M1.P3.T1's
+    review showed `checkCompositionContract()` catches a wrong *branch* but NOT a wrong *label* — the
+    branch and the audit read the same `kind` field, so mislabelling a split part as `Point`
+    reproduces the +9% double-count and still passes the audit. Parent reconstruction is the only
+    check that catches it. Also consider extracting an `overCompositeGroup()` helper into
+    `DeepSampleOptimizer.h` here (there are now three copies of that arithmetic), which is safe to do
+    once these tests protect the shipped `DeepCBlur`/`DeepCBlur2` callers.
     **Add a termination fuzz test for `deepc::tidyOverlapping()`**: randomised sample vectors with
     depths drawn from a small discrete set so exact ties are common, asserting termination and a
     bounded output size. The non-termination bug fixed during M1.P2.T2 hung Nuke unkillably on
@@ -453,11 +465,38 @@ verified.
   - verify: `cmake -DDEEPC_BUILD_TESTS=ON && make && ctest` — all cases pass.
   - size: M
 
+- [ ] M1.P3.T6 — Make `tidyOverlapping()`'s split pass single-pass (run BEFORE T5)
+  - files: `src/DeepSampleOptimizer.h`
+  - approach: the split pass restarts its scan and re-sorts after every single split, which measured
+    at M1.P3.T1 as **≈O(n³·⁷) time for O(n) output** on mutually overlapping spans — per pixel:
+    0.06ms at 8 spans, 0.59ms at 16, 2.92ms at 24, **9.96ms at 32**. At ~10ms/pixel a 2K frame of fog
+    would take days, so T5's validation scenes (f) and (g) are not runnable until this is fixed, and
+    it is not shippable regardless. It also costs one malloc/free per multi-sample pixel (~12.7M per
+    4K frame) from its result vector, and it dominated the review's sanitizer runs by ~1000×, so it
+    is a dev-loop cost as well as a render cost. Replace with the equivalent single-pass form: collect the distinct
+    endpoint set once, sort it, then cut every span against it in one sweep — O(n log n), identical
+    output. The transmittance-preserving split arithmetic and the mixture merge (M1.P3.T0) both stay
+    exactly as they are; only the loop structure changes. Note this is shared code reached by shipped
+    `DeepCBlur`/`DeepCBlur2`, so it needs the same "bit-identical on previously-working input"
+    evidence the two earlier fixes carried.
+  - verify: a differential harness over a large randomised corpus showing bit-identical output
+    against the current implementation on every input it terminates on, plus the timing curve
+    re-measured (expect the n=32 case to drop from ~3ms to single-digit µs); full local build and
+    `ctest` green; `DeepToImage` parity unchanged in headless Nuke.
+  - size: M
+
 - [ ] M1.P3.T5 — Wire scatter into `engine()` (serial, single frame-wide lock)
   - files: `src/DeepCDefocus.cpp`, `src/DeepCDefocusScatter.h`/`.cpp`
   - approach: `computeDepthRange()` — a separate cheap full-frame `DeepFront/DeepBack/Alpha`
-    pass, alpha-weighted, producing the ΔCoC bucket boundaries. Build the `DiscKernelLUT` here,
-    immediately after that pass, over the frame's **measured** radius range — `rMax` measured
+    pass, alpha-weighted, producing the ΔCoC bucket boundaries. **It must apply the same
+    ray-distance→Z correction the flatten applies**, or every corner-pixel sample lands below
+    `depthMin` (the correction always shrinks depth) and out-of-range spans pile into the edge
+    bucket; the alpha-weighted range clipping can do the same to low-alpha fog. M1.P3.T1's review
+    made out-of-range parts harmless by over-compositing same-bucket parts of one parent, but the
+    two passes disagreeing is still a bug worth not writing. Build the `DiscKernelLUT` here,
+    immediately after that pass, proxy-scaling `edge_softness` as well as the radii (M1.P3.T1's
+    `applyProxyScale()` deliberately does not touch `edge_softness`, since `CocParams` doesn't carry
+    it — the LUT build is where it lands), over the frame's **measured** radius range — `rMax` measured
     (clamped by `max_radius`), but **`rMin` passed as 0** — rather than eagerly over
     `[0, max_radius]`; see Decisions for both halves of this.
     `computeBand(b)` — given the
@@ -483,7 +522,10 @@ verified.
     render thread computes its band into private bucket planes and writes a disjoint region of
     the shared flat frame; other threads block on that band until `Done`. `_validate` marks all
     bands `Dirty` on an `Op::hash()` change. Memory-limit knob caps concurrent in-flight bands
-    per the formula in the Design reference (floor 1 band, then shrink B — never deadlock at 0).
+    per the formula in the Design reference (floor 1 band, then shrink B — never deadlock at 0),
+    budgeting on the **combined** bucket-plane + SoA-fragment total per the Decisions entry: the SoA
+    is the larger term at 4K (~1.49GB vs ~100MB), so a cap counting only the planes under-budgets by
+    an order of magnitude.
     `Op::aborted()` checked per source row; an aborted band resets to `Dirty`, wakes waiters,
     leaves erased/black rows. Every `deepEngine()` bool return checked. **Budget this as rework,
     not extension**: M1.P2.T2's cache is a `shared_ptr<const FrameCache>` published by copy, which
@@ -580,6 +622,42 @@ verified.
   yields the frame's true CoC range for free, keeps the build eager and lock-free, and leaves the
   0.5px steps, exact per-entry normalization, row spans, and the `KernelSampler` seam untouched.
   M1.P2.T2 and M1.P3.T5 approach text amended accordingly.
+- 2026-07-26 — The `memory_limit` formula **extends to cover the SoA fragment buffers**, not just the
+  bucket planes: measured at M1.P3.T1 as 69 B/fragment at C=4 *logically*, but **113 B/fragment
+  actually resident** (139 at C=8) once geometric capacity slack across the 15 independent buffers is
+  counted — so a 4096-wide band at B=64 / `max_radius`=100 / 20spp is ~2.4GB, not the ~1.49GB the
+  logical figure suggests, and either way it dwarfs the ~100MB of bucket planes the original formula
+  counted. Budget on the resident figure, and call `reserveFragments()` (which already exists) to
+  collapse the slack wherever the caller can estimate the count. Rejected the
+  alternative of dropping the precomputed deposit/boundary arrays (−32 B/fragment) and recomputing
+  them in the scatter: that trades a real memory win for a binary search per fragment on the hottest
+  loop in the node, and the `memory_limit` knob already exists precisely to cap concurrent in-flight
+  bands (floor 1, then shrink B). M1.P4.T1 must budget on the combined figure.
+- 2026-07-26 — Within-bucket additive accumulation over-counts **same-pixel** fragments, not only the
+  different-pixel case the design reference anticipated, and **`pre_merge` does not mitigate it**.
+  Measured at M1.P3.T1's review on disjoint fog spans sharing a bucket: **+33.3% alpha at 2 spans,
+  +71.4% at 3, +113.3% at 4** — reconstructed alpha reaching 1.0 / 1.5 / 2.0 — and *identical with
+  `pre_merge` on or off*, because its 0.25px radius tolerance is far below one bucket's ΔCoC step
+  (~1.43px on the standard rig) and so never fires. **2,519 of 4,000 randomised multi-sample pixels
+  exceeded alpha 1**, so this is the ordinary case for fog, not a corner. Consequences: M1.P3.T2's
+  saturate-down pass is fully load-bearing for ordinary volumetric input rather than a safety net for
+  overlapping surfaces, and this bears directly on M1.P3.T5's bucket-composite comparison — record
+  the behaviour at K=8 and K=64 when the scenes run, since K trades this against banding in the
+  opposite direction to what the design assumed. (The design accepted "within-bucket loss of ordering
+  between *different-pixel* fragments" as the residual approximation; this is the same mechanism at
+  the same pixel, and much larger.)
+- 2026-07-26 — `merge_tolerance` is in **CoC-radius pixels**, not z-distance. The knob table says
+  "0.25px / 0–2px" while the `optimizeSamples()` merge this task reuses groups by z-distance; the
+  CoC-radius reading is the only one under which both the knob's stated unit and the design's
+  "lossless when radii are equal" claim are true. Grouping predicate: same fragment kind AND same
+  containing bucket AND |Δradius| ≤ tolerance. Verified lossless against true sequential `over`
+  (two same-bucket points at α 0.3/0.4 merge to exactly 0.58; unmerged additive gives 0.69999). Knob
+  table amended to state the unit.
+- 2026-07-26 — M1.P2.T2's `FrameCache` was ported from `std::vector<float>` to `PodBuffer<float>` at
+  M1.P3.T1, honouring the in-source note M1.P2.T2 left asking for exactly that once the POD buffer
+  existed. `DeepToImage` parity re-verified bit-exact after the port. `DeepCDefocus.cpp` now includes
+  `DeepCDefocusScatter.h` but uses only the header-only template, so no link dependency is added
+  ahead of M1.P5.T1's CMake wiring.
 - 2026-07-26 — M1.P3.T0 adjudicated volumetric tidying in favour of the **OpenEXR mixture model**
   and fixed `tidyOverlapping()`'s merge accordingly; a second, independent precision defect in the
   same function's split pass was fixed alongside, and that one **visibly changes shipped

@@ -41,6 +41,7 @@
 #include "DDImage/Thread.h"
 
 #include "DeepCDefocusMath.h"
+#include "DeepCDefocusScatter.h"
 #include "DeepSampleOptimizer.h"
 
 #include <algorithm>
@@ -155,11 +156,21 @@ class DeepCDefocus : public DD::Image::Iop
     // in DeepCDefocusScatter.h as the project-wide owning POD buffer, and this
     // cache is its natural first adopter — it should be ported to PodBuffer
     // there rather than a competing wrapper being invented here.
+    //
+    // Ported at M1.P3.T1: `data` is now a deepc::PodBuffer<float>, so every
+    // plane buffer in this node goes through the one allocation seam the CUDA
+    // milestone swaps. Two consequences worth knowing: the buffer's BASE is
+    // 64-byte aligned (individual plane starts are not — plane p begins at
+    // p*w*h floats, which is cache-line aligned only when w*h happens to be a
+    // multiple of 16, so don't rely on it for aligned loads), and FrameCache is
+    // now move-only. Nothing copies it — it is built once inside
+    // make_shared<FrameCache>() and published as a shared_ptr<const> — and the
+    // compiler will say so loudly if that ever changes.
     // ----------------------------------------------------------------------
     struct FrameCache {
-        DD::Image::Box       box;
-        std::vector<Channel> planes;
-        std::vector<float>   data;
+        DD::Image::Box        box;
+        std::vector<Channel>  planes;
+        deepc::PodBuffer<float> data;
 
         int planeIndex(Channel z) const
         {
