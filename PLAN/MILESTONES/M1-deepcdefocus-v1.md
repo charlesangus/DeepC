@@ -27,10 +27,15 @@ front-to-back at the end:
   buckets is uniform on each side of the focal plane. A depth-range histogram pass (alpha-
   weighted, so dense low-alpha fog doesn't skew it) finds the frame's depth/CoC range and clips
   empty ranges; banding visibility is governed by ΔCoC, not sample population.
-- **Fractional assignment**: each fragment scatters into its two adjacent buckets via linear
-  interpolation weights (partition of unity) by its position between bucket centers —
-  `bucketOf()` returns `(index, fraction)`. Mandatory fix for layer-transition banding.
-- **Normalization**: each bucket accumulates `(Σ color·w·vis, Σ alpha·w·vis, Σ w·α_frag·vis)` —
+- **Fractional assignment**: each fragment scatters into its two adjacent buckets by its position
+  between bucket centers — `bucketOf()` returns `(index, fraction)`, the two fractions summing to
+  exactly 1. The fragment's *alpha* is split in transmittance-preserving form
+  (`α_i = 1 − (1−α)^{w_i}`, premultiplied color scaled by `α_i/α`), NOT linearly: a linear alpha
+  split cannot survive the front-to-back bucket composite (an opaque fragment split 50/50 returns
+  0.75), so linear weights + over-compositing + flat-field `alpha ≡ 1` are mutually exclusive.
+  See Decisions. Mandatory fix for layer-transition banding, except at α→1 where the
+  transmittance form is necessarily a no-op (also in Decisions).
+- **Normalization**: each bucket accumulates `(Σ color·w·vis, Σ alpha·w·vis, Σ w·vis)` —
   a coverage/weight plane alongside color. Additive premult accumulation is energy-conserving in
   flat regions (kernels are per-radius normalized to Σw=1). Where same-bucket surfaces overlap
   in screen space, bucket alpha can exceed 1 — after scatter, rescale color+alpha by `1/alpha`
@@ -256,7 +261,7 @@ written, since every later phase needs to build to verify. It does not touch nod
   - verify: covered by the M1.P1.T4 unit test task (this task alone has no independent gate).
   - size: L
 
-- [ ] M1.P1.T2 — Depth-bucket and compositing math
+- [x] M1.P1.T2 — Depth-bucket and compositing math
   - files: `src/DeepCDefocusMath.h` (extends T1's file)
   - approach: implement `DepthBuckets{buildBoundedDeltaCoc, bucketOf → (index, fraction)}`
     (ΔCoC-bounded boundary spacing, monotonic on each side of focus), fractional two-bucket
@@ -289,6 +294,11 @@ written, since every later phase needs to build to verify. It does not touch nod
     fractional-assignment partition-of-unity; flat-field alpha ≡ 1 under additive scatter;
     saturation renormalize (alpha>1 in, ≤1 out, color/alpha ratio preserved); volumetric split
     transmittance product identity; composite identities; tidy+sharp-path = sequential over.
+    Plus, from M1.P1.T2's review: transmittance-split reconstruction of both alpha and premult
+    color at the α=0 and α=1 endpoints; the span-split × bucket-assignment composition identity
+    (guards the +8.3% double-count regression); `bucketOfContaining()`'s contract; continuity as
+    a volumetric slab slides across a bucket boundary; and — once the bucket-composite alpha
+    deficit question is settled — the flat-opaque-across-buckets identity.
   - verify: `cmake -DDEEPC_BUILD_TESTS=ON && make && ctest` (or direct
     `g++ tests/test_defocus_math.cpp -o test && ./test`) — all cases pass.
   - size: M
@@ -345,7 +355,11 @@ verified.
     `DeepCDefocusMath.h`, volumetric bucket-boundary split, and pre-merge (adjacent-depth
     samples within `merge_tolerance`, via `DeepSampleOptimizer.h`'s over-composite merge). Input
     is a `std::vector<deepc::SampleRecord>` (already NDK-agnostic), not a live deep pixel fetch,
-    so this is testable standalone.
+    so this is testable standalone. Honour `DeepCDefocusMath.h`'s COMPOSITION CONTRACT: a
+    volumetric sample goes through `splitSpanAtBoundaries()` + `bucketOfContaining()`, a point
+    sample through `bucketOf()` + `fragmentDeposit()` — never both splits, which double-counts
+    (measured +8.3%). `splitSpanAtBoundaries()` needs a caller-owned `SpanSplitPart[K+2]`
+    (~2.6KB at K=128) — stack-sized in the per-sample path, no heap.
   - verify: covered by the M1.P3.T4 unit test task (synthetic `SampleRecord` vectors in, SoA
     buffers out).
   - size: L
@@ -493,6 +507,51 @@ verified.
   yields the frame's true CoC range for free, keeps the build eager and lock-free, and leaves the
   0.5px steps, exact per-entry normalization, row spans, and the `KernelSampler` seam untouched.
   M1.P2.T2 and M1.P3.T5 approach text amended accordingly.
+- 2026-07-26 — The fractional two-bucket **alpha** split is transmittance-preserving
+  (`α_i = 1 − (1−α)^{w_i}`, premult color scaled by `α_i/α`), not linear. Found at M1.P1.T2: the
+  design reference specified linear partition-of-unity weights, front-to-back bucket
+  over-compositing, AND `alpha ≡ 1` on a flat opaque field (scene (c)) — all three cannot hold,
+  since an opaque fragment split 50/50 over-composites to `1 − 0.5·0.5 = 0.75` (measured: 0.910 at
+  f=0.1, 0.8125 at 0.25, 0.750 at 0.5). The transmittance form reconstructs both alpha and premult
+  color exactly under `over` (worst error 8.3e-08 across the α×f grid), and is the same primitive
+  the volumetric span split already needed. The interpolation *weights* stay linear and still sum
+  to exactly 1, and the two forms agree to first order at fog alphas (2.5e-3 relative divergence at
+  α=0.01), so fog is unaffected; they diverge only as α→1, which is where linear is wrong. Disc
+  kernel weights stay linear — those are genuine partial coverage of distinct pixels, not one
+  surface duplicated across layers. `expm1`/`log1p` are load-bearing: naive `1−powf(1−a,t)` in
+  float is 19% off at α=1e-7. **Known cost:** at α=1 the split degenerates to a no-op (exact
+  reconstruction under `over` forces at least one deposit fully opaque), so opaque fragments get no
+  banding smoothing and an opaque fragment just past a bucket centre occludes up to one bucket in
+  front of it. Mathematically unavoidable — "exact" and "smooth" are incompatible at α=1;
+  documented in the header, watch scene (g).
+- 2026-07-26 — Volumetric span splitting and fractional bucket assignment are **mutually
+  exclusive**, enforced by a COMPOSITION CONTRACT in `DeepCDefocusMath.h`: a sample that went
+  through `splitSpanAtBoundaries()` is assigned with `bucketOfContaining()` (whole weight, no
+  fraction); only unsplit point samples use `bucketOf()` + `fragmentDeposit()`. Found at M1.P1.T2's
+  review: applying both re-buckets split parts by centre into overlapping pairs where accumulation
+  is additive rather than `over`, and the deliberately super-linear transmittance alphas then
+  over-count — measured **+8.29% on alpha and premult color** at parent α=0.9 for a span straddling
+  one boundary. With the contract the error is 0.00% and the result stays continuous (max alpha
+  step 6e-08) as a slab slides across a boundary, so nothing is lost by dropping the second split.
+- 2026-07-26 — The design reference's per-bucket accumulation triple listed
+  `Σ w·α_frag·vis` as its third plane, which is character-for-character the alpha plane. Corrected
+  to `Σ w·vis` — pure kernel coverage, independent of alpha. That is the only reading consistent
+  with the `K·W·B·(C+2)` memory formula (color + alpha + one more plane) and it is the quantity
+  that distinguishes bucketing-induced alpha loss from honest coverage deficit (see Open questions).
+- 2026-07-26 — `bucketOf()` measures position between bucket **centres** (for fragment
+  assignment); the holdout transmittance LUT needs position between **boundaries**, so M1.P1.T2
+  added `locateBoundary()` and M1.P1.T1's `interpAtBucket` comment — which named `bucketOf` — was
+  corrected. Verified: fed from `locateBoundary`, `interpAtBucket` reproduces the direct `interp()`
+  bit-for-bit and max |vis − exact| is 0.680 vs 0.869 when fed from `bucketOf`. M1.P3.T2/T3 must
+  wire the right one, and budget two binary searches per fragment (assignment + holdout vis).
+- 2026-07-26 — ΔCoC bucket spacing is uniform in the **clamped** CoC (`min(coc, max_radius)`), a
+  case the design reference left open. Near-field CoC is unbounded as d→0, so spacing on the raw
+  value lets a saturated plateau consume the whole bucket budget; spacing on the clamped value
+  spends exactly one bucket there. Sound because every fragment in the plateau has the identical
+  radius and so cannot band. Cost: within-bucket ordering loss applies across the whole plateau,
+  and holdout depth resolution is coarse inside it. K is split between the two sides of focus in
+  proportion to their CoC spans, so the front and back steps are equal only up to integer bucket
+  allocation (measured 1.5× apart at S=10, range [1,100], K=16).
 - 2026-07-26 — Output bbox pad becomes `ceil(max_radius + edge_softness/2)` (X) and that value
   times pixel aspect (Y), not `ceil(max_radius)`. Found at M1.P1.T3's review: the anti-aliased
   edge band is centred on the disc rim, so the kernel's true nonzero extent is

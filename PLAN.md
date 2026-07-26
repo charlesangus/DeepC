@@ -1,8 +1,8 @@
 ---
 title: DeepCDefocus — deep-input, flat-output defocus node
 status: running
-current: M1.P1.T2
-pm_heartbeat: 2026-07-26T10:19:00-04:00
+current: M1.P1.T4
+pm_heartbeat: 2026-07-26T10:41:00-04:00
 ship: pr-per-milestone
 ---
 
@@ -82,5 +82,18 @@ node; v3 (Milestone 3) adds a CUDA backend behind the seams v1/v2 leave in place
 
 # Open questions
 
-(none — all resolved during the interview and adversarial review that produced this plan; see
-`PLAN/MILESTONES/M1-deepcdefocus-v1.md` for the decisions folded in)
+- **Bucket-composite alpha deficit — must be settled before M1.P3.T2 (scatter accumulation).**
+  Found at M1.P1.T2's review. Distinct opaque fragments whose disc weights sum to 1 at a
+  destination pixel, but which land in *different* depth buckets, front-to-back over-composite to
+  `1 − Π_k(1−W_k) < 1`: measured **25.0% alpha deficit across 2 buckets, 31.6% across 4, 34.4%
+  across 8, 35.6% across 16** — it gets *worse* as K rises, so the K knob is not a mitigation.
+  That is a receding opaque ground plane (validation scene (g)) and any opaque card interior whose
+  CoC neighbourhood straddles a bucket boundary. Distinct from the *specified* coverage deficit
+  (scene (i)), which is an honest hole where nothing was rendered behind — here the coverage plane
+  `Σ w·vis` sums to exactly 1 and the hole is fabricated by the bucketing. Within a bucket
+  accumulation is additive (which is why a flat single-depth field already yields alpha ≡ 1);
+  the deficit is what happens when that same surface is spread across buckets and the composite
+  switches to an independence assumption. Fix candidates, all keyed off the now-corrected coverage
+  plane, none yet chosen. See the note in `PLAN/MILESTONES/M1-deepcdefocus-v1.md` Decisions on the
+  `Σ w·vis` correction. Everything through Phase 1.1 is unaffected — the bucket math itself is
+  correct and committed; this decides how M1.P3.T2 combines buckets.
