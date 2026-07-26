@@ -217,7 +217,7 @@ l. small-CoC transition: shallow depth ramp crossing 0–2px CoC ⇒ no chatter/
 This phase gets a working, docker-free compile/link gate in place before any node code is
 written, since every later phase needs to build to verify. It does not touch node code.
 
-- [ ] M1.P0.T1 — Confirm the local Nuke SDK builds the existing repo clean
+- [x] M1.P0.T1 — Confirm the local Nuke SDK builds the existing repo clean
   - files: none (verification-only; no source edits)
   - approach: licensed Nuke SDK installs already exist at `/usr/local/Nuke16.0v9`,
     `/usr/local/Nuke16.1v3`, `/usr/local/Nuke17.0v3` (NDK headers under `include/ndk/nuke`,
@@ -460,7 +460,16 @@ verified.
 
 ## Decisions
 
-(none yet — this section fills in as execution deviations or milestone-scoped calls happen)
+- 2026-07-26 — Baseline local build command locked in as
+  `cmake -S . -B build/local-17.0 -D Nuke_ROOT=/usr/local/Nuke17.0v3 && cmake --build
+  build/local-17.0 -j"$(nproc)"`: verified at M1.P0.T1 against the pre-`DeepCDefocus` tree —
+  configure found `libDDImage.so` for Nuke 17.0v3, build exited 0, and produced 27 `.so` modules
+  under `build/local-17.0/src`. No fallback to 16.1v3 was needed. `build` is already gitignored,
+  so the local build dir never dirties the tree.
+- 2026-07-26 — Work branch is `claude/deep-defocus-node-plan-o0ld83`, created off `master` at
+  `74ee2d0` at milestone start: the board's Context names it as "the existing branch", but no such
+  branch existed locally or on the remote, so the PM created it rather than falling back to the
+  default `milestone/<id>-<slug>` convention the user deliberately overrode.
 
 **Verification gate:** the Phase 1.0 local build (`-D Nuke_ROOT=/usr/local/Nuke17.0v3`) green
 throughout, plus `./docker-build.sh --linux` (and once, at M1.P5.T1, `--windows`) both green
