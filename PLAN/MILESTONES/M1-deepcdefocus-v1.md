@@ -191,8 +191,11 @@ a. size=0 / all-in-focus ⇒ pixel-identical to stock `DeepToImage`, scoped as f
      not in float. The ULP residual *grows with coincident-sample count* (1 ULP at 2 samples, 3 at
      5, 6 at 20), so a "≤N ULP" gate is only meaningful against a named scene with a stated sample
      count; the absolute tolerance held everywhere.
-   - **Overlapping volumetric spans: NOT a parity gate** — see M1.P3.T0, which decides what the
-     right answer is before Phase 1.3 relies on it.
+   - **Overlapping volumetric spans: a real parity gate, ≤2.4e-07 absolute** — settled at M1.P3.T0,
+     which fixed `tidyOverlapping()`'s merge to the OpenEXR mixture model. **The gate must pin
+     `volumetric_composition` ON** on the `DeepToImage` it compares against (that is Nuke's
+     default); with the knob off, Nuke selects the plain-`over` form this node deliberately moved
+     away from, and the node disagrees at ~1e-02 by design.
 b. holdout with everything in focus ⇒ matches `DeepHoldout → DeepToImage`.
 c. energy conservation: constant-color constant-depth `DeepCConstant` field ⇒ flat field out at
    any CoC (bbox interior); alpha ≡ 1 exactly.
@@ -360,7 +363,7 @@ particular is deliberately "thread-agnostic so unit tests can drive it directly 
 `std::thread`." M1.P3.T4 below covers that; T1–T3 don't need to wait for engine wiring to be
 verified.
 
-- [ ] M1.P3.T0 — Adjudicate volumetric tidying against the deep spec (run FIRST in this phase)
+- [x] M1.P3.T0 — Adjudicate volumetric tidying against the deep spec (run FIRST in this phase)
   - files: none expected (investigation); if it concludes a change is needed, that change lands as
     an amendment to this phase's tasks, not here
   - approach: M1.P2.T2's review measured that for **overlapping volumetric spans** this node
@@ -577,6 +580,16 @@ verified.
   yields the frame's true CoC range for free, keeps the build eager and lock-free, and leaves the
   0.5px steps, exact per-entry normalization, row spans, and the `KernelSampler` seam untouched.
   M1.P2.T2 and M1.P3.T5 approach text amended accordingly.
+- 2026-07-26 — M1.P3.T0 adjudicated volumetric tidying in favour of the **OpenEXR mixture model**
+  and fixed `tidyOverlapping()`'s merge accordingly; a second, independent precision defect in the
+  same function's split pass was fixed alongside, and that one **visibly changes shipped
+  `DeepCBlur`/`DeepCBlur2` output** (2.32e-02 abs / 12.4% rel in alpha on point-inside-span input) —
+  landed deliberately, on the user's explicit call, and needing a release note. Full reasoning, the
+  ray-march validation, the measured errors and the shipped-node impact analysis are in
+  `PLAN/DECISIONS/2026-07-26-volumetric-tidying-semantics.md`. Consequences for this milestone:
+  scene (a)'s volumetric clause is now a real parity gate at ≤2.4e-07 with `volumetric_composition`
+  pinned ON; M1.P3.T1 inherits a correct tidy pass and needs no rework, but should measure the
+  `log1p`-per-sample cost the merge adds on the hot path.
 - 2026-07-26 — **`deepc::tidyOverlapping()` never terminated on overlapping volumetric samples**, a
   pre-existing bug in committed shared code, fixed during M1.P2.T2's review. The split loop always
   split `samples[i]` at `samples[i+1].zFront`; when the two shared a `zFront` that *is*

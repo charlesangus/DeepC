@@ -801,15 +801,30 @@ private:
     //   deliberate — but any "<= N ULP" acceptance threshold has to be stated
     //   against a named scene, not as a universal bound.
     //
-    //   VOLUMETRIC SPANS THAT OVERLAP — NOT close to bit parity. tidy splits
-    //   spans at overlap boundaries with a transmittance split and then
-    //   over-merges the coincident parts; DeepToImage (volumetric_composition
-    //   on, its default) instead runs Nuke's own CombineOverlappingSamples.
-    //   These are different algorithms, so they disagree at the 1e-2 level,
-    //   not the ULP level: measured max |diff| 8.9e-03 on partially
-    //   overlapping spans and 9.5e-02 on perfectly coincident spans. Any
-    //   DeepToImage-parity gate therefore has to be stated over point-sample
-    //   input only, or the flatten has to adopt Nuke's volumetric combine.
+    //   VOLUMETRIC SPANS THAT OVERLAP OR COINCIDE — parity to float
+    //   precision, and NOT the 1e-02 mismatch this comment used to report.
+    //   M1.P3.T0 adjudicated the old disagreement and found the tidy pass, not
+    //   Nuke, was wrong: it merged spans sharing an interval with `over`, but
+    //   two samples on one interval are co-located media, so their optical
+    //   depths and emission ADD rather than one occluding the other.
+    //   deepc::tidyOverlapping() now merges them by the OpenEXR "Interpreting
+    //   Deep Pixels" volume-mixture rule, which is what Nuke's own
+    //   CombineOverlappingSamples computes. Re-measured (Nuke 17.0v3,
+    //   headless, all four rgba channels over every pixel of a 64x48 frame,
+    //   -O3 -mavx2 -mfma), against DeepToImage with volumetric_composition ON
+    //   — its default:
+    //     - two partially overlapping spans ................... 1.8e-07
+    //     - two perfectly coincident spans .................... 6.0e-08
+    //     - three-way overlap ................................. 2.4e-07
+    //   i.e. the same ~1-2 ULP re-association noise as the coincident
+    //   point-sample case above, so a DeepToImage-parity gate no longer has
+    //   to be scoped to point samples.
+    //
+    //   Against DeepToImage with volumetric_composition OFF the same scenes
+    //   now differ by 1.5e-02 to 4.7e-02, and that is deliberate: that
+    //   setting selects Nuke's plain `over` of overlapping spans, which is
+    //   the behaviour the tidy pass was changed away from. Do not use it as
+    //   the parity reference for volumetric input.
     // ------------------------------------------------------------------
 #if defined(__GNUC__) && !defined(__clang__)
     // See the composite loop below: fusing its multiply and add into an FMA

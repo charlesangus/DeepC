@@ -56,12 +56,17 @@ inline float colorDistance(const std::vector<float>& a, float alphaA,
 }
 
 // ---------------------------------------------------------------------------
-// tidyOverlapping — split overlapping depth intervals and over-merge
+// tidyOverlapping — split overlapping depth intervals and merge coincident ones
 //
 // Walks a depth-sorted sample list.  When sample[i].zBack > sample[i+1].zFront
 // (overlap), one of the two volumetric samples is split at the overlap
-// boundary that lies strictly inside it.  After all splits, samples at
-// identical [zFront,zBack] are over-composited.
+// boundary that lies strictly inside it.  After all splits, samples sharing an
+// identical [zFront,zBack] are merged — by the OpenEXR volume-mixture rule if
+// the interval has extent, by `over` if it is a point.  See the merge pass.
+//
+// This is the tidying algorithm of the OpenEXR "Interpreting Deep Pixels"
+// note, and it reproduces stock Nuke DeepToImage (volumetric_composition on,
+// its default) to float precision.
 // ---------------------------------------------------------------------------
 inline void tidyOverlapping(std::vector<SampleRecord>& samples)
 {
@@ -123,16 +128,69 @@ inline void tidyOverlapping(std::vector<SampleRecord>& samples)
             if (!(z > cur.zFront && z < cur.zBack))
                 continue;
 
-            float totalRange = cur.zBack - cur.zFront;
-            float frontRange = z - cur.zFront;
-            float ratio      = frontRange / totalRange;
+            const double totalRange = static_cast<double>(cur.zBack)
+                                    - static_cast<double>(cur.zFront);
+            const double ratio = (static_cast<double>(z)
+                                - static_cast<double>(cur.zFront)) / totalRange;
 
-            // Subdivide alpha: alpha_front = 1 - (1 - alpha)^ratio
-            float oneMinusA = 1.0f - cur.alpha;
-            float alphaFront = (oneMinusA <= 0.0f) ? cur.alpha
-                             : 1.0f - std::pow(oneMinusA, ratio);
-            float alphaBack  = (oneMinusA <= 0.0f) ? cur.alpha
-                             : 1.0f - std::pow(oneMinusA, 1.0f - ratio);
+            // Subdivide the span's OPTICAL DEPTH, not its alpha directly.
+            // A homogeneous medium of alpha a across the whole interval has
+            // optical depth u = -ln(1-a); the piece covering a fraction
+            // `ratio` of the interval carries u*ratio of it, so
+            //
+            //     alpha_front = 1 - e^(-u*ratio)
+            //
+            // which is algebraically the same 1 - (1-a)^ratio as before but
+            // evaluated through log1p/expm1, so it stays accurate for thin
+            // media instead of cancelling against 1.
+            //
+            // The identity that has to hold is that splitting a span
+            // preserves its transmittance: 1 - (1-a_front)(1-a_back) == a.
+            // Measured on a span split in half, relative error in that
+            // identity, old float `pow` form vs this one:
+            //     a = 1e-02   1.8e-06  ->  1.4e-08
+            //     a = 1e-04   1.4e-04  ->  2.8e-09
+            //     a = 1e-06   7.3e-02  ->  2.5e-08
+            //     a = 1e-07   1.9e-01  ->  1.4e-08
+            // Alphas that small are routine rather than exotic here:
+            // DeepCBlur multiplies every gathered sample's alpha by its
+            // kernel weight before calling this.
+            //
+            // Premultiplied colour scales with alpha — the transfer
+            // equation's homogeneous solution is C = (j/sigma)*alpha, so a
+            // piece keeps alpha_piece/a of it.  That ratio has a finite
+            // limit as a -> 0 (the purely emissive case, where colour simply
+            // splits by length), which the old `alpha > 1e-6 ? ... : 0` guard
+            // discarded along with 100% of a thin span's colour: below that
+            // threshold BOTH pieces came out black. This is the same
+            // small-alpha cancellation the coincident merge below avoids, and
+            // it is fixed the same way rather than with a magic epsilon.
+            double alphaFrontD, alphaBackD, scaleFrontD, scaleBackD;
+            const double a = (cur.alpha < 0.0f) ? 0.0
+                           : (cur.alpha > 1.0f) ? 1.0
+                           : static_cast<double>(cur.alpha);
+            if (a >= 1.0) {
+                // Opaque: every piece is opaque. Both keep the full colour,
+                // which is right because only the front piece is ever
+                // visible — the back sits behind an alpha-1 sample.
+                alphaFrontD = alphaBackD = 1.0;
+                scaleFrontD = scaleBackD = 1.0;
+            } else if (a <= 0.0) {
+                // Non-absorbing emissive limit: alpha stays 0 and the
+                // emission divides by length.
+                alphaFrontD = alphaBackD = 0.0;
+                scaleFrontD = ratio;
+                scaleBackD  = 1.0 - ratio;
+            } else {
+                const double u = -std::log1p(-a);
+                alphaFrontD = -std::expm1(-u * ratio);
+                alphaBackD  = -std::expm1(-u * (1.0 - ratio));
+                scaleFrontD = alphaFrontD / a;
+                scaleBackD  = alphaBackD  / a;
+            }
+
+            const float alphaFront = static_cast<float>(alphaFrontD);
+            const float alphaBack  = static_cast<float>(alphaBackD);
 
             // Build back portion first (we'll overwrite cur for the front)
             SampleRecord back;
@@ -141,9 +199,8 @@ inline void tidyOverlapping(std::vector<SampleRecord>& samples)
             back.alpha  = alphaBack;
             back.channels.resize(cur.channels.size());
 
-            // Premultiplied channels scale proportionally with alpha
-            float scaleFront = (cur.alpha > 1e-6f) ? alphaFront / cur.alpha : 0.0f;
-            float scaleBack  = (cur.alpha > 1e-6f) ? alphaBack  / cur.alpha : 0.0f;
+            const float scaleFront = static_cast<float>(scaleFrontD);
+            const float scaleBack  = static_cast<float>(scaleBackD);
 
             for (size_t c = 0; c < cur.channels.size(); ++c) {
                 back.channels[c] = cur.channels[c] * scaleBack;
@@ -169,6 +226,11 @@ inline void tidyOverlapping(std::vector<SampleRecord>& samples)
     std::vector<SampleRecord> result;
     result.reserve(samples.size());
 
+    // Scratch for the volumetric merge below, hoisted so a pixel pays at most
+    // one allocation for it however many coincident groups it contains (and
+    // none at all if it contains none).
+    std::vector<double> acc;
+
     size_t i = 0;
     while (i < samples.size()) {
         size_t j = i + 1;
@@ -182,7 +244,6 @@ inline void tidyOverlapping(std::vector<SampleRecord>& samples)
         if (j - i == 1) {
             result.push_back(std::move(samples[i]));
         } else {
-            // Over-composite the group front-to-back
             const size_t nChan = samples[i].channels.size();
             SampleRecord merged;
             merged.zFront = samples[i].zFront;
@@ -190,16 +251,112 @@ inline void tidyOverlapping(std::vector<SampleRecord>& samples)
             merged.alpha  = 0.0f;
             merged.channels.resize(nChan, 0.0f);
 
-            float alphaAcc = 0.0f;
-            for (size_t s = i; s < j; ++s) {
-                float w = 1.0f - alphaAcc;
-                if (w <= 0.0f) break;
-                const size_t nc = std::min(nChan, samples[s].channels.size());
-                for (size_t c = 0; c < nc; ++c)
-                    merged.channels[c] += samples[s].channels[c] * w;
-                alphaAcc += samples[s].alpha * w;
+            if (samples[i].zBack > samples[i].zFront) {
+                // --- VOLUMETRIC group: co-located media, NOT stacked layers.
+                //
+                // Samples sharing an interval [zf,zb] with zb > zf are two
+                // volumes occupying the same space, so neither is "in front"
+                // of the other and `over` is the wrong composite: it is
+                // order-dependent, and it biases the result toward whichever
+                // sample the sort happened to place first.
+                //
+                // The right combination is the one the OpenEXR "Interpreting
+                // Deep Pixels" note calls mergeOverlappingSamples: a uniform
+                // medium of alpha a over the interval has optical depth
+                // u = -ln(1-a), and co-located media ADD optical depth and
+                // ADD emission.  Solving the transfer equation over the
+                // combined medium gives
+                //
+                //     u     = sum_s u_s,          u_s   = -log1p(-a_s)
+                //     alpha = 1 - e^-u            (== 1 - prod(1 - a_s),
+                //                                  i.e. the same alpha `over`
+                //                                  produces — only colour
+                //                                  differs)
+                //     C     = (sum_s C_s * u_s/a_s) * alpha/u
+                //
+                // which is order-independent and reproduces a direct ray
+                // march through the media exactly.  This is also what Nuke's
+                // own CombineOverlappingSamples does (measured: stock
+                // DeepToImage with volumetric_composition on agrees to 7
+                // decimals; with it off it reproduces the `over` form below).
+                //
+                // NOTE the alpha channel, when the caller carries alpha as an
+                // ordinary channel too, comes out of this consistent with
+                // `merged.alpha` for free: C_s = a_s makes its term u_s, so
+                // the sum is u and the result is u * alpha/u == alpha.
+                //
+                // Both the optical depth (where the small-alpha cancellation
+                // lives) and the colour sum accumulate in double: a float sum
+                // drifts past the 2e-07 tolerance the coincident-sample gate
+                // is stated at once a group holds ~5 or more samples
+                // (measured 2.1e-07 at 5, 4.2e-07 at 40; in double it stays
+                // under 2e-07 at every count).
+                double u = 0.0;
+                int    opaque = 0;
+                acc.assign(nChan, 0.0);
+
+                for (size_t s = i; s < j; ++s) {
+                    const double a = (samples[s].alpha < 0.0f) ? 0.0
+                                   : (samples[s].alpha > 1.0f) ? 1.0
+                                   : static_cast<double>(samples[s].alpha);
+                    const size_t nc = std::min(nChan, samples[s].channels.size());
+                    if (a >= 1.0) {
+                        ++opaque;
+                        continue;                       // handled below
+                    }
+                    const double us = -std::log1p(-a);
+                    // v = u/a is the sample's emission per unit optical
+                    // depth; a -> 0 is the non-absorbing emissive limit
+                    // v -> 1 (colour simply adds), which is also OpenEXR's
+                    // guarded value.
+                    const double v = (a > 0.0) ? us / a : 1.0;
+                    u += us;
+                    for (size_t c = 0; c < nc; ++c)
+                        acc[c] += static_cast<double>(samples[s].channels[c]) * v;
+                }
+
+                if (opaque > 0) {
+                    // An opaque member makes the whole interval opaque and
+                    // swamps every finite-density member.  With several,
+                    // none is in front, so they average — the u -> infinity
+                    // limit of the formula above, and OpenEXR's own
+                    // (c1 + c2) / 2 case.
+                    std::fill(acc.begin(), acc.end(), 0.0);
+                    for (size_t s = i; s < j; ++s) {
+                        if (!(samples[s].alpha >= 1.0f)) continue;
+                        const size_t nc = std::min(nChan, samples[s].channels.size());
+                        for (size_t c = 0; c < nc; ++c)
+                            acc[c] += static_cast<double>(samples[s].channels[c]);
+                    }
+                    merged.alpha = 1.0f;
+                    for (size_t c = 0; c < nChan; ++c)
+                        merged.channels[c] = static_cast<float>(acc[c] / opaque);
+                } else {
+                    const double alpha = -std::expm1(-u);
+                    const double w     = (u > 0.0) ? alpha / u : 1.0;
+                    merged.alpha = static_cast<float>(alpha);
+                    for (size_t c = 0; c < nChan; ++c)
+                        merged.channels[c] = static_cast<float>(acc[c] * w);
+                }
+            } else {
+                // --- POINT group (zFront == zBack): genuine coincident
+                // surfaces with an arbitrary but real ordering.  Stock
+                // DeepToImage composites these one at a time with `over`
+                // (measured: Nuke gives the same, order-dependent, answer
+                // with volumetric_composition on OR off), and DeepCDefocus'
+                // bit-exact point-sample parity gate depends on matching it,
+                // so this path stays exactly as it was.
+                float alphaAcc = 0.0f;
+                for (size_t s = i; s < j; ++s) {
+                    float w = 1.0f - alphaAcc;
+                    if (w <= 0.0f) break;
+                    const size_t nc = std::min(nChan, samples[s].channels.size());
+                    for (size_t c = 0; c < nc; ++c)
+                        merged.channels[c] += samples[s].channels[c] * w;
+                    alphaAcc += samples[s].alpha * w;
+                }
+                merged.alpha = alphaAcc;
             }
-            merged.alpha = alphaAcc;
             result.push_back(std::move(merged));
         }
         i = j;
