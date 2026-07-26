@@ -281,12 +281,13 @@ written, since every later phase needs to build to verify. It does not touch nod
   - verify: covered by the M1.P1.T4 unit test task.
   - size: M
 
-- [ ] M1.P1.T4 — Unit test suite for the math foundation
+- [x] M1.P1.T4 — Unit test suite for the math foundation
   - files: `tests/test_defocus_math.cpp` (new), `tests/doctest.h` (new, vendored single-header
     MIT doctest), top-level `CMakeLists.txt` (add `option(DEEPC_BUILD_TESTS OFF)`)
   - approach: doctest-based tests, buildable with plain g++ (no docker, no NDK types anywhere
     in T1–T3's headers). Cover: CoC vs. hand-derived lens table (50mm f/2.8 S=2m d=4m ⇒
-    0.2289mm) plus one non-meter `world_units` case; d=∞/d=S/d≤0 edges; LUT Σw=1 ∀ radii
+    exactly 0.22893772893772894mm — do not re-derive it as 0.228912275, which circulated during
+    T4 and is wrong in the 5th digit) plus one non-meter `world_units` case; d=∞/d=S/d≤0 edges; LUT Σw=1 ∀ radii
     (assert `|Σw − 1| < 1e-6`, NOT float equality — measured worst case is 5.1e-08, since each
     entry is normalized by its own double-accumulated sum, not an analytic disc area); AA
     monotonicity; visibility step/product/in-span identities + boundary-LUT interpolation vs.
@@ -399,7 +400,12 @@ verified.
     saturation rule (overlapping same-bucket fragments ⇒ alpha rescaled down, ratio preserved);
     holdout LUT values match exact in-span exponential eval at several depths. Both bucket-combine
     candidates get their own cases (plain `over` and coverage-partition), since M1.P3.T5 has to
-    compare them.
+    compare them. **Carried over from M1.P1.T4**, which could not close them: the
+    "tidy + sharp-path = sequential over" identity (only the `over` half is testable at Phase 1.1 —
+    `tidyOverlapping()` lives in `src/DeepSampleOptimizer.h`, which T1–T3 don't touch), and the
+    flat-opaque-across-buckets identity (conditional on the bucket-composite decision, so it is
+    written here once M1.P3.T2 has both candidates). Mutation-test any new cases the way T4's
+    review did — a suite that survives a deliberately broken header is the defect to avoid.
   - verify: `cmake -DDEEPC_BUILD_TESTS=ON && make && ctest` — all cases pass.
   - size: M
 
@@ -516,6 +522,18 @@ verified.
   yields the frame's true CoC range for free, keeps the build eager and lock-free, and leaves the
   0.5px steps, exact per-entry normalization, row spans, and the `KernelSampler` seam untouched.
   M1.P2.T2 and M1.P3.T5 approach text amended accordingly.
+- 2026-07-26 — Phase 1.1's test suite is **mutation-verified**, and that bar carries to M1.P3.T4.
+  T4's review ran 21 deliberate header mutations against the as-written suite and **6 survived** —
+  spacing on the unclamped rather than clamped CoC, a 2% error in `partitionColorScale`, a 1e-5
+  colour:alpha ratio drift under saturation, wrong channel stride in `saturateBucketPlanes`, wrong
+  pixel offset in `compositeBucketsFrontToBack`, and `d=∞` no longer being the far-field limit. The
+  causes were the recurring ones: tolerances widened to whatever the implementation emitted rather
+  than to a measured error, reference values re-derived with the code's own expression (a
+  tautology), a whole-band driver never exercised, and a dead `if` that made the entire back-side
+  ΔCoC check unreachable. All fixed; 0 of 21 now survive, at 24 cases / 2578 assertions. Note that
+  three bucket-allocation numbers are now pinned as contract (the 8/8 and 15/1 K splits and
+  `focusBoundary() == 11` on the saturating rig) — deliberate documentation-with-teeth, so a change
+  to the bucket-budget split rule is meant to fail them.
 - 2026-07-26 — **Bucket-composite alpha deficit: both candidates get built, and the choice is made
   from rendered pixels at M1.P3.T5, not from identities** (user's call, asked at the Phase 1.1
   boundary). The problem, found at M1.P1.T2's review: distinct opaque fragments whose disc weights

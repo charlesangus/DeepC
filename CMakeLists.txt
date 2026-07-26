@@ -36,6 +36,28 @@ endif()
 # add sub directory
 add_subdirectory(src)
 
+# ---------------------------------------------------------------------------
+# Unit tests for the header-only math/kernel foundation (M1.P1.T4).
+#
+# Off by default so the normal plugin build is completely unaffected. The
+# test target is deliberately independent of Nuke/DDImage: it only compiles
+# tests/test_defocus_math.cpp (doctest + src/DeepCDefocusMath.h +
+# src/DeepCDefocusKernel.h, both header-only and NDK-free), so it exists to
+# let that math be tested without a Nuke SDK. Configuring this whole top-level
+# CMakeLists.txt still requires Nuke_ROOT (find_package(Nuke REQUIRED) above
+# is unconditional for the rest of the project), but this target itself never
+# includes an NDK header or links DDImage -- see tests/test_defocus_math.cpp,
+# which also builds standalone with plain `g++ -std=c++17`, no cmake/Nuke at
+# all, as the no-NDK proof.
+# ---------------------------------------------------------------------------
+option(DEEPC_BUILD_TESTS "Build the doctest unit tests for the math/kernel foundation" OFF)
+if (DEEPC_BUILD_TESTS)
+    enable_testing()
+    add_executable(test_defocus_math tests/test_defocus_math.cpp)
+    target_compile_features(test_defocus_math PRIVATE cxx_std_17)
+    add_test(NAME test_defocus_math COMMAND test_defocus_math)
+endif()
+
 # install directory
 install(FILES
     python/init.py
