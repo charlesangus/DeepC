@@ -180,7 +180,19 @@ Holdout itself has no enable knob — connection presence enables it.
 
 ### Validation scenes (`tests/nuke/*.nk`, committed alongside the node)
 
-a. size=0 / all-in-focus ⇒ pixel-identical to stock `DeepToImage` (needs tidy pre-pass).
+a. size=0 / all-in-focus ⇒ pixel-identical to stock `DeepToImage`, scoped as follows (measured at
+   M1.P2.T2 and re-measured at its review):
+   - **Point-sample input: bit-exact (0 ULP)** — this is the real gate, and it held across 20
+     samples/pixel, alphas from 1e-7 to 1.0, opaque-in-front, sparse, 16-thread cooks, downstream
+     crops, channel subsets, pixel aspect 2 and proxy 0.5.
+   - **Coincident-depth samples: assert ≤2e-07 absolute, NOT a ULP bound.** The mandated tidy pass
+     over-composites samples sharing an exact `[zFront, zBack]` before the flatten while
+     `DeepToImage` composites them individually, and `over` is associative in exact arithmetic but
+     not in float. The ULP residual *grows with coincident-sample count* (1 ULP at 2 samples, 3 at
+     5, 6 at 20), so a "≤N ULP" gate is only meaningful against a named scene with a stated sample
+     count; the absolute tolerance held everywhere.
+   - **Overlapping volumetric spans: NOT a parity gate** — see M1.P3.T0, which decides what the
+     right answer is before Phase 1.3 relies on it.
 b. holdout with everything in focus ⇒ matches `DeepHoldout → DeepToImage`.
 c. energy conservation: constant-color constant-depth `DeepCConstant` field ⇒ flat field out at
    any CoC (bbox interior); alpha ≡ 1 exactly.
@@ -213,7 +225,9 @@ l. small-CoC transition: shallow depth ramp crossing 0–2px CoC ⇒ no chatter/
 | Bucket quantization artifacts | Med | Fractional two-bucket assignment + ΔCoC-bounded spacing; K knob; banding scene (g) |
 | Coverage deficit misread as bug | Med | Specified honest-alpha behavior; node help + renderer-settings docs; validation scene (i) |
 | NDK signature drift | Low | Licensed Nuke SDKs are installed locally (`/usr/local/Nuke{16.0v9,16.1v3,17.0v3}`, Phase 1.0) with full NDK headers, so every NDK-facing task compiles locally as it's written, not just at a periodic gate; `docker-build.sh` remains the pre-merge parity check against the release toolchain |
-| Lock/abort UX during full-frame precompute | Med | `Op::aborted()` per row; abort invalidates hash-keyed cache, erased rows stay black |
+| Lock/abort UX during full-frame precompute | Med | `Op::aborted()` per row; abort invalidates hash-keyed cache, erased rows stay black. Verified at M1.P2.T2: an aborted cook leaves the frame fully black, publishes nothing, and the next cook is bit-exact |
+| Upstream deep failure cached as a valid black frame | Med | The NDK does **not** propagate an upstream `doDeepEngine()` failure — `DeepOp::deepEngine()` returns *true* with an empty plane, so the defensive bool check can never fire and a silently-empty upstream is published as a valid all-black cache until the hash changes (stock `DeepToImage` has the same blind spot but no cache, so it recovers next cook). Only `Op::aborted()` is a real signal. Found at M1.P2.T2's review; revisit when M1.P4.T1 rebuilds the cache |
+| Non-terminating sample tidying on volumetric input | High | `deepc::tidyOverlapping()` looped forever on *any* overlapping volumetric pair — fixed during M1.P2.T2 (see Decisions); termination fuzz test added at M1.P3.T4 |
 | Request/engine channel divergence | Low | Single `neededDeepChannels()` helper |
 | Edge darkening at bbox borders | Low | Output bbox padded by `max_radius` so scattered energy is retained |
 
@@ -317,7 +331,7 @@ written, since every later phase needs to build to verify. It does not touch nod
     (`-D Nuke_ROOT=/usr/local/Nuke17.0v3`).
   - size: M
 
-- [ ] M1.P2.T2 — `_validate`/`_request`/`engine` flatten path + NDK compile gate
+- [x] M1.P2.T2 — `_validate`/`_request`/`engine` flatten path + NDK compile gate
   - files: `src/DeepCDefocus.cpp`/`.h`
   - approach: `_validate` computes `deepInfo → info_`, pads bbox by
     `ceil(max_radius + edge_softness/2)`/`ceil((max_radius + edge_softness/2)·aspect)` — the AA
@@ -346,6 +360,25 @@ particular is deliberately "thread-agnostic so unit tests can drive it directly 
 `std::thread`." M1.P3.T4 below covers that; T1–T3 don't need to wait for engine wiring to be
 verified.
 
+- [ ] M1.P3.T0 — Adjudicate volumetric tidying against the deep spec (run FIRST in this phase)
+  - files: none expected (investigation); if it concludes a change is needed, that change lands as
+    an amendment to this phase's tasks, not here
+  - approach: M1.P2.T2's review measured that for **overlapping volumetric spans** this node
+    disagrees with stock `DeepToImage` by ~8.9e-03 (partial overlap) and ~9.5e-02 (perfectly
+    coincident) — not a rounding difference but two different algorithms: the design mandates
+    `deepc::tidyOverlapping()` (split + over-merge) while Nuke runs its own
+    `CombineOverlappingSamples`. Decide which is right *on the merits* rather than by preferring
+    either implementation: derive the correct result for a hand-worked overlapping-fog pixel from
+    the OpenEXR "Interpreting Deep Pixels" tidying rules (the same exponential in-span model this
+    node already uses for holdout transmittance and for the volumetric bucket split), then compare
+    both implementations against it. Recommend one of: keep `tidyOverlapping()` and scope the
+    parity gate to point samples; adopt Nuke's combine for the flatten; or fix `tidyOverlapping()`
+    if it is the one that diverges from the spec.
+  - verify: a written recommendation with the hand-derived reference numbers, folded into this
+    file's Decisions, and scene (a)'s volumetric clause settled. This must land before M1.P3.T1
+    builds SoA flattening on top of the tidy pass, and before M1.P3.T5's correctness gate.
+  - size: M
+
 - [ ] M1.P3.T1 — `PodBuffer<T>`, `DEEPC_HD`, and SoA flattening
   - files: `src/DeepCDefocusScatter.h` (new), `src/DeepCDefocusScatter.cpp` (new)
   - approach: define `PodBuffer<T>` (thin owning wrapper over aligned host allocation) in this
@@ -360,7 +393,11 @@ verified.
     volumetric sample goes through `splitSpanAtBoundaries()` + `bucketOfContaining()`, a point
     sample through `bucketOf()` + `fragmentDeposit()` — never both splits, which double-counts
     (measured +8.3%). `splitSpanAtBoundaries()` needs a caller-owned `SpanSplitPart[K+2]`
-    (~2.6KB at K=128) — stack-sized in the per-sample path, no heap.
+    (~2.6KB at K=128) — stack-sized in the per-sample path, no heap. Note `tidyOverlapping()`
+    restarts its scan (and re-sorts) after every split, so a pixel with many overlapping spans costs
+    roughly O(splits · n log n) — tolerable at M1.P2.T2's scale but this task puts it on the real
+    hot path, so measure it. Also: `max_radius` is not proxy-scaled (M1.P2.T2 used it only for the
+    bbox pad, where over-padding is harmless); the radius clamp here must handle proxy.
   - verify: covered by the M1.P3.T4 unit test task (synthetic `SampleRecord` vectors in, SoA
     buffers out).
   - size: L
@@ -406,6 +443,10 @@ verified.
     flat-opaque-across-buckets identity (conditional on the bucket-composite decision, so it is
     written here once M1.P3.T2 has both candidates). Mutation-test any new cases the way T4's
     review did — a suite that survives a deliberately broken header is the defect to avoid.
+    **Add a termination fuzz test for `deepc::tidyOverlapping()`**: randomised sample vectors with
+    depths drawn from a small discrete set so exact ties are common, asserting termination and a
+    bounded output size. The non-termination bug fixed during M1.P2.T2 hung Nuke unkillably on
+    ordinary fog input and would have been caught in milliseconds by this.
   - verify: `cmake -DDEEPC_BUILD_TESTS=ON && make && ctest` — all cases pass.
   - size: M
 
@@ -441,7 +482,12 @@ verified.
     bands `Dirty` on an `Op::hash()` change. Memory-limit knob caps concurrent in-flight bands
     per the formula in the Design reference (floor 1 band, then shrink B — never deadlock at 0).
     `Op::aborted()` checked per source row; an aborted band resets to `Dirty`, wakes waiters,
-    leaves erased/black rows. Every `deepEngine()` bool return checked.
+    leaves erased/black rows. Every `deepEngine()` bool return checked. **Budget this as rework,
+    not extension**: M1.P2.T2's cache is a `shared_ptr<const FrameCache>` published by copy, which
+    is the wrong primitive for per-band claims (they need a mutable shared frame plus per-band
+    atomics), and its `engine()` takes the frame-wide lock on *every row* just to snapshot the
+    pointer — ~2160 acquisitions per thread per 4K frame. Both are correct for the serial phase and
+    both must go here.
   - verify: re-run validation scenes (a)–(l) — results must be identical to Phase 1.3's serial
     output (this phase changes execution order only, not results); manually abort a cook
     mid-render and confirm clean recovery (no crash, no stuck lock, next cook succeeds).
@@ -472,7 +518,11 @@ verified.
     `DeepCShuffle2`/`ShuffleMatrixKnob.cpp` precedent at `src/CMakeLists.txt:128-129` (not the
     FastNoise object-library pattern — different shape); `target_compile_options(DeepCDefocus
     PRIVATE -mavx2 -mfma)` per-target, so the existing global `-mavx` floor is unchanged for
-    every other node.
+    every other node. **FMA hazard**: `-mfma` under GCC's default `-ffp-contract=fast` fuses the
+    flatten loop's multiply-add and destroys the `DeepToImage` bit-parity M1.P2.T2 established
+    (the 1.19e-07 divergence returns). That file guards its composite loop with a
+    `#pragma GCC optimize("fp-contract=off")`; if the pragma is ever removed, `-ffp-contract=off`
+    must go on the target instead.
   - verify: the local build (`-D Nuke_ROOT=/usr/local/Nuke17.0v3`) builds `DeepCDefocus` clean
     first; then, wherever docker is available, `./docker-build.sh --linux` builds it clean via
     the release toolchain and `./docker-build.sh --windows` confirms every other node still
@@ -487,7 +537,9 @@ verified.
     README plugin-list entry following house style (4-space indent, `_` prefix, lowerCamelCase).
     Also strip M1.P2.T1's placeholder "this is the Phase 1.2 skeleton" line from `node_help()`, and
     override `node_shape()` to `DeepOp::DeepNodeShape()` so this deep-consuming node draws like
-    stock `DeepToImage` rather than as a plain 2D box.
+    stock `DeepToImage` rather than as a plain 2D box. The help text should also state that,
+    unlike `DeepToImage`, this node does not synthesise a `depth.Z` AOV — a selected `Z` flattens
+    as an ordinary data channel (M1.P2.T2 deliberately did not special-case `Chan_Z`).
   - verify: help text renders in Nuke's node properties panel; icon shows in the node graph;
     README entry present and follows the existing plugin-list format.
   - size: S
@@ -525,6 +577,49 @@ verified.
   yields the frame's true CoC range for free, keeps the build eager and lock-free, and leaves the
   0.5px steps, exact per-entry normalization, row spans, and the `KernelSampler` seam untouched.
   M1.P2.T2 and M1.P3.T5 approach text amended accordingly.
+- 2026-07-26 — **`deepc::tidyOverlapping()` never terminated on overlapping volumetric samples**, a
+  pre-existing bug in committed shared code, fixed during M1.P2.T2's review. The split loop always
+  split `samples[i]` at `samples[i+1].zFront`; when the two shared a `zFront` that *is*
+  `samples[i]`'s own front, so it made no progress — and the loop created that configuration itself,
+  since splitting `[1,5]` at 3 yields `[3,5]`, which then shares a front with `[3,9]`. Every
+  overlapping volumetric pair hit it: the vector grew without bound and Nuke hung unkillably, with
+  the frame lock held and no `aborted()` check to escape through. **Blast radius is wider than the
+  new node**: `optimizeSamples()` calls `tidyOverlapping()` (`DeepSampleOptimizer.h:235`), and both
+  shipped `DeepCBlur` and `DeepCBlur2` call `optimizeSamples()` — so this was live in released
+  plugins, not just here. Fix: pick which of the pair to split so the split point is strictly
+  interior — fronts differ → split the earlier at the later's front (as before); fronts equal →
+  split the longer at the shorter's back, or skip if identical (the over-merge pass already handles
+  that). Every split point is an endpoint that already existed, so the endpoint set never grows and
+  termination is provable. This is why the milestone's "reuse `tidyOverlapping()` rather than
+  reimplementing" constraint was still the right call — the reuse is what surfaced the bug.
+- 2026-07-26 — Flatten parity with stock `DeepToImage` is **bit-exact for point samples** and is
+  scoped, not universal — see validation scene (a), rewritten at M1.P2.T2. Getting to 0 ULP needed
+  two specific choices, both of which later phases must preserve: back-to-front accumulation, and
+  the `acc = acc*(1−a) + c` form of `over` as a separate multiply and add. Front-to-back
+  `acc += c·T` was off by exactly 1 ULP. The composite loop is guarded with
+  `#pragma GCC optimize("fp-contract=off")` because `-mfma` under GCC's default
+  `-ffp-contract=fast` fuses that multiply-add and costs the parity (verified: 5 ULP without the
+  pragma, 0 with it, at `-O3 -mavx2 -mfma`). The pragma is the authority rather than a build flag,
+  since a flag can be dropped in a refactor and the failure mode is a silent 1e-7 pixel drift. Note
+  the pragma covers `flattenPixel` only — `tidyOverlapping()` is compiled with contraction on and
+  contains the remaining FMAs; harmless today (measured identical under `-mavx` and `-mavx2 -mfma`)
+  but the "no FMA on the parity path" guarantee is narrower than it reads.
+- 2026-07-26 — The frame cache is published under a lock as a `shared_ptr<const FrameCache>` and
+  readers snapshot it **under that same lock**, so a bare `shared_ptr` is sufficient and
+  `atomic_load`/`atomic_store` are not needed. Two threads cannot both compute (verified: 16 threads
+  on 2048×1152 with a 200ms stall injected to widen the race window → exactly 2 computes for 2
+  distinct hashes, 0 concurrent entries, output 0 ULP; and 24 renders across 12 hashes → 24 computes,
+  0 concurrent, all bit-exact). One real bug was found and fixed here: `Op::hash()` was sampled
+  *before* taking the guard, so a re-validate in between could publish a cache computed from the new
+  `info_` under the old key — a permanent recompute-every-cook livelock. `DD::Image::Lock` is a
+  non-recursive pthread mutex, so the "upstream cooks can't re-enter" invariant is load-bearing: a
+  violation deadlocks rather than corrupting.
+- 2026-07-26 — Serial-phase performance baseline, for M1.P4.T2 to beat: the frame-wide precompute is
+  ~2–3× slower than stock `DeepToImage` on a cold cook (4096×3112 / 12 layers: 3.99s vs 1.81s;
+  2048×1556: 6.5s vs 2.2s on the pre-optimisation build), and free on a warm one (0.39s at 4K).
+  Expected — Nuke cooks `DeepToImage` per row across all threads while this phase deliberately
+  serialises on one lock until M1.P4.T1. Frame cache at 4K with default knobs is ~155MiB, ~310MiB
+  transient during a recompute (old + fresh coexist), and ~799MB at the `kMaxRadiusCap` ceiling.
 - 2026-07-26 — **`DeepCDefocus` must never fall through to `Iop::_validate` or `Iop::_request`** —
   a standing invariant for every later phase, now documented in the source. Found at M1.P2.T1's
   review: `Iop::_validate` merges info from all inputs and `Iop::_request` forwards to them, both
