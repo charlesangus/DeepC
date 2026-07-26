@@ -465,7 +465,7 @@ verified.
   - verify: `cmake -DDEEPC_BUILD_TESTS=ON && make && ctest` — all cases pass.
   - size: M
 
-- [ ] M1.P3.T6 — Make `tidyOverlapping()`'s split pass single-pass (run BEFORE T5)
+- [x] M1.P3.T6 — Make `tidyOverlapping()`'s split pass single-pass (run BEFORE T5)
   - files: `src/DeepSampleOptimizer.h`
   - approach: the split pass restarts its scan and re-sorts after every single split, which measured
     at M1.P3.T1 as **≈O(n³·⁷) time for O(n) output** on mutually overlapping spans — per pixel:
@@ -481,8 +481,9 @@ verified.
     evidence the two earlier fixes carried.
   - verify: a differential harness over a large randomised corpus showing bit-identical output
     against the current implementation on every input it terminates on, plus the timing curve
-    re-measured (expect the n=32 case to drop from ~3ms to single-digit µs); full local build and
-    `ctest` green; `DeepToImage` parity unchanged in headless Nuke.
+    re-measured; full local build and `ctest` green; `DeepToImage` parity unchanged in headless
+    Nuke. (Outcome: 9.96ms → 0.28ms at n=32, 583× at n=128. "Single-digit µs" was not attainable —
+    the intermediate is Θ(n²) for mutually overlapping spans even though the output is O(n).)
   - size: M
 
 - [ ] M1.P3.T5 — Wire scatter into `engine()` (serial, single frame-wide lock)
@@ -622,6 +623,16 @@ verified.
   yields the frame's true CoC range for free, keeps the build eager and lock-free, and leaves the
   0.5px steps, exact per-entry normalization, row spans, and the `KernelSampler` seam untouched.
   M1.P2.T2 and M1.P3.T5 approach text amended accordingly.
+- 2026-07-26 — M1.P3.T6 rewrote `tidyOverlapping()`'s split pass as a single front-to-back sweep,
+  35–583× faster (9.96ms → 0.28ms per pixel at 32 overlapping spans; a 30-scene render set 424s →
+  17.1s), unblocking T5's fog scenes. Geometry, sample counts and all volumetric records are
+  bit-identical, and point-only input — all a released build could render — is bit-identical over
+  292k cases and 65 rendered scenes. The `over` order of *coincident point samples* does move, by up
+  to 3.1e-03 through the shipped blur nodes and up to 0.89 offline where coincident samples carry
+  different colours; alpha is unaffected. Full reasoning, the corrected root-cause analysis, and the
+  decisions to keep the merge pass's second `std::sort` and NOT to adopt `stable_sort` are in
+  `PLAN/DECISIONS/2026-07-26-tidyoverlapping-single-pass.md`. That file's "release note must say"
+  paragraph is the one to copy into the PR.
 - 2026-07-26 — The `memory_limit` formula **extends to cover the SoA fragment buffers**, not just the
   bucket planes: measured at M1.P3.T1 as 69 B/fragment at C=4 *logically*, but **113 B/fragment
   actually resident** (139 at C=8) once geometric capacity slack across the 15 independent buffers is
