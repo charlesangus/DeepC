@@ -367,8 +367,11 @@ verified.
 - [ ] M1.P3.T2 — `scatterBandCPU`
   - files: `src/DeepCDefocusScatter.h`/`.cpp`
   - approach: fractional two-bucket deposit per fragment (`w`, `vis` from the LUT), accumulating
-    `(Σ color·w·vis, Σ alpha·w·vis, Σ w·α·vis)` per bucket; weight-plane saturation pass
-    (`alpha>1` → rescale down, never up). Per-fragment/per-span bodies marked `DEEPC_HD` so
+    `(Σ color·w·vis, Σ alpha·w·vis, Σ w·vis)` per bucket; weight-plane saturation pass
+    (`alpha>1` → rescale down, never up). Implement **both** bucket-combine candidates behind an
+    internal flag — plain front-to-back `over`, and coverage-partition driven off the `Σ w·vis`
+    plane — per the Decisions entry on the bucket-composite alpha deficit; M1.P3.T5 picks one from
+    rendered scenes and the loser is deleted. Per-fragment/per-span bodies marked `DEEPC_HD` so
     they're header-includable from a future `.cu` file without modification. `__restrict__`,
     scalar, auto-vectorization-friendly — no intrinsics. Signature takes only POD SoA buffers,
     so it's callable from a plain `std::thread` in a test binary.
@@ -394,7 +397,9 @@ verified.
     `scatterBandCPU` driven via `std::thread` on a synthetic single-band SoA + `DiscKernelLUT`
     reproduces the energy-conservation identity (flat opaque field ⇒ alpha ≡ 1) and the
     saturation rule (overlapping same-bucket fragments ⇒ alpha rescaled down, ratio preserved);
-    holdout LUT values match exact in-span exponential eval at several depths.
+    holdout LUT values match exact in-span exponential eval at several depths. Both bucket-combine
+    candidates get their own cases (plain `over` and coverage-partition), since M1.P3.T5 has to
+    compare them.
   - verify: `cmake -DDEEPC_BUILD_TESTS=ON && make && ctest` — all cases pass.
   - size: M
 
@@ -412,7 +417,11 @@ verified.
     correctness lands before concurrency is introduced.
   - verify: the local build compiles; run validation scenes (a)–(l) from the Design reference
     against this serial implementation in the local Nuke install — all must pass before Phase
-    1.4 changes the execution model. This is the milestone's core correctness gate.
+    1.4 changes the execution model. This is the milestone's core correctness gate. It also
+    **decides the bucket-composite question**: render scenes (c), (f), (g) and (i) through both of
+    M1.P3.T2's candidates, pick the one whose pixels are right, record the outcome and the
+    comparison in this file's Decisions, and delete the losing path plus its flag before the
+    milestone gate.
   - size: L
 
 ## Phase 1.4: Concurrency + performance
@@ -507,6 +516,24 @@ verified.
   yields the frame's true CoC range for free, keeps the build eager and lock-free, and leaves the
   0.5px steps, exact per-entry normalization, row spans, and the `KernelSampler` seam untouched.
   M1.P2.T2 and M1.P3.T5 approach text amended accordingly.
+- 2026-07-26 — **Bucket-composite alpha deficit: both candidates get built, and the choice is made
+  from rendered pixels at M1.P3.T5, not from identities** (user's call, asked at the Phase 1.1
+  boundary). The problem, found at M1.P1.T2's review: distinct opaque fragments whose disc weights
+  sum to 1 at a destination pixel but land in *different* buckets front-to-back over-composite to
+  `1 − Π_k(1−W_k) < 1` — measured 25.0% alpha deficit across 2 buckets, 31.6% / 4, 34.4% / 8,
+  35.6% / 16. It worsens as K rises, so the K knob is not a mitigation, and it hits any receding
+  opaque surface (scene (g)) or opaque card interior whose CoC neighbourhood straddles a boundary.
+  It is *not* the specified coverage deficit of scene (i): there the coverage plane `Σ w·vis` is
+  honestly < 1, here it sums to exactly 1 and the hole is fabricated by the bucketing. The two
+  candidates: (1) **plain `over`** as originally specced — conventional, what classical layered DOF
+  does, but scenes (c) and (g) fail as written; (2) **coverage-partition** — front-to-back with
+  occlusion driven off the `Σ w·vis` plane, where coverage fitting inside the pixel's remaining
+  unoccluded area adds and only the excess is `over`-attenuated, which reduces to additive when
+  total coverage ≤ 1 (receding plane → alpha 1), to plain `over` when dense (two 50% fog layers →
+  0.75), and leaves scene (i)'s honest hole untouched — but has no direct published precedent, so
+  it needs empirical proof rather than a derivation. Both go in behind an internal flag at
+  M1.P3.T2; M1.P3.T5 renders scenes (c), (f), (g), (i) through each and the winner is recorded
+  here, with the losing path deleted before the milestone gate.
 - 2026-07-26 — The fractional two-bucket **alpha** split is transmittance-preserving
   (`α_i = 1 − (1−α)^{w_i}`, premult color scaled by `α_i/α`), not linear. Found at M1.P1.T2: the
   design reference specified linear partition-of-unity weights, front-to-back bucket
