@@ -231,7 +231,7 @@ written, since every later phase needs to build to verify. It does not touch nod
     the milestone's baseline, not discovering whether it works).
   - size: S
 
-- [ ] M1.P0.T2 — Document the local build as this environment's dev-loop compile gate
+- [x] M1.P0.T2 — Document the local build as this environment's dev-loop compile gate
   - files: `README.md` (new short "Local development build" section)
   - approach: document
     `cmake -S . -B build/local -D Nuke_ROOT=/usr/local/Nuke17.0v3 && cmake --build build/local`
