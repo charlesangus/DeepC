@@ -81,7 +81,9 @@ radius    = (coc_px/2) · (d<S ? frontMult : backMult), clamped to max_radius
   spanning multiple buckets are split at bucket boundaries (transmittance splits analytically as
   `(1−α)^t`) so a deep fog slab doesn't collapse to one hard layer.
 - Ray-distance toggle: `z = rayDist · f/√(f² + r_mm²)`, `r_mm` = pixel's radial filmback offset.
-- Manual mode: `coc_px = size · |1 − S/d|` (unitless ratio, no conversion needed).
+- Manual mode: `radius_px = size · |1 − S/d| · (d<S ? frontMult : backMult)`, clamped to
+  `max_radius` — unitless ratio, no mm conversion, and **no halving**: `size` is the blur
+  *radius* in pixels at d=∞, matching the knob table's description (see Decisions).
 - radius < 0.5px → sharp fast path: fragments composite directly into their own pixel's bucket,
   depth-ordered within the pixel (with the tidy pre-pass, size-0 output is bit-exact with a
   `DeepToImage` flatten). Watch the 0.5–1.5px transition band for chatter; if it chatters, add a
@@ -245,7 +247,7 @@ written, since every later phase needs to build to verify. It does not touch nod
 
 ## Phase 1.1: Pure math foundation (no NDK, unit-testable)
 
-- [ ] M1.P1.T1 — CoC and holdout-visibility math
+- [x] M1.P1.T1 — CoC and holdout-visibility math
   - files: `src/DeepCDefocusMath.h` (new, header-only, `namespace deepc`)
   - approach: implement `CocParams` + `signedCocPixels()` (incl. `unitScale`) and the
     ray-distance→Z correction per the CoC model above; implement
@@ -330,8 +332,9 @@ verified.
 
 - [ ] M1.P3.T1 — `PodBuffer<T>`, `DEEPC_HD`, and SoA flattening
   - files: `src/DeepCDefocusScatter.h` (new), `src/DeepCDefocusScatter.cpp` (new)
-  - approach: define `PodBuffer<T>` (thin owning wrapper over aligned host allocation) and the
-    `DEEPC_HD` macro in this header (the POD boundary that becomes the M3 CUDA seam). Implement
+  - approach: define `PodBuffer<T>` (thin owning wrapper over aligned host allocation) in this
+    header (the POD boundary that becomes the M3 CUDA seam); the `DEEPC_HD` macro is NOT defined
+    here — include it from `DeepCDefocusMath.h`, which owns it (see Decisions). Implement
     SoA flattening of deep samples: tidy pre-pass (`deepc::tidyOverlapping()` /
     `deepc::SampleRecord` from `src/DeepSampleOptimizer.h`), CoC evaluation via
     `DeepCDefocusMath.h`, volumetric bucket-boundary split, and pre-merge (adjacent-depth
@@ -466,6 +469,24 @@ verified.
   configure found `libDDImage.so` for Nuke 17.0v3, build exited 0, and produced 27 `.so` modules
   under `build/local-17.0/src`. No fallback to 16.1v3 was needed. `build` is already gitignored,
   so the local build dir never dirties the tree.
+- 2026-07-26 — Manual-mode `size` is the blur **radius** in pixels at d=∞, not a diameter. The
+  design reference's CoC-model block said `coc_px = size·|1−S/d|` and then halved `coc_px` on the
+  shared code path (giving radius = size/2), while the knob table described `size` as "radius at
+  ∞" — a genuine contradiction found by the M1.P1.T1 implementer. Resolved in favour of the knob
+  table, since that string is the user-facing contract and `size=10` producing a 5px blur would
+  be the surprising reading. Manual mode therefore skips the `/2` that the physical branch
+  applies (physical genuinely computes a CoC *diameter*, so its halving is correct). The CoC
+  model block was amended to state this.
+- 2026-07-26 — `DEEPC_HD` is defined in `src/DeepCDefocusMath.h`, not in
+  `src/DeepCDefocusScatter.h` as M1.P3.T1 originally said. The math header is the lowest-level
+  header and is written first (Phase 1.1), and its per-fragment functions are exactly the ones
+  the M3 CUDA seam needs annotated — defining the macro in a header written two phases later
+  would leave Phase 1.1 either unannotated or dependent on a file that doesn't exist yet. It is
+  guarded with `#ifndef DEEPC_HD` so a `.cu` TU can pre-define it; `DeepCDefocusScatter.h`
+  inherits it by including the math header. M1.P3.T1's approach text was amended to match.
+- 2026-07-26 — C++17 for all `DeepCDefocus` sources: `CMakeLists.txt:22-28` selects C++17 for
+  Nuke ≥ 15.0 and C++14 below, and `docker-build.sh:24` targets 16.0/16.1/17.0 only — every
+  supported build is ≥ 15, so no C++14 fallback path needs to be maintained in this node.
 - 2026-07-26 — Work branch is `claude/deep-defocus-node-plan-o0ld83`, created off `master` at
   `74ee2d0` at milestone start: the board's Context names it as "the existing branch", but no such
   branch existed locally or on the remote, so the PM created it rather than falling back to the
