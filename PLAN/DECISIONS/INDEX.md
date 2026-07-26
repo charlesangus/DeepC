@@ -1,0 +1,1 @@
+- 2026-07-26 — local-nuke-sdk-compile-gate: docker daemon unavailable in this dev environment; licensed local Nuke SDKs (16.0v9/16.1v3/17.0v3) are the dev-loop compile gate instead → DECISIONS/2026-07-26-local-nuke-sdk-compile-gate.md
