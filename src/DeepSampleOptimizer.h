@@ -59,8 +59,9 @@ inline float colorDistance(const std::vector<float>& a, float alphaA,
 // tidyOverlapping — split overlapping depth intervals and over-merge
 //
 // Walks a depth-sorted sample list.  When sample[i].zBack > sample[i+1].zFront
-// (overlap), the earlier volumetric sample is split at the overlap boundary.
-// After all splits, samples at identical [zFront,zBack] are over-composited.
+// (overlap), one of the two volumetric samples is split at the overlap
+// boundary that lies strictly inside it.  After all splits, samples at
+// identical [zFront,zBack] are over-composited.
 // ---------------------------------------------------------------------------
 inline void tidyOverlapping(std::vector<SampleRecord>& samples)
 {
@@ -79,19 +80,49 @@ inline void tidyOverlapping(std::vector<SampleRecord>& samples)
             });
 
         for (size_t i = 0; i + 1 < samples.size(); ++i) {
-            SampleRecord& cur  = samples[i];
-            const SampleRecord& nxt = samples[i + 1];
+            const SampleRecord& lo = samples[i];
+            const SampleRecord& hi = samples[i + 1];
 
             // No overlap?
-            if (cur.zBack <= nxt.zFront)
+            if (lo.zBack <= hi.zFront)
                 continue;
 
-            // Point sample — cannot be split; skip
-            if (cur.zFront == cur.zBack)
+            // Decide WHICH of the pair to split, and where.  The split point
+            // must lie STRICTLY inside the span being split; splitting at one
+            // of its own endpoints produces a zero-extent piece plus an
+            // unchanged copy of the original, so the scan restarts on the same
+            // overlap forever (verified: the naive "always split lo at
+            // hi.zFront" form never terminates for ANY overlapping pair of
+            // volumetric samples, growing the vector without bound).
+            //
+            // The sort above guarantees lo.zFront <= hi.zFront, and
+            // lo.zBack <= hi.zBack whenever the fronts are equal.
+            size_t splitIdx;
+            float  z;
+            if (lo.zFront < hi.zFront) {
+                // hi starts strictly inside lo -> split lo at hi's front.
+                splitIdx = i;
+                z        = hi.zFront;
+            } else {
+                // Shared front: lo is the shorter (or equal) span.
+                if (hi.zBack <= lo.zBack)
+                    continue;   // perfectly coincident — the over-merge pass below handles it
+                // Split the longer span at the shorter one's back, which
+                // leaves a piece coincident with lo (merged below) and a
+                // strictly shorter remainder.
+                splitIdx = i + 1;
+                z        = lo.zBack;
+            }
+
+            SampleRecord& cur = samples[splitIdx];
+
+            // Guard the strictness the termination argument relies on. Every
+            // split point is an endpoint that already existed in the list, so
+            // the set of distinct endpoints never grows and the number of
+            // reachable spans is finite — hence the loop terminates.
+            if (!(z > cur.zFront && z < cur.zBack))
                 continue;
 
-            // Split cur at z = nxt.zFront
-            float z = nxt.zFront;
             float totalRange = cur.zBack - cur.zFront;
             float frontRange = z - cur.zFront;
             float ratio      = frontRange / totalRange;
@@ -122,7 +153,7 @@ inline void tidyOverlapping(std::vector<SampleRecord>& samples)
             cur.zBack  = z;
             cur.alpha  = alphaFront;
 
-            samples.insert(samples.begin() + static_cast<long>(i + 1), std::move(back));
+            samples.insert(samples.begin() + static_cast<long>(splitIdx + 1), std::move(back));
             changed = true;
             break;  // restart scan after structural change
         }
