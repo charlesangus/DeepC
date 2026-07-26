@@ -170,7 +170,7 @@ disocclusion fill; aberrations (M2); GPU (M3).
 | Bokeh | `front_coc_mult` / `back_coc_mult` | Float | 1.0 | 0–4 |
 | Bokeh | `edge_softness` | Float px | 1.0 | 0–4, disc AA falloff |
 | Output | `channels` | Input_ChannelSet | rgba | alpha always processed |
-| Output | `output_holdout_matte` | Bool + Channel | false | flattened holdout coverage AOV |
+| Output | `output_holdout_matte` | Bool + Channel | false / none | flattened holdout coverage AOV; the channel deliberately defaults to none (`Chan_Black`) so ticking the bool can't silently overwrite the node's own alpha — the user picks or creates one |
 | Perf | `max_radius` | Int px | 100 | 1–500; bounds bbox pad + LUT |
 | Perf | `depth_layers` | Int | 16 | 4–128 (K buckets; memory scales with K) |
 | Perf | `pre_merge` + `merge_tolerance` | Bool + Float | true / 0.25px | 0–2px (tidy pass itself always on) |
@@ -306,7 +306,7 @@ written, since every later phase needs to build to verify. It does not touch nod
 
 ## Phase 1.2: Node skeleton + flatten path (first NDK compile gate)
 
-- [ ] M1.P2.T1 — Iop skeleton, inputs, knobs
+- [x] M1.P2.T1 — Iop skeleton, inputs, knobs
   - files: `src/DeepCDefocus.cpp` (new), `src/DeepCDefocus.h` if the repo's node convention
     splits declaration/definition (check an existing deep node for the local pattern)
   - approach: `Iop` subclass, ctor `inputs(2)`; `test_input` → `dynamic_cast<DeepOp*>` for
@@ -485,6 +485,9 @@ verified.
   - approach: node help text covering holdout semantics, the coverage-deficit/renderer-settings
     note, the linear-light/no-bloom note, and the volumetric-split/midpoint limitation; icon;
     README plugin-list entry following house style (4-space indent, `_` prefix, lowerCamelCase).
+    Also strip M1.P2.T1's placeholder "this is the Phase 1.2 skeleton" line from `node_help()`, and
+    override `node_shape()` to `DeepOp::DeepNodeShape()` so this deep-consuming node draws like
+    stock `DeepToImage` rather than as a plain 2D box.
   - verify: help text renders in Nuke's node properties panel; icon shows in the node graph;
     README entry present and follows the existing plugin-list format.
   - size: S
@@ -522,6 +525,31 @@ verified.
   yields the frame's true CoC range for free, keeps the build eager and lock-free, and leaves the
   0.5px steps, exact per-entry normalization, row spans, and the `KernelSampler` seam untouched.
   M1.P2.T2 and M1.P3.T5 approach text amended accordingly.
+- 2026-07-26 — **`DeepCDefocus` must never fall through to `Iop::_validate` or `Iop::_request`** —
+  a standing invariant for every later phase, now documented in the source. Found at M1.P2.T1's
+  review: `Iop::_validate` merges info from all inputs and `Iop::_request` forwards to them, both
+  reaching inputs via `Iop::asIop()`, which is a bare `static_cast<Iop*>` (its `dynamic_cast` is
+  only an `mFnAssert`, so debug-only). This node's inputs are `DeepOp`s, which are not `Iop`s, so
+  the skeleton **core-dumped Nuke 17.0v3** on a plain `n.bbox()` with a `DeepFromImage` attached —
+  it compiled, linked and registered perfectly and still killed the host. Minimum-safe `_validate`
+  (empty box, `Mask_None`) and empty `_request` bodies added for M1.P2.T2 to replace. The same trap
+  applies to the inherited `Iop::input0()`/`Iop::input(int)` accessors: the node defines its own
+  `input0()`/`input1()` returning `DeepOp*`, and later phases must use those. Also pinned
+  `getViewableModes()` to `eViewableMode2D` (the default offers 3D when an Op's inputs are of a
+  different type than itself, i.e. exactly this node).
+- 2026-07-26 — Knob ranges stay **soft** (`IRange`'s `force` defaults false, so a user can type
+  `max_radius = 5000`); values are clamped at their use sites instead, which M1.P3/M1.P4 must
+  actually do. Rationale: the documented ranges are ergonomic slider bounds, and Nuke users expect
+  to be able to exceed them, but the design's memory formulas (`K·W·B·(C+2)·4` per band, LUT
+  ~2πR³/3) are only bounded if the *use sites* clamp. Evaluate those formulas on clamped values,
+  never on raw knob values.
+- 2026-07-26 — **Headless Nuke works in this environment**, which was not assumed when the plan was
+  written: `/usr/local/Nuke17.0v3/Nuke17.0 -t <script.py>` runs with no GUI and no licensing
+  obstacle, and a plugin built into a scratch dir loads via `NUKE_PATH`. Verified at M1.P2.T1 by
+  creating the node, reading back all 19 knobs, confirming `test_input` rejects a 2D `Constant` on
+  input 0 while accepting a `DeepFromImage`, and validating without crashing. So M1.P2.T2's
+  `DeepToImage` parity check, M1.P3.T5's scenes (a)–(l), and M1.P5.T3's committed `.nk` scripts can
+  all be scripted and run non-interactively here rather than needing an interactive session.
 - 2026-07-26 — Phase 1.1's test suite is **mutation-verified**, and that bar carries to M1.P3.T4.
   T4's review ran 21 deliberate header mutations against the as-written suite and **6 survived** —
   spacing on the unclamped rather than clamped CoC, a 2% error in `partitionColorScale`, a 1e-5
