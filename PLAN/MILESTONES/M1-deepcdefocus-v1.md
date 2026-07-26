@@ -265,7 +265,7 @@ written, since every later phase needs to build to verify. It does not touch nod
   - verify: covered by the M1.P1.T4 unit test task.
   - size: L
 
-- [ ] M1.P1.T3 — Disc kernel LUT
+- [x] M1.P1.T3 — Disc kernel LUT
   - files: `src/DeepCDefocusKernel.h` (new, header-only)
   - approach: define `KernelView`, the `KernelSampler` interface
     (`kernel(radiusPx, destX, destY, depth, channelGroup) → KernelView`), and `DiscKernelLUT`:
@@ -281,7 +281,9 @@ written, since every later phase needs to build to verify. It does not touch nod
     MIT doctest), top-level `CMakeLists.txt` (add `option(DEEPC_BUILD_TESTS OFF)`)
   - approach: doctest-based tests, buildable with plain g++ (no docker, no NDK types anywhere
     in T1–T3's headers). Cover: CoC vs. hand-derived lens table (50mm f/2.8 S=2m d=4m ⇒
-    0.2289mm) plus one non-meter `world_units` case; d=∞/d=S/d≤0 edges; LUT Σw=1 ∀ radii; AA
+    0.2289mm) plus one non-meter `world_units` case; d=∞/d=S/d≤0 edges; LUT Σw=1 ∀ radii
+    (assert `|Σw − 1| < 1e-6`, NOT float equality — measured worst case is 5.1e-08, since each
+    entry is normalized by its own double-accumulated sum, not an analytic disc area); AA
     monotonicity; visibility step/product/in-span identities + boundary-LUT interpolation vs.
     exact eval; ΔCoC boundary spacing (monotone depth, bounded step, both sides of focus);
     fractional-assignment partition-of-unity; flat-field alpha ≡ 1 under additive scatter;
@@ -307,8 +309,11 @@ written, since every later phase needs to build to verify. It does not touch nod
 - [ ] M1.P2.T2 — `_validate`/`_request`/`engine` flatten path + NDK compile gate
   - files: `src/DeepCDefocus.cpp`/`.h`
   - approach: `_validate` computes `deepInfo → info_`, pads bbox by
-    `ceil(max_radius)`/`ceil(max_radius·aspect)`, caches `CocParams` and rebuilds the kernel
-    LUT; `_request` pulls the full padded deep box with `neededDeepChannels()` plus the holdout
+    `ceil(max_radius + edge_softness/2)`/`ceil((max_radius + edge_softness/2)·aspect)` — the AA
+    edge band genuinely reaches half a softness beyond `max_radius`, see Decisions — and caches
+    `CocParams`. It does **not** build the
+    kernel LUT — that is deferred until the frame's actual CoC range is known (see Decisions);
+    this task has no scatter, so it needs no LUT at all. `_request` pulls the full padded deep box with `neededDeepChannels()` plus the holdout
     box (depth+alpha only); `engine` does `row.erase(channels)` FIRST, then
     `ensureComputed()` (hash-keyed on `Op::hash()`), then copies rows from the cached planar
     frame. Radius forced to 0 must produce a correct `DeepToImage`-equivalent flatten (tidy
@@ -382,7 +387,11 @@ verified.
 - [ ] M1.P3.T5 — Wire scatter into `engine()` (serial, single frame-wide lock)
   - files: `src/DeepCDefocus.cpp`, `src/DeepCDefocusScatter.h`/`.cpp`
   - approach: `computeDepthRange()` — a separate cheap full-frame `DeepFront/DeepBack/Alpha`
-    pass, alpha-weighted, producing the ΔCoC bucket boundaries. `computeBand(b)` — given the
+    pass, alpha-weighted, producing the ΔCoC bucket boundaries. Build the `DiscKernelLUT` here,
+    immediately after that pass, over the frame's **measured** radius range — `rMax` measured
+    (clamped by `max_radius`), but **`rMin` passed as 0** — rather than eagerly over
+    `[0, max_radius]`; see Decisions for both halves of this.
+    `computeBand(b)` — given the
     global boundaries, fetch source rows for `band ± maxRadius`, run T1's SoA flatten, T3's
     holdout LUT, T2's scatter, saturate, `compositeBucketsFrontToBack()`, write. Both run under
     a single frame-wide lock in this phase (no per-band concurrency yet — that's Phase 1.4) so
@@ -469,6 +478,41 @@ verified.
   configure found `libDDImage.so` for Nuke 17.0v3, build exited 0, and produced 27 `.so` modules
   under `build/local-17.0/src`. No fallback to 16.1v3 was needed. `build` is already gitignored,
   so the local build dir never dirties the tree.
+- 2026-07-26 — The disc LUT is built over the frame's **measured** CoC radius range, not eagerly
+  over `[0, max_radius]`. Measured at M1.P1.T3: a full radius-indexed LUT at 0.5px steps costs
+  ~8.4MB at `max_radius`=100 (fine) but **~1.0GB at `max_radius`=500** — the knob's documented
+  maximum — because total size grows as ~2πR³/3. `max_radius` is meant to be a *bound* on the
+  worst case, not an upfront allocation, and a user raising it defensively should not pay a
+  gigabyte. Rejected alternatives: radius-proportional step sizes above a threshold (changes the
+  specced 0.5px quantization and risks banding); storing only the AA edge band with a constant
+  interior (would be smaller *and* faster, but the constant-interior assumption is exactly what
+  M2's aberrated/textured kernels break, so it would destroy the v2 seam); lazy per-entry
+  construction (needs a lock on the multithreaded band path). Chosen instead: `DiscKernelLUT`
+  takes a `[rMin, rMax]` range, and construction moves out of `_validate` to just after
+  `computeDepthRange()` — the alpha-weighted depth pass the design already runs per cook — which
+  yields the frame's true CoC range for free, keeps the build eager and lock-free, and leaves the
+  0.5px steps, exact per-entry normalization, row spans, and the `KernelSampler` seam untouched.
+  M1.P2.T2 and M1.P3.T5 approach text amended accordingly.
+- 2026-07-26 — Output bbox pad becomes `ceil(max_radius + edge_softness/2)` (X) and that value
+  times pixel aspect (Y), not `ceil(max_radius)`. Found at M1.P1.T3's review: the anti-aliased
+  edge band is centred on the disc rim, so the kernel's true nonzero extent is
+  `max_radius + edge_softness/2` — up to 2px beyond `max_radius` at the knob's maximum softness of
+  4. The old formula would drop that outermost scattered energy at the frame edge, which is
+  exactly the "edge darkening at bbox borders" risk in the register. M1.P2.T2 amended.
+- 2026-07-26 — M1.P3.T5 passes `rMin = 0` to `DiscKernelLUT`, using the measured range for `rMax`
+  only. The range constructor exists to bound `rMax` (that's where the ~1.0GB worst case lives —
+  size grows as ~2πR³/3); the low end saves almost nothing (a `[0,40]` LUT is only ~0.05MB bigger
+  than `[2,40]`) while introducing a silent correctness trap: a query below `rMin` is clamped up
+  to the `rMin` kernel, so any radius reaching the sampler between the sharp-path threshold and a
+  measured `rMin` would be visibly over-blurred. Rather than couple the sharp-path threshold and
+  `rMin` as provably-equal numbers, pin `rMin = 0` and keep the parameter as a seam. The header
+  documents this as an explicit caller contract.
+- 2026-07-26 — `DiscKernelLUT` sizes its buffers exactly before filling rather than growing them
+  with `push_back` + `shrink_to_fit`. Found at M1.P1.T3's review: `shrink_to_fit` reclaims memory
+  only *after* the peak, and the peak is what OOMs a render thread. Measured on a `[0,200]` LUT:
+  peak RSS 134.0MB → 68.1MB and build time 189ms → 97ms (the reallocation copies were half the
+  build cost), with byte-identical LUT output. A shared `geometryFor()`/`rowExtent()` pair backs
+  both the counting pass and the fill so the reservation is exact by construction.
 - 2026-07-26 — Manual-mode `size` is the blur **radius** in pixels at d=∞, not a diameter. The
   design reference's CoC-model block said `coc_px = size·|1−S/d|` and then halved `coc_px` on the
   shared code path (giving radius = size/2), while the knob table described `size` as "radius at
