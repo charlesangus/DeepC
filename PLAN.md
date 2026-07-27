@@ -1,8 +1,8 @@
 ---
 title: DeepCDefocus — deep-input, flat-output defocus node
 status: running
-current: M1.P3.T8
-pm_heartbeat: 2026-07-26T21:20:00-04:00
+current: M1.P3.T9
+pm_heartbeat: 2026-07-26T23:05:00-04:00
 ship: pr-per-milestone
 ---
 
@@ -92,11 +92,12 @@ node; v3 (Milestone 3) adds a CUDA backend behind the seams v1/v2 leave in place
 rendered pixels at M1.P3.T5's gate. See that milestone file's Decisions.)
 
 **Where things stand (2026-07-26T20:48-04:00).** Phases 1.0, 1.1 and 1.2 are complete and committed;
-Phase 1.3 has T0, T1, T6 and T2 done. `current: M1.P3.T7` — a new S task that wires `DeepCDefocus`
-into `src/CMakeLists.txt`, which turns out never to have listed it, so every earlier "the local build
-compiles clean" gate was vacuous (the files were compiled by hand instead, so nothing was missed).
-Remaining in this milestone: P3 T7/T8/T3/T4/T5 in that order, then Phase 1.4 and Phase 1.5. Five tasks
-have now been added by execution findings (M1.P3.T0, T6, T7, T8, plus the enlarged M1.P3.T4 test list).
+Phase 1.3 has T0, T1, T6, T2, T7 and T8 done. `current: M1.P3.T9` — the fourth accumulation plane
+(co-located area), which the user chose at the T8 boundary to build *before* T5's bucket-composite
+bake-off rather than judging the approximation from rendered pixels first.
+Remaining in this milestone: P3 T9/T3/T4/T5 in that order, then Phase 1.4 and Phase 1.5. Six tasks
+have now been added by execution findings (M1.P3.T0, T6, T7, T8, T9, plus the enlarged M1.P3.T4 test
+list).
 No PR yet — `ship: pr-per-milestone` puts that at M1's verification gate. The branch
 `claude/deep-defocus-node-plan-o0ld83` is committed but NOT pushed.
 

@@ -466,6 +466,32 @@ verified.
     lands at M1.P3.T4.
   - size: M
 
+- [ ] M1.P3.T9 — Fourth accumulation plane: co-located area (run BEFORE T5's bake-off)
+  - files: `src/DeepCDefocusScatter.h`/`.cpp`
+  - approach: **user's call at the M1.P3.T8 boundary** — build the exact fix rather than judging the
+    approximation from pixels first, because the coverage-partition candidate is the only one that
+    reads the coverage plane (plain `over` cannot use it at all), so a bake-off with candidate 2
+    knowingly crippled would not mean much. Add a fourth per-bucket plane holding **co-located area**
+    beside the existing "new area", so the composite's residual resolves as `resLocal = aRes/D_k = a_p`
+    exactly at any radius spread and the telescope closes per pixel rather than only when a parent's
+    parts share a CoC radius. This retires the −92.1% (α=0.9) / −24.1% (α=0.1) full-range-span error
+    and the `claimed == 0` back-field over-count recorded in Decisions; verify both directions, since
+    the current form errs high behind focus and low in front of it. Memory formula becomes
+    `K·W·B·(C+3)·4` — **update every place the plan and the source state `(C+2)`**: the Design
+    reference's Parallelism bullet, `BucketPlanes::bytesForBand()`, and M1.P4.T1's budgeting text.
+    Cost is ~+17% of the bucket planes (~+17MB at 4K defaults), negligible against the SoA's ~2.4GB, so
+    do not trade accuracy for it. Keep the plane out of `FrontToBackOver`'s path — that candidate must
+    stay exactly as it is so T5 compares like for like, and the loser's path is deleted at T5 anyway.
+    `DEEPC_HD` bodies stay in the header, `.cpp` stays loop drivers only.
+  - verify: the equal-radius identities all stay bit-unchanged (two 50% fog layers 0.750000, receding
+    opaque 1.000000, scene (i) 0.600000, the 4-part opaque slab 1.000000, M1.P3.T2's single-fragment
+    energy identity); the differing-radius cases now reconstruct the parent to ≤1e-6 — re-measure the
+    exact rig the Decisions entry names (front of focus at 4/8/12 buckets and full range, behind focus
+    at 2/3/4/8, at α=0.9 and α=0.1) and show each is now exact; premultiplied colour:alpha ratio holds
+    at the input's true value on a span reaching focus (the 0.8748-vs-0.5 case); local build and
+    `ctest` green; `DeepToImage` parity still 0 ULP.
+  - size: L
+
 - [ ] M1.P3.T3 — Holdout SoA and per-pixel boundary-LUT
   - files: `src/DeepCDefocusScatter.h`/`.cpp`
   - approach: build the holdout sample SoA (`DeepFront/DeepBack/Alpha` only) and, per band, the
@@ -730,6 +756,14 @@ verified.
   Registration is pulled forward from M1.P5.T1 into **M1.P3.T7**, which runs next, so that every
   subsequent task's build gate is real. The `-mavx2 -mfma` compile options stay at M1.P5.T1, where the
   `-ffp-contract` parity hazard is documented and where M1.P4.T2 will have inspected vectorization first.
+- 2026-07-26 — **The fourth accumulation plane gets built before M1.P3.T5's bake-off, not deferred to
+  it** (user's call, asked at the M1.P3.T8 boundary). The alternative — render scenes (f)/(g) through
+  both candidates as-is and add the plane only if the radius-spread error shows in pixels — matches how
+  the bucket-composite question itself was decided, but does not apply here: the coverage-partition
+  candidate is the only one that reads the coverage plane, so comparing it while it carries a
+  known-exactly-fixable −92% error would not tell us which candidate is better, only that candidate 2
+  was crippled. Cost is ~+17% of the bucket planes (~+17MB at 4K defaults) against a ~2.4GB SoA, so
+  memory is not the deciding term. Landed as M1.P3.T9, which runs before T3/T4/T5.
 - 2026-07-26 — M1.P3.T8 fixed the volumetric-split coverage over-count with a **coverage-head bit**:
   the flatten marks the front-most emitted part of a split parent, the scatter deposits coverage only
   from it (`depositWeight = coverageHead && group == 0`), and the composite's residual term carries the
