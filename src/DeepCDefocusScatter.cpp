@@ -1042,6 +1042,11 @@ void scatterBandCPU(const ScatterParams& params,
         // came from one parent.
         frag.coverageHead = fragmentCoverageHeadOf(samples.flags[f]);
 
+        // The interpAtBucket() variant knob (M1.P3.T11) is copied through
+        // unconditionally, exactly like every other per-fragment field above
+        // -- it costs nothing and is only ever read when useHoldout is true.
+        frag.holdoutInterp = params.holdoutInterp;
+
         // Zero-alpha early-out, before any rasterisation (design reference's
         // perf mitigations).  partitionColorScale() is alpha_i/alpha, so a
         // deposit's colour scale is zero exactly when its alpha is: a fragment

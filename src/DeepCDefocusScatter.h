@@ -1312,6 +1312,18 @@ struct ScatterParams {
 
     // Which of the two candidate bucket composites resolveBandCPU() runs.
     BucketCombine combine = BucketCombine::CoveragePartition;
+
+    // Which of interpAtBucket()'s three opaque-step candidates the holdout
+    // LUT lookup uses (M1.P3.T11) -- a runtime knob, like `combine` above, not
+    // a build-time flag: M1.P3.T5 must be able to render all three off the
+    // same binary.  Only observable when a holdout is connected AND a
+    // fragment's far LUT boundary transmittance is bitwise 0.0f (T1 == 0).
+    // That is USUALLY a fully-opaque sample but is not exclusively one -- a
+    // sufficiently long/dense run of alpha<1 samples can underflow the
+    // stored transmittance to bitwise 0.0f too, and when it does the three
+    // variants are NOT bit-identical for that bracket. See HoldoutInterp in
+    // DeepCDefocusMath.h for the measured trade and the underflow finding.
+    HoldoutInterp holdoutInterp = HoldoutInterp::LogChord;
 };
 
 // ---------------------------------------------------------------------------
@@ -1400,6 +1412,21 @@ struct ScatterFragment {
 
     bool  depositCoverage = false;  // alpha + coverage planes: one group only
     bool  coverageHead    = true;   // coverage plane: one fragment per parent
+
+    // ScatterParams::holdoutInterp, copied through per fragment (M1.P3.T11) —
+    // the per-fragment bodies below take no ScatterParams, so this is how the
+    // knob reaches interpAtBucket() without widening their signatures. Inert
+    // whenever there is no holdout, exactly like the pair above. Placed here,
+    // next to the two `bool`s rather than before `color`, so its single byte
+    // lands in the struct's existing tail padding instead of forcing a new
+    // 8-byte-aligned slot ahead of the pointer -- a first version of this
+    // field between `boundaryFrac` and `color` grew sizeof(ScatterFragment)
+    // from 64 to 72 bytes for no reason (found at this task's independent
+    // review); this placement keeps it at 64. ScatterFragment is a local,
+    // per-iteration stack value, not part of the persistent per-band SoA
+    // (SampleSoA's 61 B/fragment budget is unaffected either way), but there
+    // is no reason to pay the padding for nothing.
+    HoldoutInterp holdoutInterp = HoldoutInterp::LogChord;
 };
 
 // ---------------------------------------------------------------------------
@@ -1636,7 +1663,7 @@ DEEPC_HD inline std::size_t scatterFragmentSpans(const BucketPlaneView& planes,
             for (int i = 0; i < count; ++i) {
                 const float vis = HoldoutVisibility::interpAtBucket(
                     holdout.pixelLut(dstOffset + i),
-                    holdout.boundaryCount(), bIndex, bFrac);
+                    holdout.boundaryCount(), bIndex, bFrac, frag.holdoutInterp);
                 rowScratch[i] = w[i] * vis;
             }
             w = rowScratch;
@@ -1679,7 +1706,8 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
         w = HoldoutVisibility::interpAtBucket(holdout.pixelLut(dstOffset),
                                               holdout.boundaryCount(),
                                               frag.boundaryIndex,
-                                              frag.boundaryFrac);
+                                              frag.boundaryFrac,
+                                              frag.holdoutInterp);
     }
 
     scatterSpanBothBuckets(planes, frag, dstOffset, &w, 1);

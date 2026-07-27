@@ -1,8 +1,8 @@
 ---
 title: DeepCDefocus — deep-input, flat-output defocus node
 status: running
-current: M1.P3.T11
-pm_heartbeat: 2026-07-27T02:00:00-04:00
+current: M1.P3.T4
+pm_heartbeat: 2026-07-27T02:40:00-04:00
 ship: pr-per-milestone
 ---
 
@@ -91,20 +91,20 @@ node; v3 (Milestone 3) adds a CUDA backend behind the seams v1/v2 leave in place
 2026-07-26: build both candidate composites behind an internal flag at M1.P3.T2 and decide from
 rendered pixels at M1.P3.T5's gate. See that milestone file's Decisions.)
 
-**Where things stand (2026-07-27T02:00-04:00).** Phases 1.0, 1.1 and 1.2 are complete and committed;
-Phase 1.3 has T0, T1, T6, T2, T7, T8, T9, T3 and T10 done. `current: M1.P3.T11` — the interpolant half
-of the holdout defect T10 fixed the placement half of. T10 replaced the transmittance LUT's boundary
-set (the Design reference had specified the K+1 ΔCoC bucket boundaries, which bound banding, not
-occlusion, and let a solid holdout card at z=50 erase 98% of a fragment at z=15); T11 builds both
-candidate fixes for the residual opaque-step degeneracy behind a flag, for T5 to judge from pixels.
-Remaining in this milestone: P3 T11/T4/T5 in that order, then Phase 1.4 and Phase 1.5. Eight tasks
+**Where things stand (2026-07-27T02:40-04:00).** Phases 1.0, 1.1 and 1.2 are complete and committed;
+Phase 1.3 has T0, T1, T6, T2, T7, T8, T9, T3, T10 and T11 done. `current: M1.P3.T4` — the permanent
+POD-level unit tests for the scatter core, now that every contract they pin is final. The holdout path
+took two tasks to correct: T10 replaced the transmittance LUT's boundary set (the Design reference had
+specified the K+1 ΔCoC bucket boundaries, which bound banding, not occlusion, and let a solid holdout
+card at z=50 erase 98% of a fragment at z=15), and T11 added both candidate fixes for the residual
+opaque-step degeneracy behind a runtime flag for T5 to judge from pixels.
+Remaining in this milestone: P3 T4/T5, then Phase 1.4 and Phase 1.5. Eight tasks
 have now been added by execution findings (M1.P3.T0, T6, T7, T8, T9, T10, T11, plus the enlarged
 M1.P3.T4 test list).
 No PR yet — `ship: pr-per-milestone` puts that at M1's verification gate. The branch
 `claude/deep-defocus-node-plan-o0ld83` is committed but NOT pushed.
 
-**Carried obligations for whoever resumes:** M1.P3.T11 must land before T4 writes its permanent tests,
-so the contracts are final first; M1.P3.T4 and M1.P3.T5
+**Carried obligations for whoever resumes:** M1.P3.T4 and M1.P3.T5
 must set `ScatterParams::combine` and `pre_merge` explicitly rather than relying on defaults, and T4
 owes a parent-reconstruction test, a `tidyOverlapping()` termination fuzz test, the single-fragment
 energy identity, a pinned behind-focus regression gate, and the colour:alpha ratio as a standing

@@ -561,7 +561,7 @@ verified.
     parity still 0 ULP.
   - size: L
 
-- [ ] M1.P3.T11 — Both `interpAtBucket` variants for the opaque-step degeneracy (run BEFORE T4)
+- [x] M1.P3.T11 — Both `interpAtBucket` variants for the opaque-step degeneracy (run BEFORE T4)
   - files: `src/DeepCDefocusMath.h`, plus whatever carries the selection flag through
     `ScatterParams`/`HoldoutSoA`
   - approach: M1.P3.T10 fixed boundary *placement*; this is the interpolant half of the same defect,
@@ -649,7 +649,11 @@ verified.
     degenerate-range behaviour, the `locate()+interpAtBucket` == `interp` identity and the
     bit-exactness at the boundaries in `tests/test_defocus_math.cpp`** (T10 shipped the struct
     before this task exists, so they could not be left as a promise). Move them into the
-    scatter-core suite if that reads better, but do not drop or weaken them.
+    scatter-core suite if that reads better, but do not drop or weaken them. **From M1.P3.T11's
+    review**: a scatter-core-level (not just math-level) test that `ScatterParams::holdoutInterp`
+    threads correctly through `scatterBandCPU` on **both** the sharp and span paths, and the dense
+    volumetric holdout fixture (46 samples at α=0.9 packed in one bracket) at the scatter level, so the
+    variants' divergence is pinned in deposited pixels rather than only in the LUT math.
     **Add a termination fuzz test for `deepc::tidyOverlapping()`**: randomised sample vectors with
     depths drawn from a small discrete set so exact ties are common, asserting termination and a
     bounded output size. The non-termination bug fixed during M1.P2.T2 hung Nuke unkillably on
@@ -717,7 +721,12 @@ verified.
     lost only 4.8% end-to-end versus 35.6% in the synthetic K=16 worst case), so a shallow ramp would
     understate the very effect being judged. **It also decides M1.P3.T11's `interpAtBucket` variant** —
     the erase-FG-in-front vs leak-BG-behind trade, judged from scenes (e) and (f); record the outcome
-    here and delete the losing variant with its flag, same discipline as the bucket composite.
+    here and delete the losing variants with the flag, same discipline as the bucket composite. That
+    bake-off **must include a genuinely dense volumetric holdout** — many samples in depth, not a
+    single fog-slab sample: T11's review disproved the assumption that these variants only affect
+    fully-opaque content, since a run of α<1 samples underflows the transmittance product to bitwise
+    zero at ordinary counts (46 at α=0.9) and the three then diverge hard. Do not write the comparison
+    up as risk-free on α<1 content.
     Also build the holdout boundary set **once per frame** via `makeUniformHoldoutBoundaries(buckets)`,
     never per band: a fragment near a band edge scatters into two bands, and per-band sets put a seam
     along every boundary (measured: the same fragment reads vis 0.0448 in one band and 1.0000 in the
@@ -835,6 +844,36 @@ verified.
 
 ## Decisions
 
+- 2026-07-27 — **M1.P3.T11 shipped all three holdout interpolants behind
+  `ScatterParams::holdoutInterp` (`LogChord` = shipped default, `MidpointStep`, `LinearInT`) — and its
+  review FALSIFIED the safety argument they were commissioned under.** T11's brief (and T10's
+  Decisions entry) said the new variants fire "only when `T1 == 0` — reachable only from fully-opaque
+  content", so they "cannot move any α<1 case, bit-for-bit". **That is false.** The branch keys on a
+  *bitwise-zero* far-boundary transmittance, and a dense run of α<1 samples inside one bracket
+  underflows the cumulative product to `0.0f` in plain float with no sample anywhere near α=1:
+  measured thresholds **150 samples at α=0.5, 87 at α=0.7, 46 at α=0.9, 23 at α=0.99**. A sweep of
+  20–200-sample α<1 stacks hit a bitwise-zero boundary in **52% of trials**. On the clean
+  counterexample — 46 point samples at α=0.9 packed inside one K=16 bracket — the three variants
+  diverge hard at z=48: LogChord **1.32e-18**, MidpointStep **0.0**, LinearInT **0.404**. Those are
+  ordinary sample counts for a dense volumetric holdout column, i.e. precisely validation scene (f)'s
+  content class. The earlier verification missed it because 1–4-sample stacks cannot underflow (a
+  200,000-trial small-n sweep reproduces the original "0 hits" exactly).
+  **No cheap gate exists**: `(T0, T1)` alone cannot tell "one truly-opaque sample" from "many α<1
+  samples whose product underflowed" — both present as a non-degenerate `T0` and a bitwise-zero `T1`.
+  This is an inherent limit of a two-values-per-bracket LUT rather than new debt, so the variants land
+  as built, with the true gating condition documented in-source and pinned by tests covering both the
+  safe small-n regime and the divergent deep-stack one. **Consequence for M1.P3.T5: the interpolant
+  bake-off must render a genuine DENSE volumetric holdout — many samples, not a single fog slab
+  sample — under all three variants, and the write-up must not imply the choice is risk-free on all
+  content.**
+  Two smaller corrections from the same review: `sizeof(ScatterFragment)` had grown 64 → 72 bytes
+  because the new 1-byte field was placed ahead of an 8-byte-aligned pointer, forcing 7 bytes of pad —
+  moved to the tail, back to 64 (it is a per-iteration stack local, never part of the 61 B/fragment SoA
+  budget, so M1.P4.T1's formula was never affected, but the "costs nothing" comment was literally
+  untrue). And MidpointStep's measured **0.00u leak is rig-position dependent, not a broken metric** —
+  at this rig the card sits past the bracket midpoint so that variant only erases; swept across card
+  position the worst-case leak is **3.06u against a 3.09u half-bracket**, matching the plan's
+  "≤ half bracket" prediction exactly.
 - 2026-07-27 — **M1.P3.T10 shipped the decoupled holdout boundary set: `HoldoutBoundaries`,
   uniform in Z over the frame's measured depth range, at the same K+1 entries/pixel.** The
   headline rig (opaque point holdout at z=50, K=16, range [1,100]) goes mean |vis error|

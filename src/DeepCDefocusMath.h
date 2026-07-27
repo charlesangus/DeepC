@@ -26,6 +26,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 
 // Device/host seam.  A .cu translation unit pre-defines this as
@@ -403,6 +404,67 @@ DEEPC_HD inline float filmbackRadiusMm(float x, float y,
 // built per destination pixel per band, so a per-pixel std::vector would be a
 // performance defect.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// HoldoutInterp — interpAtBucket()'s selectable opaque-step alternates (M1.P3.T11)
+//
+// M1.P3.T10 fixed the LUT's boundary PLACEMENT; this is the INTERPOLANT half
+// of the same residual, measured not to be irreducible after all.  The
+// shipped log chord floors log T at kMinTransmittance, so an opaque step
+// (a fully-opaque far boundary, T1 == 0) collapses vis to ~0 across almost
+// the whole bracket instead of the monotone-chord bound's 0.5, and always
+// toward camera — a holdout card fully erases genuinely-unoccluded geometry
+// for most of one bracket in front of it (5.07 of a 6.19-unit bracket at
+// K=16 on the default rig).
+//
+// Both alternates below fire ONLY when the far boundary transmittance is
+// EXACTLY zero.  THIS IS NOT THE SAME THING AS "fully-opaque holdout content"
+// and the two must not be conflated (found at this task's independent
+// review, which is why this paragraph replaces the original "cannot move any
+// alpha<1 case" claim). A single alpha==1 sample is one way to reach T1==0.
+// The OTHER way is float underflow of the cumulative transmittance product
+// over a sufficiently long/dense run of alpha<1 samples landing in one
+// bracket: build()'s running product and evalExact()'s are both plain
+// float accumulation, and (1-alpha)^n underflows to a bitwise 0.0f at
+// measured n=150 (alpha=0.5), n=87 (alpha=0.7), n=46 (alpha=0.9), n=23
+// (alpha=0.99) -- all ordinary sample counts for a dense volumetric holdout
+// column (fog/smoke), i.e. validation scene (f)'s content class. A
+// synthetic 20,000-trial sweep over 20-200-sample alpha<1 stacks hit a
+// bitwise-zero boundary in 52% of trials; a 1-4-sample sweep (200,000
+// trials) hit zero, which is almost certainly why the original "unchanged"
+// verification missed this -- small holdout sample counts can't underflow.
+// When this happens, MidpointStep/LinearInT are NOT bit-identical to
+// LogChord for that bracket even though every constituent sample has
+// alpha<1: measured divergence up to LogChord 0.123 vs LinearInT 0.970 vs
+// MidpointStep 1.000 at the same depth, for a 46-sample alpha=0.9 stack.
+// There is no cheap fix within this task's budget (zero added memory, O(1),
+// ~4 lines): (t0, t1) alone cannot distinguish "one truly-opaque sample" from
+// "many alpha<1 samples whose product underflowed" -- both present
+// identically as a non-degenerate t0 and a bitwise-zero t1. This is a real,
+// bounded gap in the safety argument, not a hypothetical one: M1.P3.T5 MUST
+// render a genuine dense volumetric holdout (not just a discrete opaque
+// card) under all three variants before judging from pixels, and the
+// milestone's Decisions log must record this correction. See HoldoutLut's
+// "WHAT IS LEFT" note and the milestone's M1.P3.T10 Decisions entry ("THE
+// RESIDUAL, STATED PLAINLY") for the rest of the measurement:
+//
+//   variant                    headline mean   erased in front   leaks behind
+//   LogChord (shipped)         0.0565          5.07 u            0.00 u
+//   MidpointStep on T1==0      0.0262          2.59 u            <= half bracket
+//   LinearInT on T1==0         0.0266          0.00 u            0.49 u (6.16 worst)
+//
+// The trade is erasing FG in front vs leaking BG behind; scene (e) can fail
+// either way, which is why M1.P3.T5 judges it from rendered pixels rather
+// than this task deriving it.  All three are selectable at runtime (a knob
+// value, not a build flag) so T5 can render all three; the losing two and
+// this enum's unused values are deleted at T5.
+// ---------------------------------------------------------------------------
+enum class HoldoutInterp : std::uint8_t {
+    LogChord     = 0,   // shipped: log-space chord, floored at kMinTransmittance
+    MidpointStep = 1,   // T1==0 only: hard step at the bracket midpoint
+    LinearInT    = 2    // T1==0 only: linear ramp from T0 to 0 across the bracket
+};
+
 struct HoldoutVisibility {
 
     // -----------------------------------------------------------------------
@@ -576,11 +638,23 @@ struct HoldoutVisibility {
     // Interpolating log T is exact for the exponential in-span model.  A zero
     // boundary transmittance would give log(0) = -inf, so values are floored
     // at kMinTransmittance and a result at/below that floor returns exactly 0.
+    //
+    // `variant` (M1.P3.T11) selects between the shipped log chord and two
+    // opaque-step alternates — see HoldoutInterp.  It defaults to LogChord so
+    // every pre-existing 4-argument call site (including the M1.P3.T3/T10
+    // unit tests) is untouched and bit-identical.  The alternates only ever
+    // read inside the `t1 == 0.0f` branch below; every other bracket is
+    // identical across all three variants.  NOTE: "every other bracket" is
+    // NOT the same claim as "every alpha<1 bracket" — see HoldoutInterp's
+    // comment above the enum for the measured counterexample (a dense
+    // alpha<1 stack can drive t1 to bitwise 0.0f by float underflow, with no
+    // sample anywhere near alpha==1).
     // -----------------------------------------------------------------------
     static DEEPC_HD inline float interpAtBucket(const float* boundaryT,
                                                 int boundaryCount,
                                                 int index,
-                                                float frac)
+                                                float frac,
+                                                HoldoutInterp variant = HoldoutInterp::LogChord)
     {
         if (boundaryCount <= 0)
             return 1.0f;
@@ -595,6 +669,20 @@ struct HoldoutVisibility {
 
         if (t <= 0.0f) return clampf(t0, 0.0f, 1.0f);
         if (t >= 1.0f) return clampf(t1, 0.0f, 1.0f);
+
+        // Opaque-step alternates (M1.P3.T11): fire on a bitwise-zero far
+        // boundary transmittance. That is usually a fully-opaque sample, but
+        // NOT only that -- a long/dense run of alpha<1 samples can underflow
+        // the stored transmittance to bitwise 0.0f too (see HoldoutInterp's
+        // comment above the enum). Any alpha<1 bracket whose stored t1 has
+        // NOT underflowed keeps t1 > 0 and falls straight through to the
+        // untouched log chord below unaffected.
+        if (t1 == 0.0f) {
+            if (variant == HoldoutInterp::MidpointStep)
+                return (t < 0.5f) ? clampf(t0, 0.0f, 1.0f) : 0.0f;
+            if (variant == HoldoutInterp::LinearInT)
+                return clampf(t0, 0.0f, 1.0f) * (1.0f - t);
+        }
 
         const float l0 = std::log(clampf(t0, kMinTransmittance, 1.0f));
         const float l1 = std::log(clampf(t1, kMinTransmittance, 1.0f));
@@ -618,7 +706,8 @@ struct HoldoutVisibility {
     static DEEPC_HD inline float interp(const float* boundaries,
                                         const float* boundaryT,
                                         int boundaryCount,
-                                        float z)
+                                        float z,
+                                        HoldoutInterp variant = HoldoutInterp::LogChord)
     {
         if (boundaryCount <= 0)
             return 1.0f;
@@ -640,7 +729,7 @@ struct HoldoutVisibility {
 
         const float span = boundaries[lo + 1] - boundaries[lo];
         const float frac = (span > 0.0f) ? ((z - boundaries[lo]) / span) : 0.0f;
-        return interpAtBucket(boundaryT, boundaryCount, lo, frac);
+        return interpAtBucket(boundaryT, boundaryCount, lo, frac, variant);
     }
 };
 
