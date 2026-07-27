@@ -57,7 +57,7 @@ using namespace DD::Image;
 // The knob IRanges are deliberately *soft* (IRange::force defaults to false),
 // so a user can type max_radius = 5000 into the panel. Every consumer of a
 // knob value therefore clamps it here rather than trusting the slider bound —
-// the design's memory formulas (K*W*B*(C+2)*4 per band, LUT ~2*pi*R^3/3) are
+// the design's memory formulas (K*W*B*(C+3)*4 per band, LUT ~2*pi*R^3/3) are
 // only bounded if the use sites do the clamping. These caps are shared by
 // every phase of this node so the bbox pad, the LUT extent and the scatter
 // loop can never disagree about how big "big" is.

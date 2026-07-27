@@ -1522,9 +1522,10 @@ DEEPC_HD inline int splitSpanAtBoundaries(const DepthBuckets& buckets,
 //
 // with k the bucket (front to back, 0 = nearest), c the channel and i the
 // destination pixel within the band (pixelCount == bandWidth * bandHeight).
-// This is the (C+2)-plane-per-bucket layout the design reference's memory
-// formula assumes; the coverage/weight plane the scatter also keeps lives
-// alongside and is not touched by anything here.
+// This is the colour+alpha half of the (C+3)-plane-per-bucket layout the
+// design reference's memory formula assumes (K*W*B*(C+3)*4 since M1.P3.T9);
+// the two `sum of w*vis` AREA planes the scatter also keeps — new area and
+// co-located area — live alongside and are not touched by anything here.
 //
 // The per-pixel entry points below take pointers ALREADY OFFSET to their
 // pixel (`plane + i`) and derive everything else from `pixelCount`, which

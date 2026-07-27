@@ -701,6 +701,7 @@ void BucketPlanes::allocate(int bucketCountIn, int channelCountIn,
     color.assign(plane * static_cast<std::size_t>(channelCount), 0.0f);
     alpha.assign(plane, 0.0f);
     weight.assign(plane, 0.0f);
+    colocated.assign(plane, 0.0f);
 }
 
 void BucketPlanes::zero()
@@ -710,6 +711,7 @@ void BucketPlanes::zero()
     color.assign(color.size(), 0.0f);
     alpha.assign(alpha.size(), 0.0f);
     weight.assign(weight.size(), 0.0f);
+    colocated.assign(colocated.size(), 0.0f);
 }
 
 void BucketPlanes::release()
@@ -717,6 +719,7 @@ void BucketPlanes::release()
     color.release();
     alpha.release();
     weight.release();
+    colocated.release();
     bucketCount  = 0;
     channelCount = 0;
     width        = 0;
@@ -726,7 +729,8 @@ void BucketPlanes::release()
 
 std::size_t BucketPlanes::sizeBytes() const
 {
-    return color.sizeBytes() + alpha.sizeBytes() + weight.sizeBytes();
+    return color.sizeBytes() + alpha.sizeBytes() + weight.sizeBytes()
+         + colocated.sizeBytes();
 }
 
 BucketPlaneView BucketPlanes::view()
@@ -735,6 +739,7 @@ BucketPlaneView BucketPlanes::view()
     v.color        = color.data();
     v.alpha        = alpha.data();
     v.weight       = weight.data();
+    v.colocated    = colocated.data();
     v.bucketCount  = bucketCount;
     v.channelCount = channelCount;
     v.width        = width;
@@ -962,6 +967,7 @@ void resolveBandCPU(const ScatterParams& params,
             compositePixelCoveragePartition(view.color + i,
                                             view.alpha + i,
                                             view.weight + i,
+                                            view.colocated + i,
                                             view.bucketCount,
                                             view.channelCount,
                                             view.pixelCount,
@@ -982,6 +988,7 @@ void resolveBandCPU(const ScatterParams& params,
             compositePixelCoveragePartition(view.color + i,
                                             view.alpha + i,
                                             view.weight + i,
+                                            view.colocated + i,
                                             view.bucketCount,
                                             view.channelCount,
                                             view.pixelCount,

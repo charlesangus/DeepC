@@ -35,8 +35,12 @@ front-to-back at the end:
   0.75), so linear weights + over-compositing + flat-field `alpha ≡ 1` are mutually exclusive.
   See Decisions. Mandatory fix for layer-transition banding, except at α→1 where the
   transmittance form is necessarily a no-op (also in Decisions).
-- **Normalization**: each bucket accumulates `(Σ color·w·vis, Σ alpha·w·vis, Σ w·vis)` —
-  a coverage/weight plane alongside color. Additive premult accumulation is energy-conserving in
+- **Normalization**: each bucket accumulates `(Σ color·w·vis, Σ alpha·w·vis, Σ w·vis)` — a
+  coverage/weight plane alongside color. Since M1.P3.T9 that `Σ w·vis` is **two** planes, not one:
+  *new area* (deposits that claim area a pixel didn't have) and *co-located area* (deposits carrying
+  alpha at area already claimed — a fractional split's farther-bucket deposit, and every non-head part
+  of a split parent). Their sum is the original single plane; splitting them is what lets the composite
+  resolve a residual as `aRes/D_k` exactly at any radius spread. See Decisions. Additive premult accumulation is energy-conserving in
   flat regions (kernels are per-radius normalized to Σw=1). Where same-bucket surfaces overlap
   in screen space, bucket alpha can exceed 1 — after scatter, rescale color+alpha by `1/alpha`
   wherever `alpha > 1` (**saturate down, never scale up** — scaling up would hide honest
@@ -63,8 +67,9 @@ compute). `scatterBandCPU` stays thread-agnostic so unit tests can drive it dire
 - Memory-limit knob caps **concurrent in-flight bands**, not workers. NOTE the formula below counts
   only the bucket planes; M1.P3.T1 measured the SoA fragment buffers at 69 B/fragment (~1.49GB for a
   4K band at 20spp), which dominates them — budget on the combined total, see Decisions:
-  `scratch/band = K·W·B·(C+2)·4 bytes` (color + alpha + weight plane; ~100MB at K=16,C=4,W=4096,
-  B=64; ~800MB at K=128). Cap floors at 1 concurrent band, then shrinks B — never deadlocks at 0.
+  `scratch/band = K·W·B·(C+3)·4 bytes` (color + alpha + the two area planes — new area and,
+  since M1.P3.T9, co-located area; ~117MB at K=16,C=4,W=4096,B=64; ~940MB at K=128). Cap floors at 1
+  concurrent band, then shrinks B — never deadlocks at 0.
 - `Op::aborted()` checked per source row; an aborted band resets to `Dirty` (never `Done`),
   wakes its waiters, leaves erased/black rows. Every `deepEngine()` bool return must be checked.
 - **Hedge (only if profiling shows serialization at Phase 1.4's perf gate)**: Nuke's row
@@ -466,7 +471,7 @@ verified.
     lands at M1.P3.T4.
   - size: M
 
-- [ ] M1.P3.T9 — Fourth accumulation plane: co-located area (run BEFORE T5's bake-off)
+- [x] M1.P3.T9 — Fourth accumulation plane: co-located area (run BEFORE T5's bake-off)
   - files: `src/DeepCDefocusScatter.h`/`.cpp`
   - approach: **user's call at the M1.P3.T8 boundary** — build the exact fix rather than judging the
     approximation from pixels first, because the coverage-partition candidate is the only one that
@@ -537,6 +542,19 @@ verified.
     fragments; the earlier "exactly 1" reading was an artifact of the over-count then being clamped);
     and every case must **set `ScatterParams::combine` explicitly** rather than relying on the
     provisional default.
+    **From M1.P3.T8/T9's reviews**: head count == 1 per **post-tidy** parent, fuzzed (T8's review ran
+    200,000 single-parent and 60,000 multi-parent cases); `pre_merge` on/off identical for a single
+    parent in alpha *and* coverage; the 3000-point-fragment bit-exactness corpus and the four
+    hand-built identities asserted with the fourth plane both zero and populated; front-of-focus
+    exactness at 4/8/12 buckets and full-side range; and a **pinned** behind-focus regression gate at
+    the measured +45.2/+51.2/+59.1% (3/4/8 buckets, α=0.9) so the structural residue is
+    documentation-with-teeth rather than something that drifts silently. Assert the **colour:alpha
+    ratio as a standing invariant** (and `aCov ≤ cov`): clamping one of a premultiplied pair and not
+    the other has now been the defect three times — M1.P3.T8's residual, T9's area split, and T2's
+    original saturation — so it wants one invariant, not three cases. Note `checkCompositionContract()`
+    does **not** audit the area planes; a test summing `weight + colocated` per bucket against the
+    deposits would catch a future break of the deposit invariant. `tests/test_defocus_scatter.cpp`
+    does not exist yet.
     **Add a termination fuzz test for `deepc::tidyOverlapping()`**: randomised sample vectors with
     depths drawn from a small discrete set so exact ties are common, asserting termination and a
     bounded output size. The non-termination bug fixed during M1.P2.T2 hung Nuke unkillably on
@@ -598,6 +616,16 @@ verified.
     coverage-head fix, and expect a residual ~4%/layer loss where fragments with *different* split
     fractions share a bucket (measured: two fully-covering 50% fog layers give 0.7297 vs the exact
     0.75) — it is identical under both candidates, so it does not bias the comparison.
+    **Set `pre_merge` explicitly too** — since M1.P3.T8 it moves the coverage plane, which is what
+    diagnoses scene (i). **Report band-alpha and flat-field readings separately**: the same input reads
+    two orders of magnitude apart between them (a full-range α=0.9 fog slab is +6.65% as an isolated
+    band-alpha sum and 0.8999999 as a flat field), so weigh scenes (f)/(g) *interiors* separately from
+    scene (i)-style sparse content, and do not read a sparse-content number as a fog-interior one. In
+    front of focus candidate 2 is now exact, so the comparison is fair; behind focus expect the
+    structural +45.2/+51.2/+59.1% at 3/4/8 buckets under *both* candidates (plain `over` tracks the
+    same numbers because it ignores the area planes entirely) — that residue is settled and is not a
+    reason to prefer either. When the winner is chosen, delete the losing path, its flag, **and** the
+    plane it doesn't read.
   - size: L
 
 ## Phase 1.4: Concurrency + performance
@@ -611,7 +639,7 @@ verified.
     bands `Dirty` on an `Op::hash()` change. Memory-limit knob caps concurrent in-flight bands
     per the formula in the Design reference (floor 1 band, then shrink B — never deadlock at 0),
     budgeting on the **combined** bucket-plane + SoA-fragment total per the Decisions entry: the SoA
-    is the larger term at 4K (~1.49GB vs ~100MB), so a cap counting only the planes under-budgets by
+    is the larger term at 4K (~1.49GB vs ~117MB), so a cap counting only the planes under-budgets by
     an order of magnitude.
     `Op::aborted()` checked per source row; an aborted band resets to `Dirty`, wakes waiters,
     leaves erased/black rows. Every `deepEngine()` bool return checked. Also **assert the planes'
@@ -756,6 +784,51 @@ verified.
   Registration is pulled forward from M1.P5.T1 into **M1.P3.T7**, which runs next, so that every
   subsequent task's build gate is real. The `-mavx2 -mfma` compile options stay at M1.P5.T1, where the
   `-ffp-contract` parity hazard is documented and where M1.P4.T2 will have inspected vectorization first.
+- 2026-07-27 — **M1.P3.T9 landed the fourth plane. In front of focus the coverage-partition composite
+  is now exact** (≤1e-6) at any part count, any alpha and any radius spread — a span covering that
+  whole side went **−68.94% → −0.0000%**. `D_k` accumulates `Σ w·vis` over exactly the deposits that
+  carry alpha but claim no new area, so `resLocal = (w_p·a_p)/w_p = a_p` with `w_p` cancelling part by
+  part; `aRes ≤ D_k` holds by construction rather than by clamp. Memory formula is now
+  `K·W·B·(C+3)·4`, verified byte-for-byte against a live `sizeBytes()`: **100.66 → 117.44 MB** at 4K
+  defaults, **805.31 → 939.52 MB** at K=128. Everything that must not move didn't: 0 differing floats
+  over 3000 random point fragments and over equal-radius volumetric slabs, and all four hand-built
+  identities (two 50% fog 0.7500000, receding opaque 1.0000000, scene (i) 0.6000000, 4-part opaque
+  slab 1.0000000) bitwise identical. `FrontToBackOver` is untouched and reads neither area plane, so
+  T5 still compares like for like — it does now pay the plane's memory and deposit loop, which the
+  losing path's deletion at T5 reclaims.
+- 2026-07-27 — **Behind focus the residue is structurally irreducible by any per-bucket plane. This is
+  settled, not open.** The head is the part nearest focus, so its disc is the *smallest*; where a rear
+  part reaches a pixel the head never touched, that bucket holds four zeros — colour, alpha, new area
+  and co-located area — and a per-pixel per-bucket reduction has no channel through which to learn
+  that `a₀` occludes what follows. Within-parent occlusion happens along the ray *before* the blur.
+  Both alternatives were tested and fail: depositing the head's area at the largest part radius leaves
+  `local = 0` (no occlusion) unless its alpha and colour move too, which is "rasterise the parent at
+  one radius" and deletes the depth-graded split the span split exists for; a per-parent occlusion
+  term needs per-parent composite state, i.e. the fragment lists the design rejected as
+  memory-infeasible. Deeper: the error follows from **one global front-to-back visit order plus
+  per-bucket planes** — behind focus the part whose disc contains the others is the rearmost, visited
+  last, and a back-to-front composite just mirrors the problem onto the front field. Measured residue:
+  **+45.2 / +51.2 / +59.1%** at 3/4/8 buckets at α=0.9 (from +56.2 / +76.5 / +113.3% pre-T9), +7.69%
+  for a full-range span, +6.65% for a focus-crossing span — that last number is *entirely* its
+  behind-focus half, not a new front-of-focus error.
+- 2026-07-27 — **The dominant error in any multi-sample deep pixel is occlusion-before-blur, and it
+  belongs to neither bucket-composite candidate** — it is unchanged by T8 and T9 and cannot be fixed
+  by picking a winner at T5. Two opaque point samples at one pixel band-sum to 2.0000 against a true
+  1.0000 under CoveragePartition and 3.9726 under plain `over`; four receding opaque, 4.0000 vs
+  6.6573. **But it is an isolated/sparse-content effect: the identical content as a flat field is
+  exact under both candidates** — 4 receding opaque → 1.0000000, two 50% fog layers → 0.7500000, a
+  full-range α=0.9 fog slab → 0.8999999. The two readings of the same input differ by two orders of
+  magnitude, so M1.P3.T5 must report band-alpha and flat-field figures separately and must not read a
+  sparse-content number as a fog-interior one.
+- 2026-07-27 — A **colour:alpha desync** was found and fixed in T9's new area split before it landed:
+  `local = clampf(aCov/cov, 0, 1)` capped the alpha the fit/excess branches emit while the colour
+  beside it was scaled by the *unclamped* `aCov/a`, so hand-built planes `(A=1.0, C=0.3, D=0.2)` gave
+  alpha 0.3 with premultiplied colour 0.6 — a ratio of 2.0. This is character-for-character the defect
+  M1.P3.T8's review fixed on the residual term (0.8748 against a true 0.5); it recurred in the new
+  clamp within one task. It was unreachable in production (`aCov ≤ cov` follows from the deposit
+  invariant) but is now guarded by construction. **Third occurrence of the same failure shape — clamp
+  one of a premultiplied pair and not the other.** M1.P3.T4 should assert the colour:alpha ratio as a
+  standing invariant rather than case by case.
 - 2026-07-26 — **The fourth accumulation plane gets built before M1.P3.T5's bake-off, not deferred to
   it** (user's call, asked at the M1.P3.T8 boundary). The alternative — render scenes (f)/(g) through
   both candidates as-is and add the plane only if the radius-spread error shows in pixels — matches how
@@ -982,7 +1055,7 @@ verified.
 - 2026-07-26 — Knob ranges stay **soft** (`IRange`'s `force` defaults false, so a user can type
   `max_radius = 5000`); values are clamped at their use sites instead, which M1.P3/M1.P4 must
   actually do. Rationale: the documented ranges are ergonomic slider bounds, and Nuke users expect
-  to be able to exceed them, but the design's memory formulas (`K·W·B·(C+2)·4` per band, LUT
+  to be able to exceed them, but the design's memory formulas (`K·W·B·(C+3)·4` per band since M1.P3.T9, LUT
   ~2πR³/3) are only bounded if the *use sites* clamp. Evaluate those formulas on clamped values,
   never on raw knob values.
 - 2026-07-26 — **Headless Nuke works in this environment**, which was not assumed when the plan was
