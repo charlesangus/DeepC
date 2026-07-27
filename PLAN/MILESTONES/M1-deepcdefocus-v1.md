@@ -235,6 +235,8 @@ l. small-CoC transition: shallow depth ramp crossing 0–2px CoC ⇒ no chatter/
 | `tidyOverlapping()` split pass is superlinear | High | Measured ≈O(n³·⁷) — 9.96ms/pixel at 32 mutually overlapping spans, which makes a fog frame unrenderable rather than merely slow. Rewritten single-pass at M1.P3.T6, before T5's scenes need it |
 | SoA fragment memory outside the `memory_limit` formula | Med | 113 B/fragment resident ⇒ ~2.4GB for one 4K band at 20spp, dwarfing the bucket planes. Formula extended at M1.P3.T1 (see Decisions); `reserveFragments()` collapses the capacity slack |
 | Non-terminating sample tidying on volumetric input | High | `deepc::tidyOverlapping()` looped forever on *any* overlapping volumetric pair — fixed during M1.P2.T2 (see Decisions); termination fuzz test added at M1.P3.T4 |
+| Coverage plane double-counted, inflating alpha and colour | High | Fractional-split half found and fixed at M1.P3.T2's review (2.0 vs honest 1.0; deposit once, into the nearer bucket). Volumetric-split half still open — M1.P3.T8, which must land before M1.P3.T5's bake-off |
+| Build gate not actually building the node | Med | `src/CMakeLists.txt` never listed `DeepCDefocus`; every Phase 1.2/1.3 "local build clean" was compiled by hand instead. Registration pulled forward to M1.P3.T7 |
 | Request/engine channel divergence | Low | Single `neededDeepChannels()` helper |
 | Edge darkening at bbox borders | Low | Output bbox padded by `max_radius` so scattered energy is retained |
 
@@ -409,7 +411,7 @@ verified.
     buffers out).
   - size: L
 
-- [ ] M1.P3.T2 — `scatterBandCPU`
+- [x] M1.P3.T2 — `scatterBandCPU`
   - files: `src/DeepCDefocusScatter.h`/`.cpp`
   - approach: fractional two-bucket deposit per fragment (`w`, `vis` from the LUT), accumulating
     `(Σ color·w·vis, Σ alpha·w·vis, Σ w·vis)` per bucket; weight-plane saturation pass
@@ -423,6 +425,46 @@ verified.
   - verify: covered by the M1.P3.T4 unit test task (synthetic SoA + kernel LUT in, checking the
     energy-conservation and saturation identities directly, without a live Nuke session).
   - size: L
+
+- [ ] M1.P3.T7 — Wire `DeepCDefocus` into `src/CMakeLists.txt` (run NEXT — every later verify depends on it)
+  - files: `src/CMakeLists.txt`
+  - approach: found at M1.P3.T2's review — **neither `DeepCDefocus.cpp` nor `DeepCDefocusScatter.cpp`
+    is in CMake**, so the milestone's "the local build compiles clean" verify step has been vacuous
+    for every Phase 1.2/1.3 task; both were compiled by hand ad hoc, and the tests target only builds
+    the header-only math. Pull the *registration* half of M1.P5.T1 forward: add `DeepCDefocus` to
+    `PLUGINS` and `FILTER_NODES` inside the `if (UNIX)` guard (verified pattern: top-level
+    `CMakeLists.txt:11` already opens a UNIX block), plus
+    `target_sources(DeepCDefocus PRIVATE DeepCDefocusScatter.cpp)` following the
+    `DeepCShuffle2`/`ShuffleMatrixKnob.cpp` precedent at `src/CMakeLists.txt:128-129` (not the
+    FastNoise object-library pattern — different shape). **Do NOT add `-mavx2 -mfma` here** — those
+    compile options stay at M1.P5.T1, where the FMA/`fp-contract` parity hazard is documented, and
+    they are only wanted once M1.P4.T2 has inspected vectorization.
+  - verify: `cmake -S . -B build/local-17.0 -D Nuke_ROOT=/usr/local/Nuke17.0v3 && cmake --build
+    build/local-17.0 -j"$(nproc)"` builds `DeepCDefocus.so` (confirm the `.so` appears under
+    `build/local-17.0/src`, i.e. the gate is no longer vacuous), warnings reviewed; the headless-Nuke
+    `DeepToImage` parity check from M1.P2.T2 still passes against the CMake-built plugin.
+  - size: S
+
+- [ ] M1.P3.T8 — Coverage-head flag for split volumetric parents
+  - files: `src/DeepCDefocusScatter.h`/`.cpp`
+  - approach: found at M1.P3.T2's review and deliberately deferred out of it (it changes M1.P3.T1's
+    committed SoA contract). Every part of a split volumetric parent currently deposits its own
+    `w·vis` into the coverage plane, so one slab is counted once **per bucket it spans**: a 4-part
+    α=0.9 slab measures band alpha sum **1.7506 (CoveragePartition) / 1.7372 (over) against an honest
+    0.9000** — ~1.94×, growing toward K× as α→1. It is exact only at full kernel coverage, so it is
+    wrong for every bokeh, every edge and every isolated fog element — i.e. exactly the scenes (f),
+    (g) and (i) that M1.P3.T5's bake-off turns on. Fix per the review's verified recipe: the flatten
+    marks the **first part of a split parent** (one bool through `FragmentRecord`/`SampleSoA`,
+    surviving pre-merge as head-of-group), and the scatter passes
+    `depositWeight = coverageHead && group == 0`; the composite already handles alpha-without-coverage
+    via M1.P3.T2's residual term. Verify analytically that this reconstructs the parent exactly at any
+    coverage, not just at full coverage. Note this re-measures M1.P3.T1's 113 B/fragment resident
+    figure — update the Decisions entry if it moves materially.
+  - verify: a driver over random (α, split-part-count, kernel radius, coverage fraction) showing band
+    alpha/premult-colour sum reconstructs the parent to ≤1e-6 at partial coverage, plus the existing
+    single-fragment energy identity unregressed; local build and `ctest` green. The permanent test
+    lands at M1.P3.T4.
+  - size: M
 
 - [ ] M1.P3.T3 — Holdout SoA and per-pixel boundary-LUT
   - files: `src/DeepCDefocusScatter.h`/`.cpp`
@@ -458,6 +500,17 @@ verified.
     check that catches it. Also consider extracting an `overCompositeGroup()` helper into
     `DeepSampleOptimizer.h` here (there are now three copies of that arithmetic), which is safe to do
     once these tests protect the shipped `DeepCBlur`/`DeepCBlur2` callers.
+    **From M1.P3.T2's review** (these are the mutation-resistant gates for the whole coverage-plane
+    defect class, which that review found live and fixed): the **single-fragment energy identity** over
+    random `(α, split fraction, radius)` — band alpha and premult-colour sums reconstruct the fragment
+    (measured 1.37e-07 / 1.24e-07 under `CoveragePartition`; plain `over` is up to **+93.8%**, so
+    `over` inflates as badly as it deflates and both directions need a case); the
+    **volumetric-slab-at-partial-coverage identity** (currently failing — gate it on M1.P3.T8's
+    head-flag fix); scene (c)'s flat-opaque field asserted at **|α−1| ≤ 1e-6, NOT equality** (measured
+    0.9999992 — the disc LUT's ~5e-8 per-entry normalisation residual over ~113 contributing
+    fragments; the earlier "exactly 1" reading was an artifact of the over-count then being clamped);
+    and every case must **set `ScatterParams::combine` explicitly** rather than relying on the
+    provisional default.
     **Add a termination fuzz test for `deepc::tidyOverlapping()`**: randomised sample vectors with
     depths drawn from a small discrete set so exact ties are common, asserting termination and a
     bounded output size. The non-termination bug fixed during M1.P2.T2 hung Nuke unkillably on
@@ -511,7 +564,14 @@ verified.
     **decides the bucket-composite question**: render scenes (c), (f), (g) and (i) through both of
     M1.P3.T2's candidates, pick the one whose pixels are right, record the outcome and the
     comparison in this file's Decisions, and delete the losing path plus its flag before the
-    milestone gate.
+    milestone gate. **Set `ScatterParams::combine` explicitly for each render** — never rely on the
+    provisional default (see Decisions). Scene (g) needs a **steep** ramp: the deficit scales with how
+    many buckets a destination pixel's CoC neighbourhood straddles, not with K alone (a gentle ramp
+    lost only 4.8% end-to-end versus 35.6% in the synthetic K=16 worst case), so a shallow ramp would
+    understate the very effect being judged. Report scenes (f)/(g) fog density against M1.P3.T8's
+    coverage-head fix, and expect a residual ~4%/layer loss where fragments with *different* split
+    fractions share a bucket (measured: two fully-covering 50% fog layers give 0.7297 vs the exact
+    0.75) — it is identical under both candidates, so it does not bias the comparison.
   - size: L
 
 ## Phase 1.4: Concurrency + performance
@@ -528,7 +588,10 @@ verified.
     is the larger term at 4K (~1.49GB vs ~100MB), so a cap counting only the planes under-budgets by
     an order of magnitude.
     `Op::aborted()` checked per source row; an aborted band resets to `Dirty`, wakes waiters,
-    leaves erased/black rows. Every `deepEngine()` bool return checked. **Budget this as rework,
+    leaves erased/black rows. Every `deepEngine()` bool return checked. Also **assert the planes'
+    geometry against `params.bandWidth/bandHeight` caller-side**: `scatterBandCPU` silently returns
+    when they disagree (found at M1.P3.T2's review), which under per-band claiming would surface as
+    black bands rather than an error. **Budget this as rework,
     not extension**: M1.P2.T2's cache is a `shared_ptr<const FrameCache>` published by copy, which
     is the wrong primitive for per-band claims (they need a mutable shared frame plus per-band
     atomics), and its `engine()` takes the frame-wide lock on *every row* just to snapshot the
@@ -558,11 +621,14 @@ verified.
 
 - [ ] M1.P5.T1 — CMake wiring
   - files: `src/CMakeLists.txt`
-  - approach: add `DeepCDefocus` to `PLUGINS` and `FILTER_NODES` inside an `if (UNIX)` guard
-    (verified pattern: top-level `CMakeLists.txt:11` already opens a UNIX block);
+  - approach: **the plugin registration and `target_sources` half of this task moved forward to
+    M1.P3.T7** (the build gate was vacuous without it); what remains here is the compile options and
+    the cross-platform check. For reference, T7 added `DeepCDefocus` to `PLUGINS` and `FILTER_NODES`
+    inside an `if (UNIX)` guard
+    (verified pattern: top-level `CMakeLists.txt:11` already opens a UNIX block) and
     `target_sources(DeepCDefocus PRIVATE DeepCDefocusScatter.cpp)` following the
     `DeepCShuffle2`/`ShuffleMatrixKnob.cpp` precedent at `src/CMakeLists.txt:128-129` (not the
-    FastNoise object-library pattern — different shape); `target_compile_options(DeepCDefocus
+    FastNoise object-library pattern — different shape). This task adds `target_compile_options(DeepCDefocus
     PRIVATE -mavx2 -mfma)` per-target, so the existing global `-mavx` floor is unchanged for
     every other node. **FMA hazard**: `-mfma` under GCC's default `-ffp-contract=fast` fuses the
     flatten loop's multiply-add and destroys the `DeepToImage` bit-parity M1.P2.T2 established
@@ -602,6 +668,74 @@ verified.
 
 ## Decisions
 
+- 2026-07-26 — **The coverage plane `Σ w·vis` is deposited ONCE per fragment, into the nearer
+  bucket** — not into both buckets of a fractional split. M1.P3.T2 shipped the full-deposit form on
+  the argument that `A_k ≤ C_k` is a precondition of the coverage-partition candidate; its review
+  refuted that (`A_k > C_k` is legitimate and simply means "co-located rear deposit") and found the
+  full deposit was a **2× energy error on every partially-covered region**: one opaque fragment split
+  across two bucket centres gave band alpha sum **2.0000 against an honest 1.0000**, with colour
+  inflated identically; fog α=0.5 gave 0.5858 vs 0.5000 (so fog is *not* spared — it is a `Σa_k/α`
+  effect, not an α² one); a defocused opaque half-plane edge went 0.5632 → 1.0000. That last case
+  destroys scene (i)'s whole point: a pixel with an honest 0.6 coverage reported 1.2, which is
+  precisely the discrimination the plane exists to provide. Fixed in the review, with a residual term
+  added to `compositePixelCoveragePartition` so alpha beyond a bucket's own coverage claims no new
+  area and is `over`-attenuated by `tClaimed`. Post-fix, over 3000 random `(α, fraction, radius)`
+  single fragments, CoveragePartition conserves energy to **1.37e-07** alpha / 1.24e-07 premult
+  colour. **Plain `over` is up to +93.8% on the same corpus** — so `over` now has two failure modes,
+  inflating as badly as it deflates, which M1.P3.T5's bake-off should weigh.
+- 2026-07-26 — **Volumetric span splits still carry that over-count, and it is M1.P3.T8's job.**
+  Each part of a split parent deposits its own coverage into its own bucket, so a slab is counted once
+  per bucket it spans: a 4-part α=0.9 slab measures **1.7506 / 1.7372** (partition / over) against an
+  honest **0.9000**, growing toward K× as α→1, exact only at full kernel coverage. It was deliberately
+  not fixed inside M1.P3.T2 because the fix changes M1.P3.T1's committed SoA contract (a
+  head-of-group bool through `FragmentRecord`/`SampleSoA`) and needs its own test coverage — the
+  milestone's sizing rule says that is a new task, not an "and then also". **M1.P3.T5's bake-off is
+  not meaningful on scenes (f)/(g)/(i) until T8 lands.**
+- 2026-07-26 — `ScatterParams::combine` defaults to `CoveragePartition`, but the default is
+  **provisional and non-authoritative**: M1.P3.T5 still decides from rendered pixels per the
+  bucket-composite entry below. The default is not neutral (plain `over` is *known* to fail scene (c),
+  so defaulting to it would ship a known-failing default while T5 runs), and post-fix
+  CoveragePartition is the only candidate satisfying its own identities. To stop the default biasing
+  anything, M1.P3.T4 and M1.P3.T5 must set `combine` explicitly in every case and every render. The
+  review also fixed an unreachable `default:` branch that routed to `FrontToBackOver` while claiming
+  it was "the safer of the two" — no longer true.
+- 2026-07-26 — A flat opaque field resolves to **0.9999992, not exactly 1.0**: the disc LUT's
+  per-entry normalisation residual (~5e-8 each, over ~113 contributing fragments). The design
+  reference's scene (c) says "alpha ≡ 1 exactly" and M1.P3.T2 initially reported exactly 1 — that
+  reading was an artifact of the coverage over-count above being clamped back down by the saturation
+  pass. **Scene (c) and M1.P3.T4 must assert `|α−1| ≤ ~1e-6`, not equality**; the α=0.5 flat fog case
+  lands at 0.5000010 on the same basis. Saturation itself is confirmed down-only and firing on the
+  ordinary path (2 coincident opaque sharp fragments 2.0 → 1.0; 3 same-bucket fog 1.5 → 1.0 — a clamp,
+  not a restoration of the true 0.875, as designed).
+- 2026-07-26 — Where fragments carrying **different split fractions** share a bucket, the planes lose
+  the pairing and alpha comes in slightly low: two fully-covering 50% fog layers with random fractions
+  give **0.7297 against the exact 0.75**, ~4% per layer. Identical under both bucket-combine
+  candidates, so it does not bias M1.P3.T5's comparison, but T5 should expect it in scenes (f)/(g)
+  rather than reading it as a candidate's failure.
+- 2026-07-26 — `scatterBandCPU`'s signature deviates from the design reference's four-argument sketch
+  and the deviation is **accepted**: `KernelSampler`, a per-thread `ScatterScratch` and an optional
+  `ScatterStats*` are added, and the bucket composite is a separate `resolveBandCPU` so a band can be
+  scattered from several SoA chunks and so M1.P3.T4/T5 can drive the passes independently. The four
+  design-named parameters keep their names, order and positions. The M3 CUDA seam survives: the
+  virtual `KernelSampler::kernel()` call happens once per (fragment, channel group) in the `.cpp`
+  driver, never inside a `DEEPC_HD` body and never per pixel — every per-span body takes a POD
+  `KernelView`. Verified: the TU compiles with plain `g++ -std=c++17` (no NDK), and
+  `-fopt-info-vec` at `-O3 -mavx2 -mfma` vectorizes all three deposit loops and the composite channel
+  loops at 16- and 32-byte vectors.
+- 2026-07-26 — **The milestone's "the local build compiles clean" verify step was vacuous for every
+  Phase 1.2 and 1.3 task**: neither `DeepCDefocus.cpp` nor `DeepCDefocusScatter.cpp` was ever added to
+  `src/CMakeLists.txt` (confirmed by the PM), so the local build built the other 27 plugins and none of
+  this node, and the tests target builds only the header-only math. Both files were in fact compiled by
+  hand, ad hoc, per task — which is why nothing was missed — but the gate as written proved nothing.
+  Registration is pulled forward from M1.P5.T1 into **M1.P3.T7**, which runs next, so that every
+  subsequent task's build gate is real. The `-mavx2 -mfma` compile options stay at M1.P5.T1, where the
+  `-ffp-contract` parity hazard is documented and where M1.P4.T2 will have inspected vectorization first.
+- 2026-07-26 — Alpha and coverage are deposited by **channel group 0 only** (they are not per-channel
+  quantities). Unobservable in v1, where every `channelRadiusScale` is 1.0 — but **M2 must decide which
+  group owns alpha** once chromatic-aberration scales diverge. Noted in-source at the deposit site.
+- 2026-07-26 — Coverage is **clamped to [0,1] at use, not in the plane**. That is what keeps the local
+  opacity `A_k/C_k ≤ 1` after the saturation pass has pulled an over-covered bucket's alpha down to 1,
+  and it makes an over-covered bucket degrade gracefully to plain `over`.
 - 2026-07-26 — Baseline local build command locked in as
   `cmake -S . -B build/local-17.0 -D Nuke_ROOT=/usr/local/Nuke17.0v3 && cmake --build
   build/local-17.0 -j"$(nproc)"`: verified at M1.P0.T1 against the pre-`DeepCDefocus` tree —

@@ -2,10 +2,15 @@
 //
 // ============================================================================
 //
-//  DeepCDefocusScatter — SoA flattening of deep samples (M1.P3.T1)
+//  DeepCDefocusScatter — SoA flattening of deep samples (M1.P3.T1) and the
+//                        band scatter core (M1.P3.T2)
 //
 //  See DeepCDefocusScatter.h for the API and for why nothing in this
 //  translation unit may include a DDImage/NDK header.
+//
+//  Everything below the flatten is a LOOP DRIVER only: every per-fragment,
+//  per-span and per-pixel body lives in the header marked DEEPC_HD, so M3
+//  compiles those unchanged under nvcc and replaces only what is here.
 //
 // ============================================================================
 
@@ -637,6 +642,309 @@ bool checkCompositionContract(const SampleSoA& soa,
     }
 
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// BucketPlanes
+// ---------------------------------------------------------------------------
+
+void BucketPlanes::allocate(int bucketCountIn, int channelCountIn,
+                            int widthIn, int heightIn)
+{
+    bucketCount  = (bucketCountIn  > 0) ? bucketCountIn  : 0;
+    channelCount = (channelCountIn > 0) ? channelCountIn : 0;
+    width        = (widthIn  > 0) ? widthIn  : 0;
+    height       = (heightIn > 0) ? heightIn : 0;
+    pixelCount   = static_cast<std::ptrdiff_t>(width) * height;
+
+    const std::size_t px    = static_cast<std::size_t>(pixelCount);
+    const std::size_t k     = static_cast<std::size_t>(bucketCount);
+    const std::size_t plane = k * px;
+
+    color.assign(plane * static_cast<std::size_t>(channelCount), 0.0f);
+    alpha.assign(plane, 0.0f);
+    weight.assign(plane, 0.0f);
+}
+
+void BucketPlanes::zero()
+{
+    // assign() is resizeUninitialized + fill, and the sizes are unchanged, so
+    // this is a pure fill: the band loop must not re-malloc per band.
+    color.assign(color.size(), 0.0f);
+    alpha.assign(alpha.size(), 0.0f);
+    weight.assign(weight.size(), 0.0f);
+}
+
+void BucketPlanes::release()
+{
+    color.release();
+    alpha.release();
+    weight.release();
+    bucketCount  = 0;
+    channelCount = 0;
+    width        = 0;
+    height       = 0;
+    pixelCount   = 0;
+}
+
+std::size_t BucketPlanes::sizeBytes() const
+{
+    return color.sizeBytes() + alpha.sizeBytes() + weight.sizeBytes();
+}
+
+BucketPlaneView BucketPlanes::view()
+{
+    BucketPlaneView v;
+    v.color        = color.data();
+    v.alpha        = alpha.data();
+    v.weight       = weight.data();
+    v.bucketCount  = bucketCount;
+    v.channelCount = channelCount;
+    v.width        = width;
+    v.height       = height;
+    v.pixelCount   = pixelCount;
+    return v;
+}
+
+// ---------------------------------------------------------------------------
+// scatterBandCPU
+// ---------------------------------------------------------------------------
+
+void scatterBandCPU(const ScatterParams& params,
+                    const SampleSoA&     samples,
+                    const HoldoutSoA&    holdout,
+                    const KernelSampler& kernel,
+                    BucketPlanes&        planes,
+                    ScatterScratch&      scratch,
+                    ScatterStats*        stats)
+{
+    BucketPlaneView view = planes.view();
+    if (!view.valid())
+        return;
+
+    // The band geometry is the planes', not the params': the planes are what
+    // gets written, so a disagreement must not be resolvable in favour of the
+    // side that does not own the memory.  Only the ORIGIN comes from params.
+    if (view.width != params.bandWidth || view.height != params.bandHeight)
+        return;
+
+    // See the header: the smaller of the two counts, so neither side is read
+    // or written past its end.
+    const int nChan = (samples.channelCount < view.channelCount)
+                    ? samples.channelCount : view.channelCount;
+
+    const std::size_t fragmentCount = samples.fragmentCount();
+    if (fragmentCount == 0)
+        return;
+
+    // Channel groups: v1 always has exactly one, covering every channel with
+    // radiusScale 1.0.  The loop below exists because the group array is the
+    // M2 chromatic-aberration seam and a per-group kernel radius is the whole
+    // point of it; with one group it is a single iteration and costs nothing.
+    ChannelGroups groups = samples.groups;
+    if (groups.groupCount <= 0)
+        groups = makeSingleChannelGroup(nChan);
+
+    const int groupCount = (groups.groupCount < ChannelGroups::kMaxGroups)
+                         ? groups.groupCount : ChannelGroups::kMaxGroups;
+
+    // Soft knob ranges: clamp at the use site, never trust the raw value.
+    const float sharpRadius = clampf(params.sharpRadiusPx, 0.0f, 1e6f);
+
+    // A holdout LUT that does not cover the whole band is treated as absent
+    // rather than read out of bounds: the seam's contract is one boundary row
+    // per band pixel (see HoldoutSoA), and "no holdout" is always safe.
+    const bool useHoldout = holdout.enabled()
+                         && holdout.pixelCount >= view.pixelCount;
+
+    // One sanitised view is what the per-fragment bodies see, so their
+    // enabled() test and this driver's rowScratch decision can never disagree.
+    const HoldoutSoA vis = useHoldout ? holdout : HoldoutSoA{};
+
+    for (std::size_t f = 0; f < fragmentCount; ++f) {
+        if (stats != nullptr)
+            ++stats->fragments;
+
+        const int bucket0 = static_cast<int>(samples.bucketIndex0[f]);
+        const int bucket1 = static_cast<int>(samples.bucketIndex1[f]);
+        if (bucket0 < 0 || bucket0 >= view.bucketCount) {
+            if (stats != nullptr)
+                ++stats->culled;
+            continue;                   // corrupt assignment: never write OOB
+        }
+
+        ScatterFragment frag;
+        frag.destX = static_cast<int>(samples.x[f]) - params.bandX;
+        frag.destY = static_cast<int>(samples.y[f]) - params.bandY;
+
+        // THE COMPOSITION CONTRACT IS HONOURED, NOT RE-DECIDED.  The flatten
+        // already chose bucketOf() (point) or bucketOfContaining() (span
+        // split) per fragment; this reads its labels straight through.  A
+        // second assignment here would be the measured +8.29% double-count.
+        frag.bucket0     = bucket0;
+        frag.bucket1     = (bucket1 >= 0 && bucket1 < view.bucketCount) ? bucket1 : bucket0;
+        frag.alpha0      = samples.bucketAlpha0[f];
+        frag.alpha1      = samples.bucketAlpha1[f];
+        frag.colorScale0 = samples.colorScale0[f];
+        frag.colorScale1 = samples.colorScale1[f];
+
+        // locateBoundary()'s pair, NOT bucketOf()'s — see HoldoutSoA.
+        frag.boundaryIndex = static_cast<int>(samples.boundaryIndex[f]);
+        frag.boundaryFrac  = samples.boundaryFrac[f];
+
+        frag.color = samples.colorOf(f);
+
+        // Zero-alpha early-out, before any rasterisation (design reference's
+        // perf mitigations).  partitionColorScale() is alpha_i/alpha, so a
+        // deposit's colour scale is zero exactly when its alpha is: a fragment
+        // failing this test carries nothing in either deposit.  Its COVERAGE
+        // is dropped with it, which is correct rather than merely convenient —
+        // the flatten already drops alpha-0 samples outright (DeepToImage
+        // parity), so a fragment reaching here with no alpha is not a
+        // transparent surface the coverage plane should report, it is nothing.
+        const bool anyAlpha = (frag.alpha0 != 0.0f) || (frag.alpha1 != 0.0f);
+        const bool anyColor = (frag.colorScale0 != 0.0f) || (frag.colorScale1 != 0.0f);
+        if (!anyAlpha && !anyColor) {
+            if (stats != nullptr)
+                ++stats->culled;
+            continue;
+        }
+
+        const float baseRadius = samples.radius[f];
+        const float depth      = samples.depth[f];
+
+        std::size_t touched = 0;
+
+        for (int g = 0; g < groupCount; ++g) {
+            int first = groups.firstChannel[g];
+            int cnt   = groups.channelCount[g];
+            if (first < 0) {
+                cnt += first;
+                first = 0;
+            }
+            if (first + cnt > nChan)
+                cnt = nChan - first;
+
+            frag.firstChannel  = first;
+            frag.groupChannels = (cnt > 0) ? cnt : 0;
+
+            // The alpha and coverage planes are NOT per channel group: they
+            // must be deposited exactly once per fragment or a multi-group
+            // (M2) build would count them once per group.  Group 0 carries
+            // them.  M2 NOTE: with radiusScale != 1 that ties alpha to group
+            // 0's kernel radius, which is a real decision M2 has to make
+            // (probably "alpha follows the base/green group"); in v1 every
+            // scale is 1.0, so group 0's kernel IS the base kernel and the
+            // choice is not observable.  Within group 0 the COVERAGE plane is
+            // written by the fragment's FIRST deposit only — see
+            // scatterSpanBothBuckets(), which is where that distinction lives.
+            frag.depositCoverage = (g == 0);
+
+            if (frag.groupChannels <= 0 && !frag.depositCoverage)
+                continue;
+
+            const float radius = groupRadius(groups, g, baseRadius);
+
+            // --- sharp fast path -------------------------------------------
+            if (!(radius >= sharpRadius)) {     // also catches NaN -> sharp
+                touched += scatterFragmentSharp(view, vis, frag);
+                if (stats != nullptr && g == 0)
+                    ++stats->sharpFragments;
+                continue;
+            }
+
+            // v1's DiscKernelLUT ignores destX/destY/depth/channelGroup; they
+            // are passed anyway because that unused-ness IS the M2 seam.
+            const KernelView kv = kernel.kernel(radius, frag.destX, frag.destY,
+                                                depth, g);
+            if (!kv.valid())
+                continue;
+
+            float* rowScratch = nullptr;
+            if (useHoldout) {
+                // The widest span a kernel row can have, before clipping.
+                scratch.ensureRow(static_cast<std::size_t>(2 * kv.radiusX + 1));
+                rowScratch = scratch.rowWeights.data();
+            }
+
+            std::size_t rows = 0;
+            touched += scatterFragmentSpans(view, vis, kv, frag,
+                                            rowScratch, &rows);
+            if (stats != nullptr)
+                stats->rowSpans += rows;
+        }
+
+        if (stats != nullptr) {
+            stats->pixelDeposits += touched;
+            if (touched == 0)
+                ++stats->culled;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// resolveBandCPU
+// ---------------------------------------------------------------------------
+
+void resolveBandCPU(const ScatterParams& params,
+                    BucketPlanes&        planes,
+                    float* __restrict__  outColor,
+                    float* __restrict__  outAlpha)
+{
+    BucketPlaneView view = planes.view();
+    if (!view.valid() || outAlpha == nullptr)
+        return;
+    if (view.channelCount > 0 && outColor == nullptr)
+        return;
+
+    // ALWAYS, on the normal path.  Not a knob, not a debug switch: within-
+    // bucket additive accumulation over-counts same-pixel fragments for
+    // ordinary fog (+33.3% / +71.4% / +113.3% of alpha at 2 / 3 / 4 disjoint
+    // spans sharing a bucket), so this is a correctness pass.  It only ever
+    // scales DOWN.
+    saturateBucketPlanes(view.color, view.alpha,
+                         view.bucketCount, view.channelCount, view.pixelCount);
+
+    switch (params.combine) {
+    case BucketCombine::FrontToBackOver:
+        compositeBucketsFrontToBack(view.color, view.alpha,
+                                    view.bucketCount, view.channelCount,
+                                    view.pixelCount, outColor, outAlpha);
+        return;
+
+    case BucketCombine::CoveragePartition:
+        for (std::ptrdiff_t i = 0; i < view.pixelCount; ++i) {
+            compositePixelCoveragePartition(view.color + i,
+                                            view.alpha + i,
+                                            view.weight + i,
+                                            view.bucketCount,
+                                            view.channelCount,
+                                            view.pixelCount,
+                                            outColor + i,
+                                            outAlpha + i);
+        }
+        return;
+
+    default:
+        // Unreachable; the node's switches all carry a default + a trailing
+        // return by standing convention.  It routes to the same rule as
+        // ScatterParams' own default, so a garbage enum value renders what an
+        // unset one would rather than silently switching candidates — and
+        // NOT to plain `over`, which is the candidate measured (M1.P3.T2
+        // review) to deposit up to +94% too much alpha for a fragment split
+        // across two buckets at partial kernel coverage.
+        for (std::ptrdiff_t i = 0; i < view.pixelCount; ++i) {
+            compositePixelCoveragePartition(view.color + i,
+                                            view.alpha + i,
+                                            view.weight + i,
+                                            view.bucketCount,
+                                            view.channelCount,
+                                            view.pixelCount,
+                                            outColor + i,
+                                            outAlpha + i);
+        }
+        return;
+    }
 }
 
 } // namespace deepc

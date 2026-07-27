@@ -1,8 +1,8 @@
 ---
 title: DeepCDefocus — deep-input, flat-output defocus node
-status: paused
-current: M1.P3.T2
-pm_heartbeat: 2026-07-26T18:05:00-04:00
+status: running
+current: M1.P3.T7
+pm_heartbeat: 2026-07-26T20:48:00-04:00
 ship: pr-per-milestone
 ---
 
@@ -90,18 +90,21 @@ node; v3 (Milestone 3) adds a CUDA backend behind the seams v1/v2 leave in place
 2026-07-26: build both candidate composites behind an internal flag at M1.P3.T2 and decide from
 rendered pixels at M1.P3.T5's gate. See that milestone file's Decisions.)
 
-**Where things stand (paused 2026-07-26T18:20-04:00).** Phases 1.0, 1.1 and 1.2 are complete and
-committed; Phase 1.3 has T0, T1 and T6 done. `current: M1.P3.T2` (`scatterBandCPU`) is the next task
-and has not been started — nothing is half-written. Remaining in this milestone: P3 T2/T3/T4/T5, then
-Phase 1.4 and Phase 1.5. Three tasks were added to the plan by execution findings (M1.P3.T0, M1.P3.T6,
-both now done, and the enlarged M1.P3.T4 test list). No PR has been opened — `ship: pr-per-milestone`
-puts that at M1's verification gate, which is still several tasks away. The branch
+**Where things stand (2026-07-26T20:48-04:00).** Phases 1.0, 1.1 and 1.2 are complete and committed;
+Phase 1.3 has T0, T1, T6 and T2 done. `current: M1.P3.T7` — a new S task that wires `DeepCDefocus`
+into `src/CMakeLists.txt`, which turns out never to have listed it, so every earlier "the local build
+compiles clean" gate was vacuous (the files were compiled by hand instead, so nothing was missed).
+Remaining in this milestone: P3 T7/T8/T3/T4/T5 in that order, then Phase 1.4 and Phase 1.5. Five tasks
+have now been added by execution findings (M1.P3.T0, T6, T7, T8, plus the enlarged M1.P3.T4 test list).
+No PR yet — `ship: pr-per-milestone` puts that at M1's verification gate. The branch
 `claude/deep-defocus-node-plan-o0ld83` is committed but NOT pushed.
 
-**Carried obligations for whoever resumes:** M1.P3.T2 must build BOTH bucket-composite candidates
-behind a flag (user's decision); M1.P3.T4 owes a parent-reconstruction test for the composition
-contract and a `tidyOverlapping()` termination fuzz test; M1.P3.T5 must apply the ray-distance
-correction in `computeDepthRange()` as well as the flatten, and must decide the bucket composite from
-rendered scenes; and the milestone PR body must carry the shipped-node release note from
-`PLAN/DECISIONS/2026-07-26-tidyoverlapping-single-pass.md` and
+**Carried obligations for whoever resumes:** M1.P3.T8 must fix the volumetric-split half of the
+coverage double-count *before* M1.P3.T5's bake-off, which is not meaningful on scenes (f)/(g)/(i)
+until then; M1.P3.T4 and M1.P3.T5 must set `ScatterParams::combine` explicitly rather than relying on
+its provisional default, and T4 owes a parent-reconstruction test, a `tidyOverlapping()` termination
+fuzz test, and the single-fragment energy identity; M1.P3.T5 must apply the ray-distance correction in
+`computeDepthRange()` as well as the flatten, use a steep ramp for scene (g), and decide the bucket
+composite from rendered scenes; and the milestone PR body must carry the shipped-node release note
+from `PLAN/DECISIONS/2026-07-26-tidyoverlapping-single-pass.md` and
 `PLAN/DECISIONS/2026-07-26-volumetric-tidying-semantics.md`.
