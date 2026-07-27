@@ -1,8 +1,8 @@
 ---
 title: DeepCDefocus — deep-input, flat-output defocus node
 status: running
-current: M1.P3.T5
-pm_heartbeat: 2026-07-27T04:10:00-04:00
+current: M1.P3.T14
+pm_heartbeat: 2026-07-27T06:30:00-04:00
 ship: pr-per-milestone
 ---
 
@@ -91,17 +91,19 @@ node; v3 (Milestone 3) adds a CUDA backend behind the seams v1/v2 leave in place
 2026-07-26: build both candidate composites behind an internal flag at M1.P3.T2 and decide from
 rendered pixels at M1.P3.T5's gate. See that milestone file's Decisions.)
 
-**Where things stand (2026-07-27T04:10-04:00).** Phases 1.0, 1.1 and 1.2 are complete and committed;
-Phase 1.3 is complete except its last task: T0, T1, T6, T2, T7, T8, T9, T3, T10, T11 and T4 are all
-done. `current: M1.P3.T5` — wiring the scatter into `engine()` and running validation scenes (a)–(l),
-the milestone's core correctness gate, which also decides the bucket composite AND the holdout
-interpolant from rendered pixels. `tests/test_defocus_scatter.cpp` now exists (26 cases, mutation-
-verified at 40 killed / 6 verified-equivalent over the review's independent 46-mutation list), so every
-contract T5 builds on is pinned.
-Remaining in this milestone: P3 T5 (wiring) and T12 (the validation-scene sweep and both bake-off
-decisions, split out of T5 so each has a real gate), then Phase 1.4 and Phase 1.5. Nine tasks
-have now been added by execution findings (M1.P3.T0, T6, T7, T8, T9, T10, T11, T12, plus the enlarged
-M1.P3.T4 test list).
+**Where things stand (2026-07-27T06:30-04:00).** Phases 1.0, 1.1 and 1.2 are complete and committed;
+Phase 1.3 has T0, T1, T6, T2, T7, T8, T9, T3, T10, T11 and T4 done. **M1.P3.T5's wiring is landed and
+the node now genuinely defocuses**, but T5 is deliberately left OPEN: its review found that scene (a)'s
+size-0 parity gate fails (up to 2.4e-01, ~12% of pixels) because same-pixel fragments collide in one
+bucket and the composite clamps coverage and ordering away together — a defect in the bucket
+accumulation that T5 merely put on the cook path — and that abort recovery cannot be exercised headless
+at all. `current: M1.P3.T14`, a three-line fix for something that has been wrong since the project
+began: `CMAKE_BUILD_TYPE` is unset, so the CMake build has never passed an `-O` flag, and the shipped
+plugin contains **zero** vectorized loops against 396 at `-O3`.
+Remaining in this milestone: P3 T14 (build flags), T13 (the bucket-collision defect), then re-run T5's
+gate, then T12 (validation sweep + both bake-offs), then Phase 1.4 and Phase 1.5. Eleven tasks
+have now been added by execution findings (M1.P3.T0, T6, T7, T8, T9, T10, T11, T12, T13, T14, plus the
+enlarged M1.P3.T4 test list).
 No PR yet — `ship: pr-per-milestone` puts that at M1's verification gate. The branch
 `claude/deep-defocus-node-plan-o0ld83` is committed but NOT pushed.
 

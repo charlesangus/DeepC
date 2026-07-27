@@ -184,11 +184,15 @@ namespace {
 // Finite non-positive depths are deliberately left alone: signedCocPixels()
 // already specifies d <= 0 -> radius 0, and rewriting them would turn a
 // behind-camera sample into a near-field one clamped to max_radius.
+//
+// THE RULE ITSELF LIVES IN THE HEADER (sanitizeFragmentDepth), because the
+// node's depth-range pass has to apply exactly this one — a range measured
+// under a different rule is the "two passes disagreeing about depth" failure
+// the milestone names for computeDepthRange().  This is a forwarder, kept so
+// the call sites below read as they did.
 inline float sanitizeSampleDepth(float v)
 {
-    if (std::isfinite(v))
-        return v;
-    return (v > 0.0f) ? DepthBuckets::kMaxDepth : 0.0f;
+    return sanitizeFragmentDepth(v);
 }
 
 // The containing bucket, used as the pre-merge grouping key so a merge can
@@ -310,18 +314,11 @@ void flattenPixelToSoA(const FlattenParams& params,
     // radial filmback offset) but applies to every sample's endpoints, so it
     // is folded into the same pass.  It scales both endpoints by one positive
     // factor, so it is monotone and cannot reorder the list.
-    float rayScale = 1.0f;
-    if (params.depthIsRayDistance) {
-        const float rMm = filmbackRadiusMm(static_cast<float>(x) + 0.5f,
-                                           static_cast<float>(y) + 0.5f,
-                                           params.coc._formatWidthPx,
-                                           params.formatHeightPx,
-                                           params.coc._filmbackWidthMm,
-                                           params.coc._pixelAspect);
-        rayScale = rayDistanceToZ(1.0f, params.coc._focalLengthMm, rMm);
-        if (!(rayScale > 0.0f) || !std::isfinite(rayScale))
-            rayScale = 1.0f;
-    }
+    //
+    // The factor comes from rayDepthScaleAt() rather than being recomputed
+    // here, so the holdout SoA's `depthScale` and the node's depth-range pass
+    // are provably the same number at the same pixel (see that function).
+    const float rayScale = rayDepthScaleAt(params, x, y);
 
     for (std::size_t i = 0; i < samples.size(); ++i) {
         SampleRecord& s = samples[i];

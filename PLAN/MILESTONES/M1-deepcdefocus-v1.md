@@ -255,6 +255,8 @@ l. small-CoC transition: shallow depth ramp crossing 0–2px CoC ⇒ no chatter/
 | SoA fragment memory outside the `memory_limit` formula | Med | 113 B/fragment resident ⇒ ~2.4GB for one 4K band at 20spp, dwarfing the bucket planes (≈100 B / ~2.1GB since M1.P3.T10 dropped the boundary pair). Formula extended at M1.P3.T1 (see Decisions); `reserveFragments()` collapses the capacity slack |
 | Non-terminating sample tidying on volumetric input | High | `deepc::tidyOverlapping()` looped forever on *any* overlapping volumetric pair — fixed during M1.P2.T2 (see Decisions); termination fuzz test added at M1.P3.T4 |
 | Holdout LUT erases fragments far in front of the holdout | High | The design's K+1 ΔCoC bucket boundaries are the wrong basis for depth occlusion — a solid card at z=50 occluded from z=10.9, 98% erasing a fragment at z=15. Found at M1.P3.T3's review; decoupled boundary set at M1.P3.T10 |
+| Optimisation flags never present in the built plugin | High | `CMAKE_BUILD_TYPE` unset since the project began, so the CMake build emits no `-O` at all: 0 vectorized loops and 0 FMA instructions in the shipped `.so` against 396 and 97 at `-O3 -mavx2 -mfma`. Every `-fopt-info-vec` result on record describes a hand-compiled object, not the module. Found at M1.P3.T5's review; fixed at M1.P3.T14, which must precede M1.P4.T2's perf gate |
+| Same-pixel fragments colliding in one bucket | High | Additive within-bucket accumulation lets `newArea` exceed 1 per pixel; the composite then clamps `cov` and `a` together and loses both coverage and ordering — 1.000 against a true 0.781 on two samples. Breaks size-0 `DeepToImage` parity outright (up to 2.4e-01, 12% of pixels). Third instance of the double-count class. M1.P3.T13 |
 | Coverage plane double-counted, inflating alpha and colour | High | Fractional-split half found and fixed at M1.P3.T2's review (2.0 vs honest 1.0; deposit once, into the nearer bucket). Volumetric-split half still open — M1.P3.T8, which must land before M1.P3.T5's bake-off |
 | Build gate not actually building the node | Med | `src/CMakeLists.txt` never listed `DeepCDefocus`; every Phase 1.2/1.3 "local build clean" was compiled by hand instead. Registration pulled forward to M1.P3.T7 |
 | Request/engine channel divergence | Low | Single `neededDeepChannels()` helper |
@@ -729,10 +731,87 @@ verified.
     in headless Nuke the node renders a defocused frame end to end on a simple deep scene (not black,
     not garbage, bbox padded, sparse regions still exactly black), **scene (a)'s size-0 flatten parity
     is still 0 ULP for point samples** now that the scatter rather than the old flatten path produces
-    it, and an aborted mid-cook still recovers cleanly. The full validation sweep (a)–(l) and both
+    it, and an aborted mid-cook still recovers cleanly. **STATUS: the wiring is landed and correct, but
+    this task is NOT closed** — its parity clause fails (M1.P3.T13 owns the defect, which is in the
+    bucket accumulation T5 merely put on the cook path, not in the wiring), and abort recovery could
+    not be exercised at all, since headless Nuke cannot trigger a recoverable mid-cook cancel
+    (`nuke.cancel()` from a timer thread does nothing; `SIGINT` kills the process). Re-run this gate
+    after T13; the abort clause needs an interactive or Viewer-driven check and must not be recorded as
+    verified until it gets one. The full validation sweep (a)–(l) and both
     bake-off decisions are **M1.P3.T12**, split out because they are a distinct body of work with
     their own gate — this task's job is to make the node actually render correctly, T12's is to prove
     it across the scene list and pick the two candidates.
+  - size: L
+
+- [ ] M1.P3.T14 — Default `CMAKE_BUILD_TYPE` to Release (run FIRST — everything downstream measures it)
+  - files: `CMakeLists.txt`
+  - approach: found at M1.P3.T5's review. **`CMAKE_BUILD_TYPE` is unset, so the milestone's own build
+    command has never passed an `-O` flag at all.** The compile line for both the plugin and the test
+    targets is `-D_GLIBCXX_USE_CXX11_ABI=1 -fPIC -DUSE_GLEW -msse … -mavx -std=gnu++17` and nothing
+    else. Consequences, measured: the shipped `DeepCDefocus.so` contains **0** `vfmadd`/`vmulps`/
+    `vaddps` where the same TU at `-O3 -mavx2 -mfma` contains **97**, and `-fopt-info-vec` reports **0**
+    vectorized loops against **396**. So the row-span auto-vectorization the entire performance design
+    rests on **has never existed in any binary the CMake build produced**, and every earlier task's
+    `-fopt-info-vec` evidence describes hand-compiled objects rather than the shipped module. Cost is
+    3.2× on the scatter suite (10.02s → 3.10s) and ~4.7× on a 1K cook. Smallest correct form: three
+    lines after `project(DeepC)` defaulting `CMAKE_BUILD_TYPE` to `Release` when the user hasn't set
+    it (never overriding an explicit choice, and leaving multi-config generators alone).
+    **Must run before M1.P4.T2**, not at M1.P5.T1 — P5.T1 lands after P4.T2's perf gate, so the gate
+    would otherwise profile the unoptimised module. Verified safe at T5's review: at `-O3` with the
+    *existing* flag set both suites are green and **zero `vfmadd`** is emitted, so the `fp-contract`
+    parity hazard stays untouched (it needs `-mfma`, which is deliberately absent until M1.P5.T1).
+  - verify: `cmake -S . -B build/local-17.0 -D Nuke_ROOT=/usr/local/Nuke17.0v3` with no build type
+    given now compiles at `-O3`; confirm from the actual compile line, not from the cache alone.
+    `-fopt-info-vec` on the scatter TU reports vectorized loops where it reported none. Both suites
+    green. **`DeepToImage` parity still 0 ULP** — that is the whole risk of turning on optimisation,
+    and the `#pragma GCC optimize("fp-contract=off")` guard is what should hold it. An explicit
+    `-DCMAKE_BUILD_TYPE=Debug` must still win.
+  - size: S
+
+- [ ] M1.P3.T13 — Same-pixel bucket collisions break the size-0 flatten (run BEFORE T12)
+  - files: `src/DeepCDefocusScatter.h`/`.cpp`, `tests/test_defocus_scatter.cpp`
+  - approach: found at M1.P3.T5's review, which measured it far past what T5 itself reported. **Within-
+    bucket accumulation is additive and the `newArea` plane can exceed 1 per pixel; the composite then
+    clamps both `cov` and `a` into [0,1] and loses the coverage and the ordering together.** Plane dump
+    from the worst 2-sample case (z=9.063 α=0.4667, z=11.039 α=0.5899, K=8): `bucket[6] alpha=1.0127
+    newArea=2.0 colocated=0.0` — *both* fragments' heads claimed new area in the same bucket, `cov`
+    clamps 2.0→1.0, `a` clamps 1.0127→1.0, `local = a/cov = 1.0`, and the bucket reads fully opaque:
+    output **1.000 against a true 0.781** (+0.219 α, +0.269 colour). This is the third instance of the
+    "Coverage plane double-counted" High risk.
+    **The trigger**: pre-merge groups by `bucketOfContaining()` (`DeepCDefocusScatter.cpp:401`) while a
+    Point fragment deposits via `bucketOf()` (`:255`). Two same-pixel fragments in *different*
+    containing buckets can share a `bucketOf` index, so they are never merged and both deposit `w=1` of
+    new area into the same bucket. Note T5's implementer diagnosed this as the `C_k : D_k` area-ratio
+    split being depth-order-blind; that is a real but *sub-dominant* case — in the dump above
+    `colocated == 0`, so that branch isn't even engaged.
+    Magnitude (scene (a) config, K=16, `pre_merge` ON, 2000 random pixels per count) — note it is
+    **bimodal**, which is why spot checks read "3–5 ULP": median |dα| ~2e-08 at every count, but max
+    **1.73e-01 at 2 spp / 2.05e-01 at 3 / 2.38e-01 at 5 / 2.32e-01 at 20**, with **5.7% / 9.1% / 11.8%
+    / 3.0%** of pixels wrong by >1e-3. Even **1 spp is not bit-exact today** (247–266 of 300).
+    **Three fixes are already disproved and must not be re-tried**: whole-weight (`bucketOfContaining`)
+    on the sharp path alone — fixes 1 spp exactly (300/300) and gets n≥2 inside the ≤2e-07 gate, but
+    only with `pre_merge` ON (OFF gives 0.946 → 1.000), it steps **0.700 → 0.900 at radius 0.5**, and
+    decisively it **defeats the K knob**, which is the design's own stated mitigation for within-bucket
+    ordering loss (RMS over 27 configs at K=8/16/32/64 — baseline 1.51e-01 / 7.96e-02 / 2.01e-02 /
+    5.69e-03 converges; whole-weight 9.06e-02 / 1.35e-01 / 5.94e-02 / 3.03e-02 does not); merge-key =
+    deposit bucket alone (worst 2.2e-01); both together (2.4e-01 — the key and deposit disagree again in
+    the opposite direction). Depositing coverage into both buckets is also closed off (M1.P3.T2's
+    review, +8.29% double-count). Candidates worth exploring: merge by the deposit **pair**, so no two
+    unmerged same-pixel point fragments share either bucket; pre-composite a pixel's sharp fragments
+    per bucket before deposit; or a per-pixel-per-bucket "already claimed" marker so a second same-pixel
+    deposit lands as co-located rather than new area.
+    **Also note validation scene (l) already fails on current code** independently of any threshold
+    crossing: a two-layer flat field (truth 0.70) wanders 0.683–0.768 across the ramp, max step 9.19e-02.
+  - verify: (1) scene (a) at size 0, K ∈ {4,8,16,32,64,128}, 1–20 spp, ≥2000 random pixels per count —
+    report **median and tail**, and require max |dα| ≤ 2e-07 with **0% of pixels >1e-3**, at `pre_merge`
+    both ON and OFF. (2) The two-layer flat field stays **K-convergent**: RMS must decrease monotonically
+    in K and beat the baseline row above at every K. (3) No step at the sharp threshold on a 0–2px ramp:
+    max step across a threshold crossing ≤ max step elsewhere. (4) Two existing tests move and must be
+    re-pinned **with an explicit argument, not a tolerance bump** — `"flattenPixelToSoA reproduces an
+    independent tidy + split + merge reference"` and `"two distinct co-located point parents (PINNED)"`;
+    the latter (`tests/test_defocus_scatter.cpp:2594`) currently pins `newArea = 2.0` and alpha
+    `0.694518` against a true `0.58`, i.e. **it pins the bug** and must be corrected rather than
+    preserved. Local build and both suites green.
   - size: L
 
 - [ ] M1.P3.T12 — Validation scenes (a)–(l) and both bake-off decisions
@@ -880,6 +959,45 @@ verified.
 
 ## Decisions
 
+- 2026-07-27 — **M1.P3.T5 wired the scatter into `engine()` and the node defocuses — but the task is
+  NOT closed.** Two of its four gate clauses did not hold. (i) **Scene (a)'s size-0 parity fails**, and
+  the defect is in the bucket accumulation rather than in T5's wiring, which merely put it on the cook
+  path — recorded and specified as **M1.P3.T13**, which must land before M1.P3.T12. (ii) **Abort
+  recovery was never actually exercised**: headless Nuke cannot trigger a recoverable mid-cook cancel
+  (`nuke.cancel()` from a timer thread has no effect; `SIGINT` kills the process), so T5's implementer's
+  "next cook 0/24576 samples different" was not reproducible. What *was* confirmed instead: bitwise
+  determinism across four independent processes (identical sha256), a forced full re-cook bitwise
+  identical, correct disconnect/reconnect, and — usefully — that an **upstream failure mid-cook neither
+  published nor corrupted the cache** (a missing-file `DeepRead` raised, the cache came back unchanged,
+  the forced recompute was bitwise identical). **Do not record abort recovery as verified**; it needs an
+  interactive or Viewer-driven pass.
+  What *did* verify: the node renders end to end (32×32 card at z=3, Manual size 12 ⇒ radius 28.0px,
+  support exactly 88px both axes, plateau alpha 0.4156817 against the analytic 0.4157517 — 1.68e-4
+  relative); sparse regions are **exactly** black (48,640 pixels bitwise zero on all four channels, no
+  denormals, the disc rim a hard cut-in rather than a decaying tail); and the holdout works exactly as
+  designed — alpha exactly 0.0 and exactly 1.0 with no other value present, the transition **one pixel**
+  wide, a foreground in front of the holdout surviving with its own colour while the background at the
+  same x erases to exact 0, and the matte AOV exact and computed as `−expm1(Σ log1p(−a))` rather than
+  `1 − boundaryT`. Enabling the AOV leaves RGBA bitwise identical.
+  Two figures T5's implementer reported are wrong as recorded: colour:alpha is **0.80001**, not "exactly
+  0.8" (the sharp path does give exactly `float(0.8)`; the drift enters through the scatter/LUT
+  normalisation), and the bbox pad of 41 was measured at `max_radius=40` rather than the default 100.
+  The **formula** is right and verified across seven settings: `ceil(max_radius + 0.5·edge_softness)`.
+- 2026-07-27 — **Plain front-to-back `over` — bucket-composite candidate 1 — is unshippable on any
+  split parent, and M1.P3.T12 can decide that half of the bake-off on energy alone.** On a card carrying
+  a thin volumetric span it gives centre alpha exactly `1−(1−0.41575)^K` (0.8834 / 0.9864 / 0.99982 /
+  0.99999994 at K=4/8/16/32) and total `Σ alpha` of **2794.8 at K=4 and 4779.1 at K=16 against an input
+  total of 1024.0** — validation scene (c) failed by **367%**, and not `depth_layers`-invariant.
+  Coverage-partition reads **1023.998** (2.0e-6 relative) with **identical bits at every K**. This is
+  what M1.P3.T9's fourth plane exists to prevent — `splitSpanAtBoundaries()` cuts the span into K parts,
+  coverage-partition telescopes them back to the parent through the coverage-head/co-located machinery,
+  and plain `over` ignores the area planes and composites each part as an independent layer — but the
+  magnitude is worth pinning. T12 still owes the **point-fragment** cases from pixels.
+- 2026-07-27 — **The bbox pad is driven by `max_radius`, never by the measured CoC**, so at `size = 0`
+  the output is still padded by 101: `(0,-1,64,66)` → `(−101,−102,266,268)`. `bboxPadX()` is now the
+  only radius consumer that uses neither the measured `rMax` nor `_proxyScale`. At 4K that is ~202
+  extra rows and columns of band compute whenever the actual radius is small — one for M1.P4.T2 to
+  weigh, since the pad must stay conservative enough not to clip scattered energy at the frame edge.
 - 2026-07-27 — **The fourth "clamp one of a premultiplied pair and not the other" was the first one
   reachable from production, and it was shipping fog interiors 66% too bright.**
   `compositePixelCoveragePartition`'s final statement clamped `accAlpha` to [0,1] with no matching

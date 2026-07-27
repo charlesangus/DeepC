@@ -4,15 +4,25 @@
 //
 //  DeepCDefocus — Deep-input, flat-output defocus/DOF node
 //
-//  Phase 1.2 skeleton (M1.P2.T1): Iop subclass shape, input wiring, and the
-//  full knob set from the milestone design doc. No flatten behaviour lands
-//  here — that is M1.P2.T2. _validate()/_request()/engine() are present only
-//  as the minimum safe overrides: Iop's defaults for the first two reach the
-//  inputs through a static_cast<Iop*>, which is undefined behaviour (and a
-//  verified Nuke core dump) against this node's DeepOp inputs, and engine()
-//  is stubbed to the one invariant the design mandates unconditionally —
-//  row.erase(channels) as its first statement, so a premature call cannot
-//  emit garbage into sparse deep pixels.
+//  State: M1.P3.T5 — the node defocuses.  engine() serves rows out of a
+//  hash-keyed frame cache that one render thread fills, under a single
+//  frame-wide lock, by:
+//
+//    computeDepthRange()  alpha-weighted DeepFront/DeepBack/Alpha pass
+//      -> DepthBuckets (bounded ΔCoC) + HoldoutBoundaries (uniform in Z,
+//         frame-global) + DiscKernelLUT over the MEASURED radius range
+//    computeBand() per horizontal band:
+//         fetch band +/- padY source rows -> flattenPixelToSoA
+//      -> holdout fetch (skipped entirely when it cannot matter) -> HoldoutLut
+//      -> scatterBandCPU -> resolveBandCPU (saturate down, then composite)
+//      -> write the band's disjoint region of the flat frame
+//
+//  Per-band concurrency is M1.P4.T1: this phase is deliberately serial so
+//  correctness lands before the execution model changes.  Two standing
+//  invariants that predate this task and outlive it: _validate()/_request()
+//  must NEVER fall through to Iop's (they reach inputs through a bare
+//  static_cast<Iop*> and this node's inputs are DeepOps — a verified Nuke
+//  core dump), and row.erase(channels) is engine()'s first statement.
 //
 //  Node shape (PLAN/MILESTONES/M1-deepcdefocus-v1.md, "Node shape"):
 //    - Iop subclass (not DeepFilterOp — this is the first in-repo node that
@@ -46,6 +56,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -89,6 +101,28 @@ static const char* const worldUnitsNames[] = {
     "mm", "cm", "dm", "m", "in", "ft", nullptr
 };
 
+// --- BAKE-OFF KNOBS (M1.P3.T5, deleted at M1.P3.T12) ------------------------
+//
+// The milestone carries two undecided candidates that must be judged from
+// rendered pixels rather than derived: the bucket composite (Decisions,
+// 2026-07-26, "Bucket-composite alpha deficit") and the holdout interpolant's
+// opaque-step behaviour (M1.P3.T11).  Both are runtime enums in the scatter
+// core precisely so ONE build can render every candidate — but the scatter is
+// only reachable through this node, so without these two knobs M1.P3.T12 has
+// no way to select them.  Every render therefore sets `combine`,
+// `holdoutInterp` and `pre_merge` EXPLICITLY from knobs and never relies on a
+// default (the ScatterParams default is documented as provisional and
+// non-authoritative).
+//
+// M1.P3.T12 deletes the losing paths, their enum values and these two knobs.
+static const char* const bucketCombineNames[] = {
+    "Front-to-back over", "Coverage partition", nullptr
+};
+
+static const char* const holdoutInterpNames[] = {
+    "Log chord", "Midpoint step", "Linear in T", nullptr
+};
+
 // ---------------------------------------------------------------------------
 class DeepCDefocus : public DD::Image::Iop
 {
@@ -130,16 +164,25 @@ class DeepCDefocus : public DD::Image::Iop
     float _mergeTolerance;       // Float, default 0.25px, 0-2px
     float _memoryLimit;          // Float GB, default 4.0, 1-64
 
+    // --- Bake-off (M1.P3.T5; both knobs deleted at M1.P3.T12) --------------
+    int   _bucketCombine;        // Enum {FrontToBackOver, CoveragePartition}
+    int   _holdoutInterp;        // Enum {LogChord, MidpointStep, LinearInT}
+
     // ----------------------------------------------------------------------
     // Derived state — rebuilt by _validate(), read by _request()/engine().
     // ----------------------------------------------------------------------
-    deepc::CocParams _cocParams;    // cached lens state (consumed by the scatter
-                                    // phases; _validate deliberately does NOT
-                                    // build the kernel LUT here — that waits
-                                    // until M1.P3.T5 knows the frame's measured
-                                    // CoC range, see the milestone Decisions)
+    deepc::CocParams _cocParams;    // cached lens state, ALREADY PROXY-SCALED
+                                    // (applyProxyScale() is called exactly once
+                                    // per _validate, on freshly built params);
+                                    // _validate deliberately does NOT build the
+                                    // kernel LUT — that waits until
+                                    // computeFrame() knows the frame's measured
+                                    // CoC range, see the milestone Decisions
+    float _proxyScale;              // current format width / full-size width
+    float _formatHeightPx;          // current (proxy) format height, for the
+                                    // ray-distance correction's filmback offset
     ChannelSet _outChannels;        // advertised output: selection u alpha (+ matte)
-    ChannelSet _flattenChannels;    // what the flatten writes: selection u alpha
+    ChannelSet _flattenChannels;    // what the cook writes: selection u alpha
 
     // ----------------------------------------------------------------------
     // Frame cache.
@@ -224,6 +267,10 @@ public:
         _preMerge(true),
         _mergeTolerance(0.25f),
         _memoryLimit(4.0f),
+        _bucketCombine(static_cast<int>(deepc::BucketCombine::CoveragePartition)),
+        _holdoutInterp(static_cast<int>(deepc::HoldoutInterp::LogChord)),
+        _proxyScale(1.0f),
+        _formatHeightPx(1080.0f),
         _outChannels(Mask_None),
         _flattenChannels(Mask_None)
     {
@@ -393,6 +440,22 @@ public:
         Float_knob(f, &_memoryLimit, IRange(1.0, 64.0), "memory_limit", "memory limit (GB)");
         Tooltip(f, "Caps concurrent in-flight bands (floors at 1 band, then "
                     "shrinks the band height — never deadlocks at 0).");
+
+        // --- Bake-off (TEMPORARY — deleted at M1.P3.T12) -------------------
+        Divider(f, "Bake-off (temporary)");
+
+        Enumeration_knob(f, &_bucketCombine, bucketCombineNames,
+                         "bucket_combine", "bucket combine");
+        Tooltip(f, "TEMPORARY: which of the two candidate bucket composites "
+                    "resolves the depth buckets. Judged from rendered pixels at "
+                    "M1.P3.T12; the losing path and this knob are then deleted.");
+
+        Enumeration_knob(f, &_holdoutInterp, holdoutInterpNames,
+                         "holdout_interp", "holdout interp");
+        Tooltip(f, "TEMPORARY: which interpolant the holdout visibility LUT "
+                    "uses where a bracket's far transmittance is bitwise zero "
+                    "(an opaque holdout, or a dense enough alpha<1 stack). "
+                    "Judged from rendered pixels at M1.P3.T12.");
     }
 
     // ------------------------------------------------------------------
@@ -413,6 +476,58 @@ public:
         if (!(_edgeSoftness > 0.0f))
             return 0.0f;
         return std::min(_edgeSoftness, kEdgeSoftnessCap);
+    }
+
+    // K, the bucket count. DepthBuckets' own storage is sized for [4, 128], so
+    // this clamp is not cosmetic: the memory formula K*W*B*(C+3)*4 is only
+    // bounded because of it, and buildBoundedDeltaCoc() would clamp anyway.
+    int clampedDepthLayers() const
+    {
+        return std::max(deepc::DepthBuckets::kMinBuckets,
+                        std::min(_depthLayers, deepc::DepthBuckets::kMaxBuckets));
+    }
+
+    // Pre-merge tolerance, in CoC-RADIUS pixels (milestone Decisions). It is a
+    // radius, so it is proxy-scaled exactly like the radii it is compared
+    // against — applyProxyScale() cannot do it, because CocParams does not
+    // carry the tolerance (same reason edge_softness is scaled at the LUT
+    // build rather than in the params).
+    float clampedMergeTolerancePx() const
+    {
+        const float t = (_mergeTolerance > 0.0f) ? std::min(_mergeTolerance, 16.0f) : 0.0f;
+        return t * _proxyScale;
+    }
+
+    // memory_limit, in bytes. Soft range 1-64 GB; the floor is deliberately
+    // well below the documented minimum so a user who types 0 gets the
+    // smallest band this phase can compute rather than a division by zero.
+    double memoryLimitBytes() const
+    {
+        const double gb = (_memoryLimit > 0.0625f) ? static_cast<double>(_memoryLimit) : 0.0625;
+        return std::min(gb, 1024.0) * 1024.0 * 1024.0 * 1024.0;
+    }
+
+    // Bake-off selections, validated rather than cast (an out-of-range enum
+    // index from a corrupted script must not become an undefined enum value).
+    deepc::BucketCombine clampedBucketCombine() const
+    {
+        return (_bucketCombine == static_cast<int>(deepc::BucketCombine::FrontToBackOver))
+             ? deepc::BucketCombine::FrontToBackOver
+             : deepc::BucketCombine::CoveragePartition;
+    }
+
+    deepc::HoldoutInterp clampedHoldoutInterp() const
+    {
+        switch (_holdoutInterp) {
+            case static_cast<int>(deepc::HoldoutInterp::MidpointStep):
+                return deepc::HoldoutInterp::MidpointStep;
+            case static_cast<int>(deepc::HoldoutInterp::LinearInT):
+                return deepc::HoldoutInterp::LinearInT;
+            case static_cast<int>(deepc::HoldoutInterp::LogChord):
+            default:
+                return deepc::HoldoutInterp::LogChord;
+        }
+        return deepc::HoldoutInterp::LogChord;
     }
 
     // Output bbox pad, X. The anti-aliased disc edge is *centred* on the rim,
@@ -482,7 +597,8 @@ public:
     // It is built once the frame's measured CoC range is known, immediately
     // after computeDepthRange() at M1.P3.T5 — building it eagerly over
     // [0, max_radius] costs ~1.0GB at max_radius=500 (milestone Decisions).
-    // This task has no scatter at all, so it needs no LUT.
+    // _validate() cannot know that range: it is measured per cook, so the LUT
+    // belongs to computeFrame() and nothing here may depend on it.
     // ------------------------------------------------------------------
     void _validate(bool forReal) override
     {
@@ -540,6 +656,18 @@ public:
         // format width makes the mm knobs resolution-independent, so proxy
         // scaling comes for free.
         const float formatWidth = fmt ? static_cast<float>(fmt->width()) : 1920.0f;
+        _formatHeightPx = fmt ? static_cast<float>(fmt->height()) : 1080.0f;
+
+        // Proxy scale = current format width / full-size format width. The mm
+        // knobs are resolution-independent for free (formatWidth above is the
+        // CURRENT format), but the PIXEL-unit ones — max_radius, Manual-mode
+        // size, edge_softness, merge_tolerance — are not: see applyProxyScale().
+        const Format* full = deepInfo.fullSizeFormat();
+        const float fullWidth = full ? static_cast<float>(full->width()) : formatWidth;
+        _proxyScale = (fullWidth > 0.0f && formatWidth > 0.0f)
+                    ? (formatWidth / fullWidth) : 1.0f;
+        if (!(_proxyScale > 0.0f) || !std::isfinite(_proxyScale))
+            _proxyScale = 1.0f;
 
         _cocParams = deepc::makeCocParams(
             (_cocMode == static_cast<int>(deepc::CocMode::Manual)) ? deepc::CocMode::Manual
@@ -555,6 +683,11 @@ public:
             std::max(0.0f, _backCocMult),
             static_cast<float>(clampedMaxRadius()),
             std::max(0.0f, _size));
+
+        // EXACTLY ONCE, on freshly built params (applyProxyScale mutates and
+        // re-derives). From here on _cocParams is in proxy pixels, which is the
+        // space every radius, bucket boundary and kernel entry lives in.
+        deepc::applyProxyScale(_cocParams, _proxyScale);
 
         // Mirror DeepToImage: propagate our caching state to the deep source.
         src->op()->cached(cached());
@@ -687,13 +820,70 @@ private:
         return _cache;
     }
 
-    // ------------------------------------------------------------------
-    // computeFrame() — flatten the whole padded output box into planar
-    // floats. Called with _cacheLock held.
+    // ==================================================================
     //
-    // Returns false if the cook was aborted or an upstream deepEngine()
-    // failed; in that case the caller must not publish the buffer.
-    // ------------------------------------------------------------------
+    //  THE COOK (M1.P3.T5) — depth range, then band-by-band scatter
+    //
+    //  Sequence, all of it under _cacheLock, all of it serial (per-band
+    //  concurrency is M1.P4.T1 — correctness first, deliberately):
+    //
+    //    1. computeDepthRange()  one cheap full-frame DeepFront/DeepBack/
+    //                            Alpha pass, alpha-weighted
+    //    2. DepthBuckets         bounded-DeltaCoC, from that range
+    //       HoldoutBoundaries    uniform in Z over the SAME range, built ONCE
+    //                            per frame (a per-band set seams every band
+    //                            boundary — measured vis 0.0448 vs 1.0000 for
+    //                            one fragment either side of one)
+    //       DiscKernelLUT        over the frame's MEASURED radius range, with
+    //                            rMin = 0 (milestone Decisions, both halves)
+    //    3. for each band: fetch band +/- padY source rows -> SoA flatten ->
+    //                      holdout LUT -> scatterBandCPU -> saturate +
+    //                      resolveBandCPU -> write the band's disjoint region
+    //
+    //  Returns false if the cook was aborted or an upstream deepEngine()
+    //  failed; in that case the caller must not publish the buffer.
+    // ==================================================================
+
+    // Everything one band needs, plus the scratch that is reused across
+    // bands (and across cooks would be next — M1.P4.T1's per-thread state).
+    struct BandJob {
+        DeepOp* src     = nullptr;
+        DeepOp* holdout = nullptr;
+
+        const deepc::FlattenParams*     fp                = nullptr;
+        const deepc::DepthBuckets*      buckets           = nullptr;
+        const deepc::HoldoutBoundaries* holdoutBoundaries = nullptr;
+        const deepc::KernelSampler*     kernel            = nullptr;
+
+        DD::Image::Box srcBox;
+        DD::Image::Box holdoutBox;
+
+        const std::vector<Channel>* colorChannels = nullptr;
+        const std::vector<int>*     colorPlanes   = nullptr;
+        int alphaPlane = -1;
+        int mattePlane = -1;
+        int padY       = 0;
+
+        // bandY / bandHeight are filled per band; everything else (origin,
+        // width, sharp threshold, and BOTH bake-off selections) is set once,
+        // explicitly, from the knobs.
+        deepc::ScatterParams sp;
+
+        deepc::SampleSoA        soa;
+        deepc::FlattenScratch   flattenScratch;
+        deepc::ScatterScratch   scatterScratch;
+        deepc::BucketPlanes     planes;
+        deepc::HoldoutSampleSoA holdoutSamples;
+        deepc::HoldoutLut       holdoutLut;
+
+        std::vector<deepc::SampleRecord> samples;         // source scratch
+        std::vector<deepc::SampleRecord> holdoutRecords;  // holdout scratch
+
+        std::vector<float> bandColor;
+        std::vector<float> bandAlpha;
+        std::vector<float> bandMatte;
+    };
+
     bool computeFrame(FrameCache& fc)
     {
         DeepOp* src = input0();
@@ -714,55 +904,570 @@ private:
 
         fc.data.assign(nPlanes * fc.planeStride(), 0.0f);
 
-        // Which planes the flatten actually writes, and where the deep
-        // sample for each one lives. The matte AOV plane (if any) is
-        // deliberately left at 0: holdout visibility lands at M1.P3.T3, and
-        // 0 is the correct value for an unconnected holdout anyway.
-        std::vector<Channel> flatChannels;
-        std::vector<int>     flatPlanes;
+        // --- plane routing -------------------------------------------------
+        // ALPHA IS NOT A SCATTER CHANNEL. The bucket planes carry alpha as a
+        // first-class quantity (it is what the transmittance split, the
+        // saturation pass and both bucket composites operate on), so the
+        // scatter's channel list is the selection MINUS alpha and the
+        // composite's own outAlpha is what lands in the alpha plane. Carrying
+        // alpha as an ordinary channel as well would composite it through the
+        // colour path — a different expression — and the two would disagree.
+        std::vector<Channel> colorChannels;
+        std::vector<int>     colorPlanes;
         foreach(z, _flattenChannels) {
+            if (z == Chan_Alpha)
+                continue;
             const int p = fc.planeIndex(z);
             if (p >= 0) {
-                flatChannels.push_back(z);
-                flatPlanes.push_back(p);
+                colorChannels.push_back(z);
+                colorPlanes.push_back(p);
             }
         }
-        if (flatChannels.empty())
-            return true;
+        const int alphaPlane = fc.planeIndex(Chan_Alpha);
+        const int mattePlane = (_outputHoldoutMatte && _holdoutMatteChannel != Chan_Black)
+                             ? fc.planeIndex(_holdoutMatteChannel)
+                             : -1;
 
-        // Only rows/columns the deep source actually covers can carry
-        // samples; the rest of the padded box stays exactly 0.0. (Once
-        // scatter lands, the covered region widens by the CoC radius —
-        // that is M1.P3.T5's problem, not this task's.)
+        // Only pixels the deep source covers can carry samples; everything
+        // else in the padded box stays exactly 0.0 unless a disc reaches it.
         const DD::Image::Box srcBox = src->deepInfo().box();
-        if (!fc.box.intersects(srcBox))
+        if (srcBox.w() <= 0 || srcBox.h() <= 0 || !fc.box.intersects(srcBox))
             return true;
 
-        // Constructed from components rather than copy-initialised: the NDK's
-        // Box copy constructor trips -Wdeprecated-copy on this toolchain.
-        DD::Image::Box fetchBox(fc.box.x(), fc.box.y(), fc.box.r(), fc.box.t());
-        fetchBox.intersect(srcBox);
+        // --- flatten params, built ONCE ------------------------------------
+        // The depth-range pass, the source flatten and the holdout's
+        // depthScale all read this same instance, so they cannot disagree
+        // about the ray-distance correction (see rayDepthScaleAt()).
+        deepc::FlattenParams fp;
+        fp.coc                = _cocParams;              // proxy-scaled already
+        fp.preMerge           = _preMerge;               // EXPLICIT, never a default
+        fp.mergeTolerancePx   = clampedMergeTolerancePx();
+        fp.depthIsRayDistance = _depthIsRayDistance;
+        fp.formatHeightPx     = _formatHeightPx;
+        fp.channelCount       = static_cast<int>(colorChannels.size());
+        fp.groups             = deepc::makeSingleChannelGroup(fp.channelCount);
 
-        const ChannelSet need = neededDeepChannels();
+        // --- 1. the depth-range pass ---------------------------------------
+        float depthMin  = 0.0f;
+        float depthMax  = 0.0f;
+        bool  anyAlpha  = false;
+        if (!computeDepthRange(src, srcBox, fp, depthMin, depthMax, anyAlpha))
+            return false;
+        if (!anyAlpha)
+            return true;   // no contributing sample anywhere: frame stays black
 
-        std::vector<deepc::SampleRecord> samples;
-        std::vector<float>               accum(flatChannels.size(), 0.0f);
+        // --- 2. buckets, holdout boundary set, kernel LUT ------------------
+        const deepc::DepthBuckets buckets =
+            deepc::makeBoundedDeltaCocBuckets(fp.coc, depthMin, depthMax,
+                                              clampedDepthLayers());
 
-        for (int y = fetchBox.y(); y < fetchBox.t(); ++y) {
+        // FRAME-GLOBAL, never per band: a fragment near a band edge scatters
+        // into two bands, and per-band sets put a seam along every boundary.
+        const deepc::HoldoutBoundaries holdoutBoundaries =
+            deepc::makeUniformHoldoutBoundaries(buckets);
+
+        // The frame's MEASURED radius range. radiusPixels() is monotone away
+        // from the focal plane on each side, so the frame's largest radius is
+        // at one of the two ends of the measured depth range — no second pass
+        // is needed to find it. It is already clamped by max_radius (in proxy
+        // pixels) inside radiusPixels().
+        float rMax = std::max(deepc::radiusPixels(fp.coc, buckets.depthMin()),
+                              deepc::radiusPixels(fp.coc, buckets.depthMax()));
+        if (!(rMax > 0.0f) || !std::isfinite(rMax))
+            rMax = 0.0f;
+        // The LUT sanitises anything above its own cap to that cap, so clamp
+        // here too and keep the band geometry consistent with what the
+        // sampler will actually hand back.
+        rMax = std::min(rMax, deepc::DiscKernelLUT::kMaxSupportedRadius);
+
+        // edge_softness is proxy-scaled HERE. applyProxyScale() deliberately
+        // does not touch it — CocParams does not carry it — so the LUT build
+        // is where it lands (milestone brief, M1.P3.T5).
+        const float softness    = clampedEdgeSoftness() * _proxyScale;
+        const float pixelAspect = fp.coc._pixelAspect;
+
+        // rMin = 0, NOT the measured minimum (milestone Decisions,
+        // 2026-07-26): a query below rMin is clamped UP to the rMin kernel, so
+        // a measured rMin would visibly over-blur every radius between the
+        // sharp-path threshold and it. The range parameter exists to bound
+        // rMax, which is where the ~1.0GB worst case lives.
+        const deepc::DiscKernelLUT kernel(0.0f, rMax, softness, pixelAspect);
+
+        // --- 3. band decomposition -----------------------------------------
+        const int W = fc.box.w();
+        const int C = static_cast<int>(colorChannels.size());
+        const int K = buckets.bucketCount();
+
+        DeepOp* holdout = input1();
+        DD::Image::Box holdoutBox;
+        if (holdout) {
+            const DD::Image::Box& hb = holdout->deepInfo().box();
+            holdoutBox.set(hb.x(), hb.y(), hb.r(), hb.t());
+        }
+        const bool holdoutConnected = (holdout != nullptr)
+                                   && holdoutBox.w() > 0 && holdoutBox.h() > 0;
+
+        // A band's dest rows need source samples from band +/- the kernel's
+        // true vertical extent: (rMax + softness/2) * pixelAspect, the same
+        // quantity the output bbox is padded by.
+        const int padY = static_cast<int>(
+            std::ceil((rMax + 0.5f * softness)
+                      * ((pixelAspect > 0.0f && std::isfinite(pixelAspect)) ? pixelAspect : 1.0f)));
+
+        // B = clamp(2*maxRadius, 32, 256), then shrunk (never below 1 row)
+        // until the band's own scratch fits the memory limit. Every term is
+        // evaluated on CLAMPED values, never on raw knob values.
+        int bandHeight = deepc::clampi(static_cast<int>(std::ceil(2.0f * rMax)), 32, 256);
+        bandHeight = std::min(bandHeight, fc.box.h());
+        while (bandHeight > 1
+               && bandScratchBytes(K, C, W, bandHeight, holdoutConnected) > memoryLimitBytes()) {
+            bandHeight = std::max(1, bandHeight / 2);
+        }
+
+        // --- 4. the band loop ----------------------------------------------
+        BandJob job;
+        job.src               = src;
+        job.holdout           = holdoutConnected ? holdout : nullptr;
+        job.fp                = &fp;
+        job.buckets           = &buckets;
+        job.holdoutBoundaries = &holdoutBoundaries;
+        job.kernel            = &kernel;
+        job.srcBox.set(srcBox.x(), srcBox.y(), srcBox.r(), srcBox.t());
+        job.holdoutBox.set(holdoutBox.x(), holdoutBox.y(), holdoutBox.r(), holdoutBox.t());
+        job.colorChannels     = &colorChannels;
+        job.colorPlanes       = &colorPlanes;
+        job.alphaPlane        = alphaPlane;
+        job.mattePlane        = mattePlane;
+        job.padY              = padY;
+
+        job.sp.bandX         = fc.box.x();
+        job.sp.bandWidth     = W;
+        job.sp.sharpRadiusPx = deepc::kSharpRadiusPx;
+        // BOTH bake-off selections come from knobs, explicitly. The scatter
+        // core's defaults are documented as provisional and non-authoritative
+        // (milestone Decisions), and M1.P3.T12 has to render each candidate.
+        job.sp.combine       = clampedBucketCombine();
+        job.sp.holdoutInterp = clampedHoldoutInterp();
+
+        for (int y0 = fc.box.y(); y0 < fc.box.t(); y0 += bandHeight) {
+            if (aborted())
+                return false;
+            const int y1 = std::min(y0 + bandHeight, fc.box.t());
+            if (!computeBand(fc, job, y0, y1))
+                return false;
+        }
+
+        return true;
+    }
+
+    // ------------------------------------------------------------------
+    // bandScratchBytes() — the memory-limit formula, in one place
+    //
+    // The design reference's K*W*B*(C+3)*4 bucket planes, plus the holdout
+    // LUT's (K+1)*W*B*4 when a holdout is connected. It does NOT include the
+    // SoA fragment buffers, which dominate both (~100 B/fragment resident;
+    // milestone Decisions) but cannot be sized before the band is flattened —
+    // M1.P4.T1 budgets on the combined figure.
+    // ------------------------------------------------------------------
+    static double bandScratchBytes(int k, int c, int w, int h, bool holdout)
+    {
+        double bytes = static_cast<double>(
+            deepc::BucketPlanes::bytesForBand(k, c, w, h));
+        if (holdout) {
+            bytes += static_cast<double>(k + 1) * static_cast<double>(w)
+                   * static_cast<double>(h) * 4.0;
+        }
+        return bytes;
+    }
+
+    // ------------------------------------------------------------------
+    // computeDepthRange() — the frame's alpha-weighted depth range
+    //
+    // A separate, cheap, full-frame DeepFront/DeepBack/Alpha pass. It is what
+    // the ΔCoC bucket boundaries, the holdout boundary set and the kernel
+    // LUT's extent are all derived from, so getting it wrong is not a
+    // resolution question, it is a correctness one:
+    //
+    //   * IT APPLIES THE SAME RAY-DISTANCE -> Z CORRECTION THE FLATTEN
+    //     APPLIES (rayDepthScaleAt(), off the same FlattenParams). The
+    //     correction always SHRINKS depth, so a range measured without it
+    //     puts every corner-pixel sample below depthMin and piles the
+    //     out-of-range spans into the edge bucket.
+    //   * it sanitises depths with the flatten's own rule
+    //     (sanitizeFragmentDepth), for the same reason.
+    //
+    // ALPHA WEIGHTING. Samples with alpha <= 0 are skipped outright — the
+    // flatten drops them too (DeepToImage parity), so they are not content.
+    // Beyond that, the endpoints are accumulated into a log-spaced histogram
+    // weighted by alpha and the outermost bins carrying less than
+    // kDepthTailFraction of the frame's total alpha mass are clipped, so one
+    // stray alpha-1e-7 sample at the far clip cannot spend the whole bucket
+    // budget on empty depth. Clipping is SAFE, not merely cheap: bucketOf()
+    // and locateBoundary() clamp an out-of-range depth onto the nearest
+    // bucket, which is monotone, so front-to-back ORDER is preserved and only
+    // the depth RESOLUTION of the clipped tail is lost. The fragment's own
+    // radius is still computed from its own depth, so its blur is unchanged.
+    //
+    // Returns false only on abort / upstream failure. `anyAlpha` false means
+    // the frame carries no contributing sample at all.
+    // ------------------------------------------------------------------
+    bool computeDepthRange(DeepOp* src,
+                          const DD::Image::Box& srcBox,
+                          const deepc::FlattenParams& fp,
+                          float& depthMin,
+                          float& depthMax,
+                          bool&  anyAlpha)
+    {
+        depthMin = 0.0f;
+        depthMax = 0.0f;
+        anyAlpha = false;
+
+        const int    kBins   = 2048;
+        const double kTail   = 1e-4;   // of the frame's total alpha mass
+        const double logLo   = std::log(static_cast<double>(deepc::DepthBuckets::kMinDepth));
+        const double logHi   = std::log(static_cast<double>(deepc::DepthBuckets::kMaxDepth));
+        const double binPerL = static_cast<double>(kBins) / (logHi - logLo);
+
+        std::vector<double> hist(static_cast<size_t>(kBins), 0.0);
+        double total = 0.0;
+        float  exactLo = std::numeric_limits<float>::infinity();
+        float  exactHi = -std::numeric_limits<float>::infinity();
+
+        // DeepFront/DeepBack/Alpha only — the same three channels _request()
+        // asked the holdout for, through the same helper.
+        const ChannelSet need = neededHoldoutChannels();
+
+        for (int y = srcBox.y(); y < srcBox.t(); ++y) {
             if (aborted())
                 return false;
 
             DeepPlane deepRow;
-            if (!src->deepEngine(y, fetchBox.x(), fetchBox.r(), need, deepRow)) {
+            if (!src->deepEngine(y, srcBox.x(), srcBox.r(), need, deepRow)) {
                 Iop::abort();
                 return false;
             }
 
-            for (int x = fetchBox.x(); x < fetchBox.r(); ++x) {
-                flattenPixel(deepRow.getPixel(y, x), flatChannels, samples, accum);
+            for (int x = srcBox.x(); x < srcBox.r(); ++x) {
+                const DeepPixel pixel = deepRow.getPixel(y, x);
+                const size_t n = pixel.getSampleCount();
+                if (n == 0)
+                    continue;
 
-                for (size_t c = 0; c < flatPlanes.size(); ++c)
-                    fc.rowPtr(flatPlanes[c], y)[x - fc.box.x()] = accum[c];
+                const ChannelMap& have = pixel.channels();
+                if (!have.contains(Chan_DeepFront) || !have.contains(Chan_Alpha))
+                    continue;
+                const bool haveBack = have.contains(Chan_DeepBack);
+
+                const float rayScale = deepc::rayDepthScaleAt(fp, x, y);
+
+                for (size_t s = 0; s < n; ++s) {
+                    const float a = deepc::clampf(
+                        pixel.getUnorderedSample(s, Chan_Alpha), 0.0f, 1.0f);
+                    if (!(a > 0.0f))
+                        continue;
+
+                    const float zfRaw = pixel.getUnorderedSample(s, Chan_DeepFront);
+                    const float zbRaw = haveBack
+                                      ? pixel.getUnorderedSample(s, Chan_DeepBack)
+                                      : zfRaw;
+
+                    float z[2];
+                    z[0] = deepc::DepthBuckets::sanitizeDepth(
+                        deepc::sanitizeFragmentDepth(zfRaw) * rayScale);
+                    z[1] = deepc::DepthBuckets::sanitizeDepth(
+                        deepc::sanitizeFragmentDepth(zbRaw) * rayScale);
+
+                    for (int e = 0; e < 2; ++e) {
+                        if (z[e] < exactLo) exactLo = z[e];
+                        if (z[e] > exactHi) exactHi = z[e];
+
+                        int bin = static_cast<int>(
+                            (std::log(static_cast<double>(z[e])) - logLo) * binPerL);
+                        bin = deepc::clampi(bin, 0, kBins - 1);
+                        hist[static_cast<size_t>(bin)] += static_cast<double>(a);
+                        total += static_cast<double>(a);
+                    }
+                }
+                anyAlpha = true;
+            }
+        }
+
+        if (!anyAlpha || !(total > 0.0) || !(exactLo <= exactHi)) {
+            anyAlpha = false;
+            return true;
+        }
+
+        const double tail = total * kTail;
+
+        int b0 = 0;
+        for (double c = 0.0; b0 < kBins; ++b0) {
+            c += hist[static_cast<size_t>(b0)];
+            if (c > tail)
+                break;
+        }
+        int b1 = kBins - 1;
+        for (double c = 0.0; b1 > b0; --b1) {
+            c += hist[static_cast<size_t>(b1)];
+            if (c > tail)
+                break;
+        }
+        b0 = deepc::clampi(b0, 0, kBins - 1);
+        b1 = deepc::clampi(b1, b0, kBins - 1);
+
+        const float binLo = static_cast<float>(std::exp(logLo + b0 / binPerL));
+        const float binHi = static_cast<float>(std::exp(logLo + (b1 + 1) / binPerL));
+
+        depthMin = std::max(exactLo, binLo);
+        depthMax = std::min(exactHi, binHi);
+        if (!(depthMin <= depthMax) || !std::isfinite(depthMin) || !std::isfinite(depthMax)) {
+            depthMin = exactLo;    // clipping went degenerate: use the raw range
+            depthMax = exactHi;
+        }
+        return true;
+    }
+
+    // ------------------------------------------------------------------
+    // fillSampleRecords() — one DeepPixel -> the SampleRecord vector the
+    // POD flatten consumes. Returns false when the pixel has nothing usable
+    // (the same validity test the NDK's own DeepToImage applies).
+    //
+    // resize() only, never clear() + resize(): the vector is reused across
+    // every pixel of the band, and clear() would free every SampleRecord's
+    // channel vector, costing a malloc/free per sample per pixel.
+    // ------------------------------------------------------------------
+    static bool fillSampleRecords(const DeepPixel& pixel,
+                                  const std::vector<Channel>& chans,
+                                  std::vector<deepc::SampleRecord>& out)
+    {
+        const size_t n = pixel.getSampleCount();
+        if (n == 0)
+            return false;
+
+        const ChannelMap& have = pixel.channels();
+        if (!have.contains(Chan_DeepFront) || !have.contains(Chan_Alpha))
+            return false;
+
+        const bool   haveBack = have.contains(Chan_DeepBack);
+        const size_t nChan    = chans.size();
+
+        out.resize(n);
+        for (size_t s = 0; s < n; ++s) {
+            deepc::SampleRecord& rec = out[s];
+
+            const float zf = pixel.getUnorderedSample(s, Chan_DeepFront);
+            const float zb = haveBack ? pixel.getUnorderedSample(s, Chan_DeepBack) : zf;
+
+            // Left raw: flattenPixelToSoA() sanitises, ray-corrects and orders
+            // the endpoints itself, and it must be the one doing it.
+            rec.zFront = zf;
+            rec.zBack  = zb;
+            rec.alpha  = pixel.getUnorderedSample(s, Chan_Alpha);
+
+            rec.channels.resize(nChan);
+            for (size_t c = 0; c < nChan; ++c) {
+                rec.channels[c] = have.contains(chans[c])
+                                ? pixel.getUnorderedSample(s, chans[c])
+                                : 0.0f;
+            }
+        }
+        return true;
+    }
+
+    // ------------------------------------------------------------------
+    // computeBand() — one horizontal band, end to end
+    //
+    //   fetch band +/- padY source rows -> flattenPixelToSoA
+    //   (only if it can matter) fetch the band's own rows of holdout
+    //     -> HoldoutSampleSoA -> HoldoutLut at the FRAME-GLOBAL boundary set
+    //   scatterBandCPU -> resolveBandCPU (saturate + composite)
+    //   write the band's disjoint region of the frame
+    //
+    // Returns false on abort / upstream failure, leaving the frame unpublished.
+    // ------------------------------------------------------------------
+    bool computeBand(FrameCache& fc, BandJob& job, int y0, int y1)
+    {
+        const int h = y1 - y0;
+        const int W = fc.box.w();
+        if (h <= 0 || W <= 0)
+            return true;
+
+        const int C = static_cast<int>(job.colorChannels->size());
+        const int K = job.buckets->bucketCount();
+        const std::ptrdiff_t px = static_cast<std::ptrdiff_t>(W) * h;
+
+        // --- source fetch: band +/- padY, clipped to the source bbox -------
+        job.soa.begin(C, job.fp->groups);
+
+        const int fy0 = std::max(job.srcBox.y(), y0 - job.padY);
+        const int fy1 = std::min(job.srcBox.t(), y1 + job.padY);
+
+        const ChannelSet need = neededDeepChannels();
+
+        for (int y = fy0; y < fy1; ++y) {
+            if (aborted())
+                return false;
+
+            DeepPlane deepRow;
+            if (!job.src->deepEngine(y, job.srcBox.x(), job.srcBox.r(), need, deepRow)) {
+                Iop::abort();
+                return false;
+            }
+
+            for (int x = job.srcBox.x(); x < job.srcBox.r(); ++x) {
+                if (!fillSampleRecords(deepRow.getPixel(y, x), *job.colorChannels,
+                                       job.samples))
+                    continue;
+
+                deepc::flattenPixelToSoA(*job.fp, *job.buckets, x, y,
+                                         job.samples, job.flattenScratch,
+                                         job.soa, nullptr);
+            }
+        }
+
+        // --- holdout -------------------------------------------------------
+        // begin() with NO appendPixel() calls at all is well defined and lands
+        // on exactly the same disabled view, so the per-pixel loop is skipped
+        // ENTIRELY when there is no holdout or the band misses its bbox —
+        // discovering emptiness by running it costs ~1.98 ms/band, ~67 ms per
+        // 4K frame of pure bookkeeping (M1.P3.T3's review).
+        job.holdoutSamples.begin(px);
+        if (job.mattePlane >= 0)
+            job.bandMatte.assign(static_cast<size_t>(px), 0.0f);
+
+        DD::Image::Box bandBox(fc.box.x(), y0, fc.box.r(), y1);
+        const bool holdoutActive = (job.holdout != nullptr)
+                                && bandBox.intersects(job.holdoutBox);
+
+        if (holdoutActive) {
+            const ChannelSet hNeed = neededHoldoutChannels();
+
+            const int hx0 = std::max(fc.box.x(), job.holdoutBox.x());
+            const int hx1 = std::min(fc.box.r(), job.holdoutBox.r());
+
+            for (int y = y0; y < y1; ++y) {
+                if (aborted())
+                    return false;
+
+                const bool rowInside = (y >= job.holdoutBox.y() && y < job.holdoutBox.t())
+                                    && (hx1 > hx0);
+
+                DeepPlane deepRow;
+                if (rowInside) {
+                    if (!job.holdout->deepEngine(y, hx0, hx1, hNeed, deepRow)) {
+                        Iop::abort();
+                        return false;
+                    }
+                }
+
+                for (int x = fc.box.x(); x < fc.box.r(); ++x) {
+                    job.holdoutRecords.clear();
+
+                    if (rowInside && x >= hx0 && x < hx1) {
+                        const DeepPixel pixel = deepRow.getPixel(y, x);
+                        const size_t n = pixel.getSampleCount();
+                        const ChannelMap& have = pixel.channels();
+                        if (n > 0 && have.contains(Chan_DeepFront)
+                                  && have.contains(Chan_Alpha)) {
+                            const bool haveBack = have.contains(Chan_DeepBack);
+                            job.holdoutRecords.resize(n);
+                            for (size_t s = 0; s < n; ++s) {
+                                deepc::SampleRecord& rec = job.holdoutRecords[s];
+                                const float zf = pixel.getUnorderedSample(s, Chan_DeepFront);
+                                rec.zFront = zf;
+                                rec.zBack  = haveBack
+                                           ? pixel.getUnorderedSample(s, Chan_DeepBack)
+                                           : zf;
+                                rec.alpha  = pixel.getUnorderedSample(s, Chan_Alpha);
+                                rec.channels.clear();   // holdout carries no colour
+                            }
+                        }
+                    }
+
+                    // THE SAME per-pixel ray-distance factor the flatten
+                    // applied at this pixel. Without it the holdout sits
+                    // systematically too far back in Z off-axis (measured:
+                    // 47.3% at the corner of a 20mm / 36x24 frame).
+                    const float depthScale = deepc::rayDepthScaleAt(*job.fp, x, y);
+                    job.holdoutSamples.appendPixel(job.holdoutRecords, depthScale);
+
+                    // The matte AOV, from the SAME sanitised sample set
+                    // appendPixel() just left behind (it drops alpha<=0 and
+                    // NaN depths in place). It is 1 - vis(infinity), and it is
+                    // NOT computed as 1 - boundaryT: that subtraction's
+                    // relative error is 100% at alpha 1e-7 and 19.2% over 200
+                    // compounded samples of it (milestone Decisions). The
+                    // log1p/expm1 form is exact in the same limit —
+                    // 1 - prod(1-a) == -expm1(sum log1p(-a)).
+                    if (job.mattePlane >= 0) {
+                        double logT = 0.0;
+                        for (size_t s = 0; s < job.holdoutRecords.size(); ++s) {
+                            const double a = static_cast<double>(
+                                deepc::clampf(job.holdoutRecords[s].alpha, 0.0f, 1.0f));
+                            logT += std::log1p(-a);   // a == 1 -> -inf -> matte 1
+                        }
+                        const std::ptrdiff_t i =
+                            static_cast<std::ptrdiff_t>(y - y0) * W + (x - fc.box.x());
+                        // max(0, ...) rather than a bare negation: -expm1(0)
+                        // is -0.0f, and writing a negative zero into a matte
+                        // channel is a wart every downstream comparison then
+                        // has to know about.
+                        job.bandMatte[static_cast<size_t>(i)] =
+                            std::max(0.0f, static_cast<float>(-std::expm1(logT)));
+                    }
+                }
+            }
+        }
+
+        // Empty when nothing was appended: view() is then disabled and the
+        // scatter's per-fragment path never touches the holdout at all.
+        job.holdoutLut.build(job.holdoutSamples, *job.holdoutBoundaries);
+        const deepc::HoldoutSoA holdoutView = job.holdoutLut.view();
+
+        if (aborted())
+            return false;
+
+        // --- scatter + resolve ---------------------------------------------
+        job.planes.allocate(K, C, W, h);   // sizes AND zeroes; keeps capacity
+
+        job.bandColor.assign(static_cast<size_t>(C) * static_cast<size_t>(px), 0.0f);
+        job.bandAlpha.assign(static_cast<size_t>(px), 0.0f);
+
+        job.sp.bandY      = y0;
+        job.sp.bandHeight = h;
+
+        deepc::scatterBandCPU(job.sp, job.soa, holdoutView, *job.kernel,
+                              job.planes, job.scatterScratch);
+        deepc::resolveBandCPU(job.sp, job.planes,
+                              job.bandColor.data(), job.bandAlpha.data());
+
+        if (aborted())
+            return false;
+
+        // --- write the band's disjoint region ------------------------------
+        for (int c = 0; c < C; ++c) {
+            const int plane = (*job.colorPlanes)[static_cast<size_t>(c)];
+            const float* srcPlane = job.bandColor.data()
+                                  + static_cast<size_t>(c) * static_cast<size_t>(px);
+            for (int y = 0; y < h; ++y) {
+                std::memcpy(fc.rowPtr(plane, y0 + y),
+                            srcPlane + static_cast<size_t>(y) * W,
+                            static_cast<size_t>(W) * sizeof(float));
+            }
+        }
+        if (job.alphaPlane >= 0) {
+            for (int y = 0; y < h; ++y) {
+                std::memcpy(fc.rowPtr(job.alphaPlane, y0 + y),
+                            job.bandAlpha.data() + static_cast<size_t>(y) * W,
+                            static_cast<size_t>(W) * sizeof(float));
+            }
+        }
+        // Written last on purpose: if the user points the AOV at a channel the
+        // node also processes, the AOV is what they asked for.
+        if (job.mattePlane >= 0) {
+            for (int y = 0; y < h; ++y) {
+                std::memcpy(fc.rowPtr(job.mattePlane, y0 + y),
+                            job.bandMatte.data() + static_cast<size_t>(y) * W,
+                            static_cast<size_t>(W) * sizeof(float));
             }
         }
 
@@ -771,6 +1476,21 @@ private:
 
     // ------------------------------------------------------------------
     // flattenPixel() — one deep pixel to one flat pixel.
+    //
+    // *** NO LONGER ON THE COOK PATH (M1.P3.T5) ***  computeFrame() now
+    // scatters; this is M1.P2.T2's plain flatten, kept deliberately for two
+    // reasons the milestone names explicitly:
+    //   * it is the REFERENCE the DeepToImage parity gate was established
+    //     against, and the parity numbers below are the record of it;
+    //   * it carries one of the TWO independent layers of the FMA /
+    //     fp-contract parity guard (milestone Decisions, 2026-07-26: "the
+    //     CMake-level omission is the belt; the pragma is the braces"), and
+    //     M1.P5.T1 adds -mavx2 -mfma to this target.
+    // M1.P3.T12 / M1.P5.T1 should decide whether it is retired — deleting it
+    // here would silently drop a documented guard mid-phase.  NOTE for
+    // M1.P5.T1: the arithmetic that now produces the shipped pixels lives in
+    // DeepCDefocusScatter.{h,cpp} (the pre-merge `over` and both bucket
+    // composites), and that TU has NO such pragma.
     //
     // Tidy pre-pass first (deepc::tidyOverlapping(), reused rather than
     // reimplemented), then a plain front-to-back over. The tidy pass is

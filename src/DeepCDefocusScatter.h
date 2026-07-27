@@ -637,6 +637,67 @@ struct FlattenParams {
 };
 
 // ---------------------------------------------------------------------------
+// sanitizeFragmentDepth — THE depth sanitiser the flatten applies, exported
+//
+// It lives here rather than in flattenPixelToSoA()'s translation unit because
+// THREE passes have to agree about what a depth means, and the milestone has
+// already been bitten twice by two of them disagreeing (the holdout's missing
+// ray-distance factor, and computeDepthRange() measuring a range the flatten
+// then falls below).  The node's depth-range pass calls this; so does the
+// flatten; the holdout's appendPixel() calls it too and then applies its own
+// extra NaN rule on top (see there — NaN is DROPPED on the holdout side, not
+// mapped to 0).
+//
+//   NaN, -inf -> 0.0f       ("invalid depth": radius 0, first bucket)
+//   +inf      -> kMaxDepth  (a real far-field sample, kept finite)
+//
+// Finite non-positive depths are left alone: signedCocPixels() already
+// specifies d <= 0 -> radius 0, and rewriting them would turn a behind-camera
+// sample into a near-field one clamped to max_radius.
+// ---------------------------------------------------------------------------
+DEEPC_HD inline float sanitizeFragmentDepth(float v)
+{
+    if (std::isfinite(v))
+        return v;
+    return (v > 0.0f) ? DepthBuckets::kMaxDepth : 0.0f;
+}
+
+// ---------------------------------------------------------------------------
+// rayDepthScaleAt — THE per-pixel ray-distance -> Z factor, exported
+//
+// `depth_is_ray_distance` corrects a ray-LENGTH depth channel to camera-space
+// Z, and the correction depends on the pixel's radial filmback offset, so it
+// is a per-pixel scalar rather than a constant.  Every pass that reads depth
+// must apply the SAME factor at the SAME pixel:
+//
+//   * flattenPixelToSoA() (below) — the source fragments;
+//   * HoldoutSampleSoA::appendPixel(`depthScale`) — the holdout, which the
+//     milestone measured sitting 47.3% too far back in Z at the corner of a
+//     20mm / 36x24 frame when this was omitted;
+//   * the node's computeDepthRange() — the frame's measured range, which the
+//     buckets and the holdout boundary set are both built from.  The
+//     correction always SHRINKS depth, so a range measured without it puts
+//     every corner-pixel sample below depthMin.
+//
+// Returns exactly 1.0f when the toggle is off, or when the geometry degenerates
+// (non-positive/non-finite factor), so a caller can multiply unconditionally.
+// ---------------------------------------------------------------------------
+DEEPC_HD inline float rayDepthScaleAt(const FlattenParams& params, int x, int y)
+{
+    if (!params.depthIsRayDistance)
+        return 1.0f;
+
+    const float rMm = filmbackRadiusMm(static_cast<float>(x) + 0.5f,
+                                       static_cast<float>(y) + 0.5f,
+                                       params.coc._formatWidthPx,
+                                       params.formatHeightPx,
+                                       params.coc._filmbackWidthMm,
+                                       params.coc._pixelAspect);
+    const float s = rayDistanceToZ(1.0f, params.coc._focalLengthMm, rMm);
+    return (s > 0.0f && std::isfinite(s)) ? s : 1.0f;
+}
+
+// ---------------------------------------------------------------------------
 // FlattenStats — optional instrumentation, for the perf gate at M1.P4.T2
 //
 // Pass nullptr to skip.  All counters are cumulative across pixels so a band
