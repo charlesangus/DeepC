@@ -91,7 +91,7 @@ node; v3 (Milestone 3) adds a CUDA backend behind the seams v1/v2 leave in place
 2026-07-26: build both candidate composites behind an internal flag at M1.P3.T2 and decide from
 rendered pixels at M1.P3.T5's gate. See that milestone file's Decisions.)
 
-**Where things stand (2026-07-26T20:48-04:00).** Phases 1.0, 1.1 and 1.2 are complete and committed;
+**Where things stand (2026-07-27T01:05-04:00).** Phases 1.0, 1.1 and 1.2 are complete and committed;
 Phase 1.3 has T0, T1, T6, T2, T7, T8, T9 and T3 done. `current: M1.P3.T10` — replacing the holdout
 transmittance LUT's boundary set, which the Design reference specified as the K+1 ΔCoC bucket
 boundaries and which M1.P3.T3's review measured as breaking the node's differentiator outright (a solid
@@ -102,12 +102,16 @@ test list).
 No PR yet — `ship: pr-per-milestone` puts that at M1's verification gate. The branch
 `claude/deep-defocus-node-plan-o0ld83` is committed but NOT pushed.
 
-**Carried obligations for whoever resumes:** M1.P3.T8 must fix the volumetric-split half of the
-coverage double-count *before* M1.P3.T5's bake-off, which is not meaningful on scenes (f)/(g)/(i)
-until then; M1.P3.T4 and M1.P3.T5 must set `ScatterParams::combine` explicitly rather than relying on
-its provisional default, and T4 owes a parent-reconstruction test, a `tidyOverlapping()` termination
-fuzz test, and the single-fragment energy identity; M1.P3.T5 must apply the ray-distance correction in
-`computeDepthRange()` as well as the flatten, use a steep ramp for scene (g), and decide the bucket
-composite from rendered scenes; and the milestone PR body must carry the shipped-node release note
-from `PLAN/DECISIONS/2026-07-26-tidyoverlapping-single-pass.md` and
+**Carried obligations for whoever resumes:** M1.P3.T10 must land the decoupled holdout boundary set
+before T4 writes its permanent tests, since it changes `HoldoutSoA`'s contract; M1.P3.T4 and M1.P3.T5
+must set `ScatterParams::combine` and `pre_merge` explicitly rather than relying on defaults, and T4
+owes a parent-reconstruction test, a `tidyOverlapping()` termination fuzz test, the single-fragment
+energy identity, a pinned behind-focus regression gate, and the colour:alpha ratio as a standing
+invariant (that same clamp-one-of-a-premultiplied-pair defect has now appeared three times); M1.P3.T5
+must apply the ray-distance correction in `computeDepthRange()` *and* pass the matching `depthScale` to
+the holdout SoA, skip the holdout append entirely when unconnected, avoid computing the matte AOV as
+`1 − boundaryT` in float, use a steep ramp for scene (g), report band-alpha and flat-field figures
+separately, and decide the bucket composite from rendered scenes; M1.P4.T1 must budget on `(C+3)` plus
+the holdout term; and the milestone PR body must carry the shipped-node release note from
+`PLAN/DECISIONS/2026-07-26-tidyoverlapping-single-pass.md` and
 `PLAN/DECISIONS/2026-07-26-volumetric-tidying-semantics.md`.
