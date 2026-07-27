@@ -1,8 +1,8 @@
 ---
 title: DeepCDefocus — deep-input, flat-output defocus node
 status: running
-current: M1.P3.T7
-pm_heartbeat: 2026-07-26T20:48:00-04:00
+current: M1.P3.T8
+pm_heartbeat: 2026-07-26T21:20:00-04:00
 ship: pr-per-milestone
 ---
 
@@ -33,7 +33,8 @@ node; v3 (Milestone 3) adds a CUDA backend behind the seams v1/v2 leave in place
   claims against current code before relying on them in any task.
 - **Linux-only for this node.** Gated `if (UNIX)` in `src/CMakeLists.txt` (verified: the
   top-level `CMakeLists.txt:11` already has a UNIX block ending at `-mavx`). The Windows
-  docker build (`src/windows.Dockerfile`, `docker-build.sh --windows`) must keep building every
+  docker build (`docker/windows.Dockerfile` — not `src/`, as this line said until M1.P3.T7 —
+  `docker-build.sh --windows`) must keep building every
   other node unchanged; `DeepCDefocus` is deliberately absent there.
 - **No hand-written SIMD, no SIMD library.** The scatter inner loop is a plain
   `dst[i] += w[i]*c` multiply-add over a row span, written so GCC auto-vectorizes it at `-O3`

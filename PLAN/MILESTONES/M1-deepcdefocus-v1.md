@@ -426,7 +426,7 @@ verified.
     energy-conservation and saturation identities directly, without a live Nuke session).
   - size: L
 
-- [ ] M1.P3.T7 — Wire `DeepCDefocus` into `src/CMakeLists.txt` (run NEXT — every later verify depends on it)
+- [x] M1.P3.T7 — Wire `DeepCDefocus` into `src/CMakeLists.txt` (run NEXT — every later verify depends on it)
   - files: `src/CMakeLists.txt`
   - approach: found at M1.P3.T2's review — **neither `DeepCDefocus.cpp` nor `DeepCDefocusScatter.cpp`
     is in CMake**, so the milestone's "the local build compiles clean" verify step has been vacuous
@@ -730,6 +730,25 @@ verified.
   Registration is pulled forward from M1.P5.T1 into **M1.P3.T7**, which runs next, so that every
   subsequent task's build gate is real. The `-mavx2 -mfma` compile options stay at M1.P5.T1, where the
   `-ffp-contract` parity hazard is documented and where M1.P4.T2 will have inspected vectorization first.
+- 2026-07-26 — M1.P3.T7 wired the node in with `list(APPEND PLUGINS/FILTER_NODES DeepCDefocus)` inside
+  a new `if (UNIX)` block (the `if (OpenGL_FOUND) list(APPEND PLUGINS_MWRAPPED DeepCPMatte)` idiom),
+  not by editing the unconditional base `set(...)` lines. `PLUGINS` is the correct list — `DeepCDefocus`
+  is a plain `Iop` like `DeepCShuffle2`, so it must NOT go in `PLUGINS_MWRAPPED`, which links the
+  `DeepCWrapper`/`DeepCMWrapper` object libraries it neither uses nor needs. **`if (UNIX)` is provably
+  the right guard for keeping the node out of the Windows build**, verified rather than assumed at T7's
+  review: `docker-build.sh:245` passes `-DCMAKE_SYSTEM_NAME=Windows`, and CMake's `UNIX`/`WIN32` track
+  the *target* (the host-only forms are `CMAKE_HOST_UNIX`/`CMAKE_HOST_WIN32`), so on the Linux docker
+  host the Windows cross-compile still evaluates `UNIX` empty / `WIN32` 1 — reproduced locally. That is
+  the same predicate the top-level `CMakeLists.txt:11` Linux-only flag block already depends on in
+  production. `FILTER_NODES` is live, not dead: it substitutes into `python/menu.py.in` via
+  `configure_file` at `src/CMakeLists.txt:153`, placing the node in the Filter toolbar submenu.
+  `DeepToImage` parity re-verified 0 ULP against the CMake-built `.so` on a harder scene than before
+  (two `DeepMerge`d layers, per-pixel varying depth, 2 samples/pixel, alpha < 1 on both, 6144 samples).
+- 2026-07-26 — The FMA/`fp-contract` parity guard has **two independent layers**, so M1.P5.T1 is not
+  the sole defence: `DeepCDefocus.cpp:847-943` already wraps the `flattenPixel` composite loop in
+  `#pragma GCC push_options` / `#pragma GCC optimize("fp-contract=off")`, which holds even once
+  `-mavx2 -mfma` land on the target. The CMake-level omission is the belt; the pragma is the braces.
+  M1.P5.T1 should still verify parity after adding the flags rather than trusting either layer alone.
 - 2026-07-26 — Alpha and coverage are deposited by **channel group 0 only** (they are not per-channel
   quantities). Unobservable in v1, where every `channelRadiusScale` is 1.0 — but **M2 must decide which
   group owns alpha** once chromatic-aberration scales diverge. Noted in-source at the deposit site.

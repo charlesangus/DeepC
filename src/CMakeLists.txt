@@ -51,6 +51,13 @@ set(MERGE_NODES DeepCKeymix)
 set(Util_NODES DeepCAdjustBBox DeepCCopyBBox)
 set(FILTER_NODES DeepCBlur DeepCBlur2 DeepThinner DeepCDepthBlur)
 
+# DeepCDefocus is deliberately Linux-only (see DeepCDefocus.cpp); keep it out
+# of the Windows docker build so every other node keeps building unchanged.
+if (UNIX)
+    list(APPEND PLUGINS DeepCDefocus)
+    list(APPEND FILTER_NODES DeepCDefocus)
+endif()
+
 # add nuke plugin linked to ddimage lib
 function(add_nuke_plugin PLUGIN_NAME)
     add_library(${PLUGIN_NAME} MODULE ${ARGN})
@@ -121,6 +128,11 @@ target_sources(DeepCPNoise PRIVATE $<TARGET_OBJECTS:FastNoise>)
 # link DeepCPMatte with OpenGL
 if (OpenGL_FOUND)
     target_link_libraries(DeepCPMatte PRIVATE OpenGL::GL)
+endif()
+
+# Link the CPU scatter kernel into DeepCDefocus (Linux-only, see above)
+if (UNIX)
+    target_sources(DeepCDefocus PRIVATE DeepCDefocusScatter.cpp)
 endif()
 
 # Link Qt6 into DeepCShuffle2 for ShuffleMatrixKnob widget
