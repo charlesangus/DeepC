@@ -1,8 +1,8 @@
 ---
 title: DeepCDefocus — deep-input, flat-output defocus node
 status: running
-current: M1.P3.T4
-pm_heartbeat: 2026-07-27T02:40:00-04:00
+current: M1.P3.T5
+pm_heartbeat: 2026-07-27T04:10:00-04:00
 ship: pr-per-milestone
 ---
 
@@ -91,14 +91,14 @@ node; v3 (Milestone 3) adds a CUDA backend behind the seams v1/v2 leave in place
 2026-07-26: build both candidate composites behind an internal flag at M1.P3.T2 and decide from
 rendered pixels at M1.P3.T5's gate. See that milestone file's Decisions.)
 
-**Where things stand (2026-07-27T02:40-04:00).** Phases 1.0, 1.1 and 1.2 are complete and committed;
-Phase 1.3 has T0, T1, T6, T2, T7, T8, T9, T3, T10 and T11 done. `current: M1.P3.T4` — the permanent
-POD-level unit tests for the scatter core, now that every contract they pin is final. The holdout path
-took two tasks to correct: T10 replaced the transmittance LUT's boundary set (the Design reference had
-specified the K+1 ΔCoC bucket boundaries, which bound banding, not occlusion, and let a solid holdout
-card at z=50 erase 98% of a fragment at z=15), and T11 added both candidate fixes for the residual
-opaque-step degeneracy behind a runtime flag for T5 to judge from pixels.
-Remaining in this milestone: P3 T4/T5, then Phase 1.4 and Phase 1.5. Eight tasks
+**Where things stand (2026-07-27T04:10-04:00).** Phases 1.0, 1.1 and 1.2 are complete and committed;
+Phase 1.3 is complete except its last task: T0, T1, T6, T2, T7, T8, T9, T3, T10, T11 and T4 are all
+done. `current: M1.P3.T5` — wiring the scatter into `engine()` and running validation scenes (a)–(l),
+the milestone's core correctness gate, which also decides the bucket composite AND the holdout
+interpolant from rendered pixels. `tests/test_defocus_scatter.cpp` now exists (26 cases, mutation-
+verified at 40 killed / 6 verified-equivalent over the review's independent 46-mutation list), so every
+contract T5 builds on is pinned.
+Remaining in this milestone: P3 T5, then Phase 1.4 and Phase 1.5. Eight tasks
 have now been added by execution findings (M1.P3.T0, T6, T7, T8, T9, T10, T11, plus the enlarged
 M1.P3.T4 test list).
 No PR yet — `ship: pr-per-milestone` puts that at M1's verification gate. The branch

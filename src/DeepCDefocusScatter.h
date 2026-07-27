@@ -2143,7 +2143,32 @@ DEEPC_HD inline void compositePixelCoveragePartition(
             break;                      // fully opaque: nothing behind shows
     }
 
-    *outAlpha = clampf(accAlpha, 0.0f, 1.0f);
+    // THE COLOUR IS RESCALED WITH THE ALPHA, NOT LEFT BEHIND (M1.P3.T4 review).
+    // accAlpha CAN exceed 1 on the production path: a pixel carrying several
+    // co-located volumetric residuals attenuates by resLocal = aRes/D_k, which
+    // is weaker than the alpha each of them adds whenever D_k > aRes, so the
+    // sum over buckets is not bounded by 1 the way the per-bucket terms are.
+    // Measured over 300 randomised fields through the real flatten + scatter +
+    // saturate path (24x24 band, K in [2,24], focus in [0.8, 60]): 970 of
+    // 172800 pixels came out above 1, worst 1.6598 -- and with the alpha
+    // clamped and the colour not, that pixel shipped premultiplied colour
+    // 0.9959 against an honest 0.5975, i.e. +66% too bright.  Overlapping
+    // volumetric fog reaches it easily; it is not a hand-built-planes case.
+    //
+    // Scaling both by the same factor is what the node already does one pass
+    // earlier in saturateBucketPixel() and is DOWN-ONLY, so it fabricates no
+    // coverage and leaves the honest-alpha contract (and validation scene
+    // (i)'s deficit) untouched.  It is a no-op wherever accAlpha <= 1, which
+    // is every identity documented above -- all of them are bit-unchanged.
+    // FOURTH occurrence of "clamp one of a premultiplied pair and not the
+    // other" in this phase (Decisions, 2026-07-27).
+    const float outA = clampf(accAlpha, 0.0f, 1.0f);
+    if (accAlpha > outA && accAlpha > 0.0f) {
+        const float s = outA / accAlpha;
+        for (int c = 0; c < channelCount; ++c)
+            outColor[static_cast<std::ptrdiff_t>(c) * pixelCount] *= s;
+    }
+    *outAlpha = outA;
 }
 
 // ---------------------------------------------------------------------------

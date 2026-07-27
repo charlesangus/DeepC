@@ -592,7 +592,7 @@ verified.
     `DeepToImage` parity 0 ULP.
   - size: M
 
-- [ ] M1.P3.T4 — Unit tests for the scatter core (POD-level)
+- [x] M1.P3.T4 — Unit tests for the scatter core (POD-level)
   - files: `tests/test_defocus_scatter.cpp` (new, doctest, uses the same `DEEPC_BUILD_TESTS`
     option as Phase 1.1)
   - approach: drive T1–T3 directly with synthetic POD inputs (no NDK, no live Nuke session).
@@ -613,9 +613,20 @@ verified.
     review showed `checkCompositionContract()` catches a wrong *branch* but NOT a wrong *label* — the
     branch and the audit read the same `kind` field, so mislabelling a split part as `Point`
     reproduces the +9% double-count and still passes the audit. Parent reconstruction is the only
-    check that catches it. Also consider extracting an `overCompositeGroup()` helper into
-    `DeepSampleOptimizer.h` here (there are now three copies of that arithmetic), which is safe to do
-    once these tests protect the shipped `DeepCBlur`/`DeepCBlur2` callers.
+    check that catches it. (Note the +9% figure no longer reproduces from a wrong *label* alone since
+    the fourth plane landed — measured at T4, a Point label with the head kept on part 0 gives exactly
+    0.900000, because the centre re-split of a whole-weight assignment is compensated. The whole
+    over-count is now coverage-head duplication, pinned at **+40.09% / +70.70%** for 2/4 parts at
+    α=0.9. `checkCompositionContract()` still accepts both labellings.)
+    ~~Also consider extracting an `overCompositeGroup()` helper into `DeepSampleOptimizer.h` here~~ —
+    **deferred deliberately at T4**: the safety condition ("once these tests protect the shipped
+    `DeepCBlur`/`DeepCBlur2` callers") is NOT met, because those plugins reach the arithmetic through
+    `optimizeSamples()`, which `DeepCDefocus` never calls and this suite therefore never exercises. The
+    three copies (`DeepSampleOptimizer.h:486` and `:577`, `DeepCDefocusScatter.cpp:582`) also differ
+    materially — span union present/absent, channel-count clamp present/absent, different output
+    target — so it is a real refactor of shipped shared code needing the same "bit-identical on
+    previously-working input" differential evidence M1.P3.T6 carried. Follow-up task, size S/M: add a
+    differential harness over `optimizeSamples()` first, then extract and point all three at it.
     **From M1.P3.T2's review** (these are the mutation-resistant gates for the whole coverage-plane
     defect class, which that review found live and fixed): the **single-fragment energy identity** over
     random `(α, split fraction, radius)` — band alpha and premult-colour sums reconstruct the fragment
@@ -727,6 +738,11 @@ verified.
     fully-opaque content, since a run of α<1 samples underflows the transmittance product to bitwise
     zero at ordinary counts (46 at α=0.9) and the three then diverge hard. Do not write the comparison
     up as risk-free on α<1 content.
+    Note from T4: the `over`-vs-partition discriminator is **not** a flat single-depth field (both give
+    α=1 there, since saturation clamps) — it is a field whose fragments land in *different* buckets with
+    `frac == 0`, which is what scene (g)'s steep ramp must actually produce. The behind-focus residue
+    and the interpolant divergence are now pinned by tests, so a bake-off that moves them fails the
+    suite and needs adjudication rather than a silent tolerance bump.
     Also build the holdout boundary set **once per frame** via `makeUniformHoldoutBoundaries(buckets)`,
     never per band: a fragment near a band edge scatters into two bands, and per-band sets put a seam
     along every boundary (measured: the same fragment reads vis 0.0448 in one band and 1.0000 in the
@@ -844,6 +860,47 @@ verified.
 
 ## Decisions
 
+- 2026-07-27 — **The fourth "clamp one of a premultiplied pair and not the other" was the first one
+  reachable from production, and it was shipping fog interiors 66% too bright.**
+  `compositePixelCoveragePartition`'s final statement clamped `accAlpha` to [0,1] with no matching
+  scale on the colour. M1.P3.T4 found it on hand-built planes, probed the real path (0 of 60
+  randomised fields, 0 of 30 dense-fog fields), concluded it was unreachable, and left it — reasoning
+  that changing a composite candidate right before M1.P3.T5 judges it from pixels was the greater
+  risk. **T4's review probed harder and refuted that**: 300 randomised fields through the real
+  `flattenPixelToSoA → scatterBandCPU → saturateBucketPlanes → resolveBandCPU` path (24×24 band,
+  K∈[2,24], focus∈[0.8,60]) put **970 of 172,800 pixels above alpha 1, worst 1.6598**, shipping
+  premultiplied colour **0.9959 against an honest 0.5975 — +66.0%**. The trigger is ordinary
+  *overlapping volumetric fog*: several co-located residuals each attenuate `tClaimed` by `aRes/D_k`,
+  which is weaker than the alpha each adds whenever `D_k > aRes`, so the sum over buckets isn't bounded
+  the way the per-bucket terms are. Fixed by rescaling the colour by the same factor — the same
+  down-only move `saturateBucketPixel()` already makes one pass earlier, fabricating no coverage and
+  leaving scene (i)'s honest deficit untouched, and a no-op wherever `accAlpha ≤ 1` (every pinned
+  number bit-unchanged; worst ratio error 65.98% → 0.0003%). **The right call was to fix it**: leaving
+  it would have had M1.P3.T5 choosing between a correct candidate and one that renders fog 66% too
+  bright. **The pattern is now 4-for-4 — every clamp applied to one half of a premultiplied pair in
+  this codebase has been a bug.** Note the invariant that should have caught it was scoped
+  `if (outAlpha > 1e-04f && outAlpha < 1.0f)`, and that `< 1.0f` excluded exactly the region where it
+  breaks — the "dead `if`" failure mode already on record from Phase 1.1. Scoping removed.
+- 2026-07-27 — **`HoldoutVisibility::build()` is order-dependent for overlapping spans**, so
+  `appendPixel()`'s ascending `zFront` sort is a **correctness** requirement, not the fast-path
+  precondition M1.P3.T3 recorded it as. Presenting the same overlapping spans descending instead of
+  ascending changes the result by up to **2.7e-02 absolute** (0.1117 vs 0.0851, 24% relative) over
+  200k trials. The `build()`-vs-`evalBoundaries()` equivalence fuzz cannot see this — both walk in
+  whatever order they're given, so they agree with each other while both differ from the sorted
+  answer. A pixel's LUT is a function of its sample *set* only because of that sort. Now pinned.
+- 2026-07-27 — **M1.P3.T4's suite is mutation-verified at a higher bar than Phase 1.1's**: the
+  implementer's own 35 mutations all died, but the review's independent 46-mutation list found **16
+  survivors** against the as-submitted suite — among them an unclamped fourth plane, `resolveBandCPU`'s
+  default branch silently becoming plain `over`, the ray-distance→Z correction dropped wholesale,
+  `FragmentKind` dropped from the pre-merge predicate, a descending holdout sort, and
+  `BucketPlanes::zero()` leaving the co-located plane dirty across band reuse. All closed; final state
+  **40 killed / 6 verified-equivalent**. Two equivalence claims were checked rather than accepted: the
+  disc kernel is **exactly** Y-symmetric including anamorphic pixel aspect (66,692 row pairs across
+  PAR 0.5–2.0, zero asymmetries), and `tidyOverlapping()`'s disjoint-or-identical postcondition makes
+  `zBack` monotone within a staged pre-merge run (3.75M groups, zero differences). Two of the six
+  (`g == 0` in the deposit) are equivalent **only because v1 has one channel group** — they become live
+  mutants at M2. One tolerance was fudged and got tightened: scene (c) asserted at 1e-05 against its own
+  measured 8e-07 where the plan says ~1e-6, now 2e-06.
 - 2026-07-27 — **M1.P3.T11 shipped all three holdout interpolants behind
   `ScatterParams::holdoutInterp` (`LogChord` = shipped default, `MidpointStep`, `LinearInT`) — and its
   review FALSIFIED the safety argument they were commissioned under.** T11's brief (and T10's
