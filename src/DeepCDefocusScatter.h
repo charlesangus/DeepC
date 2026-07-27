@@ -483,6 +483,47 @@ constexpr int kMaxSpanSplitParts = DepthBuckets::kMaxBoundaries + 1;
 constexpr float kSharpRadiusPx = 0.5f;
 
 // ---------------------------------------------------------------------------
+// scatterKernelBin — "would the scatter rasterise these two radii identically?"
+//
+// M1.P3.T13 needs a predicate that is TRUE only when two fragments deposit the
+// same weights into the same pixels, because that is exactly the condition
+// under which over-compositing them at the flatten is lossless.  It mirrors
+// the only two decisions the scatter makes about a radius, and nothing else:
+//
+//   * scatterBandCPU() takes the SHARP path for `!(radius >= sharpRadiusPx)`,
+//     where the "kernel" is a single weight of 1.0 at the fragment's own pixel
+//     — so every sharp radius is the same kernel, and NaN is sharp there too;
+//   * otherwise DiscKernelLUT::radiusToIndex() rounds to the nearest entry on
+//     the 0.5px grid (`lround(radius / kStepPx)`), so two radii on the same
+//     grid step return the SAME KernelView — identical weights, identical row
+//     spans, identical support.
+//
+// The LUT additionally CLAMPS the index into its built [rMin, rMax] range, so
+// two different bins can still resolve to one entry.  This function does not
+// model that, which makes it conservative in the safe direction: it can answer
+// "different kernels" for a pair the LUT would have merged, never the reverse.
+//
+// M2 NOTE: with several channel groups a group's radius is
+// `groupRadius(groups, g, baseRadius)`, and equal BASE bins do not imply equal
+// bins after a per-group `channelRadiusScale != 1`.  In v1 every scale is 1.0,
+// so the base bin IS every group's bin; M2 must revisit this alongside the
+// "which group owns alpha" decision.
+// ---------------------------------------------------------------------------
+DEEPC_HD inline int scatterKernelBin(float radiusPx)
+{
+    if (!(radiusPx >= kSharpRadiusPx))      // also catches NaN, as the scatter does
+        return -1;                          // the sharp one-pixel kernel
+    if (!(radiusPx <= 1.0e6f))              // +inf: the LUT clamps to its last entry
+        return 0x40000000;
+    return static_cast<int>(std::lround(radiusPx / DiscKernelLUT::kStepPx));
+}
+
+DEEPC_HD inline bool sameScatterKernel(float a, float b)
+{
+    return scatterKernelBin(a) == scatterKernelBin(b);
+}
+
+// ---------------------------------------------------------------------------
 // FragmentRecord — one fragment as appended to the SoA
 //
 // A "fragment" is a post-tidy, post-span-split, post-pre-merge piece of one
@@ -632,6 +673,27 @@ struct FlattenParams {
     bool  depthIsRayDistance = false;
     float formatHeightPx     = 1080.0f;
 
+    // IS A HOLDOUT CONNECTED?  Not a knob — input 1's presence, which the node
+    // already knows when it builds these params.
+    //
+    // It gates ONE thing: how far the same-pixel deposit-collision merge
+    // (M1.P3.T13, see the .cpp) may reach in depth.  That merge is exact for
+    // the scatter — its members rasterise the identical kernel, so
+    // over-compositing them is what a `DeepToImage` flatten does — but it emits
+    // ONE fragment at ONE depth, and the holdout is sampled per fragment.  With
+    // a holdout connected the merge is therefore restricted to members sharing
+    // a HoldoutBoundaries bracket, which is the resolution the transmittance
+    // LUT has anyway; without one, depth is unobservable downstream of the
+    // merge (the kernel is provably identical and the composite is exact for a
+    // single fragment) and the merge runs unrestricted.
+    //
+    // DEFAULTS FALSE, i.e. "merge freely", because that is the branch the
+    // `DeepToImage` parity gate lives on and because it is what every
+    // holdout-free caller wants.  A caller that connects a holdout and forgets
+    // this gets the pre-T13 holdout behaviour of a `pre_merge` group, not a
+    // crash or an out-of-range read.
+    bool  holdoutConnected   = false;
+
     int           channelCount = 0;
     ChannelGroups groups       = {};
 };
@@ -754,6 +816,39 @@ struct FlattenScratch {
     std::vector<Staged> staged;
     std::size_t         stagedCount = 0;
     std::vector<float>  mergeAccum;          // over-composite accumulator
+
+    // The deposit-collision pass (M1.P3.T13) holds ONE group back while it
+    // decides whether the next one lands in a bucket it already occupies, so it
+    // needs a second accumulator; it is never live at the same time as
+    // mergeAccum's group is being built.
+    std::vector<float>  pendingAccum;
+
+    // The holdout LUT's boundary set, cached across pixels.  Only built (and
+    // only read) when FlattenParams::holdoutConnected is set: the collision
+    // merge may not cross a bracket there.  Cached on the bucket set's own
+    // range + count so it is rebuilt exactly when makeUniformHoldoutBoundaries()
+    // would return something different — the boundary set the LUT is built at
+    // is derived from those three numbers and nothing else, which is what keeps
+    // this copy from drifting onto a different array than HoldoutLut's.
+    HoldoutBoundaries   holdoutBoundaries;
+    float               holdoutRangeMin   = 0.0f;
+    float               holdoutRangeMax   = 0.0f;
+    int                 holdoutRangeCount = 0;
+
+    // "Has a new-area claim already been made in this bucket, at this pixel,
+    // and by WHICH KERNEL?" — the second half of M1.P3.T13, for the collisions
+    // the merge above cannot take (fragments at one pixel whose kernels
+    // genuinely differ).  Stamped rather than cleared: `claimStamp[k] ==
+    // claimEpoch` means "claimed during the current pixel", so a pixel costs no
+    // reset at all.  The epoch is incremented per pixel and both arrays are
+    // sized to the bucket count on first use, so this is O(1) per fragment and
+    // ~1.5KB per thread at K=128.  `claimBin` holds the claimer's
+    // scatterKernelBin(): a later deposit yields the claim only to a DIFFERENT
+    // kernel — see claimNewArea() in the .cpp for the measurement that makes
+    // that restriction load-bearing.
+    std::vector<std::uint32_t> claimStamp;
+    std::vector<int>           claimBin;
+    std::uint32_t              claimEpoch = 0;
 };
 
 // ---------------------------------------------------------------------------

@@ -672,7 +672,13 @@ verified.
     degenerate-range behaviour, the `locate()+interpAtBucket` == `interp` identity and the
     bit-exactness at the boundaries in `tests/test_defocus_math.cpp`** (T10 shipped the struct
     before this task exists, so they could not be left as a promise). Move them into the
-    scatter-core suite if that reads better, but do not drop or weaken them. **From M1.P3.T11's
+    scatter-core suite if that reads better, but do not drop or weaken them.
+    **Standing warning from M1.P3.T13's review**: its `"coverage head: exactly one per POST-TIDY
+    parent"` re-pin was claimed "strictly stronger" and was not — "head `bucketIndex0` pairwise
+    distinct" and `!preMerge ⇒ heads == liveParents` are *different* invariants, not ordered, and a
+    mutation silently dropping one head of three passed the new clause while failing the old. When any
+    pinned invariant is replaced, prove the replacement subsumes the original or keep both.
+    **From M1.P3.T11's
     review**: a scatter-core-level (not just math-level) test that `ScatterParams::holdoutInterp`
     threads correctly through `scatterBandCPU` on **both** the sharp and span paths, and the dense
     volumetric holdout fixture (46 samples at α=0.9 packed in one bracket) at the scatter level, so the
@@ -778,7 +784,7 @@ verified.
     `-DCMAKE_BUILD_TYPE=Debug` must still win.
   - size: S
 
-- [ ] M1.P3.T13 — Same-pixel bucket collisions break the size-0 flatten (run BEFORE T12)
+- [x] M1.P3.T13 — Same-pixel bucket collisions break the size-0 flatten (run BEFORE T12)
   - files: `src/DeepCDefocusScatter.h`/`.cpp`, `tests/test_defocus_scatter.cpp`
   - approach: found at M1.P3.T5's review, which measured it far past what T5 itself reported. **Within-
     bucket accumulation is additive and the `newArea` plane can exceed 1 per pixel; the composite then
@@ -824,10 +830,59 @@ verified.
     preserved. Local build and both suites green.
   - size: L
 
+- [ ] M1.P3.T15 — Per-bucket transmittance attenuation at the flatten (run BEFORE T12)
+  - files: `src/DeepCDefocusScatter.h`/`.cpp`, `tests/test_defocus_scatter.cpp`
+  - approach: identified at M1.P3.T13's review as the change that closes **three** open holes at once and
+    lets T13's one-slot merge and its gates be **deleted**. T13 fixed same-pixel bucket collisions by
+    merging colliding groups and by claiming area per (bucket, kernel); that works, but leaves: (1) the
+    **cross-kind hole** — a Point and a span piece sharing a bucket cannot merge without mislabelling one
+    against the COMPOSITION CONTRACT, so mixed point+volumetric interiors still carry a ~2.7e-01
+    residual; (2) the **same-kernel unmergeable residual**; and (3) the **holdout-connected gap** —
+    connecting input 1 switches T13's fix off, so size-0 parity is met only with the holdout
+    disconnected (worst |dα| 2.35e-01, up to 99.0% of pixels, and validation scene (b) will fail the way
+    scene (a) did).
+    Fix: in `FlattenScratch`, beside `claimStamp`/`claimBin`, keep a **per-bucket running alpha** for the
+    current source pixel. When a fragment's deposit lands in a bucket already written by a fragment with
+    the same `scatterKernelBin` at that pixel, scale that deposit's `alpha_k` and `colorScale_k` by
+    `(1 − running_k)` — **per bucket independently**, never by the leading fragment's total alpha — then
+    update `running_k`. Areas revert to the pre-T13 rule (both claim; the coverage clamp handles it),
+    because with alpha composited rather than added, `aCov = min(a, cov) = a` and `local = a_true`, which
+    is exact. Exact by construction: `1 − Π_k(1−A_k) = 1 − Π_k Π_i (1−a_{i,k}) = 1 − Π_i(1−a_i)`.
+    Measured at T13's review on hand-built planes: ≤**4.2e-08** on alpha *and* premultiplied colour in
+    every row where two fragments share `index0`, and never worse than additive elsewhere.
+    **It is label-neutral**, which is exactly why it closes the cross-kind hole — no `FragmentKind`
+    decision is needed. No new plane, no composite change. **It also needs no holdout gate for the
+    catastrophic case**: holdout transmittance is monotone in z and the front member is in front, so
+    `vis_front ≥ vis_back` and a sample can never be carried from behind a card to in front of it — each
+    fragment keeps its own depth and its own `vis`. Only the attenuation *factor* is stale when
+    `vis_front < 1`, which is bounded and soft.
+    **The two alternatives are already disproved** and must not be re-tried: merge-as-Volumetric loses
+    the point's mandatory fractional split (banding; the K-knob failure already on record), and
+    merge-as-Point gives a span piece a second fractional split on top of its boundary split (the +8.3%
+    double-count). Whole-**fragment** attenuation is also disproved — systematically under, −9.8e-02 at
+    truth 0.963, worse than plain additive on 8 of 12 rows; it is the *per-bucket* form that is exact.
+    Cost: one float per bucket per thread (~512 B at K=128), no per-fragment scatter cost.
+  - verify: (i) the size-0 **mixed** point+volumetric corpus reaches the same ≤2e-07 / 0%-over-1e-3 gate
+    the pure-point and pure-span rows already meet, at every K ∈ {4,8,16,32,64,128} and `pre_merge` both
+    ways; (ii) `SpanSplitPart` reconstruction identities and the four hand-built plane identities
+    **bitwise** unchanged; (iii) `FrontToBackOver` untouched (M1.P3.T12 must still render it);
+    (iv) **with a holdout connected**, size-0 parity matches the disconnected case to ≤2e-07 — that is
+    the gate that fails today; (v) two opaque layers at one pixel read **exactly 1.000000** at any alpha
+    pair and any kernel; (vi) the two-layer K-convergence table beats the current one at every K.
+    Delete T13's one-slot merge and its gates if this supersedes them, and say so explicitly rather than
+    leaving both mechanisms in. Local build and both suites green; mutation-test any new cases to the
+    suite's established bar.
+  - size: L
+
 - [ ] M1.P3.T12 — Validation scenes (a)–(l) and both bake-off decisions
   - files: `src/DeepCDefocus.cpp`, `src/DeepCDefocusScatter.h`/`.cpp` (deleting losing paths), this
     file's `## Decisions`
-  - approach: with M1.P3.T5's serial wiring in place, run **validation scenes (a)–(l)** from the
+  - approach: **scene (b) will fail until M1.P3.T15 lands** — connecting a holdout switches M1.P3.T13's
+    collision fix off (see Decisions). Do not read that as a T12 defect, and do not run T12 before T15.
+    Mixed point+volumetric interiors also carry the cross-kind residual T15 closes; weigh it as a
+    content class, not as a bucket-composite candidate's failure. `pre_merge`'s holdout behaviour
+    changed at T13 (correctly) — set it explicitly as before.
+    With M1.P3.T5's serial wiring in place, run **validation scenes (a)–(l)** from the
     Design reference against it in the local Nuke install (scripted headless — `NUKE_PATH=<dir>
     /usr/local/Nuke17.0v3/Nuke17.0 -t <script.py>`). All must pass before Phase 1.4 changes the
     execution model. **This is the milestone's core correctness gate.** Committed `.nk` scripts are
@@ -972,6 +1027,64 @@ verified.
 
 ## Decisions
 
+- 2026-07-27 — **M1.P3.T13 fixed the same-pixel bucket collision** with two passes in
+  `flattenPixelToSoA` and **no plane, flag or composite change**: a one-slot-delayed collision merge
+  (`over`-composite when same `FragmentKind` + `sameScatterKernel()` + same holdout bracket +
+  intersecting deposit ranges, unconditional rather than behind `pre_merge` since it is a correctness
+  pass, and the group's depth/radius always its front-most member's), plus `claimNewArea()` so a second
+  same-pixel deposit into a bucket arrives as co-located area. Scene (a) at size 0 over 60 rows
+  (K ∈ {4…128} × 1–20 spp × `pre_merge` both, 2000 pixels each): worst |dα| **2.65e-01 → 2.38e-07**,
+  worst |dcolour| 5.89e-01 → 3.44e-07, **100% → 0.00%** of pixels over 1e-3. In real headless Nuke
+  against `DeepToImage`: worst |dα| **1.394e-01 → 2.980e-07**, 96.3% → 0.00%. **Scene (l) is closed**
+  (wander 0.780–0.880 / max step 9.97e-02 → 0.6947–0.7010 / 3.90e-03 against a truth of 0.700), and the
+  0–2px ramp criterion is met (max step across a threshold crossing 2.906e-03 ≤ 3.899e-03 elsewhere).
+  **K-convergence survives** — the property the previously-disproved whole-weight fix died on — because
+  the pass never touches `bucketOf()`'s assignment: the sharp row is flat at ~3e-08 at every K (six
+  orders better than baseline) and the defocused row beats baseline at every K. Note the defocused row
+  is **not** strictly monotone in an independent 200-config corpus (4.39e-02 at K=8 → 4.53e-02 at K=16);
+  the 3% wobble is the milestone's own occlusion-before-blur residual, not T13, so verify clause (2)'s
+  "monotone" should read "beats baseline at every K, monotone within corpus noise".
+- 2026-07-27 — **The area claim is per (bucket, KERNEL), not per (bucket, pixel)** — T13's review found
+  the as-submitted form punched a **25% hole in in-focus opaque geometry that had previously been
+  exact**. Re-labelling the second same-kernel deposit co-located makes the composite split that
+  bucket's alpha `C_k : D_k = 1 : 1` and read `a − a²/4`: exact only when the two alphas are equal,
+  short by `((a1−a2)/2)²` in general, and short by a **flat 0.25 once the additive alpha saturates**
+  (two opaque samples read 0.750 against a true 1.000). Over mixed corpora it moved mean |dα|
+  2.27e-02 → 6.00e-02 and the rate 38.9% → 98.0%. Root cause: the area planes model "C_k claimed by one
+  kernel, D_k co-located on it" — which describes two *different-sized* discs and describes nothing at
+  all when the two deposits share a kernel and therefore cover the identical area. Fixed by yielding an
+  existing claim only to a **different** kernel; the different-kernel win T13 was built for is retained
+  (a 23.3px/8.5px pair still reads band alpha 1.000000 against 2.000000 before), pure rows are
+  byte-identical, and mixed rows now beat both baseline and the as-submitted form on mean, RMS, worst
+  and rate in every row.
+- 2026-07-27 — **`pre_merge` merging across holdout brackets was erasing unoccluded foreground outright,
+  at default knobs.** Found at T13's review: with `pre_merge` on and tolerance 0.25px, an opaque card at
+  z=50 and samples at z=40 and z=62 all land in the default rig's single `[10, 100]` ΔCoC bucket — 90
+  units wide against ~6.2-unit holdout brackets — and inside the radius tolerance, so the group's union
+  midpoint lands *behind* the card and the pixel reads **alpha 0.000000 against an exact 0.500000**.
+  Fixed by applying T13's own `holdoutBracketOf()` gate to the pre-merge predicate (same cache, free
+  when no holdout is connected). Pre-existing, default-on, and pinned by a new test.
+- 2026-07-27 — **The `pre_merge` focus-straddle risk is REFUTED, not merely unaddressed.**
+  `buildBoundedDeltaCoc` places a boundary *exactly on* the focal plane (`boundary(focusBoundary()) ==
+  focus` to 5 dp at focus 2/10/50 and K 4/16/128), so no ΔCoC bucket contains focus in its interior and
+  a `pre_merge` group — keyed on one containing bucket — can never straddle it. T13's own collision
+  merge *can* span focus, and anchoring the group's radius to its front-most member is exactly the right
+  guard (measured 0.52632 for an equal-radius straddling pair, not 0).
+- 2026-07-27 — **Size-0 parity currently holds only with input 1 DISCONNECTED, and validation scene (b)
+  will fail until M1.P3.T15 lands.** Connecting a holdout that occludes nothing switches T13's fix off:
+  the same 60-row corpus reads worst |dα| **2.35e-01 with up to 99.0% of pixels over 1e-3**, and two
+  sharp samples at z=20/40 behind a card at z=95 read 0.816118 against a true 0.750000. Not a regression
+  — the baseline is equally bad — but it is a gate the milestone does not yet have. **M1.P3.T12 must not
+  read scene (b)'s failure as a T12 defect.**
+- 2026-07-27 — Scene (a)'s ≤2e-07 gate needs the **same "grows with sample count" qualifier the
+  coincident-sample clause already carries**: the residual is a float `over` chain against a double
+  reference, ≤2.0e-07 at 1–5 spp but **2.38e-07 offline and 2.98e-07 in Nuke at 12–20 spp / K=128**.
+  State the sample count with the tolerance, as the coincident-sample clause does.
+- 2026-07-27 — `merge_tolerance` no longer governs the M1.P3.T13 collision pass, which ignores it
+  entirely (bin equality on the 0.5px grid already implies an *identical* `KernelView`, which is the
+  stronger and provable condition — an explicit `|Δr| ≤ 0.25px` limb was tried, survived mutation, and
+  was deleted as strictly tighter than necessary). The knob's documented meaning now covers only the
+  pre-merge. **M1.P5.T2's node help must say so.**
 - 2026-07-27 — **`CMAKE_BUILD_TYPE` had been unset since the project began, so the CMake build never
   passed an `-O` flag at all** — every plugin in this repo, not just the new node. The scatter TU went
   from **0 vectorized loops to 402** once M1.P3.T14 defaulted it to Release, and `vmulps`/`vaddps`

@@ -1007,6 +1007,17 @@ private:
         const bool holdoutConnected = (holdout != nullptr)
                                    && holdoutBox.w() > 0 && holdoutBox.h() > 0;
 
+        // The flatten needs to know too (M1.P3.T13): with a holdout connected
+        // its same-pixel deposit-collision merge may not carry a fragment
+        // across a HoldoutBoundaries bracket, because the merged fragment is
+        // sampled against the transmittance LUT at ONE depth. Measured on two
+        // sharp samples at one pixel with an opaque card between them: 0.750
+        // (both survive — wrong) unrestricted, 0.500 (front survives, back
+        // erased — exact) with this set. Assigned here rather than up with the
+        // other fields because that is where input 1's presence is decided,
+        // and nothing between the two reads it.
+        fp.holdoutConnected = holdoutConnected;
+
         // A band's dest rows need source samples from band +/- the kernel's
         // true vertical extent: (rMax + softness/2) * pixelAspect, the same
         // quantity the output bbox is padded by.
