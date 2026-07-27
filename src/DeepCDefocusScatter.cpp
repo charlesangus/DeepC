@@ -32,7 +32,6 @@ std::size_t SampleSoA::sizeBytes() const
          + bucketIndex0.sizeBytes() + bucketIndex1.sizeBytes()
          + bucketAlpha0.sizeBytes() + bucketAlpha1.sizeBytes()
          + colorScale0.sizeBytes() + colorScale1.sizeBytes()
-         + boundaryIndex.sizeBytes() + boundaryFrac.sizeBytes()
          + flags.sizeBytes() + color.sizeBytes();
 }
 
@@ -49,8 +48,6 @@ void SampleSoA::clear()
     bucketAlpha1.clear();
     colorScale0.clear();
     colorScale1.clear();
-    boundaryIndex.clear();
-    boundaryFrac.clear();
     flags.clear();
     color.clear();
 }
@@ -68,8 +65,6 @@ void SampleSoA::release()
     bucketAlpha1.release();
     colorScale0.release();
     colorScale1.release();
-    boundaryIndex.release();
-    boundaryFrac.release();
     flags.release();
     color.release();
 }
@@ -94,8 +89,6 @@ void SampleSoA::reserveFragments(std::size_t count)
     bucketAlpha1.reserve(count);
     colorScale0.reserve(count);
     colorScale1.reserve(count);
-    boundaryIndex.reserve(count);
-    boundaryFrac.reserve(count);
     flags.reserve(count);
     color.reserve(count * static_cast<std::size_t>(channelCount));
 }
@@ -118,8 +111,6 @@ void SampleSoA::appendFragment(const FragmentRecord& f, const float* __restrict_
     bucketAlpha1.growForAppend(next);
     colorScale0.growForAppend(next);
     colorScale1.growForAppend(next);
-    boundaryIndex.growForAppend(next);
-    boundaryFrac.growForAppend(next);
     flags.growForAppend(next);
     color.growForAppend(next * static_cast<std::size_t>(channelCount));
 
@@ -134,8 +125,6 @@ void SampleSoA::appendFragment(const FragmentRecord& f, const float* __restrict_
     bucketAlpha1.resize(next);
     colorScale0.resize(next);
     colorScale1.resize(next);
-    boundaryIndex.resize(next);
-    boundaryFrac.resize(next);
     flags.resize(next);
     color.resize(next * static_cast<std::size_t>(channelCount));
 
@@ -150,8 +139,6 @@ void SampleSoA::appendFragment(const FragmentRecord& f, const float* __restrict_
     bucketAlpha1[n]  = f.deposit.alpha1;
     colorScale0[n]   = f.deposit.colorScale0;
     colorScale1[n]   = f.deposit.colorScale1;
-    boundaryIndex[n] = static_cast<std::int32_t>(f.boundary.index);
-    boundaryFrac[n]  = f.boundary.frac;
     flags[n]         = packFragmentFlags(f.kind, f.coverageHead);
 
     if (channelCount > 0) {
@@ -266,7 +253,6 @@ inline void emitFragment(const FlattenParams& params,
                           : buckets.bucketOf(depth);
 
     f.deposit  = fragmentDeposit(bw, f.alpha);
-    f.boundary = buckets.locateBoundary(depth);
 
     out.appendFragment(f, channels);
 
@@ -648,13 +634,13 @@ bool checkCompositionContract(const SampleSoA& soa,
 
         const int i0 = static_cast<int>(soa.bucketIndex0[i]);
         const int i1 = static_cast<int>(soa.bucketIndex1[i]);
-        const int ib = static_cast<int>(soa.boundaryIndex[i]);
         ok = ok && i0 >= 0 && i0 <= lastBucket;
         ok = ok && i1 >= 0 && i1 <= lastBucket;
         ok = ok && (i1 == i0 || i1 == i0 + 1);
-        ok = ok && ib >= 0 && ib <= lastBucket;
-        ok = ok && std::isfinite(soa.boundaryFrac[i])
-                && soa.boundaryFrac[i] >= 0.0f && soa.boundaryFrac[i] <= 1.0f;
+        // There is no holdout boundary pair to audit here any more: since
+        // M1.P3.T10 the holdout LUT has its own boundary set and the pair is
+        // derived in the scatter from `depth`, which is already checked finite
+        // above.  HoldoutBoundaries::locate() clamps its own output.
 
         // The contract itself: a span-split piece must carry NO fractional
         // spill into a second bucket.  Both splits applied to one sample is
@@ -816,9 +802,10 @@ std::size_t HoldoutSampleSoA::sizeBytes() const
 // HoldoutLut (M1.P3.T3)
 // ---------------------------------------------------------------------------
 
-void HoldoutLut::build(const HoldoutSampleSoA& samples, const DepthBuckets& buckets)
+void HoldoutLut::build(const HoldoutSampleSoA& samples,
+                       const HoldoutBoundaries& boundarySet)
 {
-    const int bCount = buckets.boundaryCount();
+    const int bCount = boundarySet.count();
 
     // THE ZERO-COST PATH.  Nothing to build: release rather than fill, so an
     // unconnected holdout (or a band wholly outside its bbox) costs nothing
@@ -829,13 +816,18 @@ void HoldoutLut::build(const HoldoutSampleSoA& samples, const DepthBuckets& buck
         return;
     }
 
+    boundaries    = boundarySet;
     boundaryCount = bCount;
     pixelCount    = samples.pixelCount;
 
     boundaryT.resizeUninitialized(static_cast<std::size_t>(pixelCount)
                                  * static_cast<std::size_t>(boundaryCount));
 
-    const float* boundaries = buckets.boundaries();
+    // THE BOUNDARY DEPTHS ARE THE HOLDOUT SET'S, NOT DepthBuckets' -- see the
+    // header.  They are copied into this object so view() can hand the scatter
+    // the LUT and the depths it was built at together, with no second party to
+    // agree with.
+    const float* boundaryZ = boundaries.boundaries();
 
     // A caller that did not call appendPixel() the full pixelCount times is a
     // bug, but it must not become an out-of-bounds read here: pixels beyond
@@ -865,13 +857,14 @@ void HoldoutLut::build(const HoldoutSampleSoA& samples, const DepthBuckets& buck
         HoldoutVisibility::build(samples.zFront.data() + begin,
                                  samples.zBack.data() + begin,
                                  samples.alpha.data() + begin,
-                                 n, boundaries, boundaryCount, outRow);
+                                 n, boundaryZ, boundaryCount, outRow);
     }
 }
 
 void HoldoutLut::release()
 {
     boundaryT.release();
+    boundaries    = HoldoutBoundaries{};
     boundaryCount = 0;
     pixelCount    = 0;
 }
@@ -884,9 +877,9 @@ std::size_t HoldoutLut::sizeBytes() const
 HoldoutSoA HoldoutLut::view() const
 {
     HoldoutSoA v;
-    v.boundaryT     = boundaryT.data();
-    v.boundaryCount = boundaryCount;
-    v.pixelCount    = pixelCount;
+    v.boundaryT  = boundaryT.data();
+    v.boundaries = boundaries;
+    v.pixelCount = pixelCount;
     return v;
 }
 
@@ -1039,10 +1032,6 @@ void scatterBandCPU(const ScatterParams& params,
         frag.colorScale0 = samples.colorScale0[f];
         frag.colorScale1 = samples.colorScale1[f];
 
-        // locateBoundary()'s pair, NOT bucketOf()'s — see HoldoutSoA.
-        frag.boundaryIndex = static_cast<int>(samples.boundaryIndex[f]);
-        frag.boundaryFrac  = samples.boundaryFrac[f];
-
         frag.color = samples.colorOf(f);
 
         // Does this fragment own its parent sample's kernel coverage?  Point
@@ -1071,6 +1060,18 @@ void scatterBandCPU(const ScatterParams& params,
 
         const float baseRadius = samples.radius[f];
         const float depth      = samples.depth[f];
+
+        // THE HOLDOUT LUT'S OWN (index, frac), from the LUT's own boundary set
+        // (M1.P3.T10).  O(1) closed form, derived here rather than precomputed
+        // by the flatten: the pair is only meaningful against the boundary
+        // array the LUT was built at, and that array travels with the LUT.
+        // Not DepthBuckets::locateBoundary()'s pair, and not bucketOf()'s.
+        // Skipped entirely when there is no holdout -- the zero-cost path.
+        if (useHoldout) {
+            const BoundarySpan hb = vis.locate(depth);
+            frag.boundaryIndex = hb.index;
+            frag.boundaryFrac  = hb.frac;
+        }
 
         std::size_t touched = 0;
 

@@ -418,8 +418,18 @@ TEST_CASE("HoldoutVisibility::build matches evalBoundaries for sorted input and 
 }
 
 TEST_CASE("HoldoutVisibility boundary-LUT interpolation is exact for a single full-range sample, "
-          "and locateBoundary (not bucketOf) is the correct feed for interpAtBucket")
+          "and a BOUNDARY locator (not bucketOf) is the correct feed for interpAtBucket")
 {
+    // NOTE (M1.P3.T10): in production the locator is HoldoutBoundaries::locate()
+    // over the holdout LUT's OWN boundary set, not DepthBuckets::locateBoundary()
+    // over the ΔCoC bucket set -- the two sets are decoupled and a pair from one
+    // must never index the other.  What this case pins is the property the two
+    // share and that bucketOf() does not: the fraction must be measured between
+    // BOUNDARIES, not between bucket CENTRES.  DepthBuckets is used here only
+    // because it is a convenient locator over the very array the LUT below is
+    // built at; see the HoldoutBoundaries case that follows for the production
+    // locator's own contract.
+
     // A single holdout sample spanning the whole boundary range makes log(T)
     // exactly linear in z across every interval (no sample edge falls inside
     // any bucket), so interpAtBucket() fed the correct boundary-fraction must
@@ -466,6 +476,198 @@ TEST_CASE("HoldoutVisibility boundary-LUT interpolation is exact for a single fu
     const float errWrongFeed = std::fabs(visWrongFeed - exact);
     CHECK(errCorrect < 1e-5f);
     CHECK(errCorrect <= errWrongFeed);
+}
+
+// ---------------------------------------------------------------------------
+// HoldoutBoundaries (M1.P3.T10) -- the holdout LUT's own boundary set.
+//
+// The header states these post-conditions and defers them to M1.P3.T4; T10
+// shipped the struct before T4 exists, so they are pinned here.  T4 may move
+// them into the scatter-core suite, but must not drop them: locate() is on the
+// per-fragment path and its exactness AT the boundaries is what makes
+// "LUT == exact at the boundaries" a hard identity rather than a tolerance.
+// ---------------------------------------------------------------------------
+TEST_CASE("HoldoutBoundaries::buildUniformZ post-conditions and locate() are exact "
+          "at every boundary, across the whole K range")
+{
+    SUBCASE("a default-constructed set is inert")
+    {
+        HoldoutBoundaries h;
+        CHECK(h.count() == 0);
+        CHECK(h.enabled() == false);
+        const BoundarySpan s = h.locate(5.0f);
+        CHECK(s.index == 0);
+        CHECK(s.frac == 0.0f);
+    }
+
+    SUBCASE("post-conditions and locate(boundary(i)) == {i, 0} for K in [4, 128]")
+    {
+        const float ranges[][2] = {
+            {1.0f, 100.0f},          // the default rig
+            {1e-6f, 1e12f},          // the full sanitised window
+            {1000.0f, 1001.0f},      // narrow and far from zero
+        };
+
+        for (const auto& r : ranges) {
+            for (int k = 4; k <= 128; ++k) {
+                HoldoutBoundaries h;
+                h.buildUniformZ(r[0], r[1], k + 1);
+
+                CHECK(h.count() == k + 1);
+                CHECK(h.boundary(0) == r[0]);
+                CHECK(h.boundary(h.count() - 1) == r[1]);
+
+                for (int i = 1; i < h.count(); ++i)
+                    CHECK(h.boundary(i) > h.boundary(i - 1));   // strictly increasing
+
+                for (int i = 0; i < h.count() - 1; ++i) {
+                    const BoundarySpan s = h.locate(h.boundary(i));
+                    CHECK(s.index == i);
+                    CHECK(s.frac == 0.0f);          // exactly, not approximately
+                }
+                const BoundarySpan last = h.locate(h.boundary(h.count() - 1));
+                CHECK(last.index == h.count() - 2);
+                CHECK(last.frac == 1.0f);
+            }
+        }
+    }
+
+    SUBCASE("the closed-form index agrees with a binary search everywhere in range")
+    {
+        // locate() derives the bracket from a multiply and then reconciles it
+        // with the STORED (float-rounded) array in two bounded steps.  This is
+        // the case that would catch that reconciliation being too narrow.
+        for (int k : {4, 16, 33, 64, 128}) {
+            HoldoutBoundaries h;
+            h.buildUniformZ(1.0f, 100.0f, k + 1);
+
+            for (int t = 0; t < 4000; ++t) {
+                const float z = 1.0f + 99.0f * (static_cast<float>(t) / 3999.0f);
+                const BoundarySpan s = h.locate(z);
+
+                int lo = 0;
+                int hi = h.count() - 1;
+                while (hi - lo > 1) {
+                    const int mid = lo + (hi - lo) / 2;
+                    if (h.boundary(mid) <= z) lo = mid; else hi = mid;
+                }
+                if (z >= h.boundary(h.count() - 1)) lo = h.count() - 2;
+
+                CHECK(s.index == lo);
+                CHECK(s.frac >= 0.0f);
+                CHECK(s.frac <= 1.0f);
+            }
+        }
+    }
+
+    SUBCASE("out-of-range, NaN and infinite depths clamp rather than propagate")
+    {
+        HoldoutBoundaries h;
+        h.buildUniformZ(1.0f, 100.0f, 17);
+
+        const float inf = std::numeric_limits<float>::infinity();
+        const BoundarySpan below = h.locate(-1e30f);
+        const BoundarySpan above = h.locate(1e30f);
+        const BoundarySpan nan   = h.locate(std::numeric_limits<float>::quiet_NaN());
+        const BoundarySpan pinf  = h.locate(inf);
+        const BoundarySpan ninf  = h.locate(-inf);
+
+        CHECK(below.index == 0);       CHECK(below.frac == 0.0f);
+        CHECK(ninf.index  == 0);       CHECK(ninf.frac  == 0.0f);
+        CHECK(nan.index   == 0);       CHECK(nan.frac   == 0.0f);   // NOT propagated
+        CHECK(above.index == 15);      CHECK(above.frac == 1.0f);
+        CHECK(pinf.index  == 15);      CHECK(pinf.frac  == 1.0f);
+    }
+
+    SUBCASE("degenerate ranges still produce a usable strictly-increasing set")
+    {
+        HoldoutBoundaries h;
+
+        h.buildUniformZ(50.0f, 50.0f, 17);              // zero-width measurement
+        CHECK(h.count() == 17);
+        CHECK(h.boundary(16) > h.boundary(0));
+
+        h.buildUniformZ(100.0f, 1.0f, 17);              // reversed
+        CHECK(h.boundary(0) == 1.0f);
+        CHECK(h.boundary(16) == 100.0f);
+
+        h.buildUniformZ(std::numeric_limits<float>::quiet_NaN(),
+                        std::numeric_limits<float>::quiet_NaN(), 17);
+        CHECK(h.boundary(16) > h.boundary(0));
+
+        h.buildUniformZ(1.0f, 100.0f, 1);               // count clamps up to 2
+        CHECK(h.count() == 2);
+
+        h.buildUniformZ(1.0f, 100.0f, 100000);          // and down to kMaxBoundaries
+        CHECK(h.count() == HoldoutBoundaries::kMaxBoundaries);
+    }
+}
+
+TEST_CASE("HoldoutBoundaries::locate + interpAtBucket reproduces HoldoutVisibility::interp, "
+          "and is BIT-EXACT against evalExact at the boundaries")
+{
+    // The identity M1.P3.T10 must not have regressed: the O(1) closed-form pair
+    // and the O(log n) searching entry point are the same number, and AT a
+    // boundary the LUT is not an approximation of anything.
+    HoldoutBoundaries h;
+    h.buildUniformZ(1.0f, 100.0f, 17);
+
+    const float zFront[3] = {12.0f, 40.0f, 71.0f};
+    const float zBack[3]  = {12.0f, 55.0f, 71.0f};   // point, span, point
+    const float alpha[3]  = {0.25f, 0.6f, 1.0f};
+
+    float boundaryT[17];
+    HoldoutVisibility::build(zFront, zBack, alpha, 3,
+                             h.boundaries(), h.count(), boundaryT);
+
+    for (int i = 0; i < h.count(); ++i) {
+        const BoundarySpan s = h.locate(h.boundary(i));
+        const float lut = HoldoutVisibility::interpAtBucket(boundaryT, h.count(),
+                                                           s.index, s.frac);
+        const float exact = clampf(HoldoutVisibility::evalExact(zFront, zBack, alpha, 3,
+                                                               h.boundary(i)), 0.0f, 1.0f);
+        CHECK(lut == exact);            // bit-exact, not Approx
+    }
+
+    for (int t = 0; t <= 200; ++t) {
+        const float z = 1.0f + 99.0f * (static_cast<float>(t) / 200.0f);
+        const BoundarySpan s = h.locate(z);
+        const float viaPair = HoldoutVisibility::interpAtBucket(boundaryT, h.count(),
+                                                               s.index, s.frac);
+        const float viaSearch = HoldoutVisibility::interp(h.boundaries(), boundaryT,
+                                                         h.count(), z);
+        CHECK(viaPair == doctest::Approx(viaSearch).epsilon(1e-6));
+    }
+}
+
+TEST_CASE("makeUniformHoldoutBoundaries takes its count and range from the buckets, "
+          "and is NOT the ΔCoC boundary set")
+{
+    // The whole point of M1.P3.T10: same K+1 entries (so per-band LUT memory is
+    // unchanged at (K+1)*W*B*4), same measured range, deliberately different
+    // placement.  On the node's defaults the ΔCoC set spends 15 of 16 buckets
+    // inside [1,10]; the holdout set must not.
+    const CocParams p = makeCocParams(CocMode::Physical, 50.0f, 2.8f, 36.0f,
+                                      10.0f, 1000.0f, 1920.0f, 1.0f,
+                                      1.0f, 1.0f, 100.0f, 10.0f);
+    DepthBuckets buckets;
+    buckets.buildBoundedDeltaCoc(p, 1.0f, 100.0f, 16);
+
+    const HoldoutBoundaries h = makeUniformHoldoutBoundaries(buckets);
+
+    CHECK(h.count() == buckets.boundaryCount());
+    CHECK(h.depthMin() == buckets.depthMin());
+    CHECK(h.depthMax() == buckets.depthMax());
+
+    // The ΔCoC set's second-to-last boundary is at 10; the uniform one is not.
+    CHECK(buckets.boundary(buckets.boundaryCount() - 2) == doctest::Approx(10.0f).epsilon(1e-3));
+    CHECK(h.boundary(h.count() - 2) > 90.0f);
+
+    // An opaque card at z=50 must land in a bracket that CONTAINS it, not in one
+    // starting at 10 -- the exact regression T10 fixed.
+    const BoundarySpan hs = h.locate(50.0f);
+    CHECK(h.boundary(hs.index) > 40.0f);
+    CHECK(h.boundary(hs.index + 1) < 55.0f);
 }
 
 // ===========================================================================

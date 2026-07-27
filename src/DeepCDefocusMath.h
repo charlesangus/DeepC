@@ -380,15 +380,24 @@ DEEPC_HD inline float filmbackRadiusMm(float x, float y,
 //
 // Per-fragment binary search over holdout samples is far too slow (the scatter
 // touches O(sum of pi*r^2) fragment-pixels), so the scatter core instead
-// evaluates transmittance once per destination pixel at the K+1 bucket
-// boundaries (build()) and interpolates between two boundaries per fragment
+// evaluates transmittance once per destination pixel at a fixed set of
+// boundary depths (build()) and interpolates between two of them per fragment
 // (interp/interpAtBucket).  Because transmittance is exponential in depth,
 // interpolating in LOG space is exact for the model, not an approximation:
 // log T is linear in z across any interval that no holdout sample starts or
 // ends inside.  Where a sample edge does fall strictly between two boundaries,
 // log T is piecewise linear there and the interpolation is the (still
-// monotone) chord — the one bucket-wide approximation the design accepts in
+// monotone) chord — the one bracket-wide approximation the design accepts in
 // exchange for O(1) per fragment.
+//
+// THOSE BOUNDARIES ARE **HoldoutBoundaries**, NOT DepthBuckets' (M1.P3.T10).
+// The design reference's "at the K+1 bucket boundaries" is wrong and was
+// replaced: the ΔCoC bucket spacing bounds banding, not occlusion, and sampling
+// this LUT at it made an opaque card at z=50 start occluding at z=10.9.  See
+// HoldoutBoundaries for the measurement and for why uniform-in-z won.  The
+// chord's accepted worst case, (T0-T1)/2, is only meaningful once the
+// boundaries are placed by an occlusion criterion; nothing in this struct
+// depends on WHICH ascending boundary array it is handed.
 //
 // Buffers are plain contiguous float arrays owned by the caller: one LUT is
 // built per destination pixel per band, so a per-pixel std::vector would be a
@@ -456,7 +465,9 @@ struct HoldoutVisibility {
     //
     //   zFront/zBack/alpha : one dest pixel's holdout samples, SoA,
     //                        sorted front-to-back by zFront (ascending)
-    //   boundaries         : the K+1 bucket boundary depths, ascending
+    //   boundaries         : HoldoutBoundaries::boundaries(), ascending
+    //                        (K+1 of them — the COUNT is shared with
+    //                        DepthBuckets, the PLACEMENT is not; M1.P3.T10)
     //   outT               : caller-owned, at least boundaryCount floats
     //
     // Host-side (loops the whole sample list); the in-span exponential is
@@ -552,12 +563,15 @@ struct HoldoutVisibility {
     // -----------------------------------------------------------------------
     // interpAtBucket — O(1) visibility from the LUT, log-transmittance lerp
     //
-    // The production path: the scatter core already knows a fragment's bucket
+    // The production path: the scatter core already knows a fragment's bracket
     // index and its fraction between boundary[index] and boundary[index+1] —
-    // that pair is DepthBuckets::locateBoundary(), NOT DepthBuckets::bucketOf()
-    // (whose fraction is measured between bucket *centres*, for the scatter's
-    // partition-of-unity split, and is a different number) — so no search is
-    // needed here.
+    // that pair is HoldoutBoundaries::locate(), which is O(1) and closed form.
+    // It is NOT DepthBuckets::bucketOf() (whose fraction is measured between
+    // bucket *centres*, for the scatter's partition-of-unity split) and, since
+    // M1.P3.T10, it is no longer DepthBuckets::locateBoundary() either: that
+    // one locates between the ΔCoC BUCKET boundaries, which is a different
+    // boundary set from the one this LUT is sampled at.  All three are
+    // different numbers for the same depth.
     //
     // Interpolating log T is exact for the exponential in-span model.  A zero
     // boundary transmittance would give log(0) = -inf, so values are floored
@@ -592,9 +606,10 @@ struct HoldoutVisibility {
     // -----------------------------------------------------------------------
     // interp — same interpolation, locating the bracketing boundaries by depth
     //
-    // O(log boundaryCount) because the ΔCoC boundary spacing is non-uniform.
-    // Convenience/verification entry point; the scatter core should use
-    // interpAtBucket() with the index it already has.
+    // O(log boundaryCount), and correct for ANY ascending boundary array.
+    // Convenience/verification entry point (it is what the unit tests check
+    // HoldoutBoundaries::locate() + interpAtBucket() against); the scatter core
+    // uses the O(1) closed-form pair instead and never calls this.
     //
     // Depths outside the boundary range clamp to the nearest boundary value
     // (the LUT is built to span the frame's depth range, so this is a
@@ -786,7 +801,11 @@ struct BucketWeight {
 // BoundarySpan — a depth's position between two adjacent bucket BOUNDARIES
 //
 // Distinct from BucketWeight, which is a position between bucket CENTRES.
-// This is the pair HoldoutVisibility::interpAtBucket() consumes.
+// This is the pair HoldoutVisibility::interpAtBucket() consumes — but note
+// that TWO different locators produce it over TWO different boundary arrays:
+// HoldoutBoundaries::locate() (the holdout LUT's own set, the only one that
+// may feed interpAtBucket) and DepthBuckets::locateBoundary() (the ΔCoC bucket
+// set, for span splitting and pre-merge grouping).  See HoldoutBoundaries.
 // ---------------------------------------------------------------------------
 struct BoundarySpan {
     int   index = 0;
@@ -1210,14 +1229,20 @@ struct DepthBuckets {
     }
 
     // -----------------------------------------------------------------------
-    // locateBoundary — position between the two BOUNDARIES bracketing a depth
+    // locateBoundary — position between the two BUCKET BOUNDARIES bracketing a
+    // depth
     //
-    // Feeds HoldoutVisibility::interpAtBucket(), which interpolates the
-    // per-destination-pixel transmittance LUT between boundary[index] and
-    // boundary[index+1].  Deliberately separate from bucketOf(): that one
-    // measures between bucket *centres* for the scatter's partition of unity,
-    // this one between *boundaries* for the holdout LUT, and the two fractions
-    // are different numbers for the same depth.
+    // Deliberately separate from bucketOf(): that one measures between bucket
+    // *centres* for the scatter's partition of unity, this one between bucket
+    // *boundaries*, and the two fractions are different numbers for the same
+    // depth.  bucketOfContaining(), splitSpanAtBoundaries() and the flatten's
+    // pre-merge grouping key are its callers.
+    //
+    // IT NO LONGER FEEDS THE HOLDOUT LUT (M1.P3.T10).  That is
+    // HoldoutBoundaries::locate(), over a decoupled uniform-in-z boundary set;
+    // sampling the LUT at the ΔCoC boundaries is the defect that task fixed.
+    // Passing this pair to HoldoutVisibility::interpAtBucket() would index a
+    // different array than the one the LUT was built at.
     //
     // Depths outside the range clamp onto the first/last boundary, matching
     // interp()'s own out-of-range behaviour.
@@ -1320,6 +1345,245 @@ inline DepthBuckets makeBoundedDeltaCocBuckets(const CocParams& p,
     DepthBuckets b;
     b.buildBoundedDeltaCoc(p, depthMin, depthMax, requestedBuckets);
     return b;
+}
+
+// ---------------------------------------------------------------------------
+// HoldoutBoundaries — THE HOLDOUT LUT'S OWN BOUNDARY SET (M1.P3.T10)
+//
+// The holdout transmittance LUT is sampled at THESE depths, not at
+// DepthBuckets' ones.  The two sets share a COUNT (K+1, so per-band LUT memory
+// stays at the documented (K+1)*W*B*4 bytes) and nothing else.
+//
+// WHY THEY ARE DECOUPLED.  The design reference originally specified the LUT
+// "at the K+1 bucket boundaries".  That is wrong, and it inverted the node's
+// differentiator.  DepthBuckets' spacing is bounded-ΔCoC: it holds the CoC
+// step constant, which is the criterion that governs BANDING, and it therefore
+// spends its budget wherever the CoC changes fastest — on the node's own
+// defaults (K=16, focus 10, measured range [1,100]) that is 15 buckets inside
+// [1,10] and ONE covering [10,100].  Depth OCCLUSION has no such bias: an
+// opaque point-sample holdout (a solid card — the commonest holdout shape
+// there is) at z=50 landed in that single [10,100] bracket, and because
+// interpAtBucket() chords a step onto the bracket's NEAR boundary the card
+// started occluding at z=10.9.  A fragment at z=15, thirty-five units IN FRONT
+// of the card, came out 98% erased; fragments at z=30/40/49 vanished outright.
+// Mean |vis error| 0.391, max 1.000.
+//
+// Neither K nor a better interpolant fixes THAT (the bite only moves to
+// 25.8/40.6/40.2 at K=32/64/128; linear-in-T moves the mean 0.476 -> 0.450),
+// because the dominant term on a 90-unit-wide bracket is boundary PLACEMENT.
+// With two boundary values a monotone T can be anywhere between them, so no
+// interpolant beats a worst case of (T0-T1)/2 — the goal here is correct
+// placement, not exactness.
+//
+// PLACEMENT IS NOT THE WHOLE RESIDUAL, THOUGH — see the "what is left" note on
+// HoldoutLut.  Once the brackets are the right width, the log chord's own
+// collapse on an OPAQUE step (it floors log T at kMinTransmittance, so vis
+// hits ~0 across the whole bracket rather than the bound's half) is the
+// remaining reducible term, and it is one-sided toward camera.  M1.P3.T10's
+// review measured 5.07 of the 6.19-unit bracket fully erased at K=16.  Do not
+// read "(T0-T1)/2 is irreducible" as "what ships is irreducible".
+//
+// WHY UNIFORM-IN-Z (measured at M1.P3.T10, same 17 entries/pixel, mean
+// |vis error| / bite depth against a true 50; full numbers in the milestone
+// Decisions):
+//
+//   set                         headline card   opaque points   opaque spans
+//   dCoC buckets (was)          0.391 @ 10.9    0.115           0.110 / 0.113
+//   uniform-in-1/z              0.352 @ 14.8    0.116           0.111 / 0.114
+//   equal-occlusion-mass hist.  0.000 @ 50.0    0.004           0.270 / 0.318
+//   UNIFORM-IN-Z (this)         0.057 @ 44.4    0.014           0.014 / 0.013
+//
+// * uniform-in-1/z is NOT the answer — it reproduces almost exactly the
+//   front-loaded bias that broke the ΔCoC set.
+// * a holdout-depth-HISTOGRAM-derived set (boundaries at equal-occlusion-mass
+//   quantiles, i.e. equal optical depth) is exact for isolated opaque cards,
+//   but it is 20x WORSE than uniform-in-z on VOLUMETRIC holdouts — an opaque
+//   fog slab carries essentially all the frame's mass, so every quantile
+//   crossing lands inside the slab's front edge and the rest of the range
+//   collapses into one bracket: the ΔCoC failure reproduced through a
+//   different door, and precisely validation scene (f).  It also needs an
+//   eager full-frame holdout pass to build the histogram, and a non-uniform
+//   set has no closed-form index.  Rejected on the measurement.
+// * sub-refining the ΔCoC set to the same accuracy needs S=16, i.e. 257
+//   entries/pixel — 16x the memory and build time.  Rejected.
+//
+// THE INDEX IS CLOSED FORM, so the per-fragment cost is O(1) with no search:
+// the plan's budget of "two binary searches per fragment (assignment + holdout
+// vis)" is now ONE (bucketOf's O(log K)) plus this O(1) locate.
+//
+// STORAGE mirrors DepthBuckets': a fixed array sized by the K knob's maximum,
+// so the object allocates nothing, is trivially copyable and can be handed to
+// a device kernel by value.  It is built once per frame, never per band.
+//
+// A default-constructed instance is inert: count() == 0, enabled() == false,
+// locate() answers {0, 0}.
+// ---------------------------------------------------------------------------
+struct HoldoutBoundaries {
+
+    static constexpr int kMaxBoundaries = DepthBuckets::kMaxBoundaries;
+
+    float _z[kMaxBoundaries] = {};
+    float _z0      = 0.0f;       // == _z[0]
+    float _invStep = 0.0f;       // (count-1) / (_z[count-1] - _z[0])
+    int   _count   = 0;
+
+    DEEPC_HD inline int          count() const      { return _count; }
+    DEEPC_HD inline bool         enabled() const    { return _count > 1; }
+    DEEPC_HD inline const float* boundaries() const { return _z; }
+    DEEPC_HD inline float        boundary(int i) const { return _z[i]; }
+    DEEPC_HD inline float        depthMin() const   { return _z[0]; }
+    DEEPC_HD inline float        depthMax() const   { return _z[(_count > 0) ? _count - 1 : 0]; }
+
+    // -----------------------------------------------------------------------
+    // buildUniformZ — equal steps in Z across the frame's measured depth range
+    //
+    //   depthMin/depthMax : the frame's measured range (the SAME alpha-weighted
+    //                       depth pass DepthBuckets is built from — so this
+    //                       costs no extra pass, and the two sets clip the same
+    //                       empty ranges).  Order is irrelevant; both clamped.
+    //   count             : DepthBuckets::boundaryCount() == K+1.
+    //
+    // A holdout wholly outside the range degrades correctly rather than
+    // arbitrarily: one entirely BEHIND depthMax leaves every boundary
+    // transmittance at 1 (it occludes nothing, which is right), and one
+    // entirely IN FRONT of depthMin drives every boundary to its own
+    // (1-alpha) (it occludes everything, which is also right).
+    //
+    // Host-side builder, matching this header's convention for whole-list
+    // builders; uses double for the step exactly as DepthBuckets does.
+    //
+    // Post-conditions (asserted NOW, in tests/test_defocus_math.cpp's
+    // HoldoutBoundaries cases -- T10 shipped this struct before M1.P3.T4
+    // exists, so they are pinned there rather than promised; T4 may move them
+    // into the scatter-core suite but must not drop them):
+    //   * count() == clamp(count, 2, kMaxBoundaries)
+    //   * boundary(0) == sanitised depthMin, boundary(count-1) == sanitised
+    //     depthMax
+    //   * boundaries strictly increasing (same one-ulp fix-up DepthBuckets uses)
+    //   * locate(boundary(i)) == {i, 0} for every interior i
+    // -----------------------------------------------------------------------
+    void buildUniformZ(float depthMin, float depthMax, int count)
+    {
+        const int n = clampi(count, 2, kMaxBoundaries);
+
+        float lo = DepthBuckets::sanitizeDepth(depthMin);
+        float hi = DepthBuckets::sanitizeDepth(depthMax);
+        if (hi < lo) {
+            const float t = lo;
+            lo = hi;
+            hi = t;
+        }
+        if (!(hi > lo)) {
+            // Degenerate/single-depth measurement: open the range by a hair so
+            // every bracket keeps a non-zero extent (DepthBuckets does the
+            // same, for the same reason).
+            float pad = lo * 1e-4f;
+            if (!(pad > 0.0f))
+                pad = DepthBuckets::kMinDepth;
+            hi = lo + pad;
+            if (!(hi < DepthBuckets::kMaxDepth)) {
+                hi = DepthBuckets::kMaxDepth;
+                lo = hi - pad;
+            }
+            if (!(hi > lo)) {                   // unreachable in practice
+                lo = DepthBuckets::kMinDepth;
+                hi = DepthBuckets::kMinDepth * 2.0f;
+            }
+        }
+
+        const double dlo  = static_cast<double>(lo);
+        const double dhi  = static_cast<double>(hi);
+        const double step = (dhi - dlo) / static_cast<double>(n - 1);
+
+        for (int i = 0; i < n; ++i)
+            _z[i] = static_cast<float>(dlo + step * static_cast<double>(i));
+        _z[0]     = lo;
+        _z[n - 1] = hi;
+
+        // Same strict-monotonicity fix-up as DepthBuckets: rounding a double
+        // boundary to float can collapse a pair on a very wide range, and
+        // locate() must never divide by a zero span.
+        for (int i = 1; i < n; ++i) {
+            if (!(_z[i] > _z[i - 1])) {
+                _z[i] = std::nextafter(_z[i - 1],
+                                       std::numeric_limits<float>::infinity());
+            }
+        }
+
+        _count   = n;
+        _z0      = _z[0];
+        const float total = _z[n - 1] - _z[0];
+        _invStep = (total > 0.0f)
+                 ? (static_cast<float>(n - 1) / total)
+                 : 0.0f;
+    }
+
+    // -----------------------------------------------------------------------
+    // locate — the bracket containing `z`, and the position inside it.  O(1).
+    //
+    // The pair HoldoutVisibility::interpAtBucket() consumes.  It replaces
+    // DepthBuckets::locateBoundary() on the holdout path ONLY: locateBoundary()
+    // still answers for the ΔCoC boundaries (pre-merge grouping, span splits,
+    // bucketOfContaining) and its fraction is a different number.
+    //
+    // The index comes from the uniform step in closed form; the two guarded
+    // correction steps that follow reconcile it with the STORED array, whose
+    // float rounding can differ from the multiply by at most one bracket
+    // (the worst relative error over 128 steps is ~1.3e-05 of a bracket).
+    // Deriving `frac` from the stored boundaries rather than from the
+    // multiplication is what makes locate(boundary(i)) return frac exactly 0,
+    // which is what keeps "LUT == exact AT the boundaries" a hard identity
+    // rather than a tolerance.
+    //
+    // Depths outside the range clamp onto the first/last boundary, matching
+    // DepthBuckets::locateBoundary() and HoldoutVisibility::interp(); NaN takes
+    // the first-boundary path rather than propagating.
+    // -----------------------------------------------------------------------
+    DEEPC_HD inline BoundarySpan locate(float z) const
+    {
+        BoundarySpan s;
+        if (_count <= 1)
+            return s;                       // {0, 0}: inert
+
+        const int last = _count - 1;        // index of the last boundary
+        if (!(z > _z[0]))                   // also catches NaN
+            return s;
+        if (z >= _z[last]) {
+            s.index = last - 1;
+            s.frac  = 1.0f;
+            return s;
+        }
+
+        int i = static_cast<int>((z - _z0) * _invStep);
+        i = clampi(i, 0, last - 1);
+
+        // Bounded (never a loop over the array): the closed form is off by at
+        // most one, and two steps each way is slack, not necessity.
+        for (int g = 0; g < 2 && i > 0 && z < _z[i]; ++g)
+            --i;
+        for (int g = 0; g < 2 && i < last - 1 && z >= _z[i + 1]; ++g)
+            ++i;
+
+        const float span = _z[i + 1] - _z[i];
+        s.index = i;
+        s.frac  = (span > 0.0f) ? clampf((z - _z[i]) / span, 0.0f, 1.0f) : 0.0f;
+        return s;
+    }
+};
+
+// ---------------------------------------------------------------------------
+// makeUniformHoldoutBoundaries — build-and-return convenience
+//
+// THE CANONICAL CALL SITE.  The holdout LUT's boundary count is the bucket
+// boundary count (K+1) and its range is the frame's measured depth range, both
+// of which DepthBuckets already carries — so the whole decoupling costs one
+// line at the point where the buckets are built, and no extra frame pass.
+// ---------------------------------------------------------------------------
+inline HoldoutBoundaries makeUniformHoldoutBoundaries(const DepthBuckets& buckets)
+{
+    HoldoutBoundaries h;
+    h.buildUniformZ(buckets.depthMin(), buckets.depthMax(), buckets.boundaryCount());
+    return h;
 }
 
 // ---------------------------------------------------------------------------

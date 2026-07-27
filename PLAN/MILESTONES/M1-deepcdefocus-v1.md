@@ -66,7 +66,8 @@ compute). `scatterBandCPU` stays thread-agnostic so unit tests can drive it dire
   run once under the same lock on first `engine()` — bucket boundaries are global.
 - Memory-limit knob caps **concurrent in-flight bands**, not workers. NOTE the formula below counts
   only the bucket planes; M1.P3.T1 measured the SoA fragment buffers at 69 B/fragment (~1.49GB for a
-  4K band at 20spp), which dominates them — budget on the combined total, see Decisions:
+  4K band at 20spp) — **61 B/fragment (~1.32GB) since M1.P3.T10 removed the boundary pair** — which
+  dominates them — budget on the combined total, see Decisions:
   `scratch/band = K·W·B·(C+3)·4 bytes` (color + alpha + the two area planes — new area and,
   since M1.P3.T9, co-located area; ~117MB at K=16,C=4,W=4096,B=64; ~940MB at K=128). Cap floors at 1
   concurrent band, then shrinks B — never deadlocks at 0.
@@ -107,10 +108,23 @@ identically in `_request` and fetch. Per dest pixel: samples sorted front-to-bac
 transmittance `T_i = Π_{j<i}(1−α_j)`; `vis(z)` for a containing volumetric sample uses
 exponential in-span attenuation `(1−α)^((z−zf)/(zb−zf))` within `[zf, zb]`. Per-fragment binary
 search over holdout samples at every covered dest pixel is too slow (O(Σπr²·log H) total) —
-instead, per band, precompute a per-dest-pixel transmittance LUT at the K+1 bucket boundaries
-(in-span exponential folded in at build time); a fragment's vis is interpolation between its two
-boundary values in log-transmittance space (exact for the exponential model) — O(1) per
-fragment-pixel. Fragment contribution at scatter time: `V·w·vis`, `alpha·w·vis` — no separate
+instead, per band, precompute a per-dest-pixel transmittance LUT at **the holdout's own K+1
+boundaries — `HoldoutBoundaries`, uniform in Z over the frame's measured depth range, NOT the
+ΔCoC bucket boundaries** (in-span exponential folded in at build time); a fragment's vis is
+interpolation between its two boundary values in log-transmittance space — O(1) per
+fragment-pixel, off a closed-form index. The two sets share only the count K+1 (so LUT memory is
+`(K+1)·W·B·4`); ΔCoC spacing bounds *banding*, a CoC criterion, and sampling this LUT at it made
+an opaque card at z=50 start occluding at z=10.9 (see Decisions, 2026-07-27, M1.P3.T10). The
+log chord is exact only where no holdout span edge falls strictly inside a bracket; elsewhere it
+is the monotone chord, whose worst case `(T0−T1)/2` is irreducible with two boundary values, so
+*placement* was the fix — but the shipped chord does **not** attain that bound on an opaque step,
+and the leftover is only partly irreducible: it floors `log T` at `kMinTransmittance`, so vis
+collapses to ~0 across almost the whole bracket, always toward camera. **A holdout card still
+fully erases genuinely-unoccluded source geometry for one bracket in front of it** — 5.07 of the
+6.19-unit bracket at K=16 on the default rig, 2.28 at K=32, 0.89 at K=64, i.e. ≈`(depthRange)/K`.
+That is the standard holdout setup (an element sitting just in front of the held-out object), it
+is a visible artefact, and the interpolant half of it is cheaply reducible — an open follow-up,
+see Decisions. Fragment contribution at scatter time: `V·w·vis`, `alpha·w·vis` — no separate
 punch pass needed (fragments behind the holdout attenuate to zero; fragments in front survive,
 so a defocused FG blooms over the held-out element with pixel-sharp edges, since visibility is
 never blurred). Unconnected holdout / outside holdout bbox ⇒ vis ≡ 1, zero cost. Holdout matte
@@ -238,7 +252,7 @@ l. small-CoC transition: shallow depth ramp crossing 0–2px CoC ⇒ no chatter/
 | Lock/abort UX during full-frame precompute | Med | `Op::aborted()` per row; abort invalidates hash-keyed cache, erased rows stay black. Verified at M1.P2.T2: an aborted cook leaves the frame fully black, publishes nothing, and the next cook is bit-exact |
 | Upstream deep failure cached as a valid black frame | Med | The NDK does **not** propagate an upstream `doDeepEngine()` failure — `DeepOp::deepEngine()` returns *true* with an empty plane, so the defensive bool check can never fire and a silently-empty upstream is published as a valid all-black cache until the hash changes (stock `DeepToImage` has the same blind spot but no cache, so it recovers next cook). Only `Op::aborted()` is a real signal. Found at M1.P2.T2's review; revisit when M1.P4.T1 rebuilds the cache |
 | `tidyOverlapping()` split pass is superlinear | High | Measured ≈O(n³·⁷) — 9.96ms/pixel at 32 mutually overlapping spans, which makes a fog frame unrenderable rather than merely slow. Rewritten single-pass at M1.P3.T6, before T5's scenes need it |
-| SoA fragment memory outside the `memory_limit` formula | Med | 113 B/fragment resident ⇒ ~2.4GB for one 4K band at 20spp, dwarfing the bucket planes. Formula extended at M1.P3.T1 (see Decisions); `reserveFragments()` collapses the capacity slack |
+| SoA fragment memory outside the `memory_limit` formula | Med | 113 B/fragment resident ⇒ ~2.4GB for one 4K band at 20spp, dwarfing the bucket planes (≈100 B / ~2.1GB since M1.P3.T10 dropped the boundary pair). Formula extended at M1.P3.T1 (see Decisions); `reserveFragments()` collapses the capacity slack |
 | Non-terminating sample tidying on volumetric input | High | `deepc::tidyOverlapping()` looped forever on *any* overlapping volumetric pair — fixed during M1.P2.T2 (see Decisions); termination fuzz test added at M1.P3.T4 |
 | Holdout LUT erases fragments far in front of the holdout | High | The design's K+1 ΔCoC bucket boundaries are the wrong basis for depth occlusion — a solid card at z=50 occluded from z=10.9, 98% erasing a fragment at z=15. Found at M1.P3.T3's review; decoupled boundary set at M1.P3.T10 |
 | Coverage plane double-counted, inflating alpha and colour | High | Fractional-split half found and fixed at M1.P3.T2's review (2.0 vs honest 1.0; deposit once, into the nearer bucket). Volumetric-split half still open — M1.P3.T8, which must land before M1.P3.T5's bake-off |
@@ -465,6 +479,7 @@ verified.
     `depositWeight = coverageHead && group == 0`; the composite already handles alpha-without-coverage
     via M1.P3.T2's residual term. Verify analytically that this reconstructs the parent exactly at any
     coverage, not just at full coverage. Note this re-measures M1.P3.T1's 113 B/fragment resident
+    (≈100 B since M1.P3.T10)
     figure — update the Decisions entry if it moves materially.
   - verify: a driver over random (α, split-part-count, kernel radius, coverage fraction) showing band
     alpha/premult-colour sum reconstructs the parent to ≤1e-6 at partial coverage, plus the existing
@@ -508,7 +523,7 @@ verified.
     values against the exact exponential eval).
   - size: M
 
-- [ ] M1.P3.T10 — Decouple the holdout LUT's boundary set from the ΔCoC buckets (run BEFORE T4)
+- [x] M1.P3.T10 — Decouple the holdout LUT's boundary set from the ΔCoC buckets (run BEFORE T4)
   - files: `src/DeepCDefocusScatter.h`/`.cpp`, `src/DeepCDefocusMath.h` if the boundary-set helper
     belongs beside `HoldoutVisibility`
   - approach: found at M1.P3.T3's review. **The Design reference's instruction to build the holdout
@@ -545,6 +560,37 @@ verified.
     transition exactly one pixel wide in both directions. Local build and `ctest` green; `DeepToImage`
     parity still 0 ULP.
   - size: L
+
+- [ ] M1.P3.T11 — Both `interpAtBucket` variants for the opaque-step degeneracy (run BEFORE T4)
+  - files: `src/DeepCDefocusMath.h`, plus whatever carries the selection flag through
+    `ScatterParams`/`HoldoutSoA`
+  - approach: M1.P3.T10 fixed boundary *placement*; this is the interpolant half of the same defect,
+    which its review measured as **not irreducible** after all. The shipped log chord floors `log T`
+    at `kMinTransmittance`, so an opaque step collapses vis to ~0 across almost the whole bracket
+    instead of the `(T0−T1)/2` bound's 0.5 — and always toward camera. Net effect: **a holdout card
+    still fully erases genuinely-unoccluded source geometry for one bracket in front of it** — 5.07 of
+    the 6.19-unit bracket at K=16 on the default rig (5.57 worst case over card position), 2.28 at
+    K=32, 0.89 at K=64, scaling as ≈`(depthRange)/K`. An element sitting just in front of the
+    held-out object *is* the standard holdout setup, so this is an ordinary case, not a corner.
+    Follow the M1.P3.T2 precedent: implement **both** candidates behind a runtime flag (not a
+    preprocessor one — T5 must switch at render time) and let T5 decide from pixels. Both are ~4 lines,
+    zero memory, zero per-fragment cost, and fire **only** when `T1 == 0` — reachable only from
+    fully-opaque content, where "log T is linear in z" is not the model at all — so neither moves any
+    α<1 case at all. Measured: midpoint-step on `T1==0` gives headline mean 0.0262, 2.59u erased in
+    front, ≤half a bracket leaked behind, opaque sweep 0.0074; linear-in-T on `T1==0` gives 0.0266,
+    **0.00u erased**, 0.49u leaked behind (6.16u worst), opaque sweep 0.0097; the shipped chord is
+    0.0565 / 5.07u / 0.00u / 0.0134. The trade is **erasing FG in front vs leaking BG behind**, and
+    scene (e) can fail either way — which is exactly why it is judged from pixels rather than derived.
+    Do not pursue "one extra entry" (17→18→19→21 gives 5.07 → 1.83 → 4.45 → 3.96 units: phase noise,
+    not convergence) or snapping a boundary to a detected opaque step (exact, but needs the eager
+    full-frame holdout pass the histogram set was rejected for).
+  - verify: both variants selectable at runtime and measured against the table above on the same rig;
+    every α<1 case bit-unchanged under all three (that is the property that makes this safe); all of
+    M1.P3.T3/T10's identities still hold — LUT vs exact 0.000e+00 at boundaries, all-ones LUT
+    bit-identical to the disabled path, fully-behind ⇒ exactly 0, fully-in-front ⇒ bit-identical to
+    no-holdout, hard edge exactly one pixel wide in both directions. Local build and `ctest` green;
+    `DeepToImage` parity 0 ULP.
+  - size: M
 
 - [ ] M1.P3.T4 — Unit tests for the scatter core (POD-level)
   - files: `tests/test_defocus_scatter.cpp` (new, doctest, uses the same `DEEPC_BUILD_TESTS`
@@ -598,7 +644,12 @@ verified.
     suite has no coverage of, and the shape that exposed M1.P3.T10's boundary-set defect; a
     `build()`-vs-`evalBoundaries()` equivalence fuzz on **overlapping and unsorted** input (both are
     supported, neither is assumed); the NaN-depth drop; and a `depthScale` round-trip. Write these
-    against M1.P3.T10's boundary set, not T3's.
+    against M1.P3.T10's boundary set, not T3's. **T10's review already pinned `HoldoutBoundaries`'
+    documented post-conditions, its closed-form-index-vs-binary-search agreement, its NaN/±inf/
+    degenerate-range behaviour, the `locate()+interpAtBucket` == `interp` identity and the
+    bit-exactness at the boundaries in `tests/test_defocus_math.cpp`** (T10 shipped the struct
+    before this task exists, so they could not be left as a promise). Move them into the
+    scatter-core suite if that reads better, but do not drop or weaken them.
     **Add a termination fuzz test for `deepc::tidyOverlapping()`**: randomised sample vectors with
     depths drawn from a small discrete set so exact ties are common, asserting termination and a
     bounded output size. The non-termination bug fixed during M1.P2.T2 hung Nuke unkillably on
@@ -664,7 +715,13 @@ verified.
     provisional default (see Decisions). Scene (g) needs a **steep** ramp: the deficit scales with how
     many buckets a destination pixel's CoC neighbourhood straddles, not with K alone (a gentle ramp
     lost only 4.8% end-to-end versus 35.6% in the synthetic K=16 worst case), so a shallow ramp would
-    understate the very effect being judged. Report scenes (f)/(g) fog density against M1.P3.T8's
+    understate the very effect being judged. **It also decides M1.P3.T11's `interpAtBucket` variant** —
+    the erase-FG-in-front vs leak-BG-behind trade, judged from scenes (e) and (f); record the outcome
+    here and delete the losing variant with its flag, same discipline as the bucket composite.
+    Also build the holdout boundary set **once per frame** via `makeUniformHoldoutBoundaries(buckets)`,
+    never per band: a fragment near a band edge scatters into two bands, and per-band sets put a seam
+    along every boundary (measured: the same fragment reads vis 0.0448 in one band and 1.0000 in the
+    next). Report scenes (f)/(g) fog density against M1.P3.T8's
     coverage-head fix, and expect a residual ~4%/layer loss where fragments with *different* split
     fractions share a bucket (measured: two fully-covering 50% fog layers give 0.7297 vs the exact
     0.75) — it is identical under both candidates, so it does not bias the comparison.
@@ -778,6 +835,84 @@ verified.
 
 ## Decisions
 
+- 2026-07-27 — **M1.P3.T10 shipped the decoupled holdout boundary set: `HoldoutBoundaries`,
+  uniform in Z over the frame's measured depth range, at the same K+1 entries/pixel.** The
+  headline rig (opaque point holdout at z=50, K=16, range [1,100]) goes mean |vis error|
+  **0.391 → 0.057**, bite **10.9 → 44.4** against a true 50; fragments at z=15/30/40 come back
+  **1.000000** from 0.0215/0.000000/0.000000. Randomised sweep (K 4–128, 1–4 samples, 3000
+  trials/shape, same harness before and after) — opaque samples: point **0.1113 → 0.0140**,
+  sub-bucket spans **0.1113 → 0.0140**, wide spans **0.1117 → 0.0127** (7.9–8.8×); with
+  α~U(0,1): **0.0826 → 0.0072**, **0.0806 → 0.0064**, **0.0780 → 0.0016** (11–49×). NOTE the
+  absolute shipped baselines differ from the 0.464/0.431/0.234 quoted in T10's brief because the
+  corpus generator differs (this one draws K uniformly in [4,128], which is what most of the gap
+  is); the headline rig reproduces the brief's numbers to four figures, so the harness is
+  calibrated and the before/after pairs above are the ones to compare.
+  - **A holdout-depth-histogram-derived set was measured and REJECTED.** Boundaries at
+    equal-occlusion-mass (equal optical depth, `−ln(1−α)` spread along each span) quantiles are
+    *exact* for isolated opaque cards — 0.0000 on the headline, 0.0058 on a two-card frame — but
+    they are **20× worse than uniform-in-z on volumetric holdouts** (opaque sub-bucket spans
+    0.270 vs 0.014, wide spans 0.318 vs 0.013), because an opaque slab carries essentially all
+    the frame's mass, every quantile crossing lands inside its front edge, and the rest of the
+    range collapses into one bracket — the ΔCoC failure reproduced through a different door, and
+    precisely validation scene (f). It also loses on a continuum of holdout depths (0.0266 vs
+    0.0168 over 64 pixels), needs an **eager full-frame holdout pass** the design does not
+    otherwise have (the depth pass reads the source only), and has no closed-form index. A
+    one-sided variant is worse still: pinning only the front of each step leaves a log ramp
+    across the whole gap to the next boundary (0.0817, i.e. no better than the ΔCoC set).
+  - **Uniform-in-1/z confirmed not the answer**: 0.352 / bite 14.8 on the headline, 0.116 on the
+    opaque sweep — it reproduces almost exactly the front-loaded bias that broke the ΔCoC set.
+  - **`HoldoutSoA`'s contract changed**: it now carries `HoldoutBoundaries` **by value** next to
+    `boundaryT` (the set the LUT was built at travels with the LUT, so a build and a lookup
+    cannot drift onto different arrays), `boundaryCount` became a method, and
+    `HoldoutLut::build()` takes `HoldoutBoundaries` instead of `DepthBuckets`. The boundary set
+    must be **frame-global** — a fragment near a band edge scatters into two bands, and per-band
+    sets would put a seam along every band boundary; `makeUniformHoldoutBoundaries(buckets)`
+    derives it from the already-global measured range at no extra pass.
+  - **`SampleSoA::boundaryIndex`/`boundaryFrac` are GONE.** They held
+    `DepthBuckets::locateBoundary()`'s pair, which now indexes the wrong array;
+    `scatterBandCPU()` derives the right pair from the fragment's own `depth` via
+    `HoldoutSoA::locate()`. Per-fragment cost: the plan budgeted *two binary searches per
+    fragment*; it is now **one** (`bucketOf`'s O(log K)) plus an **O(1) closed-form locate**,
+    skipped entirely when no holdout is connected — and the SoA is **69 → 61 B/fragment**
+    (~173 MB off a 4K/20spp band). Per-band LUT memory is unchanged at exactly `(K+1)·W·B·4`
+    (17,825,792 B measured at K=16/4096×64).
+  - Every M1.P3.T3 identity re-verified against the real scatter: LUT vs exact at the boundaries
+    **0.000e+00** over 2000 random holdouts; `locate(boundary(i)) == {i, 0}` exactly at
+    K∈{4,16,33,64,128}; all-ones LUT **bit-identical** to the disabled path; fully behind an
+    opaque holdout **exactly 0**; fully in front **bit-identical** to no-holdout; the hard edge is
+    **exactly one pixel wide in both directions** (1 transition, at the holdout's own pixel);
+    α=1e-7 precision unregressed (1 ulp of 1.0, identical before and after) and bit-exact at the
+    boundaries for a 200-sample 1e-7 stack. ASAN+UBSAN clean (empty holdout, single sample,
+    zero-thickness spans, band outside the bbox, NaN/±inf depths and alphas, K=4/16/128).
+    `DeepToImage` parity still **0 ULP** (12 depth-separated layers, alphas 1e-7…1.0, all four
+    channels) — engine() is still the M1.P2.T2 flatten path, so it was never at risk.
+  - The Design reference's **Holdout mechanics** paragraph has been corrected in place; do not
+    read the pre-correction "at the K+1 bucket boundaries" wording from git history as binding.
+  - **THE RESIDUAL, STATED PLAINLY (added at T10's independent review, which reproduced every
+    number above with its own drivers — headline 0.3909/0.3519/0.0000/0.0565 at bites
+    10.90/14.78/50.00/44.38, and the histogram's volumetric failure at 0.256/0.300 against
+    uniform-in-z's 0.013).** The card at z=50 sits in bracket [44.31, 50.50], and **fragments from
+    44.93 to 50 come back vis 0** — 5.07 world units, 82% of the bracket, of genuinely-unoccluded
+    geometry fully erased. 2.28 units at K=32, 0.89 at K=64, 0.196 at K=128; worst case over card
+    position at K=16 is 5.57 units. It scales as ≈`(measured depth range)/K`, so it is mild on a
+    tight scene and material on a wide one. **This is NOT all "the irreducible `(T0−T1)/2`
+    placement error"**, and T10's first draft of this entry called it that. Half a bracket of
+    placement uncertainty is irreducible with K+1 values; the *other* half is the log chord's own
+    degeneracy — it floors `log T` at `kMinTransmittance`, so an opaque step collapses vis to ~0
+    across the whole bracket instead of the bound's 0.5, and always toward camera. Measured
+    alternatives, all zero memory / zero per-fragment cost, firing only when `T1 == 0` (reachable
+    only from fully-opaque content, where "log T is linear in z" is not the model at all):
+    | interpAtBucket variant | headline mean | erased in front | leaks behind | opaque sweep | α<1 sweep |
+    |---|---|---|---|---|---|
+    | log chord (shipped) | 0.0565 | 5.07 u | 0.00 u | 0.0134 | 0.0075/0.0058/0.0018 |
+    | midpoint step on `T1==0` | 0.0262 | 2.59 u | ≤ half bracket | 0.0074 | unchanged |
+    | linear-in-T on `T1==0` | 0.0266 | 0.00 u | 0.49 u (to 6.16 worst) | 0.0097 | unchanged |
+    Both cut the mean ~2× and neither moves any α<1 case. The trade is *erasing FG in front* vs
+    *leaking BG behind* — scene (e) can fail either way, so **judge it from pixels at M1.P3.T5,
+    do not derive it**. "One extra entry" is NOT a fix (17→18→19→21 entries gives 5.07 → 1.83 →
+    4.45 → 3.96 units: phase noise, not convergence); snapping a boundary to a detected opaque
+    step would fix it exactly but needs the eager full-frame holdout pass the histogram set was
+    rejected for. **Land T10; open a follow-up on the interpolant.**
 - 2026-07-26 — **The coverage plane `Σ w·vis` is deposited ONCE per fragment, into the nearer
   bucket** — not into both buckets of a fractional split. M1.P3.T2 shipped the full-deposit form on
   the argument that `A_k ≤ C_k` is a precondition of the coverage-partition candidate; its review
@@ -936,7 +1071,8 @@ verified.
   rest as alpha-without-coverage. Stored as **bit 1 of the existing `kind` byte**, which was renamed
   `flags` so any un-migrated `static_cast<FragmentKind>` fails to compile; `SampleSoA::sizeBytes()` is
   byte-identical, so M1.P3.T1's 69 B/fragment logical / 113 B resident figures and the `memory_limit`
-  entry are unchanged. Pre-merge survival is an **OR over the group**, not the group head's flag — a
+  entry were unchanged **by T8** (M1.P3.T10 later moved both to 61 / ≈100 — see the 2026-07-27
+  entries). Pre-merge survival is an **OR over the group**, not the group head's flag — a
   group is a maximal run of adjacent staged fragments and can mix a non-head part of parent A with a
   head point sample B, so taking the first flag would drop B's coverage. Fuzz-verified rather than
   argued: head count is exactly 1 per parent over 200,000 randomised single-parent cases, and never
@@ -1049,7 +1185,12 @@ verified.
   actually resident** (139 at C=8) once geometric capacity slack across the 15 independent buffers is
   counted — so a 4096-wide band at B=64 / `max_radius`=100 / 20spp is ~2.4GB, not the ~1.49GB the
   logical figure suggests, and either way it dwarfs the ~100MB of bucket planes the original formula
-  counted. Budget on the resident figure, and call `reserveFragments()` (which already exists) to
+  counted. **Superseded in part by M1.P3.T10, which removed two of the fifteen buffers: 61
+  B/fragment logical at C=4 (77 at C=8), ≈100 B resident at C=4 and ≈126 at C=8 — the
+  resident/logical ratio is unchanged, so re-measure exactly at M1.P4.T1. The rejection below no
+  longer applies to the boundary pair: T10 dropped it and paid NO search, because
+  `HoldoutBoundaries::locate()` is O(1) closed form. It still stands for the `deposit` arrays,
+  whose locator (`bucketOf`) is not.** Budget on the resident figure, and call `reserveFragments()` (which already exists) to
   collapse the slack wherever the caller can estimate the count. Rejected the
   alternative of dropping the precomputed deposit/boundary arrays (−32 B/fragment) and recomputing
   them in the scatter: that trades a real memory win for a binary search per fragment on the hottest

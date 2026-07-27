@@ -33,8 +33,10 @@
 //                      alpha, and the two `sum of w*vis` AREA planes — new
 //                      area and, since M1.P3.T9, co-located area).
 //    - HoldoutSoA    : non-owning view of M1.P3.T3's per-dest-pixel boundary
-//                      transmittance LUT.  Absent/unconnected holdout is an
-//                      empty view and costs nothing.
+//                      transmittance LUT, plus (M1.P3.T10) the HoldoutBoundaries
+//                      set it was built at — which is NOT DepthBuckets'.
+//                      Absent/unconnected holdout is an empty view and costs
+//                      nothing.
 //    - scatterBandCPU() : the scatter core proper — fragments -> planes.
 //    - resolveBandCPU() : saturate-down, then combine the planes into the
 //                      band's flat output by one of the two candidate
@@ -431,7 +433,8 @@ enum class FragmentKind : std::uint8_t {
 // A point sample is its own parent and is always a head.
 //
 // STORED AS A BIT IN THE EXISTING `kind` BYTE, not as a sixteenth SoA array.
-// The SoA is already 113 B/fragment resident at C=4 (milestone Decisions) and
+// The SoA is already ~100 B/fragment resident at C=4 (61 logical; milestone
+// Decisions 2026-07-27) and
 // dominates the memory-limit budget, so a new PodBuffer would add its own
 // geometric capacity slack for one bool; bit 1 of a byte that only ever used
 // bit 0 costs nothing.  SampleSoA's array is named `flags` rather than `kind`
@@ -492,8 +495,14 @@ struct FragmentRecord {
     float         depth    = 0.0f;      // midpoint depth used for CoC + bucketing
     float         alpha    = 0.0f;      // this fragment's own alpha
     BucketDeposit deposit  = {};        // the two bucket deposits (see contract)
-    BoundarySpan  boundary = {};        // for HoldoutVisibility::interpAtBucket()
     FragmentKind  kind     = FragmentKind::Point;
+
+    // NOTE (M1.P3.T10): there is deliberately NO precomputed holdout boundary
+    // pair here any more.  It used to be DepthBuckets::locateBoundary(depth),
+    // which indexed the ΔCoC bucket boundaries; the holdout LUT now has its own
+    // boundary set and the scatter derives the pair from `depth` in O(1) closed
+    // form (HoldoutSoA::locate).  Storing it would re-create the possibility of
+    // an index built against one boundary array being used against another.
 
     // Does this fragment carry its parent sample's kernel COVERAGE?  True for
     // every point sample (each is its own parent) and for the front-most
@@ -529,18 +538,22 @@ struct FragmentRecord {
 // (index0, alpha 0, colorScale 0), so the scatter's inner loop can deposit
 // unconditionally and stay in bounds — see fragmentDeposit()'s note.
 //
-// TWO DIFFERENT (index, frac) PAIRS LIVE HERE, AND THEY ARE NOT INTERCHANGEABLE
-// (milestone Decisions, 2026-07-26):
-//   * bucketIndex0/1 + the deposit alphas come from bucketOf()/
-//     bucketOfContaining(), which measure position between bucket CENTRES.
-//     They are the scatter's plane assignment.
-//   * boundaryIndex/boundaryFrac come from DepthBuckets::locateBoundary(),
-//     which measures position between bucket BOUNDARIES.  They are what
-//     HoldoutVisibility::interpAtBucket() must be fed (M1.P3.T3).  Feeding it
-//     the bucketOf() fraction instead was measured to take max |vis − exact|
-//     from 0.680 to 0.869.
-// Both are precomputed here, once per fragment, so the scatter never has to
-// choose — and never pays a second binary search per fragment.
+// EXACTLY ONE (index, frac) PAIR LIVES HERE, AND IT IS THE SCATTER'S PLANE
+// ASSIGNMENT: bucketIndex0/1 + the deposit alphas, from bucketOf() /
+// bucketOfContaining(), which measure position between bucket CENTRES.
+//
+// THE HOLDOUT PAIR IS GONE FROM HERE (M1.P3.T10).  It used to be
+// boundaryIndex/boundaryFrac from DepthBuckets::locateBoundary() — position
+// between ΔCoC BUCKET boundaries — because the holdout LUT was sampled at
+// those same boundaries.  It no longer is: the LUT has its own uniform-in-z
+// boundary set (HoldoutBoundaries), so a pair precomputed against the bucket
+// boundaries would index the wrong array.  scatterBandCPU() now derives the
+// right pair from `depth` via HoldoutSoA::locate(), which is O(1) closed form
+// — cheaper than the O(log K) search this used to precompute, and 8 bytes per
+// fragment lighter (69 -> 61 B/fragment; ~173 MB off a 4K/20spp band).
+//
+// The plan budgeted "two binary searches per fragment (assignment + holdout
+// vis)".  It is now ONE: bucketOf()'s O(log K), plus an O(1) locate.
 // ---------------------------------------------------------------------------
 struct SampleSoA {
     PodBuffer<std::int32_t> x;
@@ -555,9 +568,6 @@ struct SampleSoA {
     PodBuffer<float>        bucketAlpha1;
     PodBuffer<float>        colorScale0;
     PodBuffer<float>        colorScale1;
-
-    PodBuffer<std::int32_t> boundaryIndex;
-    PodBuffer<float>        boundaryFrac;
 
     // Packed per-fragment flag byte: bit 0 = FragmentKind, bit 1 = coverage
     // head.  Read it through fragmentKindOf() / fragmentCoverageHeadOf();
@@ -964,7 +974,9 @@ struct BucketPlanes {
     // is the formula, not the policy.
     //
     // NOTE this counts ONLY the planes.  M1.P3.T1 measured the SoA fragment
-    // buffers at 113 B/fragment resident, ~2.4GB for a 4K band at 20spp,
+    // buffers at 113 B/fragment resident, ~2.4GB for a 4K band at 20spp
+    // (61 logical / ~100 resident, ~2.1GB, since M1.P3.T10 dropped the
+    // per-fragment holdout boundary pair),
     // which dwarfs them; budget on the combined total (milestone Decisions).
     static std::size_t bytesForBand(int bucketCount, int channelCount,
                                     int width, int height)
@@ -1002,32 +1014,56 @@ struct BucketPlanes {
 // vis path is a log/exp per fragment-pixel anyway — it is not the loop that
 // vectorizes.)
 //
-// THE INTERPOLATION IS FED FROM locateBoundary(), NOT bucketOf() — position
-// between BOUNDARIES, not between bucket CENTRES (milestone Decisions,
-// 2026-07-26: feeding it the bucketOf fraction takes max |vis - exact| from
-// 0.680 to 0.869).  SampleSoA already carries the right pair as
-// boundaryIndex/boundaryFrac, precomputed by the flatten, and this file uses
-// those and never the bucketIndex/bucketAlpha pair.
+// *** THE BOUNDARY SET IS THIS VIEW'S OWN, NOT DepthBuckets' (M1.P3.T10) ***
 //
-// NON-OWNING on purpose: T3 owns the storage (it belongs with the rest of the
-// band's per-thread scratch and its lifetime is the band's), and a POD view is
-// what a device kernel can take by value.  boundaryCount must be
-// DepthBuckets::boundaryCount() == K+1; a mismatch is treated as "disabled"
-// rather than read out of bounds.
+// `boundaries` is carried BY VALUE, alongside the LUT it was built at, and it
+// is the single source of truth for both halves of the seam: HoldoutLut::build()
+// fills `boundaryT` at exactly these depths and the scatter locates a fragment
+// in exactly these depths.  There is no second party to agree with and so no
+// way for a build and a lookup to drift onto different boundary arrays — which
+// is the whole failure class the original "the flatten precomputes the index"
+// arrangement was exposed to once the two sets stopped being the same set.
+//
+// The pair fed to interpAtBucket() is therefore HoldoutBoundaries::locate()'s,
+// computed by scatterBandCPU() from the fragment's own depth in O(1) closed
+// form.  It is NOT DepthBuckets::bucketOf()'s (position between bucket
+// CENTRES; milestone Decisions 2026-07-26 measured max |vis - exact| going
+// 0.680 -> 0.869 if it is used) and, since M1.P3.T10, no longer
+// DepthBuckets::locateBoundary()'s either (position between ΔCoC BUCKET
+// boundaries — a different array from the one the LUT is sampled at).
+// SampleSoA consequently no longer carries boundaryIndex/boundaryFrac at all.
+//
+// `boundaries.count()` is DepthBuckets::boundaryCount() == K+1, so per-band LUT
+// memory is unchanged at (K+1)*W*B*4 bytes.  The two sets share that COUNT and
+// nothing else; see HoldoutBoundaries for why the PLACEMENT had to diverge.
+//
+// NON-OWNING on purpose: HoldoutLut owns the storage (it belongs with the rest
+// of the band's per-thread scratch and its lifetime is the band's), and a POD
+// view is what a device kernel can take by value.
 // ---------------------------------------------------------------------------
 struct HoldoutSoA {
-    const float*   boundaryT     = nullptr;
-    int            boundaryCount = 0;       // K + 1
-    std::ptrdiff_t pixelCount    = 0;       // band pixels covered by the LUT
+    const float*      boundaryT  = nullptr;
+    HoldoutBoundaries boundaries = {};      // the set boundaryT was built at
+    std::ptrdiff_t    pixelCount = 0;       // band pixels covered by the LUT
+
+    DEEPC_HD inline int boundaryCount() const { return boundaries.count(); }
 
     DEEPC_HD inline bool enabled() const
     {
-        return boundaryT != nullptr && boundaryCount > 1 && pixelCount > 0;
+        return boundaryT != nullptr && boundaries.enabled() && pixelCount > 0;
     }
 
     DEEPC_HD inline const float* pixelLut(std::ptrdiff_t pixel) const
     {
-        return boundaryT + pixel * static_cast<std::ptrdiff_t>(boundaryCount);
+        return boundaryT + pixel * static_cast<std::ptrdiff_t>(boundaries.count());
+    }
+
+    // The fragment's (index, frac) into the LUT.  O(1), closed form — this is
+    // what replaced the flatten's precomputed pair, and it is the ONLY locator
+    // that may feed HoldoutVisibility::interpAtBucket() on this LUT.
+    DEEPC_HD inline BoundarySpan locate(float depth) const
+    {
+        return boundaries.locate(depth);
     }
 };
 
@@ -1105,7 +1141,8 @@ struct HoldoutSampleSoA {
     // (rayDistanceToZ(1, focalLengthMm, filmbackRadiusMm(x, y, ...))), or 1
     // when `depth_is_ray_distance` is off.  IT MUST MATCH WHAT
     // flattenPixelToSoA() APPLIED AT THE SAME PIXEL: the LUT is evaluated at
-    // bucket boundaries, which live in Z, so an uncorrected holdout sits
+    // the HoldoutBoundaries depths (M1.P3.T10), which live in Z, so an
+    // uncorrected holdout sits
     // systematically too far back off-axis (measured: 47% too far in Z at the
     // corner of a 20mm/36x24 frame).  This is the request/engine-style
     // "two passes disagreeing about depth" failure the milestone already
@@ -1131,8 +1168,10 @@ struct HoldoutSampleSoA {
 // reuse (rebuild) it for the next band.
 //
 // WHAT build() DOES: for every band pixel, HoldoutVisibility::build() fills
-// boundaryCount contiguous floats at the K+1 bucket boundary depths, folding
-// the in-span exponential attenuation in once per PIXEL rather than once per
+// boundaryCount contiguous floats at the HoldoutBoundaries depths (K+1 of them,
+// uniform in Z -- NOT the ΔCoC bucket boundaries; see below and
+// HoldoutBoundaries), folding the in-span exponential attenuation in once per
+// PIXEL rather than once per
 // FRAGMENT -- this is the whole reason the scatter's per-fragment-pixel cost
 // is O(1) instead of a binary search over holdout samples.  A pixel with zero
 // holdout samples costs exactly HoldoutVisibility::build()'s empty-sample
@@ -1167,55 +1206,77 @@ struct HoldoutSampleSoA {
 // 1.4 s and 578 MB across a 4K frame's 34 bands, and both scale with K.  None
 // of that is in BucketPlanes::bytesForBand() -- see M1.P4.T1.
 //
-// ***  OPEN ACCURACY DEFECT -- THE BOUNDARY SET, NOT THIS CLASS  *************
+// ***  THE BOUNDARY SET IS DECOUPLED FROM THE ΔCoC BUCKETS (M1.P3.T10)  *****
 //
-// The LUT samples transmittance at the SCATTER's dCoC bucket boundaries, and
-// interpAtBucket() chords between two of them in log space.  That is exact
+// This class used to sample transmittance at the SCATTER's ΔCoC bucket
+// boundaries, as the design reference originally specified, and
+// interpAtBucket() chorded between two of them in log space.  That is exact
 // only while no holdout span edge falls strictly inside the bracket.  For the
 // commonest holdout of all -- one opaque card, i.e. a POINT sample -- the true
 // T is a step, and the log chord collapses it onto the bracket's NEAR
-// boundary, so the card behaves as if it sat up to a whole bucket closer to
-// camera.  Measured at this file's review, at the node's DEFAULTS
+// boundary, so the card behaved as if it sat up to a whole bucket closer to
+// camera.  Measured at M1.P3.T3's review, at the node's DEFAULTS
 // (K=16, focus 10, depth range [1,100] -- the 15/1 front/back bucket split the
-// milestone Decisions already record): an opaque holdout at z=50 lands in
-// bucket [10,100] and starts occluding at z=10.9.  A source fragment at z=15,
-// 35 units IN FRONT of the holdout, comes out 98% erased; mean |vis error|
-// over the depth range is 0.391, max 1.0.  K does not rescue it -- at K=128
-// the same card still bites at z=40.2.  The magnitude is also set by
-// kMinTransmittance (moving the floor 1e-30 -> 1e-3 moves the bite 10.9 ->
-// 19.0), which is the tell that this is not a principled approximation.
+// milestone Decisions already record): an opaque holdout at z=50 landed in
+// bucket [10,100] and started occluding at z=10.9.  A source fragment at z=15,
+// 35 units IN FRONT of the holdout, came out 98% erased; mean |vis error|
+// over the depth range was 0.391, max 1.0.  K did not rescue it -- at K=128
+// the same card still bit at z=40.2.  The magnitude was also set by
+// kMinTransmittance (moving the floor 1e-30 -> 1e-3 moved the bite 10.9 ->
+// 19.0), which is the tell that it was not a principled approximation.
 //
-// It is NOT fixable inside interpAtBucket(): with only two boundary values a
-// monotone T can be anywhere between them, so no interpolant beats a
-// worst case of (T0 - T1)/2.  It is fixable by choosing DIFFERENT boundaries
-// for the holdout LUT than for the scatter's buckets -- the dCoC spacing
-// exists to bound BANDING (a CoC criterion) and deliberately spends 15/16 of
-// its budget in front of focus, which is the wrong criterion for depth
-// occlusion.  With the SAME 17 entries per pixel, uniform-in-z boundaries
-// measure mean |vis error| 0.057 (vs 0.391) and bite at 44.4 (vs 10.9).
-// Decoupling also keeps the per-fragment cost O(1) (a closed-form index, no
-// search) and costs no extra memory, unlike sub-dividing the dCoC set, which
-// needs S=16 (257 entries/pixel) to reach the same place.
+// The DOMINANT term was placement, and no interpolant could have recovered a
+// 90-unit-wide bracket: with only two boundary values a monotone T can be
+// anywhere between them, so no interpolant beats a worst case of (T0 - T1)/2.
+// The fix is therefore a DIFFERENT boundary set for this LUT than
+// for the scatter's buckets -- the ΔCoC spacing exists to bound BANDING (a CoC
+// criterion) and spends 15/16 of its budget in front of focus, which is the
+// wrong criterion for depth occlusion.  build() now takes HoldoutBoundaries
+// (uniform in Z over the frame's measured depth range, the SAME K+1 count):
+// mean |vis error| 0.057 against 0.391, biting at 44.4 against a true 50.  The
+// per-fragment index stays O(1) and closed form, and per-band memory is
+// unchanged.  See HoldoutBoundaries for the full bake-off, including why a
+// holdout-depth-histogram-derived set lost and why uniform-in-1/z is not it.
 //
-// Owner: milestone Decisions + M1.P3.T5, which is where the boundary set is
-// actually built and where scene (b)/(e)/(f) can judge it from pixels.  Do
-// not treat the numbers above as the accepted "monotone chord" tolerance the
-// HoldoutVisibility header describes -- that text predates this measurement.
+// WHAT IS LEFT, AND IT IS NOT ALL IRREDUCIBLE (M1.P3.T10's review).  Half a
+// bracket of placement uncertainty is irreducible with K+1 values; the log
+// chord's behaviour inside that bracket is NOT.  For an opaque step the chord
+// floors log T at kMinTransmittance and so collapses to ~0 across the whole
+// bracket, one-sided TOWARD CAMERA -- measured 5.07 of the 6.19-unit bracket
+// fully erased at K=16 (2.28 at K=32, 0.89 at K=64), against the (T0-T1)/2
+// bound's 0.5.  interpAtBucket() has an open follow-up: switching only the
+// T1 == 0 case (reachable only from fully-opaque content, where "log T is
+// linear in z" is not the model anyway) to a midpoint step measures headline
+// mean 0.0565 -> 0.0262, erased-in-front 5.07 -> 2.59 units, the whole opaque
+// sweep 0.0134 -> 0.0074, and every alpha<1 case bit-unchanged -- at the cost
+// of up to half a bracket of BG leaking through the holdout instead.  That is
+// an erase-vs-leak trade to judge from pixels at M1.P3.T5, not a derivation.
 // ***************************************************************************
 // ---------------------------------------------------------------------------
 struct HoldoutLut {
     PodBuffer<float> boundaryT;   // pixelCount * boundaryCount, PIXEL-MAJOR
 
-    int            boundaryCount = 0;   // K + 1
+    // The set boundaryT was built at.  Stored so view() can hand it to the
+    // scatter with the LUT: the two must never come from separate places.
+    HoldoutBoundaries boundaries = {};
+
+    int            boundaryCount = 0;   // == boundaries.count() == K + 1
     std::ptrdiff_t pixelCount    = 0;
 
     // Builds (or, per the note above, clears) the LUT from one band's
-    // flattened holdout samples and the frame's depth buckets.  Safe to call
-    // repeatedly with the same geometry (PodBuffer keeps its capacity), which
-    // is the band loop's normal path.  If `samples` was not filled for the
-    // full `samples.pixelCount` (a caller bug), the unfilled tail is treated
-    // as zero-sample rather than read out of bounds.
-    void build(const HoldoutSampleSoA& samples, const DepthBuckets& buckets);
+    // flattened holdout samples and the frame's HOLDOUT boundary set -- NOT
+    // its DepthBuckets (M1.P3.T10).  Safe to call repeatedly with the same
+    // geometry (PodBuffer keeps its capacity), which is the band loop's normal
+    // path.  If `samples` was not filled for the full `samples.pixelCount`
+    // (a caller bug), the unfilled tail is treated as zero-sample rather than
+    // read out of bounds.
+    //
+    // `boundaries` MUST be frame-global, not per-band: a fragment near a band
+    // edge scatters into two bands, and if those bands' LUTs were sampled at
+    // different depths the same fragment would get two different vis values --
+    // a visible seam along every band boundary.  makeUniformHoldoutBoundaries()
+    // derives it from the frame's DepthBuckets, which are already global.
+    void build(const HoldoutSampleSoA& samples, const HoldoutBoundaries& boundaries);
 
     void release();
 
@@ -1325,8 +1386,11 @@ struct ScatterFragment {
     float colorScale0 = 0.0f;
     float colorScale1 = 0.0f;
 
-    // locateBoundary()'s pair — position between BOUNDARIES, for the holdout
-    // LUT.  NOT the bucketOf() pair above.
+    // HoldoutBoundaries::locate()'s pair — position between the HOLDOUT LUT's
+    // own boundaries (M1.P3.T10), NOT the bucketOf() pair above and NOT
+    // DepthBuckets::locateBoundary()'s.  Filled by scatterBandCPU() from the
+    // fragment's depth in O(1); left at {0, 0} when there is no holdout, in
+    // which case nothing reads it.
     int   boundaryIndex = 0;
     float boundaryFrac  = 0.0f;
 
@@ -1572,7 +1636,7 @@ DEEPC_HD inline std::size_t scatterFragmentSpans(const BucketPlaneView& planes,
             for (int i = 0; i < count; ++i) {
                 const float vis = HoldoutVisibility::interpAtBucket(
                     holdout.pixelLut(dstOffset + i),
-                    holdout.boundaryCount, bIndex, bFrac);
+                    holdout.boundaryCount(), bIndex, bFrac);
                 rowScratch[i] = w[i] * vis;
             }
             w = rowScratch;
@@ -1613,7 +1677,7 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
     float w = 1.0f;
     if (holdout.enabled()) {
         w = HoldoutVisibility::interpAtBucket(holdout.pixelLut(dstOffset),
-                                              holdout.boundaryCount,
+                                              holdout.boundaryCount(),
                                               frag.boundaryIndex,
                                               frag.boundaryFrac);
     }
