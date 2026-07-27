@@ -98,8 +98,9 @@ the milestone's core correctness gate, which also decides the bucket composite A
 interpolant from rendered pixels. `tests/test_defocus_scatter.cpp` now exists (26 cases, mutation-
 verified at 40 killed / 6 verified-equivalent over the review's independent 46-mutation list), so every
 contract T5 builds on is pinned.
-Remaining in this milestone: P3 T5, then Phase 1.4 and Phase 1.5. Eight tasks
-have now been added by execution findings (M1.P3.T0, T6, T7, T8, T9, T10, T11, plus the enlarged
+Remaining in this milestone: P3 T5 (wiring) and T12 (the validation-scene sweep and both bake-off
+decisions, split out of T5 so each has a real gate), then Phase 1.4 and Phase 1.5. Nine tasks
+have now been added by execution findings (M1.P3.T0, T6, T7, T8, T9, T10, T11, T12, plus the enlarged
 M1.P3.T4 test list).
 No PR yet — `ship: pr-per-milestone` puts that at M1's verification gate. The branch
 `claude/deep-defocus-node-plan-o0ld83` is committed but NOT pushed.

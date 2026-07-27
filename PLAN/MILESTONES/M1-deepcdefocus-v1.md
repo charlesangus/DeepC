@@ -717,13 +717,36 @@ verified.
     ray-distance factor as the flatten** via the holdout SoA's `depthScale` (an uncorrected holdout
     sits 47.3% too far back in Z at the corner of a 20mm frame); and do **not** compute the holdout
     matte AOV as `1 − boundaryT` in float (see Decisions — the deficit's relative error is 100% at
-    α=1e-7). Both run under
+    α=1e-7). Build the holdout boundary set **once per frame** via
+    `makeUniformHoldoutBoundaries(buckets)`, never per band: a fragment near a band edge scatters into
+    two bands, and per-band sets put a seam along every boundary (measured: the same fragment reads vis
+    0.0448 in one band and 1.0000 in the next). Both run under
     a single frame-wide lock in this phase (no per-band concurrency yet — that's Phase 1.4) so
-    correctness lands before concurrency is introduced.
-  - verify: the local build compiles; run validation scenes (a)–(l) from the Design reference
-    against this serial implementation in the local Nuke install — all must pass before Phase
-    1.4 changes the execution model. This is the milestone's core correctness gate. It also
-    **decides the bucket-composite question**: render scenes (c), (f), (g) and (i) through both of
+    correctness lands before concurrency is introduced. Set `ScatterParams::combine`, `holdoutInterp`
+    and `pre_merge` from the knobs explicitly — never rely on a default (M1.P3.T12 must be able to
+    render each candidate).
+  - verify: the local build compiles and `DeepCDefocus.so` is produced; both unit suites stay green;
+    in headless Nuke the node renders a defocused frame end to end on a simple deep scene (not black,
+    not garbage, bbox padded, sparse regions still exactly black), **scene (a)'s size-0 flatten parity
+    is still 0 ULP for point samples** now that the scatter rather than the old flatten path produces
+    it, and an aborted mid-cook still recovers cleanly. The full validation sweep (a)–(l) and both
+    bake-off decisions are **M1.P3.T12**, split out because they are a distinct body of work with
+    their own gate — this task's job is to make the node actually render correctly, T12's is to prove
+    it across the scene list and pick the two candidates.
+  - size: L
+
+- [ ] M1.P3.T12 — Validation scenes (a)–(l) and both bake-off decisions
+  - files: `src/DeepCDefocus.cpp`, `src/DeepCDefocusScatter.h`/`.cpp` (deleting losing paths), this
+    file's `## Decisions`
+  - approach: with M1.P3.T5's serial wiring in place, run **validation scenes (a)–(l)** from the
+    Design reference against it in the local Nuke install (scripted headless — `NUKE_PATH=<dir>
+    /usr/local/Nuke17.0v3/Nuke17.0 -t <script.py>`). All must pass before Phase 1.4 changes the
+    execution model. **This is the milestone's core correctness gate.** Committed `.nk` scripts are
+    M1.P5.T3's job, not this task's — here they can be built in the harness.
+  - verify: every scene (a)–(l) passes its stated check. Plus the two decisions below, each recorded
+    in this file's Decisions with its comparison, and each losing path plus its flag **deleted** before
+    the milestone gate.
+    It **decides the bucket-composite question**: render scenes (c), (f), (g) and (i) through both of
     M1.P3.T2's candidates, pick the one whose pixels are right, record the outcome and the
     comparison in this file's Decisions, and delete the losing path plus its flag before the
     milestone gate. **Set `ScatterParams::combine` explicitly for each render** — never rely on the
@@ -743,10 +766,7 @@ verified.
     `frac == 0`, which is what scene (g)'s steep ramp must actually produce. The behind-focus residue
     and the interpolant divergence are now pinned by tests, so a bake-off that moves them fails the
     suite and needs adjudication rather than a silent tolerance bump.
-    Also build the holdout boundary set **once per frame** via `makeUniformHoldoutBoundaries(buckets)`,
-    never per band: a fragment near a band edge scatters into two bands, and per-band sets put a seam
-    along every boundary (measured: the same fragment reads vis 0.0448 in one band and 1.0000 in the
-    next). Report scenes (f)/(g) fog density against M1.P3.T8's
+    Report scenes (f)/(g) fog density against M1.P3.T8's
     coverage-head fix, and expect a residual ~4%/layer loss where fragments with *different* split
     fractions share a bucket (measured: two fully-covering 50% fog layers give 0.7297 vs the exact
     0.75) — it is identical under both candidates, so it does not bias the comparison.
