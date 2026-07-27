@@ -139,7 +139,8 @@ void SampleSoA::appendFragment(const FragmentRecord& f, const float* __restrict_
     bucketAlpha1[n]  = f.deposit.alpha1;
     colorScale0[n]   = f.deposit.colorScale0;
     colorScale1[n]   = f.deposit.colorScale1;
-    flags[n]         = packFragmentFlags(f.kind, f.coverageHead);
+    flags[n]         = packFragmentFlags(f.kind, f.coverageHead,
+                                        f.depositArea0, f.depositArea1);
 
     if (channelCount > 0) {
         float* __restrict__ dst = colorOf(n);
@@ -322,74 +323,140 @@ inline bool depositsCollide(const BucketWeight& a, const BucketWeight& b)
 }
 
 // ------------------------------------------------------------------------
-// claimNewArea — "is this fragment the one that claims this bucket's area at
-//                 this pixel?"  M1.P3.T13, second half.
+// visitBucket / claimNewArea — ONE source pixel's bucket bookkeeping
+//                                 (M1.P3.T13's area claim + M1.P3.T15's
+//                                  per-bucket transmittance attenuation)
 //
-// The merge in flattenPixelToSoA() resolves a same-pixel bucket collision
-// EXACTLY whenever the colliding fragments rasterise one kernel.  When they do
-// not — two genuinely different discs from one source pixel — merging them is
-// not available (it would render the far layer at the near layer's bokeh size),
-// but the collision still must not be allowed to claim the pixel's area TWICE:
-// that is the `cov = 2 -> clamp 1` half of the defect, and it is what turns a
-// bucket fully opaque.
+// Every deposit a source pixel makes passes through here, in front-to-back
+// order, and the bucket it lands in answers ONE question: has this pixel
+// already put THIS KERNEL's area into that bucket?
 //
-// So the area claim is made ONCE per (pixel, bucket): the front-most fragment
-// claims it, every later same-pixel deposit into that same bucket arrives as
-// CO-LOCATED area instead.  That is the identical shape a split volumetric
-// parent's non-head parts already take (M1.P3.T8), through the identical
-// residual term — no new plane, no new flag, no composite change.
+//   * NO (a fresh bucket) — the deposit is the first thing in it.  It keeps its
+//     alpha, it writes its `w*vis` into an area plane, and it may claim NEW
+//     area if it is its parent's coverage head.  This is the pre-T13 path and
+//     it is bit-identical to it: a pixel with one fragment per bucket, which is
+//     every isolated sample, every flat field and every split parent, never
+//     leaves this branch.
 //
-// IT ONLY APPLIES ACROSS DIFFERING KERNELS, and that restriction is load-
-// bearing rather than conservatism (found at M1.P3.T13's review, which measured
-// the unrestricted form as a REGRESSION on mixed content):
+//   * YES, SAME KERNEL (M1.P3.T15) — the two deposits cover the IDENTICAL
+//     destination area with the identical weights, so this one is BEHIND the
+//     other over exactly that area: its alpha and its premultiplied colour are
+//     scaled by the transmittance already accumulated there, `1 - running_k`,
+//     and `running_k` takes the `over` update.  Per bucket independently, never
+//     by the leading fragment's total alpha (that form — whole-FRAGMENT
+//     attenuation — measures systematically under, -9.8e-02 at truth 0.963).
+//     It writes NO area at all: the area is already in the plane, and counting
+//     it twice is what makes the composite's C_k : D_k split read `a - a^2/4`
+//     where the truth is `a` (a flat 0.25 short once the alpha saturates).
+//     This is EXACT by construction, for any number of fragments:
+//         1 - prod_k (1 - A_k) = 1 - prod_k prod_i (1 - a_{i,k})
+//                              = 1 - prod_i (1 - a_i)
+//     and it is LABEL-NEUTRAL — no FragmentKind decision is involved — which is
+//     why it closes the cross-kind (Point vs span piece) collision that the
+//     collision merge cannot take without mislabelling one of its members.
 //
-//   * DIFFERENT kernels — the case this exists for.  Two opaque points at one
-//     pixel with radii 23.3px and 8.5px deposit w1 and w2 at a shared
-//     destination pixel, so cov = w1, D_k = w2, and the composite's area-ratio
-//     split hands the whole of the alpha to the near layer: band alpha
-//     1.000000 against the flattened truth of 1.0, where the double claim reads
-//     2.000000.  The two deposits really do cover DIFFERENT amounts of the
-//     destination pixel, which is exactly what the area planes model.
+//   * YES, A DIFFERENT KERNEL (M1.P3.T13) — two genuinely different discs from
+//     one source pixel.  They cover DIFFERENT amounts of the destination pixel,
+//     which is exactly what the C_k : D_k area pair models, so this deposit
+//     keeps its area but arrives as CO-LOCATED (the caller drops its head) and
+//     takes no attenuation: attenuating it would apply a transmittance measured
+//     over one disc to a deposit spread over another.  Without this, two opaque
+//     points at one pixel at radii 23.3px and 8.5px claim the pixel's area
+//     twice and band-sum to 2.000000 against the flattened truth of 1.0.
 //
-//   * THE SAME kernel — leave both claims standing (the pre-T13 behaviour).
-//     Here the two deposits cover the IDENTICAL area, so "one claims, the other
-//     is co-located" is not a description of the geometry: the composite splits
-//     the bucket's alpha by C_k : D_k = 1 : 1 and reads `a - a^2/4` where the
-//     truth is `a1 + a2 - a1*a2`.  That is exact only when a1 == a2, is short by
-//     ((a1-a2)/2)^2 in general, and once the additive alpha saturates it is
-//     short by a fixed 0.25 — an opaque span piece in front of an opaque point
-//     sample at one pixel (a card behind fog, in focus) read 1.000000 before and
-//     0.750000 with the claim suppressed, i.e. a 25% hole punched in solid
-//     geometry.  Over a 2000-pixel mixed point+volumetric size-0 corpus the
-//     unrestricted form moved mean |d alpha| from 2.27e-02 to 6.00e-02 at 20 spp
-//     / K=16 (rate beyond 1e-3 from 38.9% to 98.0%); restricted, the same corpus
-//     reads 2.08e-02 / 37.7%, i.e. better than both.
-//     Leaving both claims standing puts more than a pixel's area in the plane,
-//     which is what the "coverage is clamped to [0,1] AT USE, not in the plane"
-//     decision (2026-07-26) already provides for: the bucket degrades to plain
-//     `over`, which is the pre-T13 answer and never worse than it.
-//     Resolving those collisions properly needs the alpha composited rather
-//     than re-labelled — see the review's per-bucket-attenuation follow-up.
+// NO HOLDOUT GATE, deliberately (M1.P3.T15).  Unlike the collision merge, which
+// emits ONE fragment at ONE depth, this changes no fragment's depth: each keeps
+// its own `depth` and therefore its own `vis`.  Holdout transmittance is
+// monotone in z and the attenuating fragment is in FRONT, so vis_front >=
+// vis_back and a sample can never be carried from behind a card to in front of
+// one.  Only the attenuation FACTOR is stale when vis_front < 1 (it uses the
+// leading fragment's unoccluded alpha), which is bounded by that fragment's own
+// alpha and soft.  Measured: with a holdout connected the size-0 corpus reads
+// the same 2.4e-07 as with it disconnected.
+//
+// The state is stamped, not cleared (`claimStamp[k] == claimEpoch` means
+// "touched during the current pixel"), so a pixel costs no reset.  T15's memory
+// cost is the THREE `run*` arrays, not one float: 12 B/bucket, i.e. 1.5 KB per
+// thread at K=128 — NOT the 512 B the milestone brief provisionally budgeted.
+// M1.P4.T1 budgets on the corrected figure; see FlattenScratch.
 // ------------------------------------------------------------------------
+enum class BucketVisit {
+    Fresh,          // first deposit into this bucket at this pixel
+    SameKernel,     // attenuated onto an identical earlier deposit
+    OtherKernel     // a different disc already covered this bucket
+};
+
+inline void ensureBucketScratch(FlattenScratch& scratch, int bucketCount)
+{
+    if (scratch.claimStamp.size() < static_cast<std::size_t>(bucketCount)) {
+        scratch.claimStamp.resize(static_cast<std::size_t>(bucketCount), 0u);
+        scratch.claimBin.resize(static_cast<std::size_t>(bucketCount), 0);
+        scratch.runStamp.resize(static_cast<std::size_t>(bucketCount), 0u);
+        scratch.runBin.resize(static_cast<std::size_t>(bucketCount), 0);
+        scratch.runAlpha.resize(static_cast<std::size_t>(bucketCount), 0.0f);
+    }
+}
+
+// THE NEW-AREA CLAIM (M1.P3.T13).  Separate from the touch record above
+// because they answer different questions: this one is "has a fragment already
+// claimed this bucket's AREA at this pixel, and with which kernel?", and only
+// a coverage head ever claims.  A fragment's REAR deposit touches a bucket
+// (so the attenuation sees it) without claiming any area in it, and treating
+// that touch as a claim measured as a regression on the two-layer defocused
+// field (+1.69e-01 at K=32 against a shipped -6.0e-03), because it pushes a
+// differently-sized disc's honest new area into the co-located plane.  That
+// figure is RIG-SPECIFIC and its rig was not recorded: the review reproduced the
+// DIRECTION on an independent two-layer field (z 15/45, alpha 0.5/0.5, Manual
+// size 6) but measured +2.47e-02 at K=32 against a shipped -2.25e-05.  Read it
+// as "folding the two stamps is a regression of order 1e-2 to 1e-1", not as a
+// number to re-measure.
+//
+// The claim is yielded only to a DIFFERENT kernel: two deposits sharing a
+// bucket AND a kernel cover the identical area, and M1.P3.T15's attenuation
+// above is what resolves those -- the area planes cannot (the C_k : D_k split
+// reads `a - a^2/4` where the truth is `a`).  Across kernels the areas really
+// do differ, which is exactly what the pair models: two opaque points at one
+// pixel at radii 23.3px and 8.5px band-sum to 1.000000 with this and 2.000000
+// without it.
 inline bool claimNewArea(FlattenScratch& scratch, int bucketCount, int bucket,
                          int kernelBin)
 {
     if (bucket < 0 || bucket >= bucketCount)
         return true;                            // never index out of range
-    if (scratch.claimStamp.size() < static_cast<std::size_t>(bucketCount)) {
-        scratch.claimStamp.resize(static_cast<std::size_t>(bucketCount), 0u);
-        scratch.claimBin.resize(static_cast<std::size_t>(bucketCount), 0);
-    }
 
     std::uint32_t& slot = scratch.claimStamp[static_cast<std::size_t>(bucket)];
-    if (slot == scratch.claimEpoch) {
-        // Already claimed at this pixel: yield the claim only to a genuinely
-        // different kernel, which is the only case the area planes can model.
+    if (slot == scratch.claimEpoch)
         return scratch.claimBin[static_cast<std::size_t>(bucket)] == kernelBin;
-    }
+
     slot = scratch.claimEpoch;
     scratch.claimBin[static_cast<std::size_t>(bucket)] = kernelBin;
     return true;
+}
+
+inline BucketVisit visitBucket(FlattenScratch& scratch, int bucketCount,
+                               int kernelBin, int bucket,
+                               float& alpha, float& colorScale)
+{
+    if (bucket < 0 || bucket >= bucketCount)
+        return BucketVisit::Fresh;              // never index out of range
+    const std::size_t k = static_cast<std::size_t>(bucket);
+
+    if (scratch.runStamp[k] != scratch.claimEpoch) {
+        scratch.runStamp[k] = scratch.claimEpoch;
+        scratch.runBin[k]   = kernelBin;
+        scratch.runAlpha[k] = alpha;
+        return BucketVisit::Fresh;
+    }
+
+    if (scratch.runBin[k] != kernelBin)
+        return BucketVisit::OtherKernel;
+
+    const float run = scratch.runAlpha[k];
+    const float t   = 1.0f - run;
+    alpha      *= t;
+    colorScale *= t;
+    scratch.runAlpha[k] = run + alpha;          // the `over` update
+    return BucketVisit::SameKernel;
 }
 
 inline void emitPending(FlattenScratch&      scratch,
@@ -408,12 +475,83 @@ inline void emitPending(FlattenScratch&      scratch,
     f.radius = g.radius;
     f.alpha  = clampf(g.alpha, 0.0f, 1.0f);
     f.kind   = g.kind;
+
+    const int kernelBin = scatterKernelBin(g.radius);
+
+    // --- THE MONOTONE BUCKET FRONTIER (M1.P3.T15) ------------------------
+    // The bucket composite is front-to-back over the PLANES: everything in
+    // bucket k is attenuated by the whole of bucket k-1.  So a deposit may
+    // never land in FRONT of a bucket an earlier (nearer) fragment at this
+    // pixel already wrote into, or that earlier fragment's own rear deposit
+    // picks up a spurious factor of this one's alpha — measured 0.879 against
+    // a true 1.0 for the front layer of two alpha-0.5 samples sharing a
+    // bucketOf() pair, and up to 8.1e-01 of premultiplied colour over the
+    // mixed size-0 corpus.  The alpha comes out right either way (a product
+    // does not care about order); it is the COLOUR that is redistributed
+    // between the two layers.
+    //
+    // The fix is to clamp the assignment forward to the frontier — the highest
+    // bucket this pixel has touched — and give the fragment whole weight
+    // there.  Two properties make that cheap rather than a return of the
+    // disproved whole-weight assignment:
+    //
+    //   * it fires ONLY on a collision.  Fragments are staged front-to-back
+    //     and bucketOf()'s index is monotone in depth, so `bw.index` is already
+    //     >= frontier - 1: the clamp moves a fragment by at most ONE bucket,
+    //     and only when it shares its front bucket with the fragment ahead of
+    //     it.  A pixel with one fragment per bucket pair never reaches it, so
+    //     every isolated sample, flat field and split parent is bit-identical.
+    //   * it converges with K.  Collisions get rarer as the buckets get finer,
+    //     so the rule fires less and less and the K -> infinity limit is the
+    //     unclamped one — the property whole-weight assignment on the sharp
+    //     path died on (Decisions, 2026-07-27).
+    //
+    // It moves the fragment's PLANE, never its depth or its radius: the disc
+    // it rasterises and the holdout visibility it is sampled at are unchanged.
+    BucketWeight bw = g.bw;
+    if (bucketCount > 0 && bw.index < scratch.frontierBucket
+        && kernelBin == scratch.frontierBin) {
+        bw.index = (scratch.frontierBucket < bucketCount) ? scratch.frontierBucket
+                                                          : (bucketCount - 1);
+        bw.frac  = 0.0f;
+    }
+    if (bw.indexHigh() >= scratch.frontierBucket) {
+        scratch.frontierBucket = bw.indexHigh();
+        scratch.frontierBin    = kernelBin;
+    }
+
+    f.deposit = fragmentDeposit(bw, f.alpha);
+
+    // --- the per-bucket claim + attenuation (see visitBucket) --------------
+    ensureBucketScratch(scratch, bucketCount);
+
+    const BucketVisit v0 = visitBucket(scratch, bucketCount, kernelBin,
+                                       f.deposit.index0,
+                                       f.deposit.alpha0, f.deposit.colorScale0);
     // A fragment that already carries no coverage (a split parent's non-head
-    // part) must not consume the claim: it never had one to give.
+    // part) must not consume the claim: it never had one to give.  A deposit
+    // that was attenuated onto an identical earlier one carries no area at all,
+    // so it is not a head either.
     f.coverageHead = g.coverageHead
-                  && claimNewArea(scratch, bucketCount, g.bw.index,
-                                  scatterKernelBin(g.radius));
-    f.deposit      = fragmentDeposit(g.bw, f.alpha);
+                  && (v0 != BucketVisit::SameKernel)
+                  && claimNewArea(scratch, bucketCount, f.deposit.index0, kernelBin);
+    f.depositArea0 = (v0 != BucketVisit::SameKernel);
+
+    BucketVisit v1 = BucketVisit::Fresh;
+    if (f.deposit.index1 != f.deposit.index0) {
+        v1 = visitBucket(scratch, bucketCount, kernelBin, f.deposit.index1,
+                         f.deposit.alpha1, f.deposit.colorScale1);
+        f.depositArea1 = (v1 != BucketVisit::SameKernel);
+    }
+
+    // `alpha` is the fragment's own alpha AS DEPOSITED, so that the two
+    // deposits still reconstruct it under `over` (checkCompositionContract's
+    // last clause) once they have been attenuated.  Recomputed ONLY when an
+    // attenuation actually happened, so that every non-colliding fragment
+    // keeps the exact float it had before this task.
+    if (v0 == BucketVisit::SameKernel || v1 == BucketVisit::SameKernel) {
+        f.alpha = 1.0f - (1.0f - f.deposit.alpha0) * (1.0f - f.deposit.alpha1);
+    }
 
     out.appendFragment(f, channels);
 
@@ -517,9 +655,12 @@ void flattenPixelToSoA(const FlattenParams& params,
     // A new pixel: every bucket's area is unclaimed again.  Bumping the epoch
     // IS the reset (see FlattenScratch::claimStamp); slot 0 is never a live
     // epoch, so a freshly-resized array reads as unclaimed.
+    scratch.frontierBucket = 0;
+    scratch.frontierBin    = 0;
     ++scratch.claimEpoch;
     if (scratch.claimEpoch == 0u) {             // wrapped: retire the old marks
         scratch.claimStamp.assign(scratch.claimStamp.size(), 0u);
+        scratch.runStamp.assign(scratch.runStamp.size(), 0u);
         ++scratch.claimEpoch;
     }
 
@@ -728,21 +869,57 @@ void flattenPixelToSoA(const FlattenParams& params,
     // `over`-composited, never added — so that pixel's NEW-AREA plane can never
     // hold more of one kernel's area than that kernel actually deposited.
     //
-    // It is a CORRECTNESS pass, so it is NOT behind `pre_merge`: with the knob
-    // off the collision is worse, not absent (the pre-merge is what accidentally
-    // resolves some of them today, which is why turning it off measures 0.946
-    // against a true 1.000).
+    // It is NOT behind `pre_merge`, and stays that way now that M1.P3.T15 has
+    // made it an optimisation rather than a correctness pass: a knob that
+    // changed the fragment count would change the rounding of every pixel it
+    // touched, and the two-way `pre_merge` sweeps in the suite and in the
+    // milestone's parity gates all expect the knob to move nothing measurable.
     //
-    // WHY THE MERGE AND NOT AN ATTENUATION.  Depositing the trailing fragment's
-    // alpha pre-attenuated by the leading one's, into the same planes, makes the
-    // ALPHA exact (transmittances multiply, and order does not matter to a
-    // product) but not the COLOUR: the composite attenuates a whole bucket by
-    // the whole of the bucket in front of it, so the leading fragment's own rear
-    // deposit picks up a spurious factor of `1 - a(trailing, front bucket)` —
-    // measured 0.879 against a true 1.0 for the front layer at alpha 0.5.  Only
-    // collapsing the group to ONE fragment gets both, because a single
-    // fragment's two deposits reconstruct it exactly by construction
-    // (partitionAlpha's transmittance split).
+    // WHY THE MERGE IS KEPT NOW THAT emitPending() ATTENUATES (M1.P3.T15).
+    // It is no longer load-bearing for CORRECTNESS: the per-bucket attenuation,
+    // the area claim and the monotone frontier in emitPending() reproduce the
+    // pixel's flatten with the merge compiled out (measured over the size-0
+    // corpus at 900 pixels x K 4..128 x 2..20 spp x pre_merge both x holdout
+    // both: worst |d alpha| 5.7e-07, worst |d colour| 4.6e-07, 0.00% of pixels
+    // beyond 1e-3 either way, and the two-layer K-convergence table equal to
+    // within RMS noise — the review reproduced this independently and found the
+    // headline table BIT-IDENTICAL with the merge compiled out).
+    //
+    // What it still buys is FRAGMENT COUNT, and the size of that saving depends
+    // entirely on `pre_merge`, so state the knob with the number:
+    //   * `pre_merge` OFF — the merge is the only thing collapsing a pixel's
+    //     colliding same-kernel groups, and it is worth a lot: 10105 emitted
+    //     fragments against 18399 over 900 pixels at 20 spp / size 0 (-45%),
+    //     12870 against 18399 at size 6 (-30%), and ~18% of the band's scatter
+    //     wall time at size 12.
+    //   * `pre_merge` ON, the SHIPPING DEFAULT — the pre-merge has already taken
+    //     most of those groups, and the saving collapses to 10104 against 10215
+    //     at size 0 (-1.1%), 12147 against 12676 at size 6 (-4.2%) and 13692
+    //     against 14382 at size 12 (-4.8%), with NO scatter wall-time difference
+    //     measurable at 0.1 ms resolution.
+    // So it is kept for the knob-off path, not for the default one, and the
+    // gates stay unchanged — the merge must stay LOSSLESS (one kernel, one
+    // holdout bracket, one FragmentKind) or it would put the error back that
+    // the attenuation just removed.
+    //
+    // THE COST OF KEEPING IT, recorded so M1.P3.T12 does not read it as a node
+    // defect: the merge is gated on the holdout bracket, so CONNECTING A
+    // NON-OCCLUDING HOLDOUT regroups fragments and moves defocused pixels.  With
+    // `pre_merge` off it is the only such gate, and the review measured the
+    // output going from bitwise-identical (0 of 4096 pixels) with the merge
+    // compiled out to |d alpha| up to 1.78e-01 on 442 of 4096 pixels with it in.
+    // At the default (`pre_merge` on) the pre-merge's own bracket gate dominates
+    // and deleting this pass would not recover the invariance.
+    //
+    // The attenuation alone could not replace it before T15's other two halves:
+    // depositing the trailing fragment's alpha pre-attenuated into the same
+    // planes makes the ALPHA exact (transmittances multiply, and order does not
+    // matter to a product) but not the COLOUR, because the composite attenuates
+    // a whole bucket by the whole of the bucket in front of it — the leading
+    // fragment's own rear deposit then picks up a spurious factor of
+    // `1 - a(trailing, front bucket)`, measured 0.879 against a true 1.0 for the
+    // front layer at alpha 0.5.  That is what the monotone frontier fixes, by
+    // keeping the trailing fragment out of the leading one's front bucket.
     //
     // WHY IT PRESERVES THE K KNOB — the property whole-weight assignment died on
     // (Decisions, 2026-07-27).  This pass does not touch the ASSIGNMENT: every
@@ -763,8 +940,8 @@ void flattenPixelToSoA(const FlattenParams& params,
     //     the blur, which is the milestone's recorded occlusion-before-blur loss
     //     and is NOT this merge's to fix — collapsing them would render the far
     //     layer at the near layer's bokeh size.  What keeps THOSE from
-    //     double-claiming the pixel's area is the second half of this task, in
-    //     claimNewArea() above.
+    //     double-claiming the pixel's area is visitBucket()'s OtherKernel
+    //     branch above.
     //     The test is against the held-back group's own radius, which absorbing
     //     never moves; a variant that re-derived the group's radius from the
     //     union span was measured and rejected, because radius is V-shaped about
@@ -1327,6 +1504,8 @@ void scatterBandCPU(const ScatterParams& params,
         // file only honours — the scatter has no way to tell which fragments
         // came from one parent.
         frag.coverageHead = fragmentCoverageHeadOf(samples.flags[f]);
+        frag.depositArea0 = fragmentDepositsArea0Of(samples.flags[f]);
+        frag.depositArea1 = fragmentDepositsArea1Of(samples.flags[f]);
 
         // The interpAtBucket() variant knob (M1.P3.T11) is copied through
         // unconditionally, exactly like every other per-fragment field above

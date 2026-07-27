@@ -325,6 +325,8 @@ struct RefFragment {
     double colorScale1 = 0.0;
     bool   volumetric  = false;
     bool   coverageHead = true;
+    bool   depositArea0 = true;   // M1.P3.T15: does deposit 0 write area?
+    bool   depositArea1 = true;
     std::vector<double> channels;
 };
 
@@ -562,18 +564,81 @@ std::vector<RefFragment> refFlatten(const CocParams& p,
         g.coverageHead = g.coverageHead || c.coverageHead;
     }
 
-    // --- 7. the area claim, then the deposit -------------------------------
-    // The claim is per (bucket, KERNEL): the area planes describe "C_k of the
-    // pixel claimed by one kernel, D_k co-located on it", so a second claim from
-    // a DIFFERENT kernel in that bucket has nowhere to go and must arrive as
-    // co-located.  A second claim from the SAME kernel covers the identical
-    // area, which C_k : D_k cannot describe at all, so it is left standing and
-    // the coverage clamp degrades the bucket to `over` (M1.P3.T13's review).
-    std::vector<RefFragment> out;
+    // --- 7. THE MONOTONE FRONTIER, THE PER-BUCKET ATTENUATION AND THE AREA
+    //        CLAIM (M1.P3.T15, M1.P3.T13), then the deposit.
+    //
+    // Re-derived from the two contracts, not from the shipped loop:
+    //
+    //  * a deposit may not land in FRONT of a bucket an earlier fragment of the
+    //    SAME kernel at this pixel already reached, because the bucket
+    //    composite attenuates a whole plane by the whole plane in front of it —
+    //    so the assignment is clamped forward to that frontier and takes whole
+    //    weight there;
+    //  * a deposit landing in a bucket an earlier deposit of the same kernel
+    //    already wrote into covers the IDENTICAL destination area, so it is
+    //    `over`-composited onto it (its alpha and colour scale by the
+    //    transmittance already there) and writes NO area of its own;
+    //  * a deposit landing on a bucket claimed by a DIFFERENT kernel keeps its
+    //    area but arrives CO-LOCATED, never as a second new-area claim.
+    struct RefTouch { int bucket; int bin; double running; };
+    std::vector<RefTouch> touched;
     std::vector<std::pair<int, int>> claimed;   // (bucket, the claiming kernel's bin)
+    const int lastBucket = (b.bucketCount() > 0) ? (b.bucketCount() - 1) : 0;
+    int frontier = 0, frontierBin = 0;
+
+    std::vector<RefFragment> out;
     for (RefFragment f : merged) {
+        const int bin = refKernelBin(f.radius);
+
+        if (b.bucketCount() > 0 && f.index0 < frontier && bin == frontierBin) {
+            f.index0 = (frontier < b.bucketCount()) ? frontier : lastBucket;
+            f.frac   = 0.0;
+        }
+        f.index1 = (f.frac > 0.0) ? (f.index0 + 1) : f.index0;
+        if (f.index1 >= frontier) {
+            frontier    = f.index1;
+            frontierBin = bin;
+        }
+
+        f.alpha0 = refPartitionAlpha(f.alpha, 1.0 - f.frac);
+        f.alpha1 = refPartitionAlpha(f.alpha, f.frac);
+        f.colorScale0 = refPartitionColorScale(f.alpha, 1.0 - f.frac);
+        f.colorScale1 = refPartitionColorScale(f.alpha, f.frac);
+
+        // The visit, once per deposit, front bucket first.
+        bool attenuated = false;
+        for (int d = 0; d < 2; ++d) {
+            if (d == 1 && f.index1 == f.index0)
+                break;
+            const int bucket = (d == 0) ? f.index0 : f.index1;
+            double&   a      = (d == 0) ? f.alpha0 : f.alpha1;
+            double&   cs     = (d == 0) ? f.colorScale0 : f.colorScale1;
+            bool&     area   = (d == 0) ? f.depositArea0 : f.depositArea1;
+
+            if (bucket < 0 || bucket >= b.bucketCount())
+                continue;                       // out of range: nothing tracked
+
+            RefTouch* hit = nullptr;
+            for (RefTouch& t : touched)
+                if (t.bucket == bucket) { hit = &t; break; }
+
+            if (hit == nullptr) {
+                touched.push_back({bucket, bin, a});
+            } else if (hit->bin != bin) {
+                // a different disc: keeps its area, takes no attenuation
+            } else {
+                const double t = 1.0 - hit->running;
+                a  *= t;
+                cs *= t;
+                hit->running += a;
+                area = false;
+                attenuated = true;
+                if (d == 0)
+                    f.coverageHead = false;
+            }
+        }
+
         if (f.coverageHead) {
-            const int bin = refKernelBin(f.radius);
             bool seen = false;
             for (const std::pair<int, int>& c : claimed) {
                 if (c.first != f.index0)
@@ -587,10 +652,11 @@ std::vector<RefFragment> refFlatten(const CocParams& p,
                 claimed.emplace_back(f.index0, bin);
         }
 
-        f.alpha0 = refPartitionAlpha(f.alpha, 1.0 - f.frac);
-        f.alpha1 = refPartitionAlpha(f.alpha, f.frac);
-        f.colorScale0 = refPartitionColorScale(f.alpha, 1.0 - f.frac);
-        f.colorScale1 = refPartitionColorScale(f.alpha, f.frac);
+        // The fragment's alpha AS DEPOSITED: the two deposits must still
+        // reconstruct it under `over`.
+        if (attenuated)
+            f.alpha = 1.0 - (1.0 - f.alpha0) * (1.0 - f.alpha1);
+
         out.push_back(f);
     }
 
@@ -1012,6 +1078,8 @@ TEST_CASE("flattenPixelToSoA reproduces an independent tidy + split + merge refe
                 CHECK(static_cast<int>(soa.bucketIndex1[i]) == w.index1);
                 CHECK((fragmentKindOf(soa.flags[i]) == FragmentKind::Volumetric) == w.volumetric);
                 CHECK(fragmentCoverageHeadOf(soa.flags[i]) == w.coverageHead);
+                CHECK(fragmentDepositsArea0Of(soa.flags[i]) == w.depositArea0);
+                CHECK(fragmentDepositsArea1Of(soa.flags[i]) == w.depositArea1);
 
                 // 2e-6 absolute: the reference runs std::pow/double throughout
                 // and the shipped path expm1/log1p/float, so the two agree only
@@ -1784,13 +1852,44 @@ TEST_CASE("the area claim is per PIXEL and survives a degenerate bucket set "
         soa.begin(1, fp.groups);
         FlattenScratch scratch;
         scratch.claimEpoch = 0xFFFFFFFFu;
+        // M1.P3.T15 keeps a SECOND stamped record beside the claim -- the
+        // per-bucket touch/running-alpha the attenuation reads -- and the wrap
+        // must retire BOTH.
+        //
+        // The marks are poisoned with the epoch the counter will hold AFTER the
+        // wrap (1, since 0 is skipped), which is what a mark left behind four
+        // billion pixels ago actually looks like when the counter comes back
+        // round to it.  Poisoning them with the PRE-wrap epoch tests nothing at
+        // all -- 0xFFFFFFFF never equals 1 -- and both retirement lines survive
+        // deletion under that setup.
+        //
+        // The two records are poisoned with DIFFERENT bins on purpose, because
+        // they fail in opposite directions.  A stale TOUCH record bites when it
+        // matches the incoming kernel, so `runBin` gets -1, the sharp kernel the
+        // fragment below actually uses (scatterKernelBin() returns -1 for the
+        // sharp path and >= 1 for every disc; a default-constructed 0 is not a
+        // bin any fragment can have, and poisoning with it would test nothing at
+        // all).  A stale CLAIM bites when it does NOT match, so `claimBin` gets
+        // a disc bin: the fragment below would then be denied the new-area claim
+        // its own pixel must always give it.  With a stale touch the fragment is
+        // attenuated by a full running alpha and deposits nothing.
+        scratch.claimStamp.assign(static_cast<std::size_t>(bk.bucketCount()), 1u);
+        scratch.claimBin.assign(static_cast<std::size_t>(bk.bucketCount()), 3);
+        scratch.runStamp.assign(static_cast<std::size_t>(bk.bucketCount()), 1u);
+        scratch.runBin.assign(static_cast<std::size_t>(bk.bucketCount()), -1);
+        scratch.runAlpha.assign(static_cast<std::size_t>(bk.bucketCount()), 1.0f);
         for (int i = 0; i < 3; ++i) {
             std::vector<SampleRecord> v{makeSample(5.0f, 5.0f, 0.5f, {0.5f})};
             flattenPixelToSoA(fp, bk, i, 0, v, scratch, soa, nullptr);
         }
         REQUIRE(soa.fragmentCount() == 3u);
-        for (std::size_t i = 0; i < soa.fragmentCount(); ++i)
+        for (std::size_t i = 0; i < soa.fragmentCount(); ++i) {
             CHECK(fragmentCoverageHeadOf(soa.flags[i]));
+            CHECK(fragmentDepositsArea0Of(soa.flags[i]));
+            // Nothing attenuated: the fragment deposits its own alpha.
+            CHECK(std::fabs(static_cast<double>(soa.alpha[i]) - 0.5) <= 1e-06);
+            CHECK(soa.bucketAlpha0[i] > 0.0f);
+        }
     }
 
     SUBCASE("an inert bucket set does not silently strip every coverage head")
@@ -1808,6 +1907,698 @@ TEST_CASE("the area claim is per PIXEL and survives a degenerate bucket set "
         REQUIRE(soa.fragmentCount() == 1u);
         CHECK(fragmentCoverageHeadOf(soa.flags[0]));
     }
+}
+
+// ===========================================================================
+// Per-bucket transmittance attenuation at the flatten (M1.P3.T15)
+//
+// THE INVARIANT: within one source pixel, deposits of the SAME kernel landing
+// in one bucket are `over`-composited rather than added, they claim that
+// bucket's area exactly once, and no deposit ever lands in FRONT of a bucket an
+// earlier (nearer) same-kernel deposit already reached.  Together those make
+// the bucket composite reproduce the pixel's flatten for ANY mixture of point
+// and volumetric content, with or without a holdout connected — the three
+// holes M1.P3.T13's merge could not close (it may not merge across
+// FragmentKind, may not merge across a holdout bracket, and cannot take a
+// same-kernel collision it is not adjacent to).
+// ===========================================================================
+
+namespace {
+
+// An "occludes nothing" holdout: one opaque sample far behind every fixture in
+// this file.  The TRUTH is therefore unchanged by connecting it, which is
+// exactly what makes it a parity gate — before M1.P3.T15 connecting input 1
+// switched T13's collision merge off and the same corpus read 2.30e-01.
+void buildFarHoldout(const DepthBuckets& bk, std::ptrdiff_t pixelCount,
+                     float depth, HoldoutSampleSoA& hs, HoldoutLut& lut)
+{
+    hs.begin(pixelCount);
+    for (std::ptrdiff_t i = 0; i < pixelCount; ++i) {
+        std::vector<SampleRecord> hv{makeSample(depth, depth, 1.0f, {})};
+        hs.appendPixel(hv, 1.0f);
+    }
+    lut.build(hs, makeUniformHoldoutBoundaries(bk));
+}
+
+} // namespace
+
+TEST_CASE("size-0 flatten is a DeepToImage `over` for MIXED point+volumetric content, with a "
+          "holdout connected and without (M1.P3.T15)")
+{
+    // THE HEADLINE GATE for this task, and the two rows M1.P3.T13 could not
+    // reach.  Measured on this corpus before T15 (shipped T13 code):
+    //   mixed,  holdout off : worst |d alpha| 2.61e-01, |d colour| 8.30e-01,
+    //                         99.8% of a row's pixels beyond 1e-3
+    //   mixed,  holdout on  : 2.64e-01 / 8.84e-01 / 99.9%
+    //   point,  holdout on  : 2.30e-01 / 5.60e-01 / 99.0%
+    //   span,   holdout on  : 2.94e-01 / 5.91e-01 / 99.2%
+    // and with it: 4.83e-07 / 4.24e-07 / 0.00% everywhere below.
+    const int C = 3, W = 32, H = 32, N = 400;
+
+    for (int content = 0; content < 3; ++content)      // 0 point, 1 span, 2 mixed
+    for (bool holdout : {false, true})
+    for (bool preMerge : {false, true})
+    for (int K : {4, 8, 16, 32, 64, 128}) {
+        const int spp = (K == 16) ? 20 : 5;            // the tail count, once per K
+        CAPTURE(content);
+        CAPTURE(holdout);
+        CAPTURE(preMerge);
+        CAPTURE(K);
+        CAPTURE(spp);
+
+        const CocParams    p  = makeManualRig(0.0f, 10.0f);
+        const DepthBuckets bk = makeBoundedDeltaCocBuckets(p, 1.0f, 100.0f, K);
+        FlattenParams fp = makeFlattenParams(p, C, preMerge);
+        fp.holdoutConnected = holdout;
+
+        Lcg rng(0x7131u + static_cast<std::uint32_t>(K * 131 + spp * 7
+                                                     + (preMerge ? 1 : 0)
+                                                     + content * 977));
+        std::vector<std::vector<SampleRecord>> pixels(static_cast<std::size_t>(N));
+
+        SampleSoA soa;
+        soa.begin(C, fp.groups);
+        FlattenScratch scratch;
+        for (int i = 0; i < N; ++i) {
+            std::vector<SampleRecord>& v = pixels[static_cast<std::size_t>(i)];
+            float z = rng.range(1.05f, 20.0f);
+            for (int s = 0; s < spp; ++s) {
+                const float a   = rng.range(0.02f, 1.0f);
+                const bool  vol = (content == 1) || (content == 2 && (rng.next() & 1u));
+                const float th  = vol ? rng.range(0.05f, 3.0f) : 0.0f;
+                v.push_back(makeSample(z, z + th, a,
+                    {a * rng.unit(), a * rng.unit(), a * rng.unit()}));
+                z += th + rng.range(0.05f, 6.0f);      // strictly disjoint
+            }
+            std::vector<SampleRecord> copy = v;
+            flattenPixelToSoA(fp, bk, i % W, i / W, copy, scratch, soa, nullptr);
+        }
+
+        HoldoutSampleSoA hs;
+        HoldoutLut       lut;
+        HoldoutSoA       view;
+        if (holdout) {
+            buildFarHoldout(bk, static_cast<std::ptrdiff_t>(W) * H, 500.0f, hs, lut);
+            view = lut.view();
+            REQUIRE(view.enabled());
+        }
+
+        Band band;
+        band.K = K; band.C = C; band.W = W; band.H = H;
+        DiscKernelLUT kernel(0.0f, 1.0f, 1.0f, 1.0f);
+        runBand(band, makeScatterParams(W, H, BucketCombine::CoveragePartition),
+                soa, view, kernel, /*useThread*/ false);
+
+        double worstAlpha = 0.0, worstColor = 0.0;
+        int    bad = 0;
+        for (int i = 0; i < N; ++i) {
+            const RefOver r = refSequentialOver(pixels[static_cast<std::size_t>(i)], C);
+            const int px = i % W, py = i / W;
+            const double da =
+                std::fabs(static_cast<double>(band.outAlpha(px, py)) - r.alpha);
+            double dc = 0.0;
+            for (int c = 0; c < C; ++c)
+                dc = std::max(dc, std::fabs(static_cast<double>(band.outColor(c, px, py))
+                                            - r.color[static_cast<std::size_t>(c)]));
+            worstAlpha = std::max(worstAlpha, da);
+            worstColor = std::max(worstColor, dc);
+            if (da > 1e-3 || dc > 1e-3)
+                ++bad;
+        }
+
+        // NOT a ULP bound, and it GROWS WITH SAMPLE COUNT (milestone scene (a):
+        // a float `over` chain against a double reference).  Measured worst over
+        // this corpus is 5.74e-07 at 20 spp / K=128 on the volumetric rows and
+        // 2.4e-07 at 5 spp; 1e-06 is ~2x that.  The defect these rows pin is
+        // five orders of magnitude larger.
+        CHECK(worstAlpha <= 1e-06);
+        CHECK(worstColor <= 1e-06);
+        CHECK(bad == 0);
+    }
+}
+
+TEST_CASE("with a holdout connected, two sharp samples IN FRONT of a card read the flatten "
+          "(M1.P3.T15, the Decisions case)")
+{
+    // Milestone Decisions, 2026-07-27: "two sharp samples at z=20/40 behind a
+    // card at z=95 read 0.816118 against a true 0.750000".  Connecting the
+    // holdout switched T13's collision merge off (the two sit in different
+    // HoldoutBoundaries brackets), the two deposits were ADDED, and validation
+    // scene (b) failed the way scene (a) did.  Nothing occludes them — the card
+    // is 55 units behind the farther sample — so the truth is the plain flatten.
+    const int W = 8, H = 8, K = 16;
+    const CocParams    p  = makeManualRig(0.0f, 10.0f);
+    const DepthBuckets bk = makeBoundedDeltaCocBuckets(p, 1.0f, 100.0f, K);
+
+    // Hand-derived: 0.5 over 0.5.
+    const double truth = 0.5 + 0.5 * (1.0 - 0.5);
+
+    for (bool holdout : {false, true}) {
+        CAPTURE(holdout);
+        FlattenParams fp = makeFlattenParams(p, 1, /*preMerge*/ true);
+        fp.holdoutConnected = holdout;
+
+        const SampleSoA soa = flattenOnePixel(fp, bk, 4, 4,
+            {makeSample(20.0f, 20.0f, 0.5f, {0.5f}),
+             makeSample(40.0f, 40.0f, 0.5f, {0.5f})});
+
+        HoldoutSampleSoA hs;
+        HoldoutLut       lut;
+        HoldoutSoA       view;
+        if (holdout) {
+            buildFarHoldout(bk, static_cast<std::ptrdiff_t>(W) * H, 95.0f, hs, lut);
+            view = lut.view();
+        }
+
+        Band band;
+        band.K = K; band.C = 1; band.W = W; band.H = H;
+        DiscKernelLUT kernel(0.0f, 1.0f, 1.0f, 1.0f);
+        runBand(band, makeScatterParams(W, H, BucketCombine::CoveragePartition),
+                soa, view, kernel, /*useThread*/ false);
+
+        CHECK(std::fabs(static_cast<double>(band.outAlpha(4, 4)) - truth) <= 2e-07);
+        CHECK(std::fabs(static_cast<double>(band.outColor(0, 4, 4)) - truth) <= 2e-07);
+    }
+}
+
+TEST_CASE("the per-bucket attenuation needs no holdout gate: each fragment keeps its own depth "
+          "and its own vis (M1.P3.T15)")
+{
+    // The property that makes a holdout gate unnecessary here where the
+    // collision MERGE needs one: the merge emits ONE fragment at ONE depth, so
+    // it can carry a sample from behind a card to in front of it; the
+    // attenuation moves no fragment's depth at all.  Holdout transmittance is
+    // monotone in z and the attenuating fragment is in FRONT, so vis_front >=
+    // vis_back always.
+    //
+    // The rig: an opaque card at z = 40, one sample at z = 20 (unoccluded) and
+    // one at z = 60 (fully occluded), sharing a source pixel.  The pixel must
+    // read the FRONT sample alone.  If the attenuation carried the rear sample
+    // forward it would read 0.75; if it carried the front sample back, 0.
+    const int W = 8, H = 8, K = 8;
+    const CocParams    p  = makeManualRig(0.0f, 10.0f);
+    const DepthBuckets bk = makeBoundedDeltaCocBuckets(p, 1.0f, 100.0f, K);
+
+    FlattenParams fp = makeFlattenParams(p, 1, /*preMerge*/ true);
+    fp.holdoutConnected = true;
+
+    const SampleSoA soa = flattenOnePixel(fp, bk, 4, 4,
+        {makeSample(20.0f, 20.0f, 0.5f, {0.5f}),
+         makeSample(60.0f, 60.0f, 0.5f, {0.5f})});
+    // They really do collide: same pixel, same (sharp) kernel, and deposit
+    // ranges that intersect -- so the attenuation is engaged here.
+    REQUIRE(soa.fragmentCount() == 2u);
+    REQUIRE(sameScatterKernel(soa.radius[0], soa.radius[1]));
+    REQUIRE(soa.bucketIndex1[0] >= soa.bucketIndex0[1]);
+    REQUIRE(soa.bucketIndex1[1] >= soa.bucketIndex0[0]);
+    // ...and each kept ITS OWN depth, which is what the holdout is sampled at.
+    CHECK(soa.depth[0] == 20.0f);
+    CHECK(soa.depth[1] == 60.0f);
+
+    HoldoutSampleSoA hs;
+    HoldoutLut       lut;
+    buildFarHoldout(bk, static_cast<std::ptrdiff_t>(W) * H, 40.0f, hs, lut);
+
+    Band band;
+    band.K = K; band.C = 1; band.W = W; band.H = H;
+    DiscKernelLUT kernel(0.0f, 1.0f, 1.0f, 1.0f);
+    runBand(band, makeScatterParams(W, H, BucketCombine::CoveragePartition),
+            soa, lut.view(), kernel, /*useThread*/ false);
+
+    CHECK(std::fabs(static_cast<double>(band.outAlpha(4, 4)) - 0.5) <= 2e-06);
+    CHECK(std::fabs(static_cast<double>(band.outColor(0, 4, 4)) - 0.5) <= 2e-06);
+}
+
+TEST_CASE("two opaque layers at one pixel read exactly 1.000000 at any alpha pair and any "
+          "kernel (M1.P3.T15)")
+{
+    // An opaque layer behind anything is still opaque, and an opaque layer in
+    // FRONT of anything hides it: both readings are 1.0 with no coverage
+    // fabricated.  Swept over the sharp path and three disc sizes, both
+    // pre_merge states, and alpha pairs that put the opaque layer first, last
+    // and both.  Read as a FLAT FIELD (every pixel carries the pair), which is
+    // the reading that is 1.0 for a blurred pair as well — an ISOLATED pair of
+    // different-sized discs band-sums to 2.0 by the milestone's recorded
+    // occlusion-before-blur loss, which is not this task's to fix.
+    const int C = 1, W = 40, H = 40, K = 16;
+
+    for (float sizePx : {0.0f, 0.4f, 3.0f, 8.0f})
+    for (bool  preMerge : {false, true})
+    for (float a1 : {1.0f, 0.35f})
+    for (float a2 : {1.0f, 0.7f}) {
+        if (a1 < 1.0f && a2 < 1.0f)
+            continue;                           // needs at least one opaque layer
+        CAPTURE(sizePx);
+        CAPTURE(preMerge);
+        CAPTURE(a1);
+        CAPTURE(a2);
+
+        const CocParams    p  = makeManualRig(sizePx, 10.0f);
+        const DepthBuckets bk = makeBoundedDeltaCocBuckets(p, 1.0f, 100.0f, K);
+        const FlattenParams fp = makeFlattenParams(p, C, preMerge);
+
+        SampleSoA soa;
+        soa.begin(C, fp.groups);
+        FlattenScratch scratch;
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x) {
+                std::vector<SampleRecord> v{makeSample(4.0f, 4.0f, a1, {a1}),
+                                            makeSample(9.0f, 9.0f, a2, {a2})};
+                flattenPixelToSoA(fp, bk, x, y, v, scratch, soa, nullptr);
+            }
+
+        Band band;
+        band.K = K; band.C = C; band.W = W; band.H = H;
+        DiscKernelLUT kernel(0.0f, std::max(1.0f, sizePx + 1.0f), 1.0f, 1.0f);
+        HoldoutSoA noHoldout;
+        runBand(band, makeScatterParams(W, H, BucketCombine::CoveragePartition),
+                soa, noHoldout, kernel, /*useThread*/ false);
+
+        // 1e-6, NOT equality: the disc LUT's ~5e-8 per-entry normalisation
+        // residual over the contributing fragments (the same bound scene (c)'s
+        // flat opaque field already carries).  It prints as 1.000000.
+        const double got = band.outAlpha(W / 2, H / 2);
+        CHECK(std::fabs(got - 1.0) <= 1e-06);
+        CHECK(got <= 1.0f);                     // never scaled UP
+    }
+}
+
+TEST_CASE("the bucket alphas MULTIPLY to the pixel's flatten: 1 - prod(1 - A_k) (M1.P3.T15)")
+{
+    // The identity the attenuation is built on, checked in the PLANES rather
+    // than after the composite, so it holds independently of which bucket
+    // composite M1.P3.T12 picks:
+    //     1 - prod_k (1 - A_k) = 1 - prod_k prod_i (1 - a_{i,k})
+    //                          = 1 - prod_i (1 - a_i)
+    // Sharp path at one pixel, so every deposit lands with weight 1 and A_k is
+    // read straight off the plane.  Before T15 the planes ADDED, so this read
+    // above the truth on every colliding pixel.
+    const int W = 4, H = 4, C = 1;
+    Lcg rng(0xB105u);
+
+    for (int K : {4, 8, 16, 64})
+    for (bool preMerge : {false, true})
+    for (int trial = 0; trial < 60; ++trial) {
+        CAPTURE(K);
+        CAPTURE(preMerge);
+        CAPTURE(trial);
+
+        const CocParams    p  = makeManualRig(0.0f, 10.0f);
+        const DepthBuckets bk = makeBoundedDeltaCocBuckets(p, 1.0f, 100.0f, K);
+        const FlattenParams fp = makeFlattenParams(p, C, preMerge);
+
+        std::vector<SampleRecord> v;
+        double truthT = 1.0;
+        float  z = rng.range(1.05f, 15.0f);
+        const int n = rng.intRange(2, 6);
+        for (int i = 0; i < n; ++i) {
+            const float a  = rng.range(0.05f, 0.95f);
+            const float th = (rng.next() & 1u) ? rng.range(0.02f, 1.0f) : 0.0f;
+            v.push_back(makeSample(z, z + th, a, {a}));
+            truthT *= (1.0 - static_cast<double>(a));
+            z += th + rng.range(0.05f, 3.0f);
+        }
+
+        SampleSoA soa;
+        soa.begin(C, fp.groups);
+        FlattenScratch scratch;
+        std::vector<SampleRecord> copy = v;
+        flattenPixelToSoA(fp, bk, 2, 2, copy, scratch, soa, nullptr);
+
+        Band band;
+        band.K = K; band.C = C; band.W = W; band.H = H;
+        band.planes.allocate(K, C, W, H);
+        band.planes.zero();
+        HoldoutSoA noHoldout;
+        DiscKernelLUT kernel(0.0f, 1.0f, 1.0f, 1.0f);
+        ScatterScratch ss;
+        scatterBandCPU(makeScatterParams(W, H, BucketCombine::CoveragePartition),
+                       soa, noHoldout, kernel, band.planes, ss);
+
+        double t = 1.0;
+        for (int k = 0; k < K; ++k)
+            t *= (1.0 - static_cast<double>(band.planeAlpha(k, 2, 2)));
+
+        // 2e-6 absolute on the transmittance PRODUCT: a float `over` chain of up
+        // to 6 samples against a double reference (measured worst 1.9e-07).
+        CHECK(std::fabs(t - truthT) <= 2e-06);
+    }
+}
+
+TEST_CASE("the monotone bucket frontier: a trailing deposit never lands in FRONT of an earlier "
+          "one, and moves by at most ONE bucket (M1.P3.T15)")
+{
+    // The rule that keeps the front-to-back bucket composite honest: bucket k+1
+    // is attenuated by the WHOLE of bucket k, so a fragment depositing into a
+    // bucket an earlier same-kernel fragment already passed would put a spurious
+    // factor of its own alpha onto that earlier fragment's rear deposit
+    // (measured: the front layer of two alpha-0.5 samples sharing a bucketOf()
+    // pair reads 0.879 of its colour against a true 1.0, and up to 8.1e-01 of
+    // premultiplied colour over the mixed corpus).
+    //
+    // Two things are asserted, because the rule is only safe if BOTH hold: the
+    // ordering it establishes, and the bound on how far it may move anything.
+    const int W = 16, H = 16;
+    Lcg rng(0x5AFEu);
+
+    for (float sizePx : {0.0f, 2.0f})
+    for (int K : {4, 16, 64})
+    for (bool preMerge : {false, true}) {
+        CAPTURE(sizePx);
+        CAPTURE(K);
+        CAPTURE(preMerge);
+
+        const CocParams    p  = makeManualRig(sizePx, 10.0f);
+        const DepthBuckets bk = makeBoundedDeltaCocBuckets(p, 1.0f, 100.0f, K);
+        const FlattenParams fp = makeFlattenParams(p, 1, preMerge);
+
+        SampleSoA soa;
+        soa.begin(1, fp.groups);
+        FlattenScratch scratch;
+        std::vector<int> pixelOf;
+        for (int i = 0; i < 120; ++i) {
+            std::vector<SampleRecord> v;
+            float z = rng.range(1.05f, 25.0f);
+            const int n = rng.intRange(2, 5);
+            for (int s = 0; s < n; ++s) {
+                const float a  = rng.range(0.05f, 1.0f);
+                const float th = (rng.next() & 1u) ? rng.range(0.02f, 2.0f) : 0.0f;
+                v.push_back(makeSample(z, z + th, a, {a * 0.5f}));
+                z += th + rng.range(0.02f, 4.0f);
+            }
+            flattenPixelToSoA(fp, bk, i % W, i / W, v, scratch, soa, nullptr);
+        }
+
+        int frontier = -1, lastX = -1, lastY = -1;
+        for (std::size_t i = 0; i < soa.fragmentCount(); ++i) {
+            const int i0 = static_cast<int>(soa.bucketIndex0[i]);
+            const int i1 = static_cast<int>(soa.bucketIndex1[i]);
+            if (soa.x[i] != lastX || soa.y[i] != lastY) {
+                lastX = soa.x[i];
+                lastY = soa.y[i];
+                frontier = -1;
+            }
+            // THE ORDERING.  Never in front of what this pixel already reached.
+            // (Fragments of DIFFERENT kernels are exempt: they cover different
+            // destination areas, the area planes model that pair directly, and
+            // pushing one back measured as a regression.  The review
+            // reproduced that on an independent rig -- an ungated clamp reads
+            // -2.08e-02 / -2.16e-02 / -2.25e-02 at K=4/8/16 on a two-layer
+            // defocused field (z 15/45, alpha 0.5/0.5, Manual size 6) against a
+            // shipped +1.39e-02 / +1.09e-02 / +7.87e-03 -- but NOT the
+            // originally recorded +1.69e-01 at K=32, which is rig-specific.)
+            if (frontier >= 0)
+                CHECK(i0 >= frontier - 1);      // >= frontier-1 for the exempt case
+            frontier = std::max(frontier, i1);
+            // A clamped fragment took WHOLE weight, which is a legal Point
+            // assignment (frac 0), never a second split.
+            CHECK((i1 == i0 || i1 == i0 + 1));
+        }
+    }
+
+    // ...AND NO FURTHER.  A fragment whose front bucket is exactly AT the
+    // frontier is not in front of anything -- the two share one bucket, which
+    // the running alpha resolves exactly -- so it must keep its fractional
+    // two-bucket split.  Collapsing it as well is the whole-weight assignment
+    // that defeats the K knob (Decisions, 2026-07-27), and it is one character
+    // away (`<` vs `<=`), so it gets a direct differential: the same sample
+    // flattened ALONE and flattened behind a leading fragment that pushes the
+    // frontier exactly onto its front bucket must produce the same assignment.
+    {
+        const CocParams    p  = makeManualRig(0.0f, 10.0f);
+        const DepthBuckets bk = makeBoundedDeltaCocBuckets(p, 1.0f, 100.0f, 16);
+        const FlattenParams fp = makeFlattenParams(p, 1, /*preMerge*/ false);
+
+        // The pair has to be CROSS-KIND: two same-kernel POINT samples whose
+        // deposits touch are collapsed by the collision merge before this rule
+        // is reached, so the case only exists across the composition contract —
+        // which is the case M1.P3.T15 exists for anyway.  A span piece wholly
+        // inside bucket k takes whole weight there and puts the frontier at k;
+        // a point sample just behind bucket k's centre has bucketOf() index k
+        // with a fraction, i.e. it sits EXACTLY at the frontier.
+        const int   k  = 5;
+        const float zSpanA = bk.boundary(k) + 0.02f * (bk.centre(k) - bk.boundary(k));
+        const float zSpanB = bk.boundary(k) + 0.30f * (bk.centre(k) - bk.boundary(k));
+        const float zPoint = bk.centre(k) + 0.25f * (bk.centre(k + 1) - bk.centre(k));
+
+        const SampleSoA alone = flattenOnePixel(fp, bk, 3, 3,
+            {makeSample(zPoint, zPoint, 0.5f, {0.25f})});
+        const SampleSoA pair  = flattenOnePixel(fp, bk, 3, 3,
+            {makeSample(zSpanA, zSpanB, 0.4f, {0.2f}),
+             makeSample(zPoint, zPoint, 0.5f, {0.25f})});
+
+        REQUIRE(alone.fragmentCount() == 1u);
+        REQUIRE(pair.fragmentCount() == 2u);
+        REQUIRE(fragmentKindOf(pair.flags[0]) == FragmentKind::Volumetric);
+        // The premise: the leading fragment reaches the trailing one's own
+        // front bucket, and no further.
+        REQUIRE(pair.bucketIndex1[0] == alone.bucketIndex0[0]);
+        REQUIRE(alone.bucketIndex1[0] == alone.bucketIndex0[0] + 1);
+        // The conclusion: the split survives, bit for bit.
+        CHECK(pair.bucketIndex0[1] == alone.bucketIndex0[0]);
+        CHECK(pair.bucketIndex1[1] == alone.bucketIndex1[0]);
+        CHECK(pair.bucketAlpha1[1] == alone.bucketAlpha1[0]);
+        CHECK(pair.colorScale1[1]  == alone.colorScale1[0]);
+    }
+}
+
+TEST_CASE("the `no area at all` deposit is REACHABLE through the flatten on BOTH deposits, and "
+          "the scatter honours both bits (M1.P3.T15's review)")
+{
+    // M1.P3.T15 shipped claiming `depositArea1` was "a GUARD rather than a live
+    // case ... unreachable through flattenPixelToSoA() today", and rested two
+    // surviving mutants on that argument.  IT IS NOT UNREACHABLE, and three
+    // independent mutants that disable the bit — clearing it in the flatten,
+    // dropping the guard in scatterSpanBothBuckets(), and making
+    // fragmentDepositsArea1Of() return true — ALL survived the suite as it
+    // stood.  This case exists to kill them.
+    //
+    // WHY IT IS REACHABLE.  The frontier clamp is gated on the kernel bin, and
+    // `frontierBin` is a single slot holding whichever deposit last reached the
+    // frontier.  CoC radius is V-SHAPED about the focal plane, so three
+    // same-pixel samples straddling focus bin as A, B, A: the middle one leaves
+    // `frontierBin` on B, the third one's clamp therefore does not fire, and it
+    // lands back on the bucket PAIR the first one already touched with kernel A
+    // — so BOTH of its deposits take the SameKernel branch.  Measured over a
+    // 900-pixel randomised corpus at Manual size 6, `pre_merge` off: 25 such
+    // fragments at K=4 and 2 at K=16 (0 at size 0, where every radius is 0 and
+    // there is only one bin).
+    //
+    // That residual is REAL but bounded and is NOT this task's to close: on the
+    // fixture below the pixel reads 1.26e-02 against the flatten where the
+    // shipped pre-T15 code read 2.23e-01, an 18x improvement, and the milestone's
+    // size-0 gates cannot reach it at all (one bin).  See this file's Decisions.
+    //
+    // FIXTURE: Manual size 8, focus 10, so radius = 8*|1 - 10/z|; z = 8 / 10 /
+    // 13.3333 give radii 2.0 / 0.0 / 2.0, i.e. bins 4 / -1 / 4.
+    const CocParams p = makeManualRig(8.0f, 10.0f);
+    const float zA = 8.0f, zB = 10.0f, zC = 13.3333333f;
+    REQUIRE(scatterKernelBin(radiusPixels(p, zA)) == scatterKernelBin(radiusPixels(p, zC)));
+    REQUIRE(scatterKernelBin(radiusPixels(p, zB)) != scatterKernelBin(radiusPixels(p, zA)));
+
+    SUBCASE("K=4: the trailing fragment's BOTH deposits write no area")
+    {
+        const DepthBuckets bk = makeBoundedDeltaCocBuckets(p, 1.0f, 100.0f, 4);
+        const FlattenParams fp = makeFlattenParams(p, 1, /*preMerge*/ false);
+        const SampleSoA soa = flattenOnePixel(fp, bk, 3, 3,
+            {makeSample(zA, zA, 0.5f,  {0.5f}),
+             makeSample(zB, zB, 0.25f, {0.25f}),
+             makeSample(zC, zC, 0.5f,  {0.5f})});
+        REQUIRE(soa.fragmentCount() == 3u);
+        // The premise: all three share one bucket PAIR, and the third was not
+        // clamped (the middle one's bin left the frontier gate shut).
+        REQUIRE(soa.bucketIndex0[0] == soa.bucketIndex0[2]);
+        REQUIRE(soa.bucketIndex1[0] == soa.bucketIndex1[2]);
+        REQUIRE(soa.bucketIndex1[2] == soa.bucketIndex0[2] + 1);
+        // The conclusion, asserted on each bit SEPARATELY so that swapping the
+        // two bit constants is a failure rather than a relabel.
+        CHECK(fragmentDepositsArea0Of(soa.flags[0]));
+        CHECK(fragmentDepositsArea1Of(soa.flags[0]));
+        CHECK(fragmentDepositsArea0Of(soa.flags[1]));
+        CHECK(fragmentDepositsArea1Of(soa.flags[1]));
+        CHECK_FALSE(fragmentDepositsArea0Of(soa.flags[2]));
+        CHECK_FALSE(fragmentDepositsArea1Of(soa.flags[2]));
+        CHECK_FALSE(fragmentCoverageHeadOf(soa.flags[2]));
+    }
+
+    SUBCASE("K=16: area0 clear and area1 SET on one fragment, so the two bits are distinct")
+    {
+        // The two bits must not be interchangeable: here the trailing fragment's
+        // front deposit collides and its rear one does not.
+        const DepthBuckets bk = makeBoundedDeltaCocBuckets(p, 1.0f, 100.0f, 16);
+        const FlattenParams fp = makeFlattenParams(p, 1, /*preMerge*/ false);
+        const SampleSoA soa = flattenOnePixel(fp, bk, 3, 3,
+            {makeSample(zA, zA, 0.5f,  {0.5f}),
+             makeSample(zB, zB, 0.25f, {0.25f}),
+             makeSample(zC, zC, 0.5f,  {0.5f})});
+        REQUIRE(soa.fragmentCount() == 3u);
+        CHECK_FALSE(fragmentDepositsArea0Of(soa.flags[2]));
+        CHECK(fragmentDepositsArea1Of(soa.flags[2]));
+    }
+
+    SUBCASE("the SCATTER honours both bits: the area planes count the suppressed deposit once")
+    {
+        // The flag has to reach the planes, not merely the SoA.  Hand-derived
+        // from the deposit rules and the K=4 fragment list above (each fragment's
+        // kernel weights sum to exactly 1, so every deposit contributes 1.0):
+        //
+        //   bucket i0 : NEW AREA  = f0 only (the one coverage head)          = 1
+        //               CO-LOCATED= f1 only (f0 is a head, f2 writes nothing) = 1
+        //   bucket i1 : NEW AREA  = none (a rear deposit never claims)        = 0
+        //               CO-LOCATED= f0 and f1 (f2 writes nothing)             = 2
+        //
+        // Ignoring `depositArea0` reads 2 for i0's co-located plane; ignoring
+        // `depositArea1` reads 3 for i1's.
+        const int W = 64, H = 64, K = 4;
+        const DepthBuckets bk = makeBoundedDeltaCocBuckets(p, 1.0f, 100.0f, K);
+        const FlattenParams fp = makeFlattenParams(p, 1, /*preMerge*/ false);
+        const SampleSoA soa = flattenOnePixel(fp, bk, W / 2, H / 2,
+            {makeSample(zA, zA, 0.5f,  {0.5f}),
+             makeSample(zB, zB, 0.25f, {0.25f}),
+             makeSample(zC, zC, 0.5f,  {0.5f})});
+        REQUIRE(soa.fragmentCount() == 3u);
+        const int i0 = static_cast<int>(soa.bucketIndex0[0]);
+        const int i1 = static_cast<int>(soa.bucketIndex1[0]);
+
+        Band band;
+        band.K = K; band.C = 1; band.W = W; band.H = H;
+        HoldoutSoA noHoldout;
+        DiscKernelLUT kernel(20.0f, 1.0f, 1.0f, 1.0f);
+        runBand(band, makeScatterParams(W, H, BucketCombine::CoveragePartition),
+                soa, noHoldout, kernel, /*useThread*/ false);
+
+        const std::ptrdiff_t px = band.pixels();
+        CHECK(planeSum(band.planes.weight,    i0, px) == doctest::Approx(1.0).epsilon(1e-5));
+        CHECK(planeSum(band.planes.colocated, i0, px) == doctest::Approx(1.0).epsilon(1e-5));
+        CHECK(planeSum(band.planes.weight,    i1, px) == doctest::Approx(0.0).epsilon(1e-5));
+        CHECK(planeSum(band.planes.colocated, i1, px) == doctest::Approx(2.0).epsilon(1e-5));
+    }
+
+    SUBCASE("packFragmentFlags DEFAULTS both area bits SET")
+    {
+        // The header promises "Defaults SET, so a hand-built fragment behaves
+        // exactly as it did before T15".  Every shipping call site passes both
+        // explicitly, so only a direct assertion pins the documented default.
+        const std::uint8_t f = packFragmentFlags(FragmentKind::Point, /*coverageHead*/ true);
+        CHECK((f & kFragmentArea0Bit) != 0);
+        CHECK((f & kFragmentArea1Bit) != 0);
+        CHECK(fragmentDepositsArea0Of(f));
+        CHECK(fragmentDepositsArea1Of(f));
+    }
+}
+
+TEST_CASE("claimNewArea() RECORDS the claiming kernel, not just the stamp (M1.P3.T15's review)")
+{
+    // `claimBin` is read only when the stamp matches, so failing to WRITE it
+    // leaves the different-kernel test reading a bin from an arbitrary earlier
+    // pixel — and the restriction it guards is the one M1.P3.T13's review found
+    // load-bearing (the unrestricted form punched a 25% hole in in-focus opaque
+    // geometry).  Deleting the write survived the suite as it stood.
+    //
+    // Poisoned with the SECOND fragment's own bin, which is the direction that
+    // bites: with the write in place the first fragment overwrites it with its
+    // OWN bin and the second is correctly denied the claim; without it the
+    // second matches the poison and takes a second head, double-claiming the
+    // pixel's area in one bucket.
+    const CocParams    p  = makeManualRig(8.0f, 10.0f);
+    const DepthBuckets bk = makeBoundedDeltaCocBuckets(p, 1.0f, 100.0f, 4);
+    const FlattenParams fp = makeFlattenParams(p, 1, /*preMerge*/ false);
+
+    const float zA = 8.0f, zB = 10.0f;                  // bins 4 and -1 (sharp)
+    const int   binB = scatterKernelBin(radiusPixels(p, zB));
+    REQUIRE(binB != scatterKernelBin(radiusPixels(p, zA)));
+
+    FlattenScratch scratch;
+    const std::size_t n = static_cast<std::size_t>(bk.bucketCount());
+    // Sized here, so ensureBucketScratch() leaves the poison alone.  The stamps
+    // are 0, which is never a live epoch, so only `claimBin` is poisoned.
+    scratch.claimStamp.assign(n, 0u);
+    scratch.claimBin.assign(n, binB);
+    scratch.runStamp.assign(n, 0u);
+    scratch.runBin.assign(n, 0);
+    scratch.runAlpha.assign(n, 0.0f);
+
+    SampleSoA soa;
+    soa.begin(1, fp.groups);
+    std::vector<SampleRecord> v{makeSample(zA, zA, 0.5f,  {0.5f}),
+                                makeSample(zB, zB, 0.25f, {0.25f})};
+    flattenPixelToSoA(fp, bk, 0, 0, v, scratch, soa, nullptr);
+
+    REQUIRE(soa.fragmentCount() == 2u);
+    REQUIRE(soa.bucketIndex0[0] == soa.bucketIndex0[1]);      // they do collide
+    CHECK(fragmentCoverageHeadOf(soa.flags[0]));
+    CHECK_FALSE(fragmentCoverageHeadOf(soa.flags[1]));
+    // ...and the claim really was re-recorded, not merely left alone.
+    CHECK(scratch.claimBin[static_cast<std::size_t>(soa.bucketIndex0[0])]
+          == scatterKernelBin(radiusPixels(p, zA)));
+}
+
+TEST_CASE("a NON-colliding fragment's own alpha is the untouched float, not a reconstruction "
+          "(M1.P3.T15's review)")
+{
+    // emitPending() recomputes `f.alpha` from its two deposits ONLY when an
+    // attenuation actually happened, "so that every non-colliding fragment keeps
+    // the exact float it had before this task".  Making the recompute
+    // unconditional survived the suite as it stood, yet it is not a no-op:
+    // 1 - (1-a0)*(1-a1) differs from `a` in the last ULPs for 46% of single
+    // fragments over a 7761-point (alpha, depth) grid — e.g. alpha 0.005 reads
+    // 0.00499999523 against the input's 0.00499999989.
+    const CocParams    p  = makeStandardRig(10.0f);
+    const DepthBuckets bk = makeStandardBuckets(p, 32);
+    const FlattenParams fp = makeFlattenParams(p, 1, /*preMerge*/ false);
+
+    int checked = 0;
+    for (int i = 1; i < 40; ++i) {
+        const float a = static_cast<float>(i) / 200.0f;
+        for (int j = 1; j < 20; ++j) {
+            const float z = 1.0f + static_cast<float>(j) * 0.7f;
+            const SampleSoA soa = flattenOnePixel(fp, bk, 0, 0,
+                {makeSample(z, z, a, {a})});
+            if (soa.fragmentCount() != 1u)
+                continue;
+            ++checked;
+            CHECK(soa.alpha[0] == a);           // BIT equality, not a tolerance
+        }
+    }
+    REQUIRE(checked > 100);
+}
+
+TEST_CASE("a pixel with ONE fragment per bucket pair is BIT-IDENTICAL to the pre-T15 flatten "
+          "(M1.P3.T15)")
+{
+    // The whole mechanism is gated on a COLLISION, so a fragment that does not
+    // collide must come out of the flatten with the exact floats it had before
+    // this task: no attenuation, no clamped assignment, no lost area claim.
+    // Checked as "the same fragment flattened alone == flattened alongside a
+    // far-away one", bit for bit -- the strongest form available inside the
+    // suite, and the one that protects every identity the milestone pins.
+    const CocParams    p  = makeStandardRig(10.0f);
+    const DepthBuckets bk = makeStandardBuckets(p, 32);
+    const FlattenParams fp = makeFlattenParams(p, 1, /*preMerge*/ false);
+
+    const SampleSoA alone = flattenOnePixel(fp, bk, 5, 5,
+        {makeSample(3.0f, 3.0f, 0.7f, {0.35f})});
+    // ...and again with a second sample far enough away in depth that their
+    // bucket pairs cannot touch.
+    const SampleSoA pair = flattenOnePixel(fp, bk, 5, 5,
+        {makeSample(3.0f, 3.0f, 0.7f, {0.35f}),
+         makeSample(60.0f, 60.0f, 0.4f, {0.2f})});
+
+    REQUIRE(alone.fragmentCount() == 1u);
+    REQUIRE(pair.fragmentCount() == 2u);
+    CHECK(pair.bucketIndex0[0] == alone.bucketIndex0[0]);
+    CHECK(pair.bucketIndex1[0] == alone.bucketIndex1[0]);
+    CHECK(pair.alpha[0]        == alone.alpha[0]);          // BIT equality
+    CHECK(pair.bucketAlpha0[0] == alone.bucketAlpha0[0]);
+    CHECK(pair.bucketAlpha1[0] == alone.bucketAlpha1[0]);
+    CHECK(pair.colorScale0[0]  == alone.colorScale0[0]);
+    CHECK(pair.colorScale1[0]  == alone.colorScale1[0]);
+    CHECK(pair.flags[0]        == alone.flags[0]);
+    CHECK(pair.colorOf(0)[0]   == alone.colorOf(0)[0]);
+    // Both deposits of BOTH fragments still write their area.
+    CHECK(fragmentDepositsArea0Of(pair.flags[1]));
+    CHECK(fragmentDepositsArea1Of(pair.flags[1]));
+    CHECK(fragmentCoverageHeadOf(pair.flags[1]));
 }
 
 TEST_CASE("the collision case from the brief resolves to the flatten, not to a fully opaque "
@@ -2078,23 +2869,28 @@ TEST_CASE("the collision merge is bounded: different kernels are not collapsed, 
         CHECK(sameScatterKernel(soa.radius[0], soa.radius[1]));
     }
 
-    SUBCASE("an UNMERGEABLE same-kernel collision keeps BOTH area claims, and stays exact on "
-            "opaque content (M1.P3.T13's review)")
+    SUBCASE("an UNMERGEABLE same-kernel collision is `over`-composited PER BUCKET and claims "
+            "its area once (M1.P3.T15, replacing T13's review's both-claims rule)")
     {
         // A span piece and a point sample inside ONE bucket at ONE pixel, both
         // opaque, both on the sharp path — i.e. an in-focus card behind fog.
-        // The merge may not take them (FragmentKind differs), so the question is
-        // what the AREA claim does with them, and the answer must be "nothing":
-        // they cover the IDENTICAL destination area, so re-labelling the second
-        // as co-located makes the composite split the bucket's alpha C_k : D_k =
-        // 1 : 1 and read `a - a^2/4`.  At a = 1 that is 0.750000 against a true
-        // 1.0 — a 25% hole punched in solid geometry, where leaving both claims
-        // standing lets the coverage clamp degrade the bucket to the pre-T13
-        // `over` and reads the truth exactly.
+        // The merge may not take them (FragmentKind differs, and merging would
+        // have to mislabel one of them against the COMPOSITION CONTRACT), so
+        // this is the CROSS-KIND collision M1.P3.T15 exists for.
         //
-        // Over a 2000-pixel mixed point+volumetric size-0 corpus, suppressing
-        // the second claim moved mean |d alpha| 2.27e-02 -> 6.00e-02 at 20 spp /
-        // K=16 and the rate beyond 1e-3 from 38.9% to 98.0%.
+        // THE RULE THIS PINS, and why it replaces T13's review's:
+        //   * the trailing deposit is scaled by `1 - running_k` — here the
+        //     leading piece is opaque, so the point contributes NOTHING;
+        //   * it therefore claims no area either, because the area is already
+        //     in the plane and the two deposits cover the IDENTICAL region.
+        // T13's review left BOTH claims standing instead, because the alpha was
+        // ADDED there and the C_k : D_k split then read `a - a^2/4` (0.750000
+        // against a true 1.0 at a = 1).  With the alpha composited that trade is
+        // gone: `cov` clamps to 1, `aCov = min(a, cov) = a` and `local` is the
+        // true composited alpha, so the bucket reads the flatten exactly.
+        // Measured over the mixed size-0 corpus (900 pixels x K 4..128 x
+        // 2..20 spp x pre_merge both, holdout both ways): worst |d alpha|
+        // 2.61e-01 -> 4.30e-07 and worst |d colour| 8.30e-01 -> 3.16e-07.
         const int W2 = 8, H2 = 8, K2 = 16;
         const CocParams    q  = makeManualRig(0.0f, 10.0f);
         const DepthBuckets qb = makeBoundedDeltaCocBuckets(q, 1.0f, 100.0f, K2);
@@ -2111,10 +2907,16 @@ TEST_CASE("the collision merge is bounded: different kernels are not collapsed, 
         REQUIRE(fragmentKindOf(soa2.flags[1]) == FragmentKind::Point);
         REQUIRE(soa2.bucketIndex0[0] == soa2.bucketIndex0[1]);   // one bucket
         REQUIRE(sameScatterKernel(soa2.radius[0], soa2.radius[1]));
-        // BOTH keep their claim — the invariant is one kernel per bucket, not
-        // one head per bucket.
+
+        // The FRONT one owns the bucket: its area, its alpha.
         CHECK(fragmentCoverageHeadOf(soa2.flags[0]));
-        CHECK(fragmentCoverageHeadOf(soa2.flags[1]));
+        CHECK(fragmentDepositsArea0Of(soa2.flags[0]));
+        // The trailing one is attenuated to nothing behind an opaque layer, and
+        // writes no area on top of the area already there.
+        CHECK_FALSE(fragmentCoverageHeadOf(soa2.flags[1]));
+        CHECK_FALSE(fragmentDepositsArea0Of(soa2.flags[1]));
+        CHECK(soa2.bucketAlpha0[1] == 0.0f);
+        CHECK(soa2.colorScale0[1] == 0.0f);
 
         Band band2;
         band2.K = K2; band2.C = 1; band2.W = W2; band2.H = H2;
@@ -2124,6 +2926,9 @@ TEST_CASE("the collision merge is bounded: different kernels are not collapsed, 
                 soa2, noHoldout2, k3, /*useThread*/ false);
         // Two opaque layers at one pixel flatten to one opaque pixel.
         CHECK(std::fabs(static_cast<double>(band2.outAlpha(4, 4)) - 1.0) <= 2e-06);
+        // ...and to the FRONT layer's colour, not to a mixture of the two: the
+        // trailing deposit contributes nothing at all.
+        CHECK(std::fabs(static_cast<double>(band2.outColor(0, 4, 4)) - 0.5) <= 2e-06);
     }
 
     SUBCASE("a group straddling the focal plane renders at its front member's radius, not at 0")

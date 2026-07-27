@@ -1,8 +1,8 @@
 ---
 title: DeepCDefocus — deep-input, flat-output defocus node
 status: running
-current: M1.P3.T15
-pm_heartbeat: 2026-07-27T09:40:00-04:00
+current: M1.P3.T12
+pm_heartbeat: 2026-07-27T14:05:00-04:00
 ship: pr-per-milestone
 ---
 
@@ -91,7 +91,7 @@ node; v3 (Milestone 3) adds a CUDA backend behind the seams v1/v2 leave in place
 2026-07-26: build both candidate composites behind an internal flag at M1.P3.T2 and decide from
 rendered pixels at M1.P3.T5's gate. See that milestone file's Decisions.)
 
-**Where things stand (2026-07-27T09:40-04:00).** Phases 1.0, 1.1 and 1.2 are complete and committed;
+**Where things stand (2026-07-27T14:05-04:00).** Phases 1.0, 1.1 and 1.2 are complete and committed;
 Phase 1.3 has T0, T1, T6, T2, T7, T8, T9, T3, T10, T11 and T4 done. **M1.P3.T5's wiring is landed and
 the node now genuinely defocuses**, but T5 is deliberately left OPEN: its review found that scene (a)'s
 size-0 parity gate fails (up to 2.4e-01, ~12% of pixels) because same-pixel fragments collide in one
@@ -99,14 +99,14 @@ bucket and the composite clamps coverage and ordering away together — a defect
 accumulation that T5 merely put on the cook path — and that abort recovery cannot be exercised headless
 at all. T14 has since fixed something wrong since the project began — `CMAKE_BUILD_TYPE` was unset, so the
 CMake build had never passed an `-O` flag and the shipped plugin contained **zero** vectorized loops
-against 402 at `-O3`. T13 has since closed the bucket-collision defect that blocked T5's gate — size-0 parity goes from
-2.65e-01 (100% of pixels wrong) to 2.38e-07 (0%), and validation scene (l) is closed with it.
-`current: M1.P3.T15`, per-bucket transmittance attenuation, which T13's review identified as closing
-three remaining holes at once — the cross-kind Point/span collision, the same-kernel unmergeable
-residual, and the fact that **connecting a holdout currently switches T13's fix back off**, so scene (b)
-would fail. It also supersedes T13's merge machinery, which can then be deleted.
-Remaining in this milestone: P3 T15, then re-run T5's gate, then T12 (validation sweep + both
-bake-offs), then Phase 1.4 and Phase 1.5. Twelve tasks
+against 402 at `-O3`. T13 and T15 have since closed every same-pixel bucket-collision hole: size-0 parity goes from 2.6e-01
+with ~100% of pixels wrong to ≤5.8e-07 with none, across point, volumetric and mixed content, with the
+holdout connected as well as disconnected. Validation scene (l) is closed with them.
+`current: M1.P3.T12` — the validation-scene sweep (a)–(l) plus the bucket-composite and holdout-
+interpolant bake-offs. Note T5's own size-0 parity clause now passes; its abort-recovery clause remains
+unverified and needs an interactive pass, since headless Nuke cannot trigger a recoverable mid-cook
+cancel.
+Remaining in this milestone: P3 T12, then Phase 1.4 and Phase 1.5. Twelve tasks
 have now been added by execution findings (M1.P3.T0, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, plus
 the enlarged M1.P3.T4 test list).
 No PR yet — `ship: pr-per-milestone` puts that at M1's verification gate. The branch

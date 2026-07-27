@@ -830,7 +830,7 @@ verified.
     preserved. Local build and both suites green.
   - size: L
 
-- [ ] M1.P3.T15 — Per-bucket transmittance attenuation at the flatten (run BEFORE T12)
+- [x] M1.P3.T15 — Per-bucket transmittance attenuation at the flatten (run BEFORE T12)
   - files: `src/DeepCDefocusScatter.h`/`.cpp`, `tests/test_defocus_scatter.cpp`
   - approach: identified at M1.P3.T13's review as the change that closes **three** open holes at once and
     lets T13's one-slot merge and its gates be **deleted**. T13 fixed same-pixel bucket collisions by
@@ -877,11 +877,16 @@ verified.
 - [ ] M1.P3.T12 — Validation scenes (a)–(l) and both bake-off decisions
   - files: `src/DeepCDefocus.cpp`, `src/DeepCDefocusScatter.h`/`.cpp` (deleting losing paths), this
     file's `## Decisions`
-  - approach: **scene (b) will fail until M1.P3.T15 lands** — connecting a holdout switches M1.P3.T13's
-    collision fix off (see Decisions). Do not read that as a T12 defect, and do not run T12 before T15.
-    Mixed point+volumetric interiors also carry the cross-kind residual T15 closes; weigh it as a
-    content class, not as a bucket-composite candidate's failure. `pre_merge`'s holdout behaviour
-    changed at T13 (correctly) — set it explicitly as before.
+  - approach: M1.P3.T15 has landed, so the holdout-connected gap and the cross-kind residual are both
+    closed and the bake-off is a fair comparison on mixed content. Carry these into the sweep:
+    **scene (b) must be built with `DeepHoldout2`, not `DeepHoldout`** — the latter's input 1 is a 2D
+    depth image and cannot take a deep input, which is what made it look unbuildable headless; pick the
+    reference deliberately, since `DeepHoldout2`'s flatten differs from volumetric `DeepToImage` by
+    |dc| 3.8e-03 on 11.9% of pixels on volumetric spans. **Expect holdout scenes near scene (f) to show
+    the M1.P3.T10 log-chord erasure** — that is the documented residual, not a T12 defect (Midpoint step
+    reads 16 wrong pixels there against Log chord's 157, which is itself evidence for T11's bake-off).
+    Connecting even a *non-occluding* holdout still moves defocused pixels by up to 1.78e-01 through
+    merge regrouping, so set `pre_merge` explicitly, as already instructed.
     With M1.P3.T5's serial wiring in place, run **validation scenes (a)–(l)** from the
     Design reference against it in the local Nuke install (scripted headless — `NUKE_PATH=<dir>
     /usr/local/Nuke17.0v3/Nuke17.0 -t <script.py>`). All must pass before Phase 1.4 changes the
@@ -1027,6 +1032,64 @@ verified.
 
 ## Decisions
 
+- 2026-07-27 — **M1.P3.T15 closed the last three same-pixel holes, and needed THREE mechanisms where the
+  plan prescribed one.** Both deviations were forced by measurement, and both were independently
+  re-derived at review: (a) the plan's "areas revert to the pre-T13 rule, both claim, the coverage clamp
+  handles it" **does not work** — with both claiming, the composite's `C_k : D_k` split still reads
+  `a − a²/4` and alpha stays at **2.50e-01**; the repeat deposit must write **no area at all** (two new
+  bits in the existing flag byte). (b) Per-bucket attenuation alone is exact on **alpha but not colour**
+  — it redistributes premultiplied colour whenever a trailing fragment lands in a leading fragment's
+  *front* bucket: alpha 2.4e-07 but **|dc| 7.97e-01 over 79–95% of pixels**. The closure is a third
+  mechanism, a **monotone bucket frontier** (a deposit may not land in front of a bucket an earlier
+  same-kernel fragment at that pixel already reached; clamped forward at whole weight if it would).
+  Note this means T13's review's ≤4.2e-08 colour figure for attenuation holds only when both layers
+  carry the same unpremultiplied colour.
+  **The frontier rule is sound and holds K-convergence** — the property two earlier candidate fixes died
+  on — verified rather than argued: it moves at most **one** bucket (maxMove = 1 over ~90k fragments),
+  never moves depth or radius, its firing rate falls monotonically with K (34.5% → 3.0% at size 0), the
+  two-layer defocused field is **bit-identical to pre-T15 at every K** and converges to 0 by K=64, and a
+  4500-config worst-case sweep shows it adds no new structural error. It **must** be gated on kernel bin.
+  Results — six corpora (point/span/mixed × holdout off/on), 900px × K{4…128} × spp{2…20} × `pre_merge`
+  both: **point-on 2.25e-01 → 2.38e-07, span-on 3.07e-01 → 5.82e-07, mixed-off 2.49e-01 → 5.24e-07,
+  mixed-on 2.67e-01 → 5.24e-07**, every rate to **0.00%**; point-off and span-off bit-identical to
+  shipped, fragment counts included. In headless Nuke, scene (a) goes 2.38e-07 / 5 ULP / 0.00% with the
+  holdout **connected or disconnected**. The span rows' >2e-07 is the span-split float chain against a
+  double reference, not T15 — verified identical base-vs-T15 at every count.
+- 2026-07-27 — **T13's collision merge is RETAINED, but not for the reason first given, and the numbers
+  behind it were wrong.** It *is* superseded on accuracy: compiled out, every T15 criterion still passes
+  and the field table is identical. It was kept as a fragment-count optimisation claimed at −30%/−20%,
+  but review measured that this holds only with `pre_merge` **off**; **at the shipping default it
+  collapses to −1.1%/−4.2%/−4.8% with no measurable wall time.** So the "every extra fragment rasterises
+  a disc" argument is **not supported at default knobs** — M1.P4.T2 must measure it there and delete the
+  merge if it doesn't pay. Also recorded: the merge's holdout-bracket gate is why connecting a
+  *non-occluding* holdout still moves defocused pixels by up to 1.78e-01 on 442/4096 px; with the merge
+  out and `pre_merge` off it is bitwise 0/4096.
+- 2026-07-27 — **`DeepHoldout`'s input 1 is a 2D depth image, not a deep input — validation scene (b)
+  must use `DeepHoldout2`.** M1.P3.T15 reported `setInput(1, …)` returning False as a headless-Nuke
+  blocker and substituted "an opaque black card merged into the deep stream"; review found that
+  substitution **vacuous** (the card evaluated to r=g=b=a=0, front=inf, from a `channel0`/`expr0..3`
+  pairing mistake, and it executes zero lines of holdout code since `holdoutConnected` gates on
+  `input1()`). The blocker claim is literally true but its conclusion is wrong: `DeepHoldout2` takes a
+  deep second input, `setInput(1, …)` returns True, and it verifiably holds out. **M1.P3.T12 can run
+  scene (b) as specified** — but pick the reference deliberately: `DeepHoldout2`'s flatten differs from
+  volumetric `DeepToImage` by |dc| 3.8e-03 on 11.9% of pixels on volumetric spans.
+- 2026-07-27 — **Two "unreachable by construction" claims in this phase turned out to be reachable**, and
+  the pattern is worth naming. M1.P3.T15 argued the `depositArea1` guard could never be exercised
+  because the monotone staging order puts a rear deposit's bucket beyond the frontier; three mutants
+  rested on that and all survived. Review disproved it: **CoC radius is V-shaped about focus**, so three
+  same-pixel samples can bin A,B,A — the middle leaves `frontierBin` on B, the third's clamp doesn't
+  fire, and both its deposits land on buckets the first already touched (25 such fragments at K=4 over
+  900px at size 6). Now covered by four subcases. The same shape left a **residual T15 does not close**:
+  `frontierBin`/`runBin` are single slots, so a negligible (α=1e-6) different-kernel sample interleaved
+  between two same-kernel ones reopens the collision — 0.750000 → 0.737391 (1.26e-02) where pre-T15 read
+  0.973309 (2.23e-01), an 18× improvement rather than a closure. Unreachable at size 0 (one kernel bin),
+  so no milestone gate touches it; pinned by test. The obvious fix (`>=`→`>` on the frontier update)
+  **regresses** it to 2.96e-02 and was dropped.
+- 2026-07-27 — The flatten scratch costs **20 B/bucket/thread (2.5 KB at K=128)**, not the 512 B the
+  plan budgeted: T15's touch record is 12 B/bucket (`runStamp`/`runBin`/`runAlpha`) and T13's claim pair
+  a further 8 B. They must stay **separate records stamped on different events** — folding them measured
+  a regression. **M1.P4.T1 budgets on 20 B/bucket.** Fragment memory and the SoA layout are unchanged;
+  the two new area flags are bits 2/3 of the existing byte.
 - 2026-07-27 — **M1.P3.T13 fixed the same-pixel bucket collision** with two passes in
   `flattenPixelToSoA` and **no plane, flag or composite change**: a one-slot-delayed collision merge
   (`over`-composite when same `FragmentKind` + `sameScatterKernel()` + same holdout bracket +

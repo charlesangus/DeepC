@@ -433,6 +433,9 @@ enum class FragmentKind : std::uint8_t {
 // A point sample is its own parent and is always a head.
 //
 // STORED AS A BIT IN THE EXISTING `kind` BYTE, not as a sixteenth SoA array.
+// M1.P3.T15 added two more bits to the same byte on the same argument (bits 2
+// and 3, "does this deposit write area at all?"), so the flag byte now carries
+// four pieces of per-fragment state and the SoA is still 61 B/fragment.
 // The SoA is already ~100 B/fragment resident at C=4 (61 logical; milestone
 // Decisions 2026-07-27) and
 // dominates the memory-limit budget, so a new PodBuffer would add its own
@@ -444,6 +447,13 @@ enum class FragmentKind : std::uint8_t {
 // ---------------------------------------------------------------------------
 constexpr std::uint8_t kFragmentKindMask    = 0x01;
 constexpr std::uint8_t kFragmentHeadBit     = 0x02;
+// M1.P3.T15: "does this deposit write its w*vis into an AREA plane at all?"
+// Set for every deposit that covers area no earlier same-pixel deposit of the
+// same kernel already covered; clear for the ones that do not (see
+// visitBucket() in the .cpp).  Defaults SET, so a hand-built fragment
+// behaves exactly as it did before T15.
+constexpr std::uint8_t kFragmentArea0Bit    = 0x04;
+constexpr std::uint8_t kFragmentArea1Bit    = 0x08;
 
 // packFragmentFlags() MASKS the kind, so a third FragmentKind would be
 // silently truncated into Point rather than mis-read.  Fail the build instead:
@@ -454,11 +464,15 @@ static_assert(static_cast<std::uint8_t>(FragmentKind::Volumetric) <= kFragmentKi
 static_assert((kFragmentKindMask & kFragmentHeadBit) == 0,
               "the kind mask and the coverage-head bit overlap");
 
-DEEPC_HD inline std::uint8_t packFragmentFlags(FragmentKind kind, bool coverageHead)
+DEEPC_HD inline std::uint8_t packFragmentFlags(FragmentKind kind, bool coverageHead,
+                                              bool depositArea0 = true,
+                                              bool depositArea1 = true)
 {
     return static_cast<std::uint8_t>(
         (static_cast<std::uint8_t>(kind) & kFragmentKindMask)
-        | (coverageHead ? kFragmentHeadBit : std::uint8_t{0}));
+        | (coverageHead  ? kFragmentHeadBit  : std::uint8_t{0})
+        | (depositArea0  ? kFragmentArea0Bit : std::uint8_t{0})
+        | (depositArea1  ? kFragmentArea1Bit : std::uint8_t{0}));
 }
 
 DEEPC_HD inline FragmentKind fragmentKindOf(std::uint8_t flags)
@@ -469,6 +483,16 @@ DEEPC_HD inline FragmentKind fragmentKindOf(std::uint8_t flags)
 DEEPC_HD inline bool fragmentCoverageHeadOf(std::uint8_t flags)
 {
     return (flags & kFragmentHeadBit) != 0;
+}
+
+DEEPC_HD inline bool fragmentDepositsArea0Of(std::uint8_t flags)
+{
+    return (flags & kFragmentArea0Bit) != 0;
+}
+
+DEEPC_HD inline bool fragmentDepositsArea1Of(std::uint8_t flags)
+{
+    return (flags & kFragmentArea1Bit) != 0;
 }
 
 // Stack budget for splitSpanAtBoundaries(): K+2 parts at the knob's K maximum.
@@ -534,7 +558,11 @@ struct FragmentRecord {
     int           y        = 0;
     float         radius   = 0.0f;      // clamped CoC radius, X pixels, base group
     float         depth    = 0.0f;      // midpoint depth used for CoC + bucketing
-    float         alpha    = 0.0f;      // this fragment's own alpha
+    float         alpha    = 0.0f;      // this fragment's own alpha AS DEPOSITED
+                                        // (M1.P3.T15 scales a colliding
+                                        // deposit by 1 - running_k, and this
+                                        // follows, so the two deposits always
+                                        // reconstruct it under `over`)
     BucketDeposit deposit  = {};        // the two bucket deposits (see contract)
     FragmentKind  kind     = FragmentKind::Point;
 
@@ -551,6 +579,14 @@ struct FragmentRecord {
     // remaining parts.  Defaults TRUE so a hand-built single fragment behaves
     // exactly as it did before M1.P3.T8.  See the flag-byte block above.
     bool          coverageHead = true;
+
+    // M1.P3.T15.  Does this fragment's first / second deposit write its w*vis
+    // into an area plane?  False for a deposit landing on area an earlier
+    // same-pixel, same-kernel deposit already covered — its alpha is already
+    // `over`-composited into that bucket, and counting the area twice is what
+    // makes the composite read `a - a^2/4` instead of `a`.
+    bool          depositArea0 = true;
+    bool          depositArea1 = true;
 };
 
 // ---------------------------------------------------------------------------
@@ -611,8 +647,10 @@ struct SampleSoA {
     PodBuffer<float>        colorScale1;
 
     // Packed per-fragment flag byte: bit 0 = FragmentKind, bit 1 = coverage
-    // head.  Read it through fragmentKindOf() / fragmentCoverageHeadOf();
-    // never cast it straight to FragmentKind.
+    // head, bits 2/3 = "deposit 0 / deposit 1 writes area" (M1.P3.T15).  Read
+    // it through fragmentKindOf() / fragmentCoverageHeadOf() /
+    // fragmentDepositsArea0Of() / fragmentDepositsArea1Of(); never cast it
+    // straight to FragmentKind.
     PodBuffer<std::uint8_t> flags;
 
     PodBuffer<float>        color;      // channelCount interleaved values/fragment
@@ -841,14 +879,39 @@ struct FlattenScratch {
     // genuinely differ).  Stamped rather than cleared: `claimStamp[k] ==
     // claimEpoch` means "claimed during the current pixel", so a pixel costs no
     // reset at all.  The epoch is incremented per pixel and both arrays are
-    // sized to the bucket count on first use, so this is O(1) per fragment and
-    // ~1.5KB per thread at K=128.  `claimBin` holds the claimer's
+    // sized to the bucket count on first use, so this is O(1) per fragment.
+    // 8 B/bucket — 1KB per thread at K=128.  `claimBin` holds the claimer's
     // scatterKernelBin(): a later deposit yields the claim only to a DIFFERENT
-    // kernel — see claimNewArea() in the .cpp for the measurement that makes
-    // that restriction load-bearing.
+    // kernel — see visitBucket() in the .cpp for the measurement that makes
+    // that restriction load-bearing, and for the per-bucket running alpha
+    // (M1.P3.T15) that `runAlpha` holds beside them.
     std::vector<std::uint32_t> claimStamp;
     std::vector<int>           claimBin;
     std::uint32_t              claimEpoch = 0;
+
+    // M1.P3.T15's per-bucket TOUCH record, beside the claim above: which kernel
+    // last deposited into this bucket at this pixel, and how much alpha it has
+    // accumulated there ("how much of THIS bucket, at THIS pixel, has already
+    // been written by fragments rasterising THIS kernel?").  Distinct from the
+    // claim, which records only NEW-AREA claims — a fragment's rear deposit
+    // touches a bucket without claiming any area in it — and stamped off the
+    // same per-pixel epoch, so a pixel still costs no reset.  Folding the two
+    // into one stamp is a measured regression; see claimNewArea() in the .cpp.
+    //
+    // COST, because M1.P4.T1 budgets on it: THREE arrays, not one float —
+    // 12 B/bucket, i.e. 1.5KB per thread at K=128, NOT the 512 B the milestone
+    // brief provisionally budgeted.  With the claim pair above the flatten's
+    // per-bucket scratch is 20 B/bucket, 2.5KB per thread at K=128.
+    std::vector<std::uint32_t> runStamp;
+    std::vector<int>           runBin;
+    std::vector<float>         runAlpha;
+
+    // M1.P3.T15: the highest bucket any deposit at the CURRENT source pixel has
+    // touched, and the kernel bin of the deposit that reached it.  A later
+    // (further) fragment rasterising THAT SAME kernel may not deposit in front
+    // of it -- see emitPending() in the .cpp.
+    int                        frontierBucket = 0;
+    int                        frontierBin    = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -1568,6 +1631,23 @@ struct ScatterFragment {
 
     bool  depositCoverage = false;  // alpha + coverage planes: one group only
     bool  coverageHead    = true;   // coverage plane: one fragment per parent
+    bool  depositArea0    = true;   // M1.P3.T15: does deposit 0 write area?
+    // ...and deposit 1.  A LIVE CASE, not a guard.  M1.P3.T15 shipped calling
+    // it "unreachable through flattenPixelToSoA() today" and rested two
+    // surviving mutants on that; its review disproved it.  The frontier clamp
+    // is gated on the kernel bin and `frontierBin` is a single slot, while CoC
+    // radius is V-SHAPED about the focal plane — so three same-pixel samples
+    // straddling focus bin as A, B, A, the middle one leaves `frontierBin` on
+    // B, the third one's clamp does not fire, and BOTH of its deposits land on
+    // buckets the first already touched with kernel A.  Measured over a
+    // 900-pixel randomised corpus at Manual size 6, `pre_merge` off: 25 such
+    // fragments at K=4 and 2 at K=16 (0 at size 0 — one bin, so the milestone's
+    // size-0 parity gates cannot reach this at all).
+    //
+    // The invariant is "at most one area plane PER DEPOSIT", not "per
+    // fragment", and it is pinned end to end by "the `no area at all` deposit
+    // is REACHABLE ... and the scatter honours both bits" in the suite.
+    bool  depositArea1    = true;
 
     // ScatterParams::holdoutInterp, copied through per fragment (M1.P3.T11) —
     // the per-fragment bodies below take no ScatterParams, so this is how the
@@ -1615,7 +1695,12 @@ struct ScatterFragment {
 // `depositWeight` and `depositColocated` are mutually exclusive per deposit
 // (one deposit's `w*vis` is either new area or co-located area, never both),
 // but that is the caller's invariant — scatterSpanBothBuckets() — not
-// something re-decided here.
+// something re-decided here.  Since M1.P3.T15 a deposit may write NEITHER: one
+// that was `over`-composited onto an identical earlier deposit of the same
+// kernel at the same source pixel covers area that is already in the plane, and
+// counting it again is what makes the composite read `a - a^2/4` in place of
+// `a`.  So the deposit invariant is now "at most one area plane per deposit",
+// not "exactly one".
 // ---------------------------------------------------------------------------
 DEEPC_HD inline void depositRowSpan(const BucketPlaneView& planes,
                                     int                    bucket,
@@ -1707,6 +1792,16 @@ DEEPC_HD inline void depositRowSpan(const BucketPlaneView& planes,
 // compositePixelCoveragePartition() recognises that (alpha in excess of a
 // bucket's own coverage is a co-located layer that claims no new area).
 //
+// AND THE DEPOSIT THAT WRITES NO AREA AT ALL (M1.P3.T15).  `depositArea0` /
+// `depositArea1` are clear for a deposit whose area an earlier deposit of the
+// SAME kernel at the SAME source pixel already put in the plane.  The two cover
+// the identical destination pixels with the identical weights — the flatten has
+// already `over`-composited the second onto the first — so writing the area
+// twice would tell the composite that one surface covers two pixels' worth of
+// area, and its C_k : D_k split then reads `a - a^2/4` where the truth is `a`
+// (a flat 0.25 short once the alpha saturates: two opaque layers at one pixel
+// read 0.750000 against a true 1.0).
+//
 // THE SAME RULE, ONE LEVEL UP (M1.P3.T8): a VOLUMETRIC parent cut at the
 // bucket boundaries becomes several independent fragments, and only the
 // front-most of them carries `coverageHead`.  A slab that spans four buckets
@@ -1729,19 +1824,23 @@ DEEPC_HD inline void scatterSpanBothBuckets(const BucketPlaneView& planes,
     // the two planes the total is exactly what a single "deposit every part"
     // coverage plane used to hold — which is why the split costs no energy and
     // why the composite can tell the two apart.
+    // `coverageHead` already implies `depositArea0` (the flatten clears the
+    // head for exactly the deposits it clears the area bit for), so the
+    // NEW-AREA term does not test the bit again -- testing it would be an
+    // unreachable branch, and a mutation removing it would be equivalent.
     depositRowSpan(planes, frag.bucket0, dstOffset, w, count,
                    frag.color, frag.firstChannel, frag.groupChannels,
                    frag.alpha0, frag.colorScale0,
                    frag.depositCoverage,
                    frag.depositCoverage && frag.coverageHead,
-                   frag.depositCoverage && !frag.coverageHead);
+                   frag.depositCoverage && frag.depositArea0 && !frag.coverageHead);
 
     if (frag.bucket1 != frag.bucket0) {
         depositRowSpan(planes, frag.bucket1, dstOffset, w, count,
                        frag.color, frag.firstChannel, frag.groupChannels,
                        frag.alpha1, frag.colorScale1,
                        frag.depositCoverage, false,
-                       frag.depositCoverage);
+                       frag.depositCoverage && frag.depositArea1);
     }
 }
 
