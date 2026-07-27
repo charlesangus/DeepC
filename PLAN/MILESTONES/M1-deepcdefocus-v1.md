@@ -445,7 +445,7 @@ verified.
     `DeepToImage` parity check from M1.P2.T2 still passes against the CMake-built plugin.
   - size: S
 
-- [ ] M1.P3.T8 — Coverage-head flag for split volumetric parents
+- [x] M1.P3.T8 — Coverage-head flag for split volumetric parents
   - files: `src/DeepCDefocusScatter.h`/`.cpp`
   - approach: found at M1.P3.T2's review and deliberately deferred out of it (it changes M1.P3.T1's
     committed SoA contract). Every part of a split volumetric parent currently deposits its own
@@ -730,6 +730,64 @@ verified.
   Registration is pulled forward from M1.P5.T1 into **M1.P3.T7**, which runs next, so that every
   subsequent task's build gate is real. The `-mavx2 -mfma` compile options stay at M1.P5.T1, where the
   `-ffp-contract` parity hazard is documented and where M1.P4.T2 will have inspected vectorization first.
+- 2026-07-26 — M1.P3.T8 fixed the volumetric-split coverage over-count with a **coverage-head bit**:
+  the flatten marks the front-most emitted part of a split parent, the scatter deposits coverage only
+  from it (`depositWeight = coverageHead && group == 0`), and the composite's residual term carries the
+  rest as alpha-without-coverage. Stored as **bit 1 of the existing `kind` byte**, which was renamed
+  `flags` so any un-migrated `static_cast<FragmentKind>` fails to compile; `SampleSoA::sizeBytes()` is
+  byte-identical, so M1.P3.T1's 69 B/fragment logical / 113 B resident figures and the `memory_limit`
+  entry are unchanged. Pre-merge survival is an **OR over the group**, not the group head's flag — a
+  group is a maximal run of adjacent staged fragments and can mix a non-head part of parent A with a
+  head point sample B, so taking the first flag would drop B's coverage. Fuzz-verified rather than
+  argued: head count is exactly 1 per parent over 200,000 randomised single-parent cases, and never
+  exceeds the parent count over 60,000 multi-parent cases. **"Parent" means a POST-TIDY sample** —
+  `tidyOverlapping()` cuts overlapping spans into disjoint segments first, so N depth-disjoint samples
+  at one pixel still deposit N coverages. Measured: a 4-part opaque slab's band alpha 4.000000 →
+  1.000000; a hand-built 60%-coverage opaque slab 1.0000 → 0.6000 (scene (i)'s honest hole stays
+  honest); the whole point-sample path is bit-unchanged.
+- 2026-07-26 — **The coverage-head fix is exact only when a parent's parts share a CoC radius, and is
+  inexact in BOTH directions when they don't** — the open item M1.P3.T5 must weigh. Each part is CoC'd
+  at its own midpoint, so a slab spanning N buckets rasterizes N different-sized discs, and the
+  governing quantity is the **radius ratio inside one parent, not the bucket count**. It is unbounded
+  whenever a span reaches the focal plane: that part takes the sharp path (w=1 into one pixel) while
+  the head is spread over a disc. Measured on the standard rig at α=0.9, front of focus: −0.0% at 1–2
+  buckets, −6.4% at 4, −24.8% at 8, −46.5% at 12, **−92.1% for a full-range span**; at α=0.1 full
+  range, −24.1% (against +0.9% for the old over-counting form, so at fog alphas with a wide spread the
+  new form can be *worse* — the old over-count was first-order-small at low α). Behind focus the flag
+  clearly helps: +14.5%/+36.2%/+76.5%/+113.3% at 2/3/4/8 buckets against the old +51.7%/+77.9%/
+  +93.5%/+118.1%. Net over 219 randomised single-parent cases: mean |band-alpha error| **6.7% vs
+  10.2%**, worst **89.7% vs 202.1%** — landed as a clear net improvement, exact where the design
+  intends (parents inside one or two buckets). **The exact fix is a fourth accumulation plane**
+  (per bucket, "co-located area" beside "new area"), which makes `resLocal = aRes/D_k = a_p` exactly at
+  any spread; memory formula would become `K·W·B·(C+3)·4`. Choosing a different head does NOT fix it —
+  a largest-radius head is identical in front of focus (the front-most part already *is* the largest)
+  and unusable behind it, since the head must be the bucket the composite visits first or every part in
+  front of it falls into the `claimed == 0` branch. Note the real reason is that the discs' normalised
+  **densities** cross, not that their supports fail to nest.
+- 2026-07-26 — **The composite's residual alpha is no longer clamped to the claimed area.** Found at
+  M1.P3.T8's review: `accAlpha += min(aRes, claimedArea) · tClaimed` was unreachable for the fractional
+  split it was written for (`aRes = w·a₁ ≤ w = claimedArea` always) but fires constantly once non-head
+  parts arrive at a different kernel radius, and **it clamped only the alpha — the colour term beside it
+  has none**. A 4-part span reaching focus therefore produced a premultiplied colour:alpha ratio of
+  0.8748 against the input's true 0.5: a 75%-too-bright pixel, not a dim one. Now `accAlpha += aRes ·
+  tClaimed`; the clamp is retained for the *transmittance*, where it is a genuine bound. Post-fix the
+  ratio is 0.5000 on every case, every documented identity is bit-unchanged (two 50% fog layers
+  0.750000, receding opaque 1.000000, scene (i) 0.600000), and it cannot over-count — per bucket the
+  three terms still sum to at most `A_k`.
+- 2026-07-26 — `compositePixelCoveragePartition` accumulates `claimedArea` directly instead of deriving
+  it as `1 − freeArea`, which cancels catastrophically at small per-pixel coverage — exactly the case
+  the residual term divides by. Measured on 11 co-located layers: −8.1e-06 relative at coverage 1e-3,
+  +1.04e-04 at 1e-4, +8.6e-04 at 1e-5, **+11.6% at 1e-7**; ≤1.4e-07 everywhere after. This is recorded
+  separately from the coverage-head fix on purpose: it was reachable **before** M1.P3.T8 (a fractional
+  split's rear deposit at a 21px radius sits at coverage ~7e-4), so it changes numbers on a path that
+  M1.P3.T2 had already landed, and it was folded into T8 silently rather than recorded.
+- 2026-07-26 — **`pre_merge` now moves the coverage plane, and ON (the default) is the accurate
+  branch.** Two distinct co-located point parents: OFF gives alpha 0.701926 with coverage 2.0; ON gives
+  0.580000 with coverage 1.0, and 0.58 is the exact sequential `over` — so the merged reading is right
+  and the unmerged one is the over-count. Acceptable, but it must be **documented in node help**
+  (M1.P5.T2) because the coverage plane is what discriminates scene (i)'s honest coverage deficit from
+  bucketing loss, and a perf knob silently changing that would make a deficit diagnosis knob-dependent.
+  M1.P3.T5 must set `pre_merge` explicitly in every render for the same reason.
 - 2026-07-26 — M1.P3.T7 wired the node in with `list(APPEND PLUGINS/FILTER_NODES DeepCDefocus)` inside
   a new `if (UNIX)` block (the `if (OpenGL_FOUND) list(APPEND PLUGINS_MWRAPPED DeepCPMatte)` idiom),
   not by editing the unconditional base `set(...)` lines. `PLUGINS` is the correct list — `DeepCDefocus`

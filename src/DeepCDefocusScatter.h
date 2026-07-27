@@ -392,6 +392,81 @@ enum class FragmentKind : std::uint8_t {
     Volumetric = 1      // zBack >  zFront: splitSpanAtBoundaries() + bucketOfContaining()
 };
 
+// ---------------------------------------------------------------------------
+// Per-fragment FLAG BYTE — FragmentKind plus the coverage-head bit (M1.P3.T8)
+//
+// THE COVERAGE HEAD BIT.  The coverage plane is `sum of w*vis`, pure kernel
+// AREA, and a surface covers its kernel's area ONCE no matter how many depth
+// layers it is later seen as.  Two constructions in this node turn one surface
+// into several layers:
+//
+//   * the fractional two-bucket assignment — handled inside
+//     scatterSpanBothBuckets(), which deposits coverage into the NEARER bucket
+//     only (M1.P3.T2's review; depositing into both was a measured 2x energy
+//     error on every partially covered region);
+//   * the VOLUMETRIC SPAN SPLIT — one parent sample cut at the bucket
+//     boundaries into P independent fragments.  Each of those used to deposit
+//     its own `w*vis`, so one slab claimed the same pixel area once per bucket
+//     it spanned: a 4-part alpha-0.9 slab measured a band alpha sum of 1.7506
+//     against an honest 0.9000, growing toward K x as alpha -> 1, and exact
+//     ONLY at full kernel coverage — i.e. wrong for every bokeh, every edge and
+//     every isolated fog element.
+//
+// The fix is this bit.  Exactly ONE fragment per split parent — the FRONT-MOST
+// emitted part, which is also the first the front-to-back composite visits —
+// carries `coverageHead`, and only that fragment deposits into the coverage
+// plane.  "Parent" here means a POST-TIDY sample: tidyOverlapping() runs first
+// and cuts overlapping spans at one pixel into disjoint depth segments, each
+// of which is its own parent with its own head.  One source pixel carrying N
+// depth-disjoint samples therefore still deposits N coverages — that is the
+// pre-existing same-pixel behaviour recorded in the milestone Decisions, not
+// something this bit addresses.  The remaining parts arrive as alpha and colour with no coverage of
+// their own, which is precisely the shape compositePixelCoveragePartition()'s
+// residual term already handles (it was added for the fractional split's rear
+// deposit): a co-located layer claiming no new area, `over`-attenuated by
+// tClaimed.  See that function for the derivation showing this reconstructs the
+// parent EXACTLY at any kernel coverage, not merely at full coverage.
+//
+// A point sample is its own parent and is always a head.
+//
+// STORED AS A BIT IN THE EXISTING `kind` BYTE, not as a sixteenth SoA array.
+// The SoA is already 113 B/fragment resident at C=4 (milestone Decisions) and
+// dominates the memory-limit budget, so a new PodBuffer would add its own
+// geometric capacity slack for one bool; bit 1 of a byte that only ever used
+// bit 0 costs nothing.  SampleSoA's array is named `flags` rather than `kind`
+// for exactly this reason: every reader must go through fragmentKindOf(), and
+// renaming the member makes an un-updated `static_cast<FragmentKind>(...)` a
+// compile error rather than a silent mis-read of a head fragment as kind 3.
+// ---------------------------------------------------------------------------
+constexpr std::uint8_t kFragmentKindMask    = 0x01;
+constexpr std::uint8_t kFragmentHeadBit     = 0x02;
+
+// packFragmentFlags() MASKS the kind, so a third FragmentKind would be
+// silently truncated into Point rather than mis-read.  Fail the build instead:
+// adding a kind means widening the mask and moving the head bit.
+static_assert(static_cast<std::uint8_t>(FragmentKind::Volumetric) <= kFragmentKindMask,
+              "FragmentKind no longer fits in kFragmentKindMask — widen the mask "
+              "and move kFragmentHeadBit");
+static_assert((kFragmentKindMask & kFragmentHeadBit) == 0,
+              "the kind mask and the coverage-head bit overlap");
+
+DEEPC_HD inline std::uint8_t packFragmentFlags(FragmentKind kind, bool coverageHead)
+{
+    return static_cast<std::uint8_t>(
+        (static_cast<std::uint8_t>(kind) & kFragmentKindMask)
+        | (coverageHead ? kFragmentHeadBit : std::uint8_t{0}));
+}
+
+DEEPC_HD inline FragmentKind fragmentKindOf(std::uint8_t flags)
+{
+    return static_cast<FragmentKind>(flags & kFragmentKindMask);
+}
+
+DEEPC_HD inline bool fragmentCoverageHeadOf(std::uint8_t flags)
+{
+    return (flags & kFragmentHeadBit) != 0;
+}
+
 // Stack budget for splitSpanAtBoundaries(): K+2 parts at the knob's K maximum.
 // 130 * sizeof(SpanSplitPart) == 2600 bytes — a per-sample stack array, never a
 // heap allocation (milestone brief).
@@ -418,6 +493,13 @@ struct FragmentRecord {
     BucketDeposit deposit  = {};        // the two bucket deposits (see contract)
     BoundarySpan  boundary = {};        // for HoldoutVisibility::interpAtBucket()
     FragmentKind  kind     = FragmentKind::Point;
+
+    // Does this fragment carry its parent sample's kernel COVERAGE?  True for
+    // every point sample (each is its own parent) and for the front-most
+    // emitted part of a split volumetric sample; false for that parent's
+    // remaining parts.  Defaults TRUE so a hand-built single fragment behaves
+    // exactly as it did before M1.P3.T8.  See the flag-byte block above.
+    bool          coverageHead = true;
 };
 
 // ---------------------------------------------------------------------------
@@ -476,7 +558,10 @@ struct SampleSoA {
     PodBuffer<std::int32_t> boundaryIndex;
     PodBuffer<float>        boundaryFrac;
 
-    PodBuffer<std::uint8_t> kind;
+    // Packed per-fragment flag byte: bit 0 = FragmentKind, bit 1 = coverage
+    // head.  Read it through fragmentKindOf() / fragmentCoverageHeadOf();
+    // never cast it straight to FragmentKind.
+    PodBuffer<std::uint8_t> flags;
 
     PodBuffer<float>        color;      // channelCount interleaved values/fragment
 
@@ -586,6 +671,11 @@ struct FlattenScratch {
         float              radius = 0.0f;
         int                bucket = 0;       // containing bucket, grouping key
         FragmentKind       kind   = FragmentKind::Point;
+        // See FragmentRecord::coverageHead.  A pre-merge group's merged
+        // fragment is a head if ANY of its members was one (an OR, not the
+        // group head's flag) — see the pre-merge block in the .cpp for why
+        // that is both loss-free and duplication-free.
+        bool               coverageHead = true;
         std::vector<float> channels;
     };
 
@@ -992,8 +1082,14 @@ struct ScatterScratch {
 // them may write the alpha and coverage planes or they would be counted once
 // per group.
 //
-// NOTE the coverage plane is written by the FIRST DEPOSIT ONLY, even when the
-// fragment straddles two buckets — see scatterSpanBothBuckets().
+// coverageHead is the OTHER gate on the coverage plane, and it is per FRAGMENT
+// rather than per group: a split volumetric parent's non-head parts carry
+// alpha and colour but no coverage (M1.P3.T8).  The two are separate because
+// they answer different questions — "is this the group that owns the alpha and
+// coverage planes" versus "is this the fragment that owns its parent's area".
+// The coverage plane is written when BOTH hold, and then only by the
+// fragment's FIRST bucket deposit even when it straddles two — see
+// scatterSpanBothBuckets().
 // ---------------------------------------------------------------------------
 struct ScatterFragment {
     int   destX = 0;            // band-relative destination centre
@@ -1016,6 +1112,7 @@ struct ScatterFragment {
     int   groupChannels = 0;
 
     bool  depositCoverage = false;  // alpha + coverage planes: one group only
+    bool  coverageHead    = true;   // coverage plane: one fragment per parent
 };
 
 // ---------------------------------------------------------------------------
@@ -1039,8 +1136,10 @@ struct ScatterFragment {
 //
 // `depositAlpha` gates the alpha plane (one channel group only) and
 // `depositWeight` the coverage plane INSIDE it (one channel group AND the
-// fragment's first bucket only) — the two are separate because a fragment's
-// alpha lands in both of its buckets while its coverage lands in one.
+// fragment's first bucket AND the fragment being its parent's coverage head)
+// — the two are separate because a fragment's alpha lands in both of its
+// buckets, and every part of a split parent's alpha lands in its own bucket,
+// while the parent's coverage lands in exactly one place.
 // ---------------------------------------------------------------------------
 DEEPC_HD inline void depositRowSpan(const BucketPlaneView& planes,
                                     int                    bucket,
@@ -1120,6 +1219,15 @@ DEEPC_HD inline void depositRowSpan(const BucketPlaneView& planes,
 // The rear deposit therefore carries alpha and colour with NO coverage, and
 // compositePixelCoveragePartition() recognises that (alpha in excess of a
 // bucket's own coverage is a co-located layer that claims no new area).
+//
+// THE SAME RULE, ONE LEVEL UP (M1.P3.T8): a VOLUMETRIC parent cut at the
+// bucket boundaries becomes several independent fragments, and only the
+// front-most of them carries `coverageHead`.  A slab that spans four buckets
+// covers its kernel's area once, not four times; before the flag it measured a
+// band alpha sum of 1.7506 against an honest 0.9000.  The non-head parts take
+// the identical "alpha and colour with no coverage" path the rear deposit
+// takes, through the identical residual term — which is why this needed no
+// composite change at all.
 // ---------------------------------------------------------------------------
 DEEPC_HD inline void scatterSpanBothBuckets(const BucketPlaneView& planes,
                                             const ScatterFragment& frag,
@@ -1130,7 +1238,8 @@ DEEPC_HD inline void scatterSpanBothBuckets(const BucketPlaneView& planes,
     depositRowSpan(planes, frag.bucket0, dstOffset, w, count,
                    frag.color, frag.firstChannel, frag.groupChannels,
                    frag.alpha0, frag.colorScale0,
-                   frag.depositCoverage, frag.depositCoverage);
+                   frag.depositCoverage,
+                   frag.depositCoverage && frag.coverageHead);
 
     if (frag.bucket1 != frag.bucket0) {
         depositRowSpan(planes, frag.bucket1, dstOffset, w, count,
@@ -1294,16 +1403,44 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 //
 // PLUS ONE TERM THE AREA MODEL ALONE DOES NOT COVER — alpha in EXCESS of the
 // bucket's own coverage (A_k > C_k).  That is the rear half of a fractionally
-// split fragment: scatterSpanBothBuckets() deposits the fragment's `w*vis`
-// into the NEARER bucket's coverage plane only (see there for why, and for the
-// measured 2x energy error of depositing it twice), so the far deposit arrives
-// as alpha and colour with no coverage of its own.  It is CO-LOCATED with area
+// split fragment, and (since M1.P3.T8) every non-head part of a split
+// volumetric parent: scatterSpanBothBuckets() deposits the fragment's `w*vis`
+// into the NEARER bucket's coverage plane only, and only for the parent's
+// front-most part (see there for why, and for the measured energy errors of
+// depositing it twice / once per bucket), so those arrive
+// as alpha and colour with no coverage of their own.  They are CO-LOCATED with area
 // its front half already claimed one bucket in front of it, so it claims no
 // new area and is `over`-attenuated by tClaimed:
 //
 //   aCov = min(A_k, C_k)   the share the bucket's own coverage accounts for
 //   aRes = A_k - aCov      the co-located residual
-//   accAlpha += min(aRes, claimedArea) * tClaimed;  tClaimed *= 1 - aRes/claimed
+//   accAlpha += aRes * tClaimed;   tClaimed *= 1 - min(1, aRes/claimedArea)
+//
+// THE RESIDUAL'S ALPHA IS NOT CLAMPED TO THE CLAIMED AREA (M1.P3.T8 review).
+// It was `min(aRes, claimedArea)` — "a layer cannot block more area than it
+// sits on" — which is unreachable for the fractional split that term was
+// written for (there aRes = w*a1 <= w = claimedArea, always) but is reached
+// constantly once a split volumetric parent's non-head parts arrive as pure
+// residual with a DIFFERENT kernel radius from their head: a rear part's disc
+// is denser than the head's wherever it is smaller, so aRes > claimedArea over
+// the whole inner disc and the clamp silently DESTROYED deposited alpha —
+// measured -45.5% of a slab's energy for a 4-part span reaching the focal
+// plane, against -4.6% without the clamp.  Worse, IT CLAMPED ONLY THE ALPHA:
+// the colour term next to it takes the resShare/tClaimed path with no clamp of
+// its own, so the same case came out with a premultiplied colour:alpha ratio
+// of 0.8748 against the input's true unpremultiplied 0.5 — a 75%-too-bright
+// pixel, not merely a dim one.  Without the clamp the ratio is 0.5000 on every
+// case measured.  Dropping real deposited alpha is
+// the same class of error as fabricating it, and nothing in this node's
+// honest-alpha contract licenses it (that contract forbids scaling alpha UP,
+// not accounting for what was actually deposited).  Removing it cannot
+// over-count either: per bucket the three terms still sum to at most
+// aCov + aRes = A_k, so accAlpha never exceeds the alpha the scatter
+// deposited.  Every documented identity below is bit-unchanged by this
+// (verified: two 50% fog layers 0.750000, receding opaque 1.000000, scene (i)
+// 60% coverage 0.600000, fractional split exact at every (alpha, fraction)).
+// The CLAMP IS RETAINED for the transmittance update, where it is a genuine
+// bound: the claimed area cannot be more than fully blocked.
 //
 // Colour follows alpha: the residual takes the aRes/A_k share of Colour_k.
 //
@@ -1330,17 +1467,88 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 //     exists for) — C_k is clamped to 1 at use, which is what keeps
 //     a_k = A_k/C_k <= 1 after saturation has pulled A_k down to 1.
 //
-// KNOWN RESIDUAL: a VOLUMETRIC sample split at the bucket boundaries emits one
-// independent fragment per part, each depositing its own coverage into its own
-// bucket, so the parts of one slab claim the same pixel area once per bucket.
-// At full kernel coverage that is exact (freeArea is consumed by the first
-// part and the rest are pure `over`, which the transmittance split
-// reconstructs); at PARTIAL coverage it over-counts the same way the point
-// split used to — measured 0.72 against an honest 0.54 for a 4-part alpha-0.9
-// slab at 60% coverage (plain `over` gives 0.70 on the same planes, so this is
-// not specific to this candidate).  Fixing it needs the flatten to mark which
-// part of a split parent carries the coverage; see the review notes for
-// M1.P3.T4/T5.
+//   * A VOLUMETRIC parent split at the bucket boundaries (M1.P3.T8) — its
+//     parts are one surface seen as P layers, so exactly the front-most part
+//     deposits coverage and the other P-1 arrive as pure residual.  Writing
+//     out the recursion: the head gives cov = w, alpha = w*a_0, so fit = w,
+//     local = a_0, accAlpha = w*a_0, tClaimed = 1 - a_0 and claimedArea = w.
+//     Every later part p has cov = 0, aRes = w*a_p and claimedArea = w, so
+//     resLocal = a_p EXACTLY (never clamped, since a_p <= 1) and it
+//     contributes w*a_p*prod_{j<p}(1 - a_j) while tClaimed picks up its
+//     (1 - a_p).  Summing:
+//
+//         accAlpha = w * (1 - prod_p (1 - a_p)) = w * alpha
+//         accColor = w * C * sum_p s_p prod_{j<p}(1 - a_j) = w * C
+//
+//     for ANY w in (0, 1] — i.e. the parent is reconstructed exactly at every
+//     kernel coverage, not merely at full coverage, and the band sums come out
+//     at the parent's own alpha and premultiplied colour because the disc
+//     weights sum to 1.  Verified end to end at EQUAL part radii (the
+//     derivation's own premise, which the radius clamp produces for a slab in
+//     the saturated near field): band alpha sum exact to <= 1.7e-07 across
+//     alpha 0.01..1, 2/4/8 parts and kernel radii 0.2/3/21px, where the
+//     depositing-every-part form read 2.00 / 4.00 / 8.00 for an opaque slab
+//     and 1.3675 / 1.7506 / 2.0008 at alpha 0.9.
+//
+// KNOWN RESIDUAL — PARTS OF ONE PARENT WITH DIFFERENT CoC RADII.  The
+// derivation above assumes every part rasterises the SAME kernel, i.e. that
+// `w` is one number.  It is not: each part is CoC'd at its own midpoint, so a
+// slab spanning N buckets spans N * deltaCoC in radius, and the head's disc
+// and a rear part's disc are different shapes.  The plane representation then
+// has no way to be right, in EITHER direction, because occlusion inside a slab
+// happens along the ray BEFORE the blur while this composite applies it in
+// image space AFTER the blur:
+//   * head disc LARGER than the rear parts' (a slab in front of focus): a
+//     rear part's disc is smaller and therefore DENSER, so its alpha exceeds
+//     the head's claimed area over the whole inner disc.  The alpha itself is
+//     no longer dropped (see the residual-clamp note above), but the
+//     transmittance still falls faster than it should, so the parts behind are
+//     over-occluded and energy is lost.  Measured on the standard rig
+//     (focus 10, range [1,100], K=16, alpha 0.9): -0.0% for a slab inside 1-2
+//     buckets, -6.4% at 4, -24.8% at 8, -46.5% at 12.  At alpha 0.1 the same
+//     cases are -0.0% / -0.5% / -3.0% / -12.1%.
+//   * head disc SMALLER (a slab behind focus): the rear parts cover pixels the
+//     head never claimed, those hit the claimed == 0 branch below and arrive
+//     unattenuated.  Measured with focus at the near end of the range
+//     (alpha 0.9): +14.5% at 2 buckets, +36.2% at 3, +76.5% at 4, +113.3% at
+//     8 — better than the depositing-every-part form everywhere (+51.7% /
+//     +77.9% / +93.5% / +118.1% on the same cases), but converging on it.
+// THE GOVERNING QUANTITY IS THE RADIUS RATIO WITHIN ONE PARENT, NOT THE BUCKET
+// COUNT, and the ratio is UNBOUNDED whenever a span reaches the focal plane:
+// the in-focus part takes the sharp path (w == 1 into a single pixel) while
+// the head is spread over a disc, so that part contributes the head's per-
+// pixel weight instead of its own alpha and all but vanishes.  A single
+// volumetric sample spanning the whole measured range therefore reads -92.1%
+// at alpha 0.9, -83.8% at 0.5, -24.1% at 0.1 and -10.3% at 0.02, where
+// depositing every part read +19.4% / +5.8% / +0.9% / +0.2% — the old form's
+// over-count is first-order-small at fog alphas, which is exactly where this
+// one is not.  That is the one regime where this flag is WORSE than the
+// over-count it replaces, and it is exactly the atmospheric-haze case (one
+// span from camera to background) — record it against M1.P3.T5's fog scenes.
+// The trade is otherwise strongly favourable: over 219 randomised single-
+// parent cases the mean |band-alpha error| is 6.7% here against 10.2% for
+// depositing every part, worst case 89.7% against 202.1%, and every parent
+// confined to one or two buckets is exact rather than +51.7%.
+//
+// It is NOT specific to this candidate (FrontToBackOver tracks the
+// depositing-every-part numbers to within 0.5% on every case above, since it
+// ignores the coverage plane entirely) and it cannot be fixed by a different
+// choice of head.  The reason is not that the discs fail to nest — concentric
+// discs of different radii nest perfectly in SUPPORT — it is that their
+// normalised DENSITIES cross: the largest-radius part's support contains every
+// other part's (so choosing it as head would remove the claimed == 0 leak) but
+// its weight is the lowest everywhere inside them (so it maximises the density
+// ratio that drives the over-occlusion), and the smallest-radius part is the
+// mirror image.  Verified: forcing the head to the largest-radius part
+// reproduces the head-only numbers exactly in front of focus (where the
+// front-most part ALREADY is the largest) and is unusable behind it, because
+// the head must be the bucket the front-to-back composite visits FIRST or the
+// parts in front of it all fall into the claimed == 0 branch.
+// The exact fix is a FOURTH PLANE — per bucket, "co-located area" alongside
+// "new area", so the residual's local opacity is aRes/D_k = a_p exactly at any
+// radius spread and the telescope closes per pixel.  That is a design-level
+// change (the memory formula becomes K*W*B*(C+3)*4) and is raised for
+// M1.P3.T5 / M1.P4.T1, not taken here.
 //
 // A bucket with neither coverage nor alpha is SKIPPED.  A bucket with coverage
 // but no alpha still contributes its colour and still claims area.
@@ -1358,9 +1566,23 @@ DEEPC_HD inline void compositePixelCoveragePartition(
     for (int c = 0; c < channelCount; ++c)
         outColor[static_cast<std::ptrdiff_t>(c) * pixelCount] = 0.0f;
 
-    float freeArea = 1.0f;
-    float tClaimed = 1.0f;
-    float accAlpha = 0.0f;
+    // freeArea and claimedArea are the same quantity twice (they sum to 1) and
+    // that redundancy is DELIBERATE, not sloppiness: deriving the claimed
+    // share as `1 - freeArea` cancels catastrophically when the pixel is only
+    // slightly covered, which is the ordinary case at a large kernel radius
+    // (a 21px disc puts w ~ 7e-4 in every pixel it touches, and its anti-
+    // aliased rim far less).  The residual term divides by the claimed share,
+    // so that cancellation lands straight on the alpha.  Measured on 11
+    // co-located layers over one claimed deposit: -7.8e-06 relative at
+    // coverage 1e-3, +1.0e-04 at 1e-4, +8.2e-04 at 1e-5, +11.1% at 1e-7 with
+    // the subtraction; accumulating the claimed share instead makes every one
+    // of those exact to float rounding.  freeArea keeps its own accumulator
+    // because it is only ever used inside a min(), where its absolute error is
+    // what matters.
+    float freeArea   = 1.0f;
+    float claimedArea = 0.0f;
+    float tClaimed   = 1.0f;
+    float accAlpha   = 0.0f;
 
     for (int k = 0; k < bucketCount; ++k) {
         const std::ptrdiff_t ko = static_cast<std::ptrdiff_t>(k) * pixelCount;
@@ -1392,7 +1614,7 @@ DEEPC_HD inline void compositePixelCoveragePartition(
             // ---- the share that fits in still-unclaimed area: ADDITIVE ----
             if (fit > 0.0f) {
                 const float f          = (fit / cov) * covShare;
-                const float claimedOld = 1.0f - freeArea;
+                const float claimedOld = claimedArea;
                 const float claimedNew = claimedOld + fit;
 
                 accAlpha += fit * local;                // == aCov * fit/cov
@@ -1401,8 +1623,9 @@ DEEPC_HD inline void compositePixelCoveragePartition(
                     outColor[o] += f * src[o];
                 }
 
-                tClaimed = (claimedOld * tClaimed + fit * (1.0f - local)) / claimedNew;
-                freeArea -= fit;
+                tClaimed    = (claimedOld * tClaimed + fit * (1.0f - local)) / claimedNew;
+                freeArea   -= fit;
+                claimedArea = claimedNew;
             }
 
             // ---- the excess: `over`-attenuated by the claimed share -------
@@ -1423,11 +1646,14 @@ DEEPC_HD inline void compositePixelCoveragePartition(
 
         // ---- the co-located residual: claims NO new area ------------------
         if (resShare > 0.0f) {
-            const float claimed = 1.0f - freeArea;
+            const float claimed = claimedArea;
             if (claimed > 0.0f) {
                 const float resLocal = clampf(aRes / claimed, 0.0f, 1.0f);
 
-                accAlpha += claimed * resLocal * tClaimed;  // min(aRes, claimed)
+                // NOT min(aRes, claimed): see the header block above for why
+                // that clamp destroyed a split parent's rear parts.  resLocal
+                // stays clamped because it is a transmittance, not an alpha.
+                accAlpha += aRes * tClaimed;
                 for (int c = 0; c < channelCount; ++c) {
                     const std::ptrdiff_t o = static_cast<std::ptrdiff_t>(c) * pixelCount;
                     outColor[o] += resShare * tClaimed * src[o];
@@ -1437,9 +1663,18 @@ DEEPC_HD inline void compositePixelCoveragePartition(
             } else {
                 // Nothing has claimed any area yet, so there is nothing for it
                 // to be co-located WITH: a rear deposit whose front deposit
-                // contributed no coverage at this pixel (only reachable from
-                // hand-built planes).  Treat it as its own unoccluded layer
-                // rather than dropping it.
+                // contributed no coverage at this pixel.  Treat it as its own
+                // unoccluded layer rather than dropping it.
+                //
+                // REACHABLE ON THE ORDINARY PATH since M1.P3.T8, and it is
+                // where the second half of the differing-radius residual above
+                // comes from: a rear part of a split slab whose disc is wider
+                // than its parent's head part covers pixels the head never
+                // claimed, and lands here unattenuated by the parts in front
+                // of it.  Unoccluded is the right answer in image space (no
+                // part in front covers this pixel) and the wrong one along the
+                // ray (they all do).  Do not "fix" it by dropping the term —
+                // that trades an over-count for a hole.
                 accAlpha += aRes;
                 for (int c = 0; c < channelCount; ++c) {
                     const std::ptrdiff_t o = static_cast<std::ptrdiff_t>(c) * pixelCount;

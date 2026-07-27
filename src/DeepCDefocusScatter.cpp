@@ -33,7 +33,7 @@ std::size_t SampleSoA::sizeBytes() const
          + bucketAlpha0.sizeBytes() + bucketAlpha1.sizeBytes()
          + colorScale0.sizeBytes() + colorScale1.sizeBytes()
          + boundaryIndex.sizeBytes() + boundaryFrac.sizeBytes()
-         + kind.sizeBytes() + color.sizeBytes();
+         + flags.sizeBytes() + color.sizeBytes();
 }
 
 void SampleSoA::clear()
@@ -51,7 +51,7 @@ void SampleSoA::clear()
     colorScale1.clear();
     boundaryIndex.clear();
     boundaryFrac.clear();
-    kind.clear();
+    flags.clear();
     color.clear();
 }
 
@@ -70,7 +70,7 @@ void SampleSoA::release()
     colorScale1.release();
     boundaryIndex.release();
     boundaryFrac.release();
-    kind.release();
+    flags.release();
     color.release();
 }
 
@@ -96,7 +96,7 @@ void SampleSoA::reserveFragments(std::size_t count)
     colorScale1.reserve(count);
     boundaryIndex.reserve(count);
     boundaryFrac.reserve(count);
-    kind.reserve(count);
+    flags.reserve(count);
     color.reserve(count * static_cast<std::size_t>(channelCount));
 }
 
@@ -120,7 +120,7 @@ void SampleSoA::appendFragment(const FragmentRecord& f, const float* __restrict_
     colorScale1.growForAppend(next);
     boundaryIndex.growForAppend(next);
     boundaryFrac.growForAppend(next);
-    kind.growForAppend(next);
+    flags.growForAppend(next);
     color.growForAppend(next * static_cast<std::size_t>(channelCount));
 
     x.resize(next);
@@ -136,7 +136,7 @@ void SampleSoA::appendFragment(const FragmentRecord& f, const float* __restrict_
     colorScale1.resize(next);
     boundaryIndex.resize(next);
     boundaryFrac.resize(next);
-    kind.resize(next);
+    flags.resize(next);
     color.resize(next * static_cast<std::size_t>(channelCount));
 
     x[n]             = static_cast<std::int32_t>(f.x);
@@ -152,7 +152,7 @@ void SampleSoA::appendFragment(const FragmentRecord& f, const float* __restrict_
     colorScale1[n]   = f.deposit.colorScale1;
     boundaryIndex[n] = static_cast<std::int32_t>(f.boundary.index);
     boundaryFrac[n]  = f.boundary.frac;
-    kind[n]          = static_cast<std::uint8_t>(f.kind);
+    flags[n]         = packFragmentFlags(f.kind, f.coverageHead);
 
     if (channelCount > 0) {
         float* __restrict__ dst = colorOf(n);
@@ -245,6 +245,7 @@ inline void emitFragment(const FlattenParams& params,
                          float                zBack,
                          float                alpha,
                          FragmentKind         kind,
+                         bool                 coverageHead,
                          const float* __restrict__ channels,
                          SampleSoA&           out,
                          FlattenStats*        stats)
@@ -258,6 +259,7 @@ inline void emitFragment(const FlattenParams& params,
     f.radius = radiusPixels(params.coc, depth);
     f.alpha  = clampf(alpha, 0.0f, 1.0f);
     f.kind   = kind;
+    f.coverageHead = coverageHead;
 
     const BucketWeight bw = (kind == FragmentKind::Volumetric)
                           ? buckets.bucketOfContaining(depth)
@@ -407,6 +409,9 @@ void flattenPixelToSoA(const FlattenParams& params,
             st.zBack  = s.zBack;
             st.alpha  = s.alpha;
             st.kind   = kind;
+            // A point sample is its own parent, so it always carries its own
+            // kernel coverage.
+            st.coverageHead = true;
             st.channels.assign(s.channels.begin(), s.channels.end());
             st.depth  = sampleMidDepth(st.zFront, st.zBack);
             st.radius = radiusPixels(params.coc, st.depth);
@@ -479,6 +484,18 @@ void flattenPixelToSoA(const FlattenParams& params,
             st.alpha  = part.alpha;
             st.kind   = kind;
 
+            // THE COVERAGE HEAD (M1.P3.T8).  One split parent covers its
+            // kernel's area ONCE, so exactly one of its parts deposits into
+            // the `sum of w*vis` coverage plane, and it must be the FRONT-MOST
+            // emitted part — the one the front-to-back composite visits first,
+            // so that the co-located residual term has claimed area to attach
+            // the remaining parts to.  `haveParentPart` is reset per parent
+            // sample and is false only until the first part with t > 0 is
+            // emitted, so a parent whose leading parts are zero-thickness
+            // still gets exactly one head, and a part merged into `prev` above
+            // inherits prev's flag rather than adding a second.
+            st.coverageHead = !haveParentPart;
+
             // Premultiplied colour scales by alpha_piece/alpha_parent, so the
             // front-to-back over of the pieces reproduces the parent exactly.
             st.channels.resize(static_cast<std::size_t>(nChan));
@@ -527,6 +544,22 @@ void flattenPixelToSoA(const FlattenParams& params,
     // It is written out here rather than called because optimizeSamples() picks
     // its groups by zFront distance, and this node has to pick them by radius
     // and bucket for the reasons above; the composite arithmetic is unchanged.
+    //
+    // THE COVERAGE HEAD SURVIVES THE MERGE AS AN OR (M1.P3.T8), not as "the
+    // group head's flag".  A group is a maximal run of ADJACENT staged
+    // fragments, so it may mix parts of different parents — e.g. a rear part of
+    // parent A (not a head) immediately followed by point sample B (a head), if
+    // they share a bucket and a radius.  Taking the run's first flag would DROP
+    // B's coverage; the OR cannot, because merging is strictly many-to-one and
+    // every group emits exactly one fragment, so a head can be absorbed but
+    // never duplicated.  Merging two heads into one deposit is not a loss
+    // either: the members share a bucket and a kernel radius (that is the
+    // grouping predicate), so they cover the SAME destination area, and the
+    // coverage plane means area — the unmerged path's two deposits are the
+    // over-count, not this one.  Parts of a single parent are cut AT the
+    // boundaries and therefore sit in distinct buckets, so a group can never
+    // contain two parts of the same parent, and the single-parent
+    // reconstruction is identical with pre_merge on and off.
     const bool  merging = params.preMerge && (params.mergeTolerancePx > 0.0f);
     const float tol     = params.mergeTolerancePx;
 
@@ -534,7 +567,8 @@ void flattenPixelToSoA(const FlattenParams& params,
     while (i < staged) {
         const FlattenScratch::Staged& head = scratch.staged[i];
 
-        std::size_t j = i + 1;
+        bool        groupHead = head.coverageHead;
+        std::size_t j         = i + 1;
         if (merging) {
             while (j < staged) {
                 const FlattenScratch::Staged& cand = scratch.staged[j];
@@ -542,6 +576,7 @@ void flattenPixelToSoA(const FlattenParams& params,
                     break;
                 if (!(std::fabs(cand.radius - head.radius) <= tol))
                     break;
+                groupHead = groupHead || cand.coverageHead;
                 ++j;
             }
         }
@@ -549,7 +584,7 @@ void flattenPixelToSoA(const FlattenParams& params,
         if (j - i == 1) {
             emitFragment(params, buckets, x, y,
                          head.zFront, head.zBack, head.alpha, head.kind,
-                         head.channels.data(), out, stats);
+                         groupHead, head.channels.data(), out, stats);
             i = j;
             continue;
         }
@@ -577,7 +612,7 @@ void flattenPixelToSoA(const FlattenParams& params,
         }
 
         emitFragment(params, buckets, x, y, zf, zb, alphaAcc, head.kind,
-                     scratch.mergeAccum.data(), out, stats);
+                     groupHead, scratch.mergeAccum.data(), out, stats);
         i = j;
     }
 }
@@ -624,7 +659,9 @@ bool checkCompositionContract(const SampleSoA& soa,
         // The contract itself: a span-split piece must carry NO fractional
         // spill into a second bucket.  Both splits applied to one sample is
         // the measured +8.3% double-count.
-        if (static_cast<FragmentKind>(soa.kind[i]) == FragmentKind::Volumetric) {
+        // `flags` is packed (kind in bit 0, coverage head in bit 1): read it
+        // through the accessor, never by casting the whole byte.
+        if (fragmentKindOf(soa.flags[i]) == FragmentKind::Volumetric) {
             ok = ok && (i1 == i0);
             ok = ok && (a1 == 0.0f);
             ok = ok && (s1 == 0.0f);
@@ -793,6 +830,14 @@ void scatterBandCPU(const ScatterParams& params,
         frag.boundaryFrac  = samples.boundaryFrac[f];
 
         frag.color = samples.colorOf(f);
+
+        // Does this fragment own its parent sample's kernel coverage?  Point
+        // samples always do; a split volumetric parent's front-most part does
+        // and its remaining parts do not (M1.P3.T8).  Like the composition
+        // contract above, this is a LABEL THE FLATTEN ALREADY DECIDED and this
+        // file only honours — the scatter has no way to tell which fragments
+        // came from one parent.
+        frag.coverageHead = fragmentCoverageHeadOf(samples.flags[f]);
 
         // Zero-alpha early-out, before any rasterisation (design reference's
         // perf mitigations).  partitionColorScale() is alpha_i/alpha, so a
