@@ -1031,6 +1031,201 @@ struct HoldoutSoA {
     }
 };
 
+// The storage behind the view above is HoldoutLut, built from
+// HoldoutSampleSoA -- both immediately below.  See those for the M1.P3.T3
+// implementation this comment block specifies.
+
+// ---------------------------------------------------------------------------
+// HoldoutSampleSoA — one band's holdout input, DeepFront/DeepBack/Alpha ONLY
+//
+// THE SOURCE-SIDE MODEL DOES NOT APPLY HERE.  Holdout occlusion is evaluated
+// at each DESTINATION pixel from that SAME pixel's own holdout samples --
+// there is no scatter, no CoC, no bucket split and no pre-merge on this side.
+// That absence is deliberate and is exactly what makes the holdout edge
+// pixel-sharp (see the design reference's Holdout mechanics paragraph): a
+// source fragment's blur is a property of the SOURCE, but visibility is
+// looked up at each dest pixel independently from that pixel's own samples,
+// so no filtering of any kind can leak across pixels.
+//
+// deepc::tidyOverlapping() is likewise NOT run on holdout samples, and this
+// is not an oversight: HoldoutVisibility's model multiplies independent
+// per-sample transmittances (Beer's law -- extinction coefficients along one
+// ray multiply regardless of how the underlying spans overlap), so two
+// overlapping holdout spans need no merge to combine correctly.  tidy's
+// over-composite pass exists to fix the SCATTER's additive bucket planes,
+// which have no equivalent here.
+//
+// Storage is CSR ("compressed sparse row"): `pixelOffset[i]..pixelOffset[i+1]`
+// delimits pixel i's samples in the flat zFront/zBack/alpha arrays.  Built by
+// calling appendPixel() once per band pixel, in the SAME band-relative
+// row-major order (`i = y*width + x`) that BucketPlaneView and HoldoutSoA
+// both already use for pixel indexing -- appendPixel() must be called
+// exactly `pixelCount` times, once per pixel, INCLUDING pixels with zero
+// samples (an empty vector still needs its offset recorded, or the CSR
+// desyncs for every pixel after it).
+// ---------------------------------------------------------------------------
+struct HoldoutSampleSoA {
+    PodBuffer<float>        zFront;
+    PodBuffer<float>        zBack;
+    PodBuffer<float>        alpha;
+    PodBuffer<std::int32_t> pixelOffset;   // size pixelCount + 1
+
+    std::ptrdiff_t pixelCount     = 0;   // band pixelCount (width * height)
+    std::ptrdiff_t pixelsAppended = 0;   // how many appendPixel() calls so far
+    std::size_t    sampleCount    = 0;   // total samples across the band
+
+    // Prepare for a band: sets pixelCount and empties every array.  Call once
+    // per band before the appendPixel() loop.
+    void begin(std::ptrdiff_t pixelCountIn);
+
+    // Capacity hint; appending works without it.
+    void reserveSamples(std::size_t count);
+
+    // Appends the NEXT band-relative pixel's holdout samples -- which pixel
+    // that is follows from call order (pixelsAppended), not a parameter, so a
+    // caller cannot skip a pixel and silently desync the CSR offsets.
+    // Sanitises depths/alpha exactly like flattenPixelToSoA's step 1/2 (a NaN
+    // depth would make std::sort's comparator a non-strict-weak ordering,
+    // which is UB), drops alpha<=0 samples (inSpan() returns exactly 1 for
+    // one in every branch, so it can only ever contribute a no-op factor to
+    // the product -- dropping it shrinks H for build()'s per-boundary walk
+    // for free), and sorts the survivors by zFront ascending --
+    // HoldoutVisibility::build()'s O(H+K) fast-path precondition (violating
+    // input falls back to the O(H*K) evalBoundaries() automatically, so this
+    // is a performance sort, not a correctness one).  `samples` is modified in
+    // place and reusable as scratch across pixels, exactly like
+    // flattenPixelToSoA's own `samples` parameter.
+    //
+    // NaN DEPTHS ARE DROPPED, not clamped -- the one place this path
+    // deliberately diverges from flattenPixelToSoA.  See the .cpp: NaN -> 0
+    // is harmless on the source side but here it makes an opaque sample
+    // occlude the destination pixel at EVERY boundary.
+    //
+    // `depthScale` is the per-pixel ray-distance -> Z factor
+    // (rayDistanceToZ(1, focalLengthMm, filmbackRadiusMm(x, y, ...))), or 1
+    // when `depth_is_ray_distance` is off.  IT MUST MATCH WHAT
+    // flattenPixelToSoA() APPLIED AT THE SAME PIXEL: the LUT is evaluated at
+    // bucket boundaries, which live in Z, so an uncorrected holdout sits
+    // systematically too far back off-axis (measured: 47% too far in Z at the
+    // corner of a 20mm/36x24 frame).  This is the request/engine-style
+    // "two passes disagreeing about depth" failure the milestone already
+    // names for computeDepthRange(), reached through a different door.
+    void appendPixel(std::vector<SampleRecord>& samples, float depthScale = 1.0f);
+
+    // Size 0, capacity kept (band-to-band reuse).
+    void clear();
+
+    // Drops every allocation.
+    void release();
+
+    std::size_t sizeBytes() const;
+};
+
+// ---------------------------------------------------------------------------
+// HoldoutLut — THE OWNING STORAGE behind HoldoutSoA (M1.P3.T3)
+//
+// One instance per band-computing thread, reused band to band exactly like
+// BucketPlanes: build() sizes and refills it, view() hands the scatter its
+// non-owning HoldoutSoA.  Lifetime is the band's -- the thread that calls
+// scatterBandCPU() must keep this alive until that call returns, and may
+// reuse (rebuild) it for the next band.
+//
+// WHAT build() DOES: for every band pixel, HoldoutVisibility::build() fills
+// boundaryCount contiguous floats at the K+1 bucket boundary depths, folding
+// the in-span exponential attenuation in once per PIXEL rather than once per
+// FRAGMENT -- this is the whole reason the scatter's per-fragment-pixel cost
+// is O(1) instead of a binary search over holdout samples.  A pixel with zero
+// holdout samples costs exactly HoldoutVisibility::build()'s empty-sample
+// fast path (a boundaryCount-long fill of 1.0, no per-sample work at all),
+// so a band that only PARTLY overlaps the holdout bbox needs no bbox test of
+// its own -- the per-pixel sample count answers the same question for free.
+//
+// THE ZERO-COST CASE.  If the WHOLE band's holdout input is empty --
+// unconnected, or the band lies wholly outside the holdout's bbox --
+// `samples.sampleCount == 0` and build() RELEASES any previous allocation
+// instead of filling a real array.  view() then returns a disabled
+// HoldoutSoA (boundaryT == nullptr), scatterBandCPU()'s `useHoldout` gate is
+// false for the whole band, and nothing in the per-fragment path so much as
+// dereferences the holdout -- see scatterFragmentSpans/scatterFragmentSharp,
+// which branch on holdout.enabled() before ever calling interpAtBucket().
+// That is the genuinely-free path the design reference requires, not a
+// multiply by 1.0 per fragment.
+//
+// ZERO COST IS THE CALLER'S HALF TOO.  build() itself on an empty band is one
+// branch (measured 7.8 ns for a 4096x64 band), but running the appendPixel()
+// loop to DISCOVER that the band is empty is NOT free: 262144 calls with an
+// empty vector measured 1.98 ms/band, ~67 ms per 4K frame of pure
+// bookkeeping.  So M1.P3.T5 must SKIP the fetch/append loop entirely when
+// input(1) is unconnected or the band's box does not intersect the holdout's
+// -- begin(N) followed by no appendPixel() at all is well defined and lands
+// on exactly the same disabled view.  Only a band that genuinely straddles
+// the holdout bbox should walk its pixels.
+//
+// COST WHEN IT IS ON, for M1.P4.T1's budget and the Phase 1.4 perf gate
+// (4096x64 band, K=16, 2 holdout samples/pixel, measured at this review):
+// appendPixel() 15.3 ms/band, build() 24.7 ms/band, 17.0 MB/band.  Roughly
+// 1.4 s and 578 MB across a 4K frame's 34 bands, and both scale with K.  None
+// of that is in BucketPlanes::bytesForBand() -- see M1.P4.T1.
+//
+// ***  OPEN ACCURACY DEFECT -- THE BOUNDARY SET, NOT THIS CLASS  *************
+//
+// The LUT samples transmittance at the SCATTER's dCoC bucket boundaries, and
+// interpAtBucket() chords between two of them in log space.  That is exact
+// only while no holdout span edge falls strictly inside the bracket.  For the
+// commonest holdout of all -- one opaque card, i.e. a POINT sample -- the true
+// T is a step, and the log chord collapses it onto the bracket's NEAR
+// boundary, so the card behaves as if it sat up to a whole bucket closer to
+// camera.  Measured at this file's review, at the node's DEFAULTS
+// (K=16, focus 10, depth range [1,100] -- the 15/1 front/back bucket split the
+// milestone Decisions already record): an opaque holdout at z=50 lands in
+// bucket [10,100] and starts occluding at z=10.9.  A source fragment at z=15,
+// 35 units IN FRONT of the holdout, comes out 98% erased; mean |vis error|
+// over the depth range is 0.391, max 1.0.  K does not rescue it -- at K=128
+// the same card still bites at z=40.2.  The magnitude is also set by
+// kMinTransmittance (moving the floor 1e-30 -> 1e-3 moves the bite 10.9 ->
+// 19.0), which is the tell that this is not a principled approximation.
+//
+// It is NOT fixable inside interpAtBucket(): with only two boundary values a
+// monotone T can be anywhere between them, so no interpolant beats a
+// worst case of (T0 - T1)/2.  It is fixable by choosing DIFFERENT boundaries
+// for the holdout LUT than for the scatter's buckets -- the dCoC spacing
+// exists to bound BANDING (a CoC criterion) and deliberately spends 15/16 of
+// its budget in front of focus, which is the wrong criterion for depth
+// occlusion.  With the SAME 17 entries per pixel, uniform-in-z boundaries
+// measure mean |vis error| 0.057 (vs 0.391) and bite at 44.4 (vs 10.9).
+// Decoupling also keeps the per-fragment cost O(1) (a closed-form index, no
+// search) and costs no extra memory, unlike sub-dividing the dCoC set, which
+// needs S=16 (257 entries/pixel) to reach the same place.
+//
+// Owner: milestone Decisions + M1.P3.T5, which is where the boundary set is
+// actually built and where scene (b)/(e)/(f) can judge it from pixels.  Do
+// not treat the numbers above as the accepted "monotone chord" tolerance the
+// HoldoutVisibility header describes -- that text predates this measurement.
+// ***************************************************************************
+// ---------------------------------------------------------------------------
+struct HoldoutLut {
+    PodBuffer<float> boundaryT;   // pixelCount * boundaryCount, PIXEL-MAJOR
+
+    int            boundaryCount = 0;   // K + 1
+    std::ptrdiff_t pixelCount    = 0;
+
+    // Builds (or, per the note above, clears) the LUT from one band's
+    // flattened holdout samples and the frame's depth buckets.  Safe to call
+    // repeatedly with the same geometry (PodBuffer keeps its capacity), which
+    // is the band loop's normal path.  If `samples` was not filled for the
+    // full `samples.pixelCount` (a caller bug), the unfilled tail is treated
+    // as zero-sample rather than read out of bounds.
+    void build(const HoldoutSampleSoA& samples, const DepthBuckets& buckets);
+
+    void release();
+
+    std::size_t sizeBytes() const;
+
+    // Non-owning view for scatterBandCPU().  Empty (disabled) whenever
+    // build() found nothing to build.
+    HoldoutSoA view() const;
+};
+
 // ---------------------------------------------------------------------------
 // ScatterParams — everything scatterBandCPU() needs that is not per-fragment
 //

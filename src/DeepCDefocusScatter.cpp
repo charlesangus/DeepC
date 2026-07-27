@@ -682,6 +682,215 @@ bool checkCompositionContract(const SampleSoA& soa,
 }
 
 // ---------------------------------------------------------------------------
+// HoldoutSampleSoA (M1.P3.T3)
+// ---------------------------------------------------------------------------
+
+void HoldoutSampleSoA::begin(std::ptrdiff_t pixelCountIn)
+{
+    pixelCount     = (pixelCountIn > 0) ? pixelCountIn : 0;
+    pixelsAppended = 0;
+    sampleCount    = 0;
+    zFront.clear();
+    zBack.clear();
+    alpha.clear();
+
+    // resizeUninitialized(), not resize(): every element from index 1 onward
+    // is about to be written by appendPixel() in order, so only index 0 (the
+    // CSR's fixed starting offset) needs an explicit store here.
+    pixelOffset.resizeUninitialized(static_cast<std::size_t>(pixelCount) + 1);
+    pixelOffset[0] = 0;
+}
+
+void HoldoutSampleSoA::reserveSamples(std::size_t count)
+{
+    zFront.reserve(count);
+    zBack.reserve(count);
+    alpha.reserve(count);
+}
+
+void HoldoutSampleSoA::appendPixel(std::vector<SampleRecord>& samples,
+                                   float depthScale)
+{
+    // The ray-distance -> Z correction, if any.  It must be the SAME factor
+    // flattenPixelToSoA() applied at this pixel (see the header): the LUT is
+    // sampled at bucket boundaries that live in Z, so a holdout left in
+    // ray-distance space sits systematically too far back off-axis.
+    const float zScale = (depthScale > 0.0f && std::isfinite(depthScale))
+                       ? depthScale : 1.0f;
+
+    // --- sanitise, drop alpha<=0 and NaN depths, compact in place -----------
+    std::size_t kept = 0;
+    for (std::size_t i = 0; i < samples.size(); ++i) {
+        SampleRecord& s = samples[i];
+
+        // A NON-FINITE FRONT DEPTH IS DROPPED HERE, unlike in the source
+        // flatten.  sanitizeSampleDepth() maps NaN to 0, which is harmless on
+        // the source side (signedCocPixels() gives d <= 0 radius 0 and the
+        // sample still composites in its own pixel) but is catastrophic here:
+        // depth 0 is in front of boundary(0), so ONE NaN in the holdout's
+        // DeepFront makes an opaque sample attenuate the destination pixel at
+        // every boundary — a black hole in the plate rather than a lost
+        // sample.  +/-inf is a real far-field holdout and is kept (mapped to
+        // kMaxDepth), exactly as on the source side; only NaN is dropped.
+        const bool badDepth = std::isnan(s.zFront) || std::isnan(s.zBack);
+
+        float zf = sanitizeSampleDepth(s.zFront) * zScale;
+        float zb = sanitizeSampleDepth(s.zBack) * zScale;
+        if (!(zb > zf))
+            zb = zf;                 // also rejects a back-before-front span
+        s.zFront = zf;
+        s.zBack  = zb;
+        s.alpha  = clampf(s.alpha, 0.0f, 1.0f);   // NaN -> 0
+
+        if (s.alpha > 0.0f && !badDepth) {
+            if (kept != i)
+                samples[kept] = std::move(samples[i]);
+            ++kept;
+        }
+    }
+    samples.resize(kept);
+
+    // --- sort ascending by zFront (build()'s fast-path precondition) -------
+    std::sort(samples.begin(), samples.end(),
+        [](const SampleRecord& a, const SampleRecord& b) {
+            return a.zFront < b.zFront;
+        });
+
+    // --- append the flat SoA arrays -----------------------------------------
+    const std::size_t n    = samples.size();
+    const std::size_t next = sampleCount + n;
+
+    zFront.growForAppend(next);
+    zBack.growForAppend(next);
+    alpha.growForAppend(next);
+    zFront.resize(next);
+    zBack.resize(next);
+    alpha.resize(next);
+
+    for (std::size_t i = 0; i < n; ++i) {
+        zFront[sampleCount + i] = samples[i].zFront;
+        zBack[sampleCount + i]  = samples[i].zBack;
+        alpha[sampleCount + i]  = samples[i].alpha;
+    }
+    sampleCount = next;
+
+    // --- close this pixel's CSR entry ---------------------------------------
+    if (pixelsAppended >= 0 && pixelsAppended < pixelCount) {
+        pixelOffset[static_cast<std::size_t>(pixelsAppended) + 1] =
+            static_cast<std::int32_t>(sampleCount);
+    }
+    // A call past pixelCount is a caller bug (there is no pixelCount+1'th
+    // offset slot to write); still counted so build()'s `filled` clamp can
+    // detect and safely ignore the excess rather than write out of bounds.
+    ++pixelsAppended;
+}
+
+void HoldoutSampleSoA::clear()
+{
+    zFront.clear();
+    zBack.clear();
+    alpha.clear();
+    pixelOffset.clear();
+    sampleCount    = 0;
+    pixelsAppended = 0;
+}
+
+void HoldoutSampleSoA::release()
+{
+    zFront.release();
+    zBack.release();
+    alpha.release();
+    pixelOffset.release();
+    pixelCount     = 0;
+    sampleCount    = 0;
+    pixelsAppended = 0;
+}
+
+std::size_t HoldoutSampleSoA::sizeBytes() const
+{
+    return zFront.sizeBytes() + zBack.sizeBytes() + alpha.sizeBytes()
+         + pixelOffset.sizeBytes();
+}
+
+// ---------------------------------------------------------------------------
+// HoldoutLut (M1.P3.T3)
+// ---------------------------------------------------------------------------
+
+void HoldoutLut::build(const HoldoutSampleSoA& samples, const DepthBuckets& buckets)
+{
+    const int bCount = buckets.boundaryCount();
+
+    // THE ZERO-COST PATH.  Nothing to build: release rather than fill, so an
+    // unconnected holdout (or a band wholly outside its bbox) costs nothing
+    // beyond this one branch -- see the header for why this is the
+    // genuinely-free case the design reference asks for, not a fill of 1.0.
+    if (samples.sampleCount == 0 || samples.pixelCount <= 0 || bCount <= 1) {
+        release();
+        return;
+    }
+
+    boundaryCount = bCount;
+    pixelCount    = samples.pixelCount;
+
+    boundaryT.resizeUninitialized(static_cast<std::size_t>(pixelCount)
+                                 * static_cast<std::size_t>(boundaryCount));
+
+    const float* boundaries = buckets.boundaries();
+
+    // A caller that did not call appendPixel() the full pixelCount times is a
+    // bug, but it must not become an out-of-bounds read here: pixels beyond
+    // what was actually appended are treated as zero-sample (an empty
+    // [sampleCount, sampleCount) range) rather than reading past pixelOffset's
+    // end.
+    const std::ptrdiff_t filled =
+        (samples.pixelsAppended < samples.pixelCount) ? samples.pixelsAppended
+                                                       : samples.pixelCount;
+
+    for (std::ptrdiff_t i = 0; i < pixelCount; ++i) {
+        std::int32_t begin;
+        std::int32_t end;
+        if (i < filled) {
+            begin = samples.pixelOffset[static_cast<std::size_t>(i)];
+            end   = samples.pixelOffset[static_cast<std::size_t>(i) + 1];
+        } else {
+            begin = end = static_cast<std::int32_t>(samples.sampleCount);
+        }
+        const int n = static_cast<int>(end - begin);
+
+        float* outRow = boundaryT.data() + static_cast<std::size_t>(i) * boundaryCount;
+
+        // THE FOLD-IN.  One O(H_i + K) walk per pixel (build()'s own fast
+        // path, verified sorted by appendPixel()) -- no search, per-fragment
+        // or otherwise, happens here or downstream in the scatter.
+        HoldoutVisibility::build(samples.zFront.data() + begin,
+                                 samples.zBack.data() + begin,
+                                 samples.alpha.data() + begin,
+                                 n, boundaries, boundaryCount, outRow);
+    }
+}
+
+void HoldoutLut::release()
+{
+    boundaryT.release();
+    boundaryCount = 0;
+    pixelCount    = 0;
+}
+
+std::size_t HoldoutLut::sizeBytes() const
+{
+    return boundaryT.sizeBytes();
+}
+
+HoldoutSoA HoldoutLut::view() const
+{
+    HoldoutSoA v;
+    v.boundaryT     = boundaryT.data();
+    v.boundaryCount = boundaryCount;
+    v.pixelCount    = pixelCount;
+    return v;
+}
+
+// ---------------------------------------------------------------------------
 // BucketPlanes
 // ---------------------------------------------------------------------------
 

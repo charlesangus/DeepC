@@ -240,6 +240,7 @@ l. small-CoC transition: shallow depth ramp crossing 0–2px CoC ⇒ no chatter/
 | `tidyOverlapping()` split pass is superlinear | High | Measured ≈O(n³·⁷) — 9.96ms/pixel at 32 mutually overlapping spans, which makes a fog frame unrenderable rather than merely slow. Rewritten single-pass at M1.P3.T6, before T5's scenes need it |
 | SoA fragment memory outside the `memory_limit` formula | Med | 113 B/fragment resident ⇒ ~2.4GB for one 4K band at 20spp, dwarfing the bucket planes. Formula extended at M1.P3.T1 (see Decisions); `reserveFragments()` collapses the capacity slack |
 | Non-terminating sample tidying on volumetric input | High | `deepc::tidyOverlapping()` looped forever on *any* overlapping volumetric pair — fixed during M1.P2.T2 (see Decisions); termination fuzz test added at M1.P3.T4 |
+| Holdout LUT erases fragments far in front of the holdout | High | The design's K+1 ΔCoC bucket boundaries are the wrong basis for depth occlusion — a solid card at z=50 occluded from z=10.9, 98% erasing a fragment at z=15. Found at M1.P3.T3's review; decoupled boundary set at M1.P3.T10 |
 | Coverage plane double-counted, inflating alpha and colour | High | Fractional-split half found and fixed at M1.P3.T2's review (2.0 vs honest 1.0; deposit once, into the nearer bucket). Volumetric-split half still open — M1.P3.T8, which must land before M1.P3.T5's bake-off |
 | Build gate not actually building the node | Med | `src/CMakeLists.txt` never listed `DeepCDefocus`; every Phase 1.2/1.3 "local build clean" was compiled by hand instead. Registration pulled forward to M1.P3.T7 |
 | Request/engine channel divergence | Low | Single `neededDeepChannels()` helper |
@@ -497,7 +498,7 @@ verified.
     `ctest` green; `DeepToImage` parity still 0 ULP.
   - size: L
 
-- [ ] M1.P3.T3 — Holdout SoA and per-pixel boundary-LUT
+- [x] M1.P3.T3 — Holdout SoA and per-pixel boundary-LUT
   - files: `src/DeepCDefocusScatter.h`/`.cpp`
   - approach: build the holdout sample SoA (`DeepFront/DeepBack/Alpha` only) and, per band, the
     per-dest-pixel transmittance LUT at the K+1 bucket boundaries (in-span exponential folded in
@@ -506,6 +507,44 @@ verified.
   - verify: covered by the M1.P3.T4 unit test task (synthetic holdout SoA in, checking LUT
     values against the exact exponential eval).
   - size: M
+
+- [ ] M1.P3.T10 — Decouple the holdout LUT's boundary set from the ΔCoC buckets (run BEFORE T4)
+  - files: `src/DeepCDefocusScatter.h`/`.cpp`, `src/DeepCDefocusMath.h` if the boundary-set helper
+    belongs beside `HoldoutVisibility`
+  - approach: found at M1.P3.T3's review. **The Design reference's instruction to build the holdout
+    transmittance LUT "at the K+1 bucket boundaries" is wrong, and it breaks the node's differentiator.**
+    ΔCoC spacing bounds *banding* — a CoC criterion — and deliberately spends 15 of 16 buckets in front
+    of focus, so on the default rig (K=16, focus 10, range [1,100]) the entire back side collapses into
+    one bucket spanning `[10, 100]`. An **opaque point-sample holdout** — a solid card, the commonest
+    holdout there is — at z=50 then starts occluding at **z=10.9**: a source fragment at z=15, 35 units
+    *in front* of the card, comes out **98% erased** (vis 0.0215), and fragments at z=30/40/49 are
+    erased completely. Mean |vis error| 0.391, max 1.000. **K does not rescue it** (bites at 25.8 / 40.6
+    / 40.2 for K=32 / 64 / 128), and neither does a better interpolant (linear-in-T moves the mean only
+    0.476 → 0.450) — the dominant term is boundary *placement*, not interpolation. Two tells that this
+    is not a principled approximation: the log chord collapses the step onto the bracket's *near*
+    boundary (systematically toward camera), and the error's magnitude tracks `kMinTransmittance`
+    (moving the floor 1e-30 → 1e-3 moves the bite 10.9 → 19.0).
+    Fix: give the holdout LUT **its own boundary set**, decoupled from the ΔCoC buckets. With the same
+    17 entries/pixel, uniform-in-z measures mean error **0.057 vs 0.391** and bites at **44.4 vs 10.9**
+    against a true 50 — 7× better at identical memory, with a closed-form O(1) index. Prefer that as
+    the baseline and measure a holdout-depth-histogram-derived set against it; **uniform-in-1/z is NOT
+    the answer** (0.352, barely better than shipped). Sub-refining the ΔCoC set instead needs S=16
+    (257 entries/px, 16× memory and build time) to reach the same place — reject it. A worst case of
+    `(T0−T1)/2` is irreducible with two boundary values, so the goal is the right *placement*, not
+    exactness.
+    This changes `HoldoutSoA`'s contract — `boundaryCount` stops being K+1, and the fragment carries a
+    different index/frac pair than `locateBoundary()`'s — which is why it runs **before** M1.P3.T4
+    rather than at T5: T4 should write its permanent tests once, against the final contract.
+  - verify: re-measure the exact rig above — opaque point holdout at z=50 on the default K=16 rig must
+    occlude at ~50, not 10.9, and a fragment at z=15/30/40 must be essentially unattenuated; report
+    mean/max |vis error| against the shipped 0.391/1.000 and the randomised sweep (K 4–128, 1–4
+    samples) against 0.464 (point) / 0.431 (sub-bucket span) / 0.234 (wide span). Boundary-set build
+    stays O(1)-indexable and adds no per-band memory over `(K+1)·W·B·4`. All of M1.P3.T3's identities
+    still hold: LUT vs exact 0.000e+00 at boundaries, all-ones LUT bit-identical to the disabled path,
+    fully-behind ⇒ exactly 0, fully-in-front ⇒ bit-identical to no-holdout, and the hard-edge
+    transition exactly one pixel wide in both directions. Local build and `ctest` green; `DeepToImage`
+    parity still 0 ULP.
+  - size: L
 
 - [ ] M1.P3.T4 — Unit tests for the scatter core (POD-level)
   - files: `tests/test_defocus_scatter.cpp` (new, doctest, uses the same `DEEPC_BUILD_TESTS`
@@ -555,6 +594,11 @@ verified.
     does **not** audit the area planes; a test summing `weight + colocated` per bucket against the
     deposits would catch a future break of the deposit invariant. `tests/test_defocus_scatter.cpp`
     does not exist yet.
+    **From M1.P3.T3's review**: a **point-sample-holdout accuracy case** — the one holdout shape the
+    suite has no coverage of, and the shape that exposed M1.P3.T10's boundary-set defect; a
+    `build()`-vs-`evalBoundaries()` equivalence fuzz on **overlapping and unsorted** input (both are
+    supported, neither is assumed); the NaN-depth drop; and a `depthScale` round-trip. Write these
+    against M1.P3.T10's boundary set, not T3's.
     **Add a termination fuzz test for `deepc::tidyOverlapping()`**: randomised sample vectors with
     depths drawn from a small discrete set so exact ties are common, asserting termination and a
     bounded output size. The non-termination bug fixed during M1.P2.T2 hung Nuke unkillably on
@@ -599,7 +643,15 @@ verified.
     `[0, max_radius]`; see Decisions for both halves of this.
     `computeBand(b)` — given the
     global boundaries, fetch source rows for `band ± maxRadius`, run T1's SoA flatten, T3's
-    holdout LUT, T2's scatter, saturate, `compositeBucketsFrontToBack()`, write. Both run under
+    holdout LUT, T2's scatter, saturate, `compositeBucketsFrontToBack()`, write.
+    **Holdout obligations from M1.P3.T3's review**: skip the fetch/append loop **entirely** when the
+    holdout is unconnected or the band doesn't intersect its bbox (`begin(N)` with no appends is
+    well-defined and lands on the same disabled view) — discovering emptiness by running the per-pixel
+    loop costs ~1.98 ms/band, ~67 ms per 4K frame of pure bookkeeping; pass the **same per-pixel
+    ray-distance factor as the flatten** via the holdout SoA's `depthScale` (an uncorrected holdout
+    sits 47.3% too far back in Z at the corner of a 20mm frame); and do **not** compute the holdout
+    matte AOV as `1 − boundaryT` in float (see Decisions — the deficit's relative error is 100% at
+    α=1e-7). Both run under
     a single frame-wide lock in this phase (no per-band concurrency yet — that's Phase 1.4) so
     correctness lands before concurrency is introduced.
   - verify: the local build compiles; run validation scenes (a)–(l) from the Design reference
@@ -640,7 +692,11 @@ verified.
     per the formula in the Design reference (floor 1 band, then shrink B — never deadlock at 0),
     budgeting on the **combined** bucket-plane + SoA-fragment total per the Decisions entry: the SoA
     is the larger term at 4K (~1.49GB vs ~117MB), so a cap counting only the planes under-budgets by
-    an order of magnitude.
+    an order of magnitude. **`bytesForBand()` must also gain the holdout term**, which M1.P3.T3 left
+    out: measured at 17.0 MB per 4096×64 band at K=16 / 2 samples per pixel (~578 MB per 4K frame),
+    plus ~15.3 ms append and ~24.7 ms build per band (~1.4 s per 4K frame), both scaling with K. The
+    exact size depends on M1.P3.T10's boundary set — `(K+1)·W·B·4` as T3 built it, unchanged if T10
+    decouples the set at the same entry count.
     `Op::aborted()` checked per source row; an aborted band resets to `Dirty`, wakes waiters,
     leaves erased/black rows. Every `deepEngine()` bool return checked. Also **assert the planes'
     geometry against `params.bandWidth/bandHeight` caller-side**: `scatterBandCPU` silently returns
@@ -784,6 +840,43 @@ verified.
   Registration is pulled forward from M1.P5.T1 into **M1.P3.T7**, which runs next, so that every
   subsequent task's build gate is real. The `-mavx2 -mfma` compile options stay at M1.P5.T1, where the
   `-ffp-contract` parity hazard is documented and where M1.P4.T2 will have inspected vectorization first.
+- 2026-07-27 — **The Design reference's "transmittance LUT at the K+1 bucket boundaries" is wrong and
+  is being replaced at M1.P3.T10.** Found at M1.P3.T3's review, which built the case the task itself
+  had not: an opaque *point-sample* holdout — a solid card, the commonest holdout shape — rather than a
+  volumetric span. ΔCoC bucket spacing bounds banding, a CoC criterion, and spends 15 of 16 buckets in
+  front of focus, so the default rig collapses the whole back side into one `[10, 100]` bucket and a
+  card at z=50 starts occluding at **z=10.9**: a fragment 35 units in front of it is 98% erased, and
+  fragments at z=30/40/49 vanish entirely (mean |vis error| 0.391, max 1.000). That is the node's
+  differentiator inverted — the thing that is supposed to stay pixel-sharp instead eats everything in
+  front of it. Neither K (bites at 25.8/40.6/40.2 for K=32/64/128) nor a better interpolant
+  (linear-in-T: mean 0.476 → 0.450) helps, because the dominant term is boundary *placement*. The
+  Design reference's "exact for the exponential model" claim holds only when a holdout span covers the
+  whole bracket. Fix is a **decoupled boundary set**: uniform-in-z gives mean 0.057 and bites at 44.4
+  against a true 50, at identical memory and still O(1)-indexable. Sequenced before M1.P3.T4 rather
+  than at T5 because it changes `HoldoutSoA`'s contract, and T4's permanent tests should be written
+  once against the final one.
+- 2026-07-27 — Two smaller holdout-path defects fixed at M1.P3.T3's review. **NaN holdout depths are
+  dropped**, deliberately diverging from the source flatten's `sanitizeSampleDepth()` NaN→0: on the
+  source side z=0 is harmless (radius 0, composites in place), but on the holdout side z=0 sits in
+  front of `boundary(0)`, so one NaN-`DeepFront` opaque sample drove the whole pixel's LUT to ≡0 at
+  every boundary — a black hole in the plate. ±inf is kept (a legitimate far-field holdout). And the
+  holdout SoA now carries a **mandatory `depthScale`** matching the flatten's ray-distance→Z factor;
+  without it an uncorrected holdout sits systematically too far back off-axis — **47.3% too far in Z
+  at the corner of a 20mm / 36×24 frame**. That is the same failure class the plan already names for
+  `computeDepthRange()`, reached through a different door, and it would have shipped silently at T5.
+- 2026-07-27 — The **holdout matte AOV must not be computed as `1 − boundaryT` in float.** `vis` is
+  only ever consumed as a multiplicative weight, so its ~4e-08 absolute error at α=1e-7 is harmless
+  and `expm1`/`log1p` genuinely do not apply on that path — but the AOV writes `1 − vis(∞)`, a
+  subtraction, and the relative error in that deficit is **100% at α=1e-7 and 19.2% at 200 compounded
+  samples of α=1e-7**. The AOV is knob-only today, so this lands with M1.P3.T5's wiring.
+- 2026-07-27 — Holdout samples are deliberately **not** run through `tidyOverlapping()`: the model
+  multiplies independent per-sample transmittances (Beer's law), so overlapping spans need no merge,
+  unlike the scatter's additive bucket planes. Verified analytically rather than argued — two
+  overlapping spans against a hand-derived Beer solution (densities add in the overlap) give worst
+  error **1.24e-08** for the raw product versus 2.98e-08 for the tidied 3-span mixture, i.e. the same
+  answer with no double-attenuation. `HoldoutVisibility::build()` does not assume tidy *or* sorted
+  input: 20,000 randomised overlapping cases and 17,500 unsorted ones all match `evalBoundaries()` to
+  0.000e+00; the `zFront` sort is a fast-path precondition only.
 - 2026-07-27 — **M1.P3.T9 landed the fourth plane. In front of focus the coverage-partition composite
   is now exact** (≤1e-6) at any part count, any alpha and any radius spread — a span covering that
   whole side went **−68.94% → −0.0000%**. `D_k` accumulates `Σ w·vis` over exactly the deposits that

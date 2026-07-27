@@ -1,8 +1,8 @@
 ---
 title: DeepCDefocus — deep-input, flat-output defocus node
 status: running
-current: M1.P3.T3
-pm_heartbeat: 2026-07-27T00:25:00-04:00
+current: M1.P3.T10
+pm_heartbeat: 2026-07-27T01:05:00-04:00
 ship: pr-per-milestone
 ---
 
@@ -92,13 +92,13 @@ node; v3 (Milestone 3) adds a CUDA backend behind the seams v1/v2 leave in place
 rendered pixels at M1.P3.T5's gate. See that milestone file's Decisions.)
 
 **Where things stand (2026-07-26T20:48-04:00).** Phases 1.0, 1.1 and 1.2 are complete and committed;
-Phase 1.3 has T0, T1, T6, T2, T7, T8 and T9 done. `current: M1.P3.T3` (holdout SoA + per-pixel
-boundary LUT). The fourth accumulation plane landed at T9 — coverage-partition is now exact in front of
-focus, and the behind-focus residue is settled as structurally irreducible by any per-bucket plane, so
-M1.P3.T5's bake-off is finally a fair comparison.
-Remaining in this milestone: P3 T3/T4/T5 in that order, then Phase 1.4 and Phase 1.5. Six tasks
-have now been added by execution findings (M1.P3.T0, T6, T7, T8, T9, plus the enlarged M1.P3.T4 test
-list).
+Phase 1.3 has T0, T1, T6, T2, T7, T8, T9 and T3 done. `current: M1.P3.T10` — replacing the holdout
+transmittance LUT's boundary set, which the Design reference specified as the K+1 ΔCoC bucket
+boundaries and which M1.P3.T3's review measured as breaking the node's differentiator outright (a solid
+holdout card at z=50 erases 98% of a fragment at z=15, 35 units in front of it).
+Remaining in this milestone: P3 T10/T4/T5 in that order, then Phase 1.4 and Phase 1.5. Seven tasks
+have now been added by execution findings (M1.P3.T0, T6, T7, T8, T9, T10, plus the enlarged M1.P3.T4
+test list).
 No PR yet — `ship: pr-per-milestone` puts that at M1's verification gate. The branch
 `claude/deep-defocus-node-plan-o0ld83` is committed but NOT pushed.
 
