@@ -1,6 +1,17 @@
 cmake_minimum_required(VERSION 3.15 FATAL_ERROR)
 project(DeepC)
 
+# Default to a Release build (M1.P3.T14): CMAKE_BUILD_TYPE is otherwise unset,
+# so this project has never passed an -O flag at all. Only apply the default
+# for single-config generators (multi-config generators ignore
+# CMAKE_BUILD_TYPE and use CMAKE_CONFIGURATION_TYPES instead), and only when
+# the user hasn't made an explicit choice -- an explicit
+# -DCMAKE_BUILD_TYPE=... must still win.
+if (NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Choose the type of build." FORCE)
+    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "RelWithDebInfo" "MinSizeRel")
+endif()
+
 cmake_policy(SET CMP0074 NEW)
 
 set(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)

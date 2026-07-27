@@ -203,9 +203,19 @@ Holdout itself has no enable knob — connection presence enables it.
 
 a. size=0 / all-in-focus ⇒ pixel-identical to stock `DeepToImage`, scoped as follows (measured at
    M1.P2.T2 and re-measured at its review):
-   - **Point-sample input: bit-exact (0 ULP)** — this is the real gate, and it held across 20
-     samples/pixel, alphas from 1e-7 to 1.0, opaque-in-front, sparse, 16-thread cooks, downstream
-     crops, channel subsets, pixel aspect 2 and proxy 0.5.
+   - **Point-sample input: ≤2e-07 absolute (a couple of ULP) — NOT 0 ULP.** ~~bit-exact (0 ULP)~~ was
+     the gate from M1.P2.T2 until M1.P3.T14's review, and it held across 20 samples/pixel, alphas from
+     1e-7 to 1.0, opaque-in-front, sparse, 16-thread cooks, downstream crops, channel subsets, pixel
+     aspect 2 and proxy 0.5 — **but only of the `flattenPixel()` path, which M1.P3.T5 retired.** The
+     shipping architecture cannot be bit-exact by design: every point fragment goes through
+     `bucketOf()`'s **mandatory fractional two-bucket split**, which is the design's own required fix
+     for layer-transition banding, and whose reconstruction is mathematically exact but not bit-exact
+     unless a sample's depth lands exactly on a bucket centre. M1.P1.T2 already measured that
+     reconstruction at **8.3e-08 worst across the α×f grid**; the end-to-end figure is consistent
+     (max 1–2 ULP, ~3% of samples at 1 spp). Verified flag-independent — bit-identical across
+     unoptimised, `-g`, and `-O3` builds. Removing the split is not available: M1.P3.T13's review
+     measured that whole-weight assignment on the sharp path **defeats the K knob**, which is the
+     design's stated mitigation for within-bucket ordering loss. So the tolerance is the honest gate.
    - **Coincident-depth samples: assert ≤2e-07 absolute, NOT a ULP bound.** The mandated tidy pass
      over-composites samples sharing an exact `[zFront, zBack]` before the flatten while
      `DeepToImage` composites them individually, and `over` is associative in exact arithmetic but
@@ -743,7 +753,7 @@ verified.
     it across the scene list and pick the two candidates.
   - size: L
 
-- [ ] M1.P3.T14 — Default `CMAKE_BUILD_TYPE` to Release (run FIRST — everything downstream measures it)
+- [x] M1.P3.T14 — Default `CMAKE_BUILD_TYPE` to Release (run FIRST — everything downstream measures it)
   - files: `CMakeLists.txt`
   - approach: found at M1.P3.T5's review. **`CMAKE_BUILD_TYPE` is unset, so the milestone's own build
     command has never passed an `-O` flag at all.** The compile line for both the plugin and the test
@@ -921,7 +931,10 @@ verified.
     `DeepCShuffle2`/`ShuffleMatrixKnob.cpp` precedent at `src/CMakeLists.txt:128-129` (not the
     FastNoise object-library pattern — different shape). This task adds `target_compile_options(DeepCDefocus
     PRIVATE -mavx2 -mfma)` per-target, so the existing global `-mavx` floor is unchanged for
-    every other node. **FMA hazard**: `-mfma` under GCC's default `-ffp-contract=fast` fuses the
+    every other node. **Move or duplicate the `fp-contract=off` guard onto the scatter TU when those
+    flags land** — `flattenPixel()`, which currently carries it, has had zero call sites since
+    M1.P3.T5, so the guard protects nothing reachable while the arithmetic that produces shipped pixels
+    sits unguarded in `DeepCDefocusScatter.{h,cpp}` (see Decisions). **FMA hazard**: `-mfma` under GCC's default `-ffp-contract=fast` fuses the
     flatten loop's multiply-add and destroys the `DeepToImage` bit-parity M1.P2.T2 established
     (the 1.19e-07 divergence returns). That file guards its composite loop with a
     `#pragma GCC optimize("fp-contract=off")`; if the pragma is ever removed, `-ffp-contract=off`
@@ -959,6 +972,35 @@ verified.
 
 ## Decisions
 
+- 2026-07-27 — **`CMAKE_BUILD_TYPE` had been unset since the project began, so the CMake build never
+  passed an `-O` flag at all** — every plugin in this repo, not just the new node. The scatter TU went
+  from **0 vectorized loops to 402** once M1.P3.T14 defaulted it to Release, and `vmulps`/`vaddps`
+  across the linked `.so` from 0 to 83 (that 83 is a whole-`.so` count; the 402 is per-TU). `ctest`
+  4.8–6× faster. So the row-span auto-vectorization the entire performance design rests on had never
+  existed in a binary the CMake build produced, and every earlier `-fopt-info-vec` result on record
+  described a hand-compiled object. **`vfmadd` stays at 0** — `-mfma` remains absent until M1.P5.T1, so
+  the `fp-contract` parity hazard is still closed. `-DNDEBUG` was audited for reach and has none: there
+  is not a single `<cassert>` include or bare `assert()` in `src/` or `tests/`. No pinned figure moved.
+  Landed before M1.P4.T2 deliberately, so that gate profiles the module that actually ships.
+- 2026-07-27 — **Validation scene (a)'s "point samples are bit-exact (0 ULP)" clause is retired, and
+  the gate is now ≤2e-07 absolute.** Not a relaxation of standards — the 0-ULP result was a true
+  property of the `flattenPixel()` path, which M1.P3.T5 retired from the cook path, and the shipping
+  bucketed-scatter architecture cannot reproduce it by construction: every point fragment goes through
+  `bucketOf()`'s **mandatory** fractional two-bucket split (the design's own required fix for
+  layer-transition banding), whose reconstruction is mathematically exact but not bit-exact unless the
+  depth lands exactly on a bucket centre. M1.P1.T2 had already measured that reconstruction at 8.3e-08
+  worst; end to end it reads max 1–2 ULP over ~3% of samples at 1 spp, and it is **flag-independent**
+  (bit-identical across unoptimised, `-g` and `-O3` builds, same diffs at the same coordinates).
+  Removing the split is not on the table — M1.P3.T13's review measured that whole-weight assignment on
+  the sharp path defeats the K knob, the design's stated mitigation for within-bucket ordering loss.
+  **This is a distinct mechanism from M1.P3.T13's**, which needs ≥2 fragments per destination pixel to
+  collide and is four orders of magnitude larger (0.238 vs ~1e-07); T13's brief is NOT extended to
+  cover it, and T13's own ≤2e-07 criterion already accommodates it.
+- 2026-07-27 — `flattenPixel()` has **zero call sites** since M1.P3.T5 — genuinely dead, and the
+  `#pragma GCC optimize("fp-contract=off")` guard on it therefore protects nothing reachable. It is
+  inert rather than harmful today (no `-mfma` anywhere yet), but **M1.P5.T1 must move or duplicate that
+  guard onto the scatter TU** when `-mavx2 -mfma` land, since that is where the arithmetic producing
+  shipped pixels now lives.
 - 2026-07-27 — **M1.P3.T5 wired the scatter into `engine()` and the node defocuses — but the task is
   NOT closed.** Two of its four gate clauses did not hold. (i) **Scene (a)'s size-0 parity fails**, and
   the defect is in the bucket accumulation rather than in T5's wiring, which merely put it on the cook
