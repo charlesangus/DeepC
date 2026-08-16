@@ -4553,34 +4553,32 @@ TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, a
         }
     }
 
-    SUBCASE("staggered multi-part parents OVER-report -- the cost of carrying ONE head "
-            "tile (M1.P3.T20 review, NOT fixed)")
+    SUBCASE("staggered multi-part parents at OVERLAPPING depths reconstruct EXACTLY "
+            "(M1.P3.T21)")
     {
-        // THE REGRESSION M1.P3.T20's REVIEW FOUND, pinned as a band so it
-        // cannot drift unnoticed.  The subcase above is a mosaic of volumetric
-        // parents whose bucket runs DO NOT OVERLAP, and it is exact.  Give two
-        // multi-part parents OVERLAPPING depth ranges -- two fog slabs at
-        // different depths, or a fog slab and a point fragment, whose kernel
-        // weights tile one destination pixel -- and both have co-located
-        // deposits still to come when a single bucket carries one parent's
-        // fit share AND the other's residual chain.  Only ONE (tHead, headArea)
-        // pair exists, so the merge rule at the bottom of the composite loop
-        // must DISCARD one of the two tiles; the discarded parent's later parts
-        // are then attenuated by the survivor's tile, which is not in front of
-        // them.
+        // THE REGRESSION M1.P3.T20's REVIEW FOUND, AND M1.P3.T21's FIX.  The
+        // subcase above is a mosaic of volumetric parents whose bucket runs do
+        // NOT overlap, and it was exact under T20 as well -- which is exactly
+        // why T20's own check could not see this.  Give two multi-part parents
+        // OVERLAPPING depth ranges -- two fog slabs at different depths, or a
+        // fog slab and a point fragment, whose kernel weights tile one
+        // destination pixel -- and BOTH have co-located deposits still to come
+        // when a single bucket carries one parent's fit share AND the other's
+        // residual chain.  T20 carried one (tHead, headArea) pair, so the merge
+        // rule had to DISCARD one of the two tiles and the dropped parent's
+        // later parts were attenuated by a tile that is not in front of them:
+        // the `pre` column below, up to +11.1% HIGH and saturating alpha to 1.
         //
         // TRUTH IS ALPHA AND NEEDS NO ORDERING ASSUMPTION: the two parents'
         // coverages sum to 1 and both fit in free area, so they tile the pixel
         // as two disjoint sub-areas at the same alpha whatever their relative
-        // depth order.  sum_j w_j * alpha == alpha, exactly.
+        // depth order.  sum_j w_j * alpha == alpha, exactly.  That is the
+        // independent oracle these cells are re-pinned against -- a hand
+        // derivation, not a re-run of the composite.
         //
-        // THE SIGN IS THE FORBIDDEN ONE.  Pre-T20 the same cells read 4-16%
-        // LOW (quoted below); they now read HIGH, and at alpha 0.90 several
-        // saturate the output alpha to exactly 1.  Neither candidate rule is a
-        // trade worth making -- `always carry the chain` costs -9.3% on the
-        // dense ramp above and `merge the two by area` -5.9% plus harness g4
-        // 0.0913 against its 0.0543 pin -- so the fix is more state and is
-        // deferred.  BANDED, not one-sided: an improvement must re-pin here.
+        // THE THREE COLUMNS ARE THE HISTORY, AND ARE HERE SO A REGRESSION IN
+        // EITHER DIRECTION IS RECOGNISABLE: pre-T20 read 4-16% LOW, T20 read up
+        // to +11.1% HIGH, and the head-tile stack reads the truth.
         auto addVol = [&](std::vector<float>& cov, std::vector<float>& alpha,
                           std::vector<float>& colo, std::vector<float>& color,
                           int m, int parts, float w, float a) {
@@ -4593,10 +4591,10 @@ TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, a
             }
         };
 
-        struct Cell { int parts; int off; float wA; float alphaIn; double pct; double pre; };
+        struct Cell { int parts; int off; float wA; float alphaIn; double t20; double pre; };
         const Cell cells[] = {
-            // parts, offset, wA,   alpha, MEASURED now,  pre-T20 (for the record)
-            {  2, 1, 0.50f, 0.90f,   0.000, -8.214 },   // exact: 2 parts leave no chain
+            // parts, offset, wA,   alpha,   T20,    pre-T20 (both for the record)
+            {  2, 1, 0.50f, 0.90f,   0.000, -8.214 },   // 2 parts leave no chain
             {  2, 2, 0.50f, 0.90f,   0.000, -4.107 },
             {  3, 1, 0.50f, 0.90f,  +7.404, -10.841 },
             {  3, 1, 0.75f, 0.90f, +11.106,  -5.420 },
@@ -4614,15 +4612,21 @@ TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, a
             addVol(cov, al, co, col, cell.off, cell.parts,
                    1.0f - cell.wA, cell.alphaIn);
             composite(cov, al, co, col, &c, &a);
-            const double pct = (a / cell.alphaIn - 1.0) * 100.0;
-            CAPTURE(pct);
-            CHECK(pct > cell.pct - 0.75);
-            CHECK(pct < cell.pct + 0.75);
+            CAPTURE((a / cell.alphaIn - 1.0) * 100.0);
+            CHECK(std::fabs(a - cell.alphaIn) <= kAcc);
+            CHECK(std::fabs(c - cell.alphaIn * unpremult) <= kAcc);
         }
 
         // ... and the same shape with a POINT fragment instead of the second
         // slab, which is the commoner form: a defocused fog slab and a
         // defocused surface reaching one pixel with complementary weights.
+        // NOT exact, and the reason is a DIFFERENT mechanism that this task
+        // does not claim to fix: the point fragment's rear (per-unit opacity
+        // partitionAlpha(0.90, 0.5) = 0.6838) lands in the same bucket as the
+        // slab's second part (partitionAlpha(0.90, 1/3) = 0.5358), so ONE
+        // bucket pools TWO per-unit opacities and the C_k : D_k area split
+        // hands both the mean -- harness f3c/f3d's term, information lost at
+        // accumulation.  Banded, and the band is BELOW zero: T20 read +4.557%.
         {
             std::vector<float> cov(9, 0.0f), al(9, 0.0f), co(9, 0.0f), col(9, 0.0f);
             addVol(cov, al, co, col, 0, 3, 0.5f, 0.90f);
@@ -4631,9 +4635,93 @@ TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, a
             co[2]  += 0.5f;  al[2] += 0.5f * a0;  col[2] += 0.5f * a0 * unpremult;
             composite(cov, al, co, col, &c, &a);
             const double pct = (a / 0.90 - 1.0) * 100.0;
-            CAPTURE(pct);                       // +4.557% now, -10.587% pre-T20
-            CHECK(pct > 4.557 - 0.75);
-            CHECK(pct < 4.557 + 0.75);
+            CAPTURE(pct);                       // -1.273% now, +4.557% at T20
+            CHECK(pct > -1.273 - 0.75);
+            CHECK(pct < -1.273 + 0.75);
+        }
+    }
+
+    SUBCASE("the head-tile stack holds at every depth the arrangement needs, and degrades "
+            "by pooling the OLDEST chains when it runs out (M1.P3.T21)")
+    {
+        // HOW MANY TILES THE MOSAIC NEEDS: one per parent whose residual chain
+        // is open at the same time.  N equal-weight, equal-alpha parents each
+        // cut into P parts, started one bucket apart, keep up to min(N, P)
+        // chains open at once; truth is alpha by the same disjoint-tiling
+        // argument as the subcase above (the weights sum to 1).
+        //
+        // THE GRID BELOW DOES NOT REACH THE CAP -- corrected at M1.P3.T21's
+        // review, which found a stale comment here claiming
+        // "kCompositeHeadTiles is 8, so the first two rows fit and the last
+        // does not".  The constant is 16 and the grid's open-chain count is
+        // min(nPar, parts) <= 6, so the `<= kCompositeHeadTiles` guard below is
+        // ALWAYS TRUE and every cell is asserted exact.  That is a fine check
+        // -- it is the exactness claim -- but it is not a cap check, and the
+        // separate overflow row further down is what reaches the cap.
+        //
+        // ALSO NOTE THE GRID'S BLIND SPOT: every parent shares one `alphaIn`.
+        // That is the constraint under which the composite CAN be exact.  Give
+        // two parents DIFFERENT alphas and the upward error returns -- M1.P3.
+        // T21's review measures +64.6% here (parts 5/1, alphas 0.99/0.10,
+        // offset 2) against T20's +83.5%, i.e. improved but not closed.  See
+        // the subcase below and the milestone Decisions entry.
+        auto addVol = [&](std::vector<float>& cov, std::vector<float>& alpha,
+                          std::vector<float>& colo, std::vector<float>& color,
+                          int m, int parts, float w, float a) {
+            const float pa = partitionAlpha(a, 1.0f / static_cast<float>(parts));
+            for (int i = 0; i < parts; ++i) {
+                const int k = m + i;
+                if (i == 0) cov[k] += w; else colo[k] += w;
+                alpha[k] += w * pa;
+                color[k] += w * pa * unpremult;
+            }
+        };
+
+        for (int nPar : {2, 3, 4, 6, 8}) {
+            for (int parts : {2, 3, 4, 6}) {
+                for (float alphaIn : {0.90f, 0.50f}) {
+                    CAPTURE(nPar); CAPTURE(parts); CAPTURE(alphaIn);
+                    const int K = nPar + parts + 3;
+                    std::vector<float> cov(K, 0.0f), al(K, 0.0f),
+                                       co(K, 0.0f), col(K, 0.0f);
+                    for (int j = 0; j < nPar; ++j)
+                        addVol(cov, al, co, col, j, parts,
+                               1.0f / static_cast<float>(nPar), alphaIn);
+                    composite(cov, al, co, col, &c, &a);
+                    const double pct = (a / alphaIn - 1.0) * 100.0;
+                    CAPTURE(pct);
+                    // The open-chain count is min(nPar, parts); everything at or
+                    // under the cap is EXACT, and nothing may ever read high.
+                    if (std::min(nPar, parts) <= kCompositeHeadTiles)
+                        CHECK(std::fabs(a - alphaIn) <= kAcc);
+                    CHECK(pct < 0.5);
+                }
+            }
+        }
+
+        // THE OVERFLOW ROW, banded.  kCompositeHeadTiles is 16, so 32 parents
+        // one bucket apart, each cut into 32 parts, is the case that runs the
+        // stack out: the oldest tiles are folded together and the parents on
+        // them are attenuated by that fold, and a partly-covered frontier tile
+        // can no longer split (the split needs a free slot and must not make
+        // one by merging, which renumbers the stack) so its uncovered ring is
+        // over-occluded too.  Measured -5.132% at alpha 0.90 — a DEFICIT, which
+        // is the direction the honest-alpha contract permits, and banded rather
+        // than one-sided because a change that simply dropped the residual term
+        // would satisfy a ceiling.  RAISE THE DEPTH AND THIS ROW GOES EXACT;
+        // that is the trade the constant records, not a defect.
+        {
+            const int nPar = 32, parts = 32;
+            const int K = nPar + parts + 3;
+            std::vector<float> cov(K, 0.0f), al(K, 0.0f), co(K, 0.0f), col(K, 0.0f);
+            for (int j = 0; j < nPar; ++j)
+                addVol(cov, al, co, col, j, parts,
+                       1.0f / static_cast<float>(nPar), 0.90f);
+            composite(cov, al, co, col, &c, &a);
+            const double pct = (a / 0.90 - 1.0) * 100.0;
+            CAPTURE(pct);
+            CHECK(pct > -5.132 - 0.30);
+            CHECK(pct < -5.132 + 0.30);
         }
     }
 
@@ -4761,38 +4849,57 @@ TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, a
     {
         // The rendered form of the above: fragment j at bucket pair (j, j+1) at
         // split fraction 0.25 or 0.75 rather than 0.5.  These are the numbers
-        // harness g4's remaining 5.4% is made of, pinned as bands so a later
-        // change to the C_k : D_k split is caught here rather than only in Nuke.
+        // harness g4's remaining deficit is made of, and since M1.P3.T21 they
+        // have a CLOSED FORM that is derived here rather than re-measured --
+        // which is what re-pins them independently of the code.
         //
         // NOTE THE TRIGGER, corrected at T20's review: EVERY fragment below
         // carries the SAME split fraction, so this is NOT "fragments at
         // different split fractions" (which is how T20 first described it).
         // On a dense ramp bucket k carries fragment k's head at per-unit
-        // opacity partitionAlpha(alpha, 1-frac) and fragment k-1's rear at
-        // partitionAlpha(alpha, frac); those differ for every frac != 0.5, so
-        // ONE bucket already pools two per-unit opacities.  frac == 0.5 is the
-        // only exact case, and the SUBCASE above pins exactly that.
-        struct Cell { int n; float frac; double pct; };
-        const Cell cells[] = {
-            {  4, 0.25f, -2.4249 }, {  4, 0.75f, -5.7890 },
-            { 16, 0.25f, -3.6865 }, { 16, 0.75f, -4.5275 },
-            { 64, 0.25f, -4.0017 }, { 64, 0.75f, -4.2119 },
-        };
-        for (const Cell& cell : cells) {
-            CAPTURE(cell.n); CAPTURE(cell.frac);
-            std::vector<float> cov(cell.n + 2, 0.0f), al(cell.n + 2, 0.0f),
-                               co(cell.n + 2, 0.0f), col(cell.n + 2, 0.0f);
-            for (int j = 0; j < cell.n; ++j)
-                deposit(cov, al, co, col, j, cell.frac,
-                        1.0f / static_cast<float>(cell.n), 0.90f);
-            composite(cov, al, co, col, &c, &a);
-            const double pct = (a / 0.90 - 1.0) * 100.0;
-            CAPTURE(pct);
-            CHECK(pct > cell.pct - 0.75);
-            CHECK(pct < cell.pct + 0.75);
+        // opacity a0 = partitionAlpha(alpha, 1-frac) and fragment k-1's rear at
+        // a1 = partitionAlpha(alpha, frac); those differ for every frac != 0.5,
+        // so ONE bucket already pools two per-unit opacities.  The composite's
+        // C_k : D_k area split can only hand both sub-layers the mean
+        // m = (a0 + a1)/2, so each fragment's tile reads
+        //
+        //     1 - (1 - m)^2      instead of      1 - (1 - a0)(1 - a1) = alpha
+        //
+        // and since (1-m) is the arithmetic mean of (1-a0) and (1-a1), AM-GM
+        // makes (1-m)^2 >= (1-a0)(1-a1): the error is a DEFICIT for every
+        // fraction but 0.5, where it vanishes.  It is also independent of N,
+        // and that is the check: M1.P3.T20's own readings here were
+        // -2.42/-3.69/-4.00% (frac 0.25) and -5.79/-4.53/-4.21% (frac 0.75) at
+        // N=4/16/64, i.e. N-dependent and asymmetric in the fraction, because
+        // the single carried tile mixed this pooling term with the mosaic error
+        // M1.P3.T21 removed.  With the mosaic term gone the reading is the
+        // closed form to five decimals at every N and both fractions.
+        for (float frac : {0.25f, 0.75f}) {
+            const double a0    = 1.0 - std::pow(1.0 - 0.90, 1.0 - frac);
+            const double a1    = 1.0 - std::pow(1.0 - 0.90, frac);
+            const double mean  = 0.5 * (a0 + a1);
+            const double want  = 1.0 - (1.0 - mean) * (1.0 - mean);   // hand-derived
+            const double wantPct = (want / 0.90 - 1.0) * 100.0;       // -4.1070%
+            CHECK(wantPct < -0.5);                                    // AM-GM: a deficit
+            for (int n : {4, 16, 64}) {
+                CAPTURE(n); CAPTURE(frac); CAPTURE(wantPct);
+                std::vector<float> cov(n + 2, 0.0f), al(n + 2, 0.0f),
+                                   co(n + 2, 0.0f), col(n + 2, 0.0f);
+                for (int j = 0; j < n; ++j)
+                    deposit(cov, al, co, col, j, frac,
+                            1.0f / static_cast<float>(n), 0.90f);
+                composite(cov, al, co, col, &c, &a);
+                const double pct = (a / 0.90 - 1.0) * 100.0;
+                CAPTURE(pct);
+                // 0.02 points, against a measured worst departure from the
+                // closed form of 0.0003 over this grid: the residue is float
+                // accumulation over up to 64 fragments, not a second term.
+                CHECK(std::fabs(pct - wantPct) < 0.02);
+            }
         }
     }
 }
+
 
 TEST_CASE("colour:alpha ratio is a standing invariant of the composite over randomised planes")
 {

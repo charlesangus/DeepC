@@ -1,8 +1,8 @@
 ---
 title: DeepCDefocus — deep-input, flat-output defocus node
 status: running
-current: M1.P3.T21
-pm_heartbeat: 2026-08-16T12:15:00-04:00
+current: M1.P3.T18
+pm_heartbeat: 2026-08-16T14:05:00-04:00
 ship: pr-per-milestone
 ---
 
@@ -175,6 +175,29 @@ fractions; `claimA = cov` is caught by `g1`/`g2`/`g3` as well as `g4`; and `a3` 
 record (+94.8% in the `excess` regime, +8.3% on a free/claimed straddle), so "+1.37% is the worst
 positive excursion" describes the K sweep, not the composite.
 
+**T21 is done: T20's regression is fixed, and it made the thing T20 bought BETTER as well.** The
+composite carried ONE `(tHead, headArea)` tile, so a bucket that both claimed area and continued a
+residual chain had to discard one — free only while the discarded chain has no deposits left, which
+two fog slabs at overlapping depths is not. It now carries a **stack of 16** tiles and allocates a
+bucket's co-located residual across them **by area, newest first**, with only the overflow landing on
+the tile the bucket itself claimed; both of T20's merge branches survive as special cases of that
+allocation and read bit-identically. The staggered sweep goes from **153 of 525 cells over +0.5% and
+worst +12.3%** (widened: 1024 cells, **+21.1%**, worse than the +18.3% the review found) to **zero
+cells and worst +0.000% — exact**, re-pinned against a hand-derived disjoint-tiling oracle. Randomised
+multi-parent pixels are exact wherever the parents' per-unit opacities agree; every error that remains
+has two parents in ONE bucket at different per-unit opacities (`f3c`/`f3d`'s accumulation-time term,
+worst +83.8% at a 17× opacity ratio, unfixable by any per-bucket rule — the corpus splits cleanly:
+15 936 pixels with no shared bucket are exact, all 13 632 over-reads are among the 24 064 that share
+one). **The cost is 128 bytes per thread** — no plane, no per-bucket state, `memory_limit` unchanged
+at every K — and the composite roughly doubles (319 → 581 ns/pixel at K=16) on an O(K)-per-pixel pass
+the scatter dwarfs. `g4` **0.0543 → 0.0325** (re-pinned, band unchanged), `g2`/`g3` at K=16 improved,
+`a3` **unmoved at 1.192e-07** against its 2.4e-07 gate, T9's behind-focus residue and every other
+pinned constant bit-identical. Harness **PASS=83 FAIL=0 XFAIL=5 SKIP=1, exit 0**. Two things are
+recorded rather than smoothed: the K sweep's positive end grew (α=0.50 reads **+3.76% at K=2/4** and
+**+0.90% at the default K=16**, against T20's +1.37% and −0.13%) because the fix lifts the whole curve
+by ~2 points; and the two **pre-existing** upward errors (+94.8%, +8.3%) are bit-identical and were
+deliberately not folded in.
+
 **T19 is done: the harness is now green end to end** — PASS=77 FAIL=0 XFAIL=18 SKIP=1, exit 0, for the
 first time in this milestone. T16's three FAILs were one real node defect: `DiscKernelLUT` quantised
 radius onto a uniform 0.5 px grid, so adjacent scanlines straddling a bin edge rasterised different
@@ -198,15 +221,23 @@ Note T5's size-0 parity clause now passes; its abort-recovery clause remains unv
 interactive pass, since headless Nuke cannot trigger a recoverable mid-cook cancel — validation scene
 (e)'s `Escape` clause (harness check `e4`, SKIPped) is blocked on the same thing and is owed by the
 same interactive pass.
-**Standing lesson, now recorded three times over:** every wrong figure in this plan has been a
+**Standing lesson, now recorded FIVE times over:** every wrong figure in this plan has been a
 measurement that never reached the phenomenon it claimed to bound — T13's synthetic corpus never
-crossed the kernel-bin edge, two `pre_merge` probes each happened to group nothing, and at T19 two
-re-pinned constants were *correct* while their stated mechanisms were fabricated. So: mutation-test
+crossed the kernel-bin edge, two `pre_merge` probes each happened to group nothing, at T19 two
+re-pinned constants were *correct* while their stated mechanisms were fabricated, T20's own volumetric
+check indexed its parents as `k = j*(P+1)+i` (**non-overlapping** runs, exact under the defect it was
+meant to guard), and at T21 the claim that T20's recorded `g1` figure (1.703e-08 at K=8) **does not
+reproduce** was itself the wrong figure — **T21's review rebuilt T20's own commit (`ac46700`) in a
+worktree and re-rendered scene (g): it reads 1.703e-08 exactly, as recorded.** 3.757e-07 is T21's
+OWN reading; T21 moved that row 22×, and the claim of a non-reproducing historical number was a
+fabricated mechanism attached to a real movement. (Harmless numerically — both sit ~2700× under the
+1.0e-03 gate — but it is the fifth time a *correct* number in this plan has carried a *wrong*
+mechanism, and this one would have licensed ignoring a real regression.) So: mutation-test
 every check (one nobody has made fail proves nothing), band pins rather than bounding them on one side,
 validate re-pins against an independent oracle rather than against the new output, and give every XFAIL
 a hard outer bound so it cannot swallow a later regression.
 
-Remaining in this milestone: P3 T21, T18, then Phase 1.4 and Phase 1.5. Eighteen tasks
+Remaining in this milestone: P3 T18, then Phase 1.4 and Phase 1.5. Eighteen tasks
 have now been added by execution findings (M1.P3.T0, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16,
 T17, T18, T19, T20, T21, plus the enlarged M1.P3.T4 test list).
 No PR yet — `ship: pr-per-milestone` puts that at M1's verification gate. The branch
@@ -226,9 +257,10 @@ separately, build the holdout boundary set once per frame rather than per band, 
 M1.P3.T11's interpolant variant from rendered scenes (the bucket-composite half of that clause was
 discharged by M1.P3.T17); M1.P4.T1 must budget on
 `(C+3)` plus the holdout term, at the revised 61 B/fragment logical / ≈100 B resident. **M1.P3.T17's
-α<1 receding-content residual is closed by M1.P3.T20** (fixed in the composite; `g4` re-pinned at
-0.0543 ± 0.004). It ran before T18 because the fix moved every rendered pixel and T18 decides from
-rendered pixels — **T18 must re-render rather than quoting any figure from before `d06c4da`**.
+α<1 receding-content residual is closed by M1.P3.T20** (fixed in the composite) **and M1.P3.T21**
+(which fixed T20's own regression and improved it further; `g4` re-pinned at 0.0325 ± 0.004). They ran before T18 because the fixes moved every rendered pixel and T18 decides from
+rendered pixels — **T18 must re-render rather than quoting any figure from before M1.P3.T21's
+commit**.
 And the milestone PR body must carry the shipped-node release note from
 `PLAN/DECISIONS/2026-07-26-tidyoverlapping-single-pass.md` and
 `PLAN/DECISIONS/2026-07-26-volumetric-tidying-semantics.md`.

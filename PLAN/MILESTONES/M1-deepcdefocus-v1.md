@@ -293,7 +293,9 @@ l. small-CoC transition: shallow depth ramp crossing 0–2px CoC ⇒ no chatter/
 | Correct number, wrong explanation | Med | Twice at M1.P3.T19 a re-pinned constant was right while its stated mechanism was fabricated; only an independent grid-free oracle caught it. Validate re-pins against an oracle, never against the new output, and **band** pins rather than bounding them on one side — a one-sided pin there would have passed a full revert of the fix |
 | `pre_merge` lossy at its shipping default | Med | Losslessness holds only when grouped radii share a kernel bin; at the 0.25px default two layers 0.20px apart straddling a bin edge move 9.0e-02 on 100% of pixels. Two separate probes concluded "unreachable"/"exactly lossless" because they happened to group nothing. `merge_tolerance`'s default needs a review at Phase 1.4 |
 | Alpha<1 receding content loses up to 16% of its alpha | ~~High~~ **closed** | **FIXED at M1.P3.T20** by giving the composite a second transmittance scalar — a co-located deposit is attenuated by the tile its own head claimed, not by the pooled mean over everything claimed, and a residual's occlusion is *subtracted* from that mean in proportion to the area it covers instead of multiplying the whole of it. On the isolated rig the deficit goes to **exact** at every N, α and split fraction (was −17.4% at α=0.90/N=16, −38.9% at split fraction **0.75** — T17 and T20 both mislabelled that cell as 0.25, which reads −5.49%); harness `g4` goes **0.1607 → 0.0543**; the K-divergence is **gone** (α=0.50 swept +0.33…−26.62% at K=2…128, now +1.37…−1.01%). The *opaque* twin improved five to six decades on the same scene — saturation pushes part of a bucket's alpha into the residual term even at α=1 — which retired the `g1`/`g2`/`g3` XFAILs and closed scene (g)'s own stated seam criterion. What remains at `g4` (−5.4%) is a **different mechanism**: one bucket pooling a head and a rear at unequal per-unit opacity — `f3c`/`f3d`'s term, information lost at accumulation and not recoverable by any per-bucket composite rule. (T20 first attributed this to fragments carrying *differing* split fractions; its review showed a constant fraction ≠ 0.5 reproduces it, so the trigger is `partitionAlpha(α,1−frac) ≠ partitionAlpha(α,frac)`, not fraction mixing.) **T20 also introduced a NEW error in the opposite, forbidden direction on staggered multi-part parents — see the row below.** Original entry, kept for the record: Found at M1.P3.T17's bake-off. An ordinary semi-transparent surface receding through focus reads −12.5/−16.1/−9.2% at α=0.99/0.90/0.50 (K=16) and **diverges** in K (−5.0 → −26.6% at K=8 → 128 at α=0.5), where the same content at α=1 reads −0.4% and converges. Controls exclude the kernel, the sharp path and depth quantisation (constant depth is exact under both candidates at every K and radius). **Mechanism isolated at T17's review**: the composite's single scalar `tClaimed` cannot represent a claimed area that a depth ramp has made a mosaic of differently-transmissive sub-areas — reproduced on hand-built planes with no kernel at all (−17.4% at α=0.9/N=16, exact at α=1, exact when the fragments share a bucket pair, −38.9% at split fraction 0.25). The deleted candidate was also wrong here but **better at every K and every α<1 tested** (−1.0/−6.6/−15.3/−18.3% at K=8/16/64/128 against −11.4/−16.1/−23.0/−27.5%), by 1.5–3×; it is not a reason to reopen T17 because it diverges in K too and fails identities partition satisfies exactly, but it is not merely "less bad by a hair" either. Bounded XFAIL `g4`; owed a fix or an accepted-residual ruling at Phase 1.4/1.5, and the check must be RE-PINNED by whatever commit fixes it |
-| Staggered multi-part parents over-report alpha (up to +18.3%) | High | Found at M1.P3.T20's **review**, and **introduced** by T20. The composite carries ONE head tile, so a bucket that both claims new area and continues a residual chain must discard one of the two; where the two are disjoint the chain is dropped and its parent's later parts are attenuated by an unrelated tile. Two multi-part parents at **overlapping** depth ranges (two fog slabs; a fog slab and a point fragment) whose kernel weights tile one pixel — truth is α with no ordering assumption — read **377/525 swept cells >+0.5% high, worst +18.3%**, saturating to alpha 1 at α=0.90, where pre-T20 they read 4–16% **low**. T20's volumetric check covered only the non-overlapping mosaic, which is exact. `always carry the chain` (−9.3% dense ramp) and `merge by area` (−5.9%, g4 0.0913, 40 unit assertions) are both worse trades, so the fix is more per-pixel state. Pinned as a band in `tests/test_defocus_scatter.cpp`; owed a ruling at Phase 1.4/1.5 |
+| Staggered multi-part parents over-report alpha (up to +18.3%) | ~~High~~ **closed** | Found at M1.P3.T20's **review**, and **introduced** by T20: the composite carried ONE head tile, so a bucket that both claimed new area and continued a residual chain had to discard one of the two, and the dropped parent's later parts were attenuated by an unrelated tile — 153/525 swept cells >+0.5% high, worst **+12.3%** on this task's own sweep and **+21.1%** on the widened one (the review measured +18.3%), saturating alpha to 1 at α=0.90, where pre-T20 they read 4–16% **low**. **FIXED at M1.P3.T21** by carrying a STACK of 16 tiles and allocating a bucket's co-located residual across it by area from the newest end: the sweep goes to **zero cells over +0.5%, worst +0.000%** (exact, not merely under the gate), and randomised multi-parent pixels are EXACT wherever the parents' per-unit opacities agree. It cost **128 bytes per thread** — no plane, no per-bucket state, `memory_limit` unchanged — and roughly doubled an O(K)-per-pixel composite (319 → 581 ns/pixel at K=16). `g4` improved 0.0543 → **0.0325** in the same change; `a3` and every other pinned constant are bit-identical. What remains is one bucket pooling two per-unit opacities (`f3c`/`f3d`'s accumulation-time term, worst +83.8% on an adversarial 17× opacity ratio), which no per-bucket rule can undo |
+| **Two defocused parents at unequal alpha and overlapping depths invent up to +71% alpha — RENDERED, and gated by nothing** | **High** | **Found at M1.P3.T21's review.** T21 records the multi-parent upward residual as an "adversarial 17× opacity ratio" on hand-built planes. It is not adversarial and it is not confined to hand-built planes: **two DeepCConstant cards side by side (a gap of 20 px), at α 0.99 and α 0.10, depth spans 8–12 and 9–13, `size` 14, K=16, defocused so their discs overlap — the ordinary "dense fog card near a thin one" shape — reads +71.2% high at its worst pixel and over +0.5% high on 41 of 186 probed pixels.** Oracle is independent of the composite and needs no ordering assumption: below saturation the area model is ADDITIVE, so the merged render must equal the sum of the two cards rendered SEPARATELY (each alone is one open chain, which the composite handles exactly). Worst pixel: solo 0.21431 + 0.03817 = 0.25248, merged **0.43220**. Other cells: α 0.10/0.99 **+63.3%**, α 0.90/0.20 **+29.3%**, and even the EQUAL-density control **+1.5%**. **T21 improved every one of these** (T20 read +94.8 / +65.1 / +44.9 / +9.6%) — this is a pre-existing defect that T21 reduced, not a regression — but it is far larger than any number in T21's record, it is in the honest-alpha contract's forbidden direction, and **no check in the harness or the unit suite bounds it**: `f3c`/`f3d` are the only overlapping-depth rendered checks and both use two slabs at the SAME density (grey 0.5), which is the one case that is nearly exact. Mechanism is tile mis-assignment across open chains (see the corrected Decisions entry), which no plane count fixes. **Owed at Phase 1.4/1.5: an unequal-density `f3c`/`f3d` variant with a hard bound, and a v1 node-help note that overlapping defocused volumes of differing density over-report alpha.** | 
+| Scene (g)'s α<1 ramp reads HIGH — up to **+6.5%**, at **every** K including the default | Med | **RE-MEASURED AND WIDENED AT M1.P3.T21's REVIEW**, which swept the g4 rig over α ∈ {0.99, 0.90, 0.50, 0.30, 0.10} × K ∈ {2,4,8,16,32,64} on BOTH the T21 tree and a worktree build of T20 (`ac46700`). T21's self-report below reproduces exactly for the cells it covers — but it stopped at α=0.50, and the excursion grows as α falls: **α=0.30 reads +5.17% (K=2/4) and +3.40% at the default K=16; α=0.10 reads +6.53% (K=2/4) and +5.93% at K=16.** So it is neither bounded by +3.8% nor confined to coarse K. Most of that is **pre-existing, not T21's**: T20 read +3.73% and +6.05% at α=0.30/0.10 K=2/4, so T21 added +1.4 and +0.5 points there against the +2.4 it added at α=0.50. The honest statement is that this rig has carried an UNGATED upward error at low α since before T20, T21 made it modestly worse, and **no check anywhere bounds it** — `g4` is α=0.90/K=16, where T21 reads −3.25% (a deficit). A bounded check owed at Phase 1.4/1.5 must cover α≤0.30, not only α=0.50. Original T21 entry follows. **New at M1.P3.T21**, and the price of its fix: removing the composite's spurious occlusion lifts scene (g)'s whole K curve by ~2 points, which closes the deficit at fine K and pushes the already-positive coarse-K readings further up. α=0.50 reads **+3.76% at K=2/4** (T20: +1.37%) and **+0.90% at the shipping default K=16** (T20: −0.13%); α=0.90 reads +0.82% at K=2/4. Bounded and roughly K-flat — no divergence — but upward, which the honest-alpha contract forbids. **Not** the mosaic term and **not** the `excess` regime (a hand-built dense ramp at α=0.50 is exact at coverage 0.5 and 1.0 and reads *lower* than T20 at coverage 1.5); it is the accumulation-time pooling of unequal per-unit opacities seen from its positive side, i.e. `f3c`/`f3d`'s term, which no per-bucket composite rule can undo. Nothing gates it — the only α<1 ramp check, `g4`, is α=0.90/K=16 — so a bounded check at α=0.50 is owed at Phase 1.4/1.5 |
 | Upward alpha error in the `excess` regime (pre-T20, unbounded) | Med | A fragment whose head lands entirely in already-claimed area registers no tile, so its own co-located rear is attenuated by whatever tile the pixel was carrying: behind a full-coverage α→0 foreground a defocused opaque fragment of coverage 0.05 reads 0.0976 against a true 0.0501 (**+94.8%**). A fragment straddling the free/claimed boundary has its excess attenuated by a mean including the tile it just claimed (**+8.3%**). Both bit-identical before and after T20 — not T20's regression — but no check bounds either, and both err in the honest-alpha contract's forbidden direction. Registering the excess as its own tile fixes the first exactly on hand-built planes and is **refuted by pixels** (g1 1.082e-02, g4 0.0825), so the fix is not known |
 | Documented residual masking a later regression | Med | An unbounded XFAIL swallows anything that lands on top of it. Every harness XFAIL now carries a hard outer bound that flips it to FAIL on drift; new XFAILs must too. **M1.P3.T20's review found the converse too**: `l3` was described as retired while still carrying `expectedFailure=True, hardTol=8.0e-03`, so a full revert of T20 reported XFAIL, not FAIL. A check whose residual is gone must lose its `expectedFailure`, not just its reading |
 | Request/engine channel divergence | Low | Single `neededDeepChannels()` helper |
@@ -1160,7 +1162,7 @@ verified.
     raised; local build and both unit suites green.
   - size: L
 
-- [ ] M1.P3.T21 — Staggered multi-part parents read HIGH (M1.P3.T20's regression) — run BEFORE T18
+- [x] M1.P3.T21 — Staggered multi-part parents read HIGH (M1.P3.T20's regression) — run BEFORE T18
   - files: `src/DeepCDefocusScatter.h`/`.cpp`, `tests/test_defocus_scatter.cpp`, `tests/nuke/scenes.py`,
     this file's `## Decisions`
   - approach: found at M1.P3.T20's review. **T20 flipped this content's error into the direction the
@@ -1334,6 +1336,183 @@ verified.
   - size: M
 
 ## Decisions
+
+- 2026-08-16 — **M1.P3.T21: the upward error M1.P3.T20 traded for the α<1 ramp is FIXED, and the ramp
+  got BETTER rather than worse. The composite's one head tile became a STACK of sixteen; nothing else
+  moved.** The regression's cause was stated exactly right at T20's review: one `(tHead, headArea)`
+  pair, so a bucket that both claims new area and continues a residual chain must discard one tile,
+  which is free only while the discarded chain has no deposits left. **The fix is the state the review
+  said it would take, and it is per-thread, not per-bucket.**
+  **WHAT SHIPS.** `compositePixelCoveragePartition()` carries `kCompositeHeadTiles = 16` tiles —
+  `(area, transmittance)` pairs, oldest first — instead of one. A bucket's co-located residual is
+  **allocated across them by area from the NEWEST end**, each tile is attenuated by the share of the
+  residual that landed on it, and only what does not fit lands on the tile this bucket itself just
+  claimed. Both of T20's merge branches survive as special cases of that allocation and read
+  ~~bit-identically~~ **identically to within float reassociation — 107 of 8 000 scalars differ over a
+  4 000-pixel single-chain corpus, worst 2 ULP / 1.6e-07 relative (measured at T21's review against a
+  worktree build of `ac46700`)**: the dense depth ramp (the residual is the newest tile's own rear — T20's
+  `else`) and the M1.P3.T13/T15 same-pixel collision (it overflows onto this bucket's claim — T20's
+  `> claimedArea` branch). A partly-covered tile **splits** into a covered core and an uncovered ring
+  rather than averaging — averaging is algebraically M1.P3.T9's rejected `claimedArea` divisor and
+  moves T9's pinned behind-focus residue 61.00% → 70.53%, measured here, matching what T9 and T17
+  recorded. No plane, no signature, no `KernelSampler`/`DEEPC_HD`/`PodBuffer` seam, no
+  `partitionAlpha()`, no scatter change.
+  **THE COST, stated as the brief asked.** Per **pixel**: nothing — the stack is a stack frame, alive
+  only inside one call. Per **bucket**: nothing — no plane and no per-bucket state is added, so
+  `memory_limit`'s `K·W·B·(C+3)·4` is **unchanged at every K**, 117 MB at K=16 and 940 MB at K=128 as
+  before. Per **thread**: `2 × 16` floats = **128 bytes**, independent of K, of the band size, of the
+  format and of the thread count (at K=128 it is still 128 bytes, i.e. 0.00001% of that band's
+  planes). In time, on a worst-case synthetic where *every* bucket carries both new and co-located
+  area (4 channels, 20 000 pixels, best of 7): **319 → 581 ns/pixel at K=16**, 1379 → 2900 at K=64,
+  3009 → 6901 at K=128 — the composite roughly doubles, on an O(K)-per-pixel pass against the
+  scatter's O(Σπr²)-per-fragment one; the harness's own render totals do not separate it from
+  run-to-run variance (110 s vs 66 s across two runs of the *same* code path shape). Depth 8 and depth
+  16 are within 1% of each other at the shipped default K=16 (577 vs 581 ns), so **the depth was
+  chosen on accuracy, not on the clock**.
+  **HOW DEEP, MEASURED.** Worst UPWARD reading / mean |error| over 20 000 randomised pixels of N
+  equal-alpha parents (random weights summing to 1, random part counts, random overlapping start
+  buckets), judged against the disjoint-tiling oracle `Σ w_j·α_j`:
+  | parents | 4 | 8 | 16 | 32 |
+  |---|---|---|---|---|
+  | M1.P3.T20 (one tile) | +21.86% / 2.32 | +21.22% / 2.76 | +22.75% / 3.10 | +18.95% / 3.34 |
+  | depth 2 | **+0.000%** / 2.28 | **+0.000%** / 5.34 | −0.357% / 9.18 | −0.769% / 11.83 |
+  | depth 4 | +0.000% / 1.29 | +0.000% / 2.27 | −0.106% / 2.90 | −0.160% / 3.00 |
+  | depth 8 | +0.000% / 1.29 | +0.000% / 2.25 | −0.106% / 2.85 | −0.149% / 2.96 |
+  | depth 16 | identical to depth 8, and so is depth 32, out to 128 overlapping parents |
+  **TWO tiles already remove the upward error entirely**, which is the property that matters: past the
+  cap the stack folds its two oldest tiles together *and* a partly-covered frontier tile can no longer
+  split (the split needs a free slot and must not make one by merging, which renumbers the stack), and
+  both of those OVER-occlude — the direction the contract permits. What more depth buys is the size of
+  the remaining **deficit**; on the random corpus the knee is at 4, but on the worst case the unit
+  suite pins — 32 equal parents of 32 parts each, i.e. 32 chains open at once — depth 8 reads −20.84%
+  and depth 16 −5.13%. **16 ships** because it costs nothing at the default K (581 vs 577 ns/pixel,
+  below the benchmark's own noise) and only 14% at K=128. A tile is retired only by capacity, since
+  nothing in the planes records that a chain has ENDED.
+  **THE SWEEP THE BRIEF ASKED FOR.** parts ∈ {2,3,4} × offsets 1..5 × 7 weights × 5 alphas = 525
+  cells: **153 cells over +0.5% and worst +12.340% → ZERO cells and worst +0.000%**, with no cell
+  below −0.5% either and no cell saturating alpha (8 did). Widened to parts ≤ 8 and offsets ≤ 7
+  (2268 cells) it goes from 1024 cells / **+21.105%** to zero — i.e. this sweep reaches *worse* cells
+  than the +18.3% the review reported, and closes them. All eight of the review's pinned cells and the
+  volumetric+point cell reproduce their T20 readings exactly before the fix. **Every cell is now
+  EXACT, not merely under the gate**, and the re-pin is against a hand-derived oracle (the coverages
+  sum to 1 and both parents fit, so they tile the pixel as disjoint sub-areas at the same α, and the
+  answer is α with no ordering assumption) rather than against the new output.
+  **WHAT IS EXACT NOW, GENERALLY.** Over 40 000 randomised multi-parent pixels the corpus splits
+  cleanly: **every pixel whose parents' per-unit opacities agree reads EXACT** (equal alpha *and*
+  equal part count: 0 of 100 000 cells off by more than 3e-06, at any overlap; equal alpha with mixed
+  part counts: 0 cells above +0.5%, worst high **+0.0000%**), and **every** error that remains has two
+  parents' deposits in ONE bucket at different per-unit opacities. The classification is the evidence:
+  of 40 000 mixed-alpha pixels, the 15 936 with no shared bucket are exact and all 13 632 cells over
+  +0.5% are among the 24 064 that share one. That is `f3c`/`f3d`'s term — information lost at
+  ACCUMULATION, not at composition — and it is **not fixed, not claimed fixed, and not fixable by any
+  per-bucket composite rule**. Its worst reading on that corpus is **+83.8%** (α 0.058 and α 0.979
+  pooled in one bucket, a 17× per-unit opacity ratio); under T20 the same corpus read +91.9% worst and
+  44.9% of cells over +0.5% against 34.1% now.
+  **THE MECHANISM ATTRIBUTION IS WRONG — CORRECTED AT T21's REVIEW.** The classification above is
+  sound and reproduces (an independent 320 000-pixel corpus gives worst high **+91.4%** volumetric /
+  **+99.2%** deep-mixed under T21, against **+105.5%** / **+113.0%** under T20 — so T21 improves it
+  substantially and regresses nothing, but "worst +0.000% — exact" describes only the EQUAL-α family
+  the sweep varies). What is NOT sound is naming `f3c`/`f3d`'s term as the cause. That term is the
+  `C_k : D_k` area split guessing how bucket k's pooled alpha divides between the new-area deposit
+  and the co-located one. **It was tested directly**: the composite was rebuilt taking a FIFTH plane
+  carrying the co-located alpha, so the split is read rather than guessed. That closes the `f3c`/`f3d`
+  dense-ramp term **exactly** (−4.107% → ±0.0001% at every N and both split fractions) and leaves the
+  +64.6% two-parent case **bit-unchanged**. So they are two different mechanisms, and the big upward
+  error is not the one named.
+  **WHAT ACTUALLY CAUSES IT: TILE MIS-ASSIGNMENT ACROSS OPEN CHAINS.** Traced by hand on the minimal
+  case (two volumetric parents, w 0.5/0.5, parts 5 and 1, α 0.99 and 0.10, offset 2). At the bucket
+  carrying parent 1's fourth part, the stack holds parent 1's tile (T = 0.0631) and parent 2's fresh
+  claim (T = 0.90); newest-first hands parent 1's residual parent 2's tile, so it is attenuated by
+  0.90 instead of 0.0631 and contributes 0.271 where truth is 0.019. **The planes carry no parent
+  identity**, so which open chain a bucket's co-located area belongs to is undecidable from them:
+  swapping to oldest-first moves this case to +22.4% but takes the dense ramp from −4.11% to −27.4%.
+  Neither order is right; the information is absent. Unlike the `C_k : D_k` split, **no fixed number
+  of planes recovers it** — parent count per bucket is unbounded — so this one really is a permanent
+  residual, for a reason different from the one recorded.
+  **T20's GAINS ARE KEPT, AND TWO OF THEM IMPROVED.** Harness `g4` **0.0543 → 0.0325** (re-pinned in
+  the same change, band unchanged at 0.004); `g2` K=16 7.153e-07 → **1.192e-07**; `g3` K=16 2.980e-07
+  → **1.192e-07**; `f3b` −0.001% → −0.000%; `f3c`/`f3d` move in the 7th decimal. `g1` reads
+  3.757e-07 / 1.277e-08 / 1.809e-08 (K=8/16/64). **CORRECTED AT T21's REVIEW: `g1` is NOT unmoved.**
+  T20's commit `ac46700` was rebuilt in a worktree and scene (g) re-rendered from it: it reads
+  1.703e-08 / 5.801e-08 / 2.182e-08, i.e. exactly the figures T20 recorded. T21 moved K=8 by 22×
+  (1.703e-08 → 3.757e-07) and improved K=16/64. The same re-render shows `g2`/`g3` at K=8 also moved
+  the wrong way — `g2` 1.848e-06 → 3.862e-05, `g3` 1.907e-06 → 3.862e-05, ~20× each — against the
+  K=16 improvements reported above. All six readings stay 100× or more under their 1.0e-03 / 3.9e-03
+  gates, so nothing here is a defect; what was wrong was the claim that T20's number did not
+  reproduce, and the selective reporting of the K=16 column only.
+  **Every other check in the suite is bit-identical**, including scene (a)'s size-0 parity — `a3`
+  **1.192e-07 against its 2.4e-07 gate, unmoved**, so the margin T20 halved is not spent further, and
+  a1/a2/a4 likewise — T9's pinned behind-focus residue (36.86/50.25/56.31/61.00%), scene (i)'s
+  coverage-deficit identity, `h3c`, `l1`, `l3`, `l5`, `b1`. Harness **PASS=83 FAIL=0 XFAIL=5 SKIP=1,
+  exit 0** — the same counts as before the change, `g4` still the banded XFAIL, re-pinned in this
+  commit. Unit suites 54 cases / **175 429** assertions and 27 / 141 034, green.
+  **THE K SWEEP: NO DIVERGENCE REINTRODUCED, AND ONE COST, REPORTED RATHER THAN SMOOTHED.** Scene
+  (g)'s ramp, interior flat-field mean, rendered at K = 2…128 (the knob's own range is 4–128):
+  | α | K=2 | K=4 | K=8 | K=16 | K=32 | K=64 | K=128 |
+  |---|-----|-----|-----|------|------|------|-------|
+  | 1.00 | −0.000 | −0.000 | −0.000 | −0.000 | −0.000 | −0.000 | −0.000% |
+  | 0.99 | −0.943 | −0.943 | −1.855 | −2.536 | −2.970 | −3.714 | −5.497% |
+  | 0.90 | +0.819 | +0.819 | −1.698 | −3.253 | −4.084 | −4.935 | −6.576% |
+  | 0.50 | +3.757 | +3.757 | +1.987 | +0.897 | +0.319 | −0.287 | −1.409% |
+  against T20's −4.363…−5.036 / −3.290…−6.055 / +1.373…−1.007. Still bounded and roughly K-flat —
+  nothing like T17's +0.33 → −26.62% — and better at every K ≤ 32; slightly worse at K=64/128 (α=0.90
+  −4.665 → −4.935 and −6.055 → −6.576, the only two columns where this scene fills the tile stack at
+  all — the whole harness renders bit-identically at depth 8 and depth 16). **THE COST IS THE UPWARD END**: the fix removes spurious
+  occlusion, so it lifts this whole curve by roughly two points, which improves it wherever the
+  reading was negative and *worsens* it wherever it was already positive. T20's worst positive
+  excursion of **+1.37%** (α=0.50/K=2) becomes **+3.76%**, and α=0.50 now reads **+0.90% at the
+  shipping default K=16** where T20 read −0.13%. That is the honest-alpha contract's forbidden
+  direction on a rendered scene, it is not the mosaic term (a hand-built dense ramp at α=0.50 is
+  exact at coverage 0.5, 1.0 and — through the saturation pass — reads *lower* than T20 at coverage
+  1.5, so the `excess` regime is not the source), and it is left as a recorded cost rather than
+  clamped away. It is the same accumulation-time pooling that `g4`'s residue is made of, seen from
+  its positive side.
+  **THE DENSE RAMP'S REMAINING DEFICIT NOW HAS A CLOSED FORM**, which is the strongest evidence that
+  what is left is the pooling term and not a mosaic one. A dense ramp at split fraction `frac` reads
+  `1 − (1−m)²` with `m = (a0+a1)/2`, against a truth of `1 − (1−a0)(1−a1) = α`; AM-GM makes that a
+  deficit for every fraction but 0.5, and it is **independent of N** — **−4.107% at α=0.90 for frac
+  0.25 AND 0.75, at N=4, 16 and 64**, agreeing with the hand-derived closed form to 5 decimals. Under
+  T20 the same cells read −2.42/−3.69/−4.00% and −5.79/−4.53/−4.21%: N-dependent and asymmetric in the
+  fraction, because the single tile mixed the pooling term with the mosaic error. The unit suite's
+  cells are re-pinned **against that closed form, computed in the test**, not against a re-run.
+  **THE TWO PRE-EXISTING UPWARD ERRORS DID NOT MOVE**, and they were checked rather than assumed: the
+  `excess`-regime rear double-count reads **0.097590 against a true 0.050095 (+94.810%)** and the
+  free/claimed straddle **0.812500 against 0.750000 (+8.333%)**, both bit-identical to their pre-T21
+  values, both still pinned, and neither folded into this change. The excess-tile fix for the first
+  was **not** re-proposed.
+  **MUTATION-TESTED, seven ways.** Reverting to T20's single tile (via the cap) fails 4 unit
+  assertions and takes `g4` to 0.0543; allocating oldest-tile-first (FIFO) fails **204** assertions
+  and 9 harness checks (`g4` 0.0718); spreading the residual over every tile — the disproved "merge by
+  area" — fails 17; refusing the overflow onto this bucket's own claim fails 9; not splitting the
+  partly-covered frontier tile fails 1; folding the overflow by area instead of by minimum fails 1;
+  never pushing the claim tile fails the M1.P3.T13 sharp-path identity. **Two of those are NOT caught
+  by any rendered check** (`g4` reads 0.0325 under both), and that is recorded next to the pin rather
+  than left unstated.
+  **THE OVERFLOW FOLD TAKES THE MINIMUM, NOT THE AREA MEAN, and that is an argument, not a
+  measurement** — `min ≤ mean`, so a lower tile transmittance can only reduce the alpha a later
+  residual adds, i.e. whatever the cap costs it costs in the direction the honest-alpha contract
+  permits. Over 80 000 randomised overflow pixels the two forms were **indistinguishable** (identical
+  worst readings in every row); the unit suite's 32-parent overflow row is the one place that
+  separates them. Said plainly so nobody re-derives a mechanism from a number that did not move.
+  **A BUG FOUND IN REVIEW OF THIS OWN CHANGE, and what it changed.** The first draft made room for the
+  frontier split by calling the merge — which renumbers the stack under the already-resolved frontier
+  index. It never crashed and the harness never reached it (the rendered scenes never fill the stack:
+  depth 8 and depth 16 render bit-identically), but the 32-parent overflow row read +0.44% under it,
+  i.e. the cap could still err upward. With the split simply skipped when the stack is full, **every
+  corpus measured reads ≤ 0 at overflow** (worst upward −0.106% at 16 parents, −0.149% at 32, −0.304%
+  at 128) and the pinned overflow row moved +0.44% → −5.13%. That is a bigger deficit and a strictly
+  safer direction, and it is why the depth table above is not the one an earlier draft measured.
+  **STILL UNEXPLAINED, said rather than papered over.** (i) Why the harness's total render time came
+  out *lower* after the change (110 s → 66 s across the two runs) when the composite got slower — most
+  likely machine variance or filesystem caching, but it was not isolated, and the microbenchmark above
+  is the figure to trust. (ii) Why the two eviction rules (fold the oldest two by MINIMUM vs by area)
+  are indistinguishable on 80 000 randomised overflow pixels while the unit suite's 32-parent row
+  separates them cleanly: the minimum is kept on the derivation (`min ≤ mean`, so it can only
+  over-occlude), not on a measured advantage. (iii) ~~The `g1` figures M1.P3.T20 recorded (1.703e-08
+  at K=8) do not reproduce.~~ **RESOLVED AND WRONG (T21's review).** T20's commit `ac46700` was
+  rebuilt in a `git worktree` and scene (g) re-rendered from it: `g1` reads 1.703e-08 at K=8, exactly
+  as T20 recorded. 3.757e-07 is T21's own reading — T21 moved that row, and the "does not reproduce"
+  claim was a fabricated mechanism attached to a real movement. See the corrected paragraph above.
 
 - 2026-08-16 — **M1.P3.T20's REVIEW: the ruling stands — the fix is real and root-caused — but it
   bought the α<1 ramp with a NEW upward error on staggered multi-part parents, and five of its claims

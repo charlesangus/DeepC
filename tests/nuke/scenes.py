@@ -900,8 +900,10 @@ def sceneG(settings):
     split is not a no-op and the saturation clamp does not hide the positive
     half of the error.  It WAS the largest residual the bucket-composite
     bake-off found on the composite it kept; M1.P3.T20 fixed the mechanism
-    behind it (0.1607 -> 0.0543, K-divergence gone) and re-pinned it.  The same
-    fix is why g1/g2/g3 are no longer XFAILs: see the note above g1.
+    behind it (0.1607 -> 0.0543, K-divergence gone) and re-pinned it, and
+    M1.P3.T21 -- fixing the upward error T20 traded for that -- took it to
+    0.0325 and re-pinned it again.  The T20 fix is why g1/g2/g3 are no longer
+    XFAILs: see the note above g1.
     """
     checks = []
     size = 86.0
@@ -1088,35 +1090,53 @@ def sceneG(settings):
     # -1.0%, and its worst reading anywhere is now +1.4%), and what is left is
     # bounded and roughly K-flat.
     #
+    # RE-PINNED AT M1.P3.T21, 0.0543 -> 0.0325.  T20 bought the ramp with an
+    # upward error on staggered multi-part parents (up to +21.1% on hand-built
+    # planes, the honest-alpha contract's forbidden direction) because it
+    # carried ONE head tile and had to discard one whenever a bucket both
+    # claimed area and continued a chain.  T21 carries a STACK of them
+    # (kCompositeHeadTiles = 16) and allocates a residual across it by area from
+    # the newest end.  That closes the upward error to +0.000% on the same
+    # sweep AND takes another 40% off this reading, because a dense ramp's
+    # buckets each leave two tiles as well.
+    #
     # THE REMAINING TERM IS A DIFFERENT MECHANISM, and the control that says so
-    # is in the unit suite ("the depth-ramp mosaic ...", M1.P3.T20).  On
+    # is in the unit suite ("the depth-ramp mosaic ...", M1.P3.T20/T21).  On
     # hand-built planes with no kernel, no holdout, no flatten and no
     # quantisation, a ramp whose fragments each occupy their OWN bucket pair is
-    # now EXACT at every bucket count, N, alpha AND split fraction — where the
+    # EXACT at every bucket count, N, alpha AND split fraction -- where the
     # pre-T20 composite read -4.11 / -17.44 / -21.63% at N=2/16/64 for alpha
-    # 0.90.  Pack the pairs ADJACENTLY, as a real ramp does, and the deficit
-    # comes back at exactly this scale (-2.4 to -5.8% over N=4..64), because
-    # bucket k then pools fragment k's head and fragment k-1's rear, whose
-    # per-unit opacities are partitionAlpha(alpha, 1-frac) and
-    # partitionAlpha(alpha, frac) — different for every split fraction but 0.5 —
-    # and the composite's C_k : D_k area split cannot separate them.  That is
-    # harness f3c/f3d's mechanism: information lost at ACCUMULATION, not at
-    # composition, and no per-bucket composite rule can undo it.
+    # 0.90.  Pack the pairs ADJACENTLY, as a real ramp does, and a deficit comes
+    # back at exactly this scale, because bucket k then pools fragment k's head
+    # and fragment k-1's rear, whose per-unit opacities are
+    # partitionAlpha(alpha, 1-frac) and partitionAlpha(alpha, frac) --
+    # different for every split fraction but 0.5 -- and the composite's
+    # C_k : D_k area split cannot separate them.  That is harness f3c/f3d's
+    # mechanism: information lost at ACCUMULATION, not at composition, and no
+    # per-bucket composite rule can undo it.
+    #
+    # SINCE M1.P3.T21 THAT TERM HAS A CLOSED FORM, which is what makes it a
+    # residual rather than a mystery: the composite hands both sub-layers the
+    # mean m = (a0 + a1)/2, so each fragment's tile reads 1 - (1-m)^2 instead of
+    # 1 - (1-a0)(1-a1) = alpha, and AM-GM makes that a DEFICIT for every
+    # fraction but 0.5.  At alpha 0.90 it is -4.107% at frac 0.25 AND at 0.75,
+    # at every N -- pinned in the unit suite against the closed form, not
+    # against a re-run.  (T20 read -2.42/-3.69/-4.00% and -5.79/-4.53/-4.21%
+    # there: N-dependent and asymmetric in the fraction, because the single tile
+    # mixed this term with the mosaic error T21 removed.)  This scene's ramp
+    # gives every scanline its own split fraction, so it cannot reach zero.
     #
     # CORRECTED AT M1.P3.T20's REVIEW.  T20 first attributed this to fragments
     # carrying DIFFERENT split fractions from one another.  It is not that: the
     # unit suite's own cells hold the fraction CONSTANT across every fragment
-    # and still read -2.42 / -3.69 / -4.00% (frac 0.25) and -5.79 / -4.53 /
-    # -4.21% (frac 0.75) at N=4/16/64.  Only frac == 0.5 is exact.  A real ramp
-    # gives every scanline its own fraction, which reads -4.91% at N=16 — the
-    # same scale, for the same one-bucket reason — which is why this scene
-    # cannot reach zero.
+    # and still read a deficit.  Only frac == 0.5 is exact.
     #
     # PINNED AS A BAND, not as a ceiling, and K IS FIXED AT 16 here rather than
     # taken from --k: a one-sided bound would be satisfied by every improvement
     # AND by a --k that moved it, and neither is what this check is for.
     # MUTATION-TESTED at M1.P3.T20 by rendering this very scene through seven
-    # separate mutations of compositePixelCoveragePartition():
+    # separate mutations of compositePixelCoveragePartition(), and RE-TESTED at
+    # M1.P3.T21 against the mutations the head-tile stack makes available:
     #
     #   full pre-T20 revert                                   0.1607
     #   always carry the chain's tile forward                 0.1315
@@ -1125,26 +1145,47 @@ def sceneG(settings):
     #   claim area = cov instead of fit                       0.0703
     #   multiplicative `tClaimed *= (1 - resLocal)` again     0.0598
     #   the excess share does not attenuate tHead             0.0491
+    #   ---- added at M1.P3.T21 ----
+    #   M1.P3.T20's single head tile (i.e. this fix reverted) 0.0543
+    #   allocate the residual OLDEST tile first (FIFO)        0.0718  (+8 FAILs)
+    #   the residual never overflows onto this bucket's claim 0.0325  NOT CAUGHT
+    #   the partly-covered frontier tile does not split       0.0325  NOT CAUGHT
     #
-    # The two nearest sit 0.0052 and 0.0055 from the pin, so the band is 0.004:
-    # every one of the seven lands outside it.  All seven readings were
-    # independently re-rendered at M1.P3.T20's review and reproduce exactly.
+    # The band stays 0.004: the nearest mutation is now 0.0218 away (a straight
+    # revert of this fix) and the nearest of the old seven 0.0166, so every one
+    # of the eleven lands outside it.  The last two are recorded as NOT CAUGHT
+    # here rather than left unstated: this check does not bound them.
     #
-    # An eighth, added at that review — registering the `excess` share as its
-    # own head tile, which the isolated arithmetic argues FOR — reads 0.0825
-    # here and takes g1/g2/g3 back to 1.082e-02 / 4.954e-02 / 3.200e-02, i.e.
-    # the fit-only rule is confirmed by pixels and not only by argument.
+    # CORRECTED AT M1.P3.T21's REVIEW, which re-ran both against the unit suite.
+    # "the residual never overflows onto this bucket's claim" is caught, by 9
+    # assertions, as recorded.  "the partly-covered frontier tile does not
+    # split" is caught by NOTHING: forcing the whole-tile branch (which is what
+    # the stack-overflow path itself does) leaves all 175 429 unit assertions
+    # passing AND leaves this check at 0.0325.  The branch is not dead -- it
+    # fires 14 600 times in the unit suite -- so the suite exercises it without
+    # constraining it.  What IS caught, by 3 assertions on T9's pinned
+    # behind-focus residue, is the OTHER formulation the source names: scaling
+    # `resLocal` by the covered share instead of splitting (61.00% -> 70.53%).
+    # The unguarded direction is DOWNWARD (the whole-tile branch over-occludes
+    # the uncovered ring), which the honest-alpha contract permits, so this is a
+    # gap in coverage rather than an unbounded hazard -- but it is a gap, and
+    # "caught by 1 assertion" was not measured.
+    #
+    # An eighth mutation from T20 -- registering the `excess` share as its own
+    # head tile, which the isolated arithmetic argues FOR -- reads 0.0825 here
+    # and takes g1/g2/g3 back to 1.082e-02 / 4.954e-02 / 3.200e-02, i.e. the
+    # fit-only rule is confirmed by pixels and not only by argument.
     #
     # ("claim area = cov" was recorded by T20 as caught HERE and nowhere else.
     # Re-run at the review it is also caught by g1 (9.980e-03 against a
-    # 1.0e-03 gate), g2 (4.906e-02) and g3 (3.191e-02) — four rendered checks,
+    # 1.0e-03 gate), g2 (4.906e-02) and g3 (3.191e-02) -- four rendered checks,
     # not one.  It does still survive the whole unit suite.)
     #
     # THIS CHECK CANNOT PASS, BY CONSTRUCTION: it is a band around a residual,
-    # so any change to the reading — an improvement included — turns it FAIL.
-    # Whoever moves it next must RE-PIN it in the same commit, exactly as this
-    # task did.
-    G4_PIN, G4_BAND = 0.0543, 0.004
+    # so any change to the reading -- an improvement included -- turns it FAIL.
+    # Whoever moves it next must RE-PIN it in the same commit, exactly as
+    # M1.P3.T20 and M1.P3.T21 did.
+    G4_PIN, G4_BAND = 0.0325, 0.004
     g4K = 16
     g4Alpha = 0.90
     g4Colour = tuple(c * g4Alpha for c in GROUND_COLOR[:3]) + (g4Alpha,)

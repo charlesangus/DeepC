@@ -2028,6 +2028,10 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 // error the substitution cost.  `tHead` IS THE FIFTH SCALAR (M1.P3.T20) — the
 // transmittance of the SUB-AREA the residual actually sits on, rather than the
 // pooled mean over everything claimed; see "THE HEAD TRANSMITTANCE" below.
+// SINCE M1.P3.T21 IT IS A STACK OF SUCH SUB-AREAS, one per parent, and `aRes`
+// is allocated across them by area — read the two sections together: T20's
+// argument for WHICH transmittance a residual sees is unchanged, and T21 only
+// stops one parent's tile from being thrown away to make room for another's.
 //
 // THE RESIDUAL'S ALPHA IS NOT CLAMPED TO THE CLAIMED AREA (M1.P3.T8 review).
 // It was `min(aRes, claimedArea)` — "a layer cannot block more area than it
@@ -2208,8 +2212,9 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 //      this pixel — by construction, since a fractional split's rear lands one
 //      bucket behind its head and a split parent's parts land in consecutive
 //      buckets — so every other fragment's head AND rear were occluding it for
-//      free.  `tHead` carries the right tile forward; see the merge rule at the
-//      bottom of the loop for how it is chosen when a bucket leaves two.
+//      free.  The head-tile stack carries the right tile forward; see the
+//      allocation in the residual branch for how a bucket that leaves two (or
+//      sixteen) keeps all of them, which is M1.P3.T21.
 //   2. `tClaimed *= (1 - resLocal)` occluded the WHOLE claimed share with a
 //      layer that covered only `resArea` of it.  The area-weighted form is
 //      subtractive: the tile loses `resLocal` of its own `tHead`, so the mean
@@ -2266,22 +2271,95 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 // g1 (9.980e-03 against a 1.0e-03 gate), g2 (4.906e-02 against 3.9e-03) and
 // g3 (3.191e-02 against 3.9e-03), i.e. by four rendered checks, not one.
 //
-// AND ONE THING THIS RULE COSTS, found at T20's review and NOT fixed here.
-// Only ONE head tile is carried, so a bucket that both claims new area and
-// continues a residual chain must DISCARD one of the two (see the merge rule at
-// the bottom of the loop).  Where the two are disjoint the chain is the one
-// dropped, and a later part of the chain's own parent is then attenuated by an
-// unrelated fresher tile.  That is invisible on a mosaic of parents whose
-// bucket runs do not overlap (the case the unit suite pins), but two multi-part
+// THE HEAD-TILE STACK — WHY ONE TILE WAS NOT ENOUGH (M1.P3.T21).
+// T20 carried ONE head tile, so a bucket that both claimed new area and
+// continued a residual chain had to DISCARD one of the two, and discarding is
+// free only while the discarded chain has no deposits left.  Two multi-part
 // parents at OVERLAPPING depth ranges — two fog slabs, or a fog slab and a
-// point fragment, whose kernel weights tile one destination pixel — now read
-// UP TO +18.3% HIGH where the pre-T20 composite read 4-16% LOW.  The sign is
-// the honest-alpha contract's forbidden one.  Pinned as a band in the unit
-// suite ("staggered multi-part parents ...") so it cannot drift unnoticed;
-// neither `always carry the chain` (-9.3% on the dense ramp) nor `merge the two
-// by area` (-5.9% on the ramp, g4 0.0913, 40 unit assertions) is an acceptable
-// trade, so the fix is more state, and that is a Phase 1.4/M2 question.
+// point fragment, whose kernel weights tile one destination pixel — both have
+// deposits left, and the dropped one was then attenuated by the survivor's
+// tile, which is not in front of it.  Swept over parts x offset x weight x
+// alpha that read up to +21.1% HIGH (the reviewer's own sweep found +18.3%),
+// saturating the output alpha to exactly 1 at alpha 0.90, where the pre-T20
+// composite read 4-16% LOW.  The sign is the honest-alpha contract's forbidden
+// one, and two fog slabs at overlapping depths is ordinary comp content.
 //
+// THE FIX IS MORE STATE, and neither cheap alternative was a trade worth
+// making: `always carry the chain` reads -9.3% on the dense ramp and `merge the
+// two by area` -5.9% there, takes harness g4 to 0.0913 and fails 40 unit
+// assertions — because the question was never "what is the mean" but "which
+// tile does the NEXT deposit land on".  So the composite now carries a STACK of
+// tiles, newest last, and a residual is ALLOCATED across it by area from the
+// newest end (see the loop above), with only the overflow landing on the tile
+// this bucket itself just claimed.  Both of T20's branches survive as special
+// cases of that allocation: the dense depth ramp, where the residual is exactly
+// the newest tile's own rear (T20's `else`), and the M1.P3.T13/T15 same-pixel
+// collision, where it overflows onto this bucket's claim (T20's `>` branch).
+// Both read identically to T20 to within float reassociation, NOT bit for bit
+// (corrected at T21's review, which ran a 4 000-pixel single-open-chain corpus
+// -- spaced splits, one volumetric parent, same-pixel collisions, the excess
+// regime -- through T20's committed build and this one): 107 of 8 000 scalars
+// differ, worst 2 ULP / 1.6e-07 relative.  The allocation reaches the same
+// quantity by a different summation order, so the behaviour is preserved and
+// the arithmetic is not.  Nothing depends on the difference; the claim does.
+//
+// WHAT IT BOUGHT, on hand-built planes with no kernel, no holdout and no
+// flatten, against the disjoint-tiling oracle (the parents' weights sum to 1,
+// so truth is alpha with no ordering assumption):
+//
+//   * the staggered sweep — parts {2,3,4} x offsets 1..5 x 7 weights x 5 alphas,
+//     525 cells — goes from 153 cells over +0.5% (worst +12.3%) to ZERO, worst
+//     +0.000%.  Widened to parts up to 8 and offsets to 7 (2268 cells) it goes
+//     from 1024 cells and +21.1% to zero.
+//   * 40 000 randomised pixels of 2-6 equal-alpha parents at random weights,
+//     part counts and overlapping start buckets: T20 read 18 580 of 20 000
+//     cells high at 5 parts, worst +28.8%; this reads ZERO high, worst
+//     +0.0000%, i.e. EXACT wherever the per-unit opacities agree.
+//   * end to end, harness g4 0.0543 -> 0.0325, g2/g3 at K=16 7.153e-07 ->
+//     1.192e-07 and 2.980e-07 -> 1.192e-07, f3b -0.001% -> -0.000%.  Every
+//     other check in the suite is bit-identical, INCLUDING scene (a)'s size-0
+//     parity (a3 1.192e-07 against its 2.4e-07 gate, unmoved) and T9's pinned
+//     behind-focus residue.
+//
+// READ THE THREE BULLETS ABOVE WITH THEIR SCOPE ATTACHED (T21's review).  Every
+// one of them holds the parents' alpha EQUAL — that is the sweep's only
+// unvaried axis, and it is exactly the constraint under which this composite
+// CAN be exact.  "Zero cells, worst +0.000%" is a true statement about the
+// equal-alpha family and not about staggered parents in general; see below.
+//
+// WHAT IS LEFT.  Over the same randomised corpus with the parents' alphas
+// allowed to DIFFER, 34% of pixels still read over +0.5% and the worst is
+// +83.8% (T21's review's own 320 000-pixel corpus reads +91.4% volumetric and
+// +99.2% deep-mixed, against +105.5% / +113.0% under T20 — so this is a large
+// improvement and no regression, but it is NOT closed).  Every one of them has
+// two parents' deposits in ONE bucket: the corpus splits exactly, the pixels
+// with no shared bucket reading EXACT and every error living among those that
+// share one.  (That split is near-tautological — for consecutive-part parents,
+// "shares a bucket" and "has an overlapping range" are the same condition — so
+// it localises the error without identifying its mechanism.)
+//
+// AND THE MECHANISM IS NOT f3c/f3d's.  T21 recorded this residual as the
+// accumulation-time pooling of unequal per-unit opacities, i.e. the C_k : D_k
+// split guessing how a bucket's alpha divides between its new-area and
+// co-located deposits.  T21's review tested that directly by rebuilding this
+// function to take a FIFTH plane carrying the co-located alpha, so the split is
+// READ rather than guessed.  Result: the dense ramp's -4.107% below goes to
+// +/-0.0001% at every N and both split fractions — that term really is the
+// C_k : D_k split and one more plane closes it — while the +64.6% two-parent
+// case is left BIT-UNCHANGED.  Two mechanisms, and the big one is the other:
+//
+//   TILE MIS-ASSIGNMENT ACROSS OPEN CHAINS.  The planes carry no parent
+//   identity, so when several chains are open, which tile a bucket's co-located
+//   area sits on is undecidable from them.  Minimal case: two volumetric
+//   parents, w 0.5/0.5, parts 5 and 1, alpha 0.99 and 0.10, offset 2.  At the
+//   bucket carrying parent 1's fourth part the stack holds parent 1's tile
+//   (T = 0.0631) and parent 2's fresh claim (T = 0.90); NEWEST-FIRST hands
+//   parent 1's residual parent 2's tile, contributing 0.271 where truth is
+//   0.019.  Swapping to OLDEST-FIRST moves that case to +22.4% and takes the
+//   dense ramp from -4.11% to -27.4%: the two orders trade, neither is right,
+//   and the choice is a Pareto point, not an approximation converging on
+//   anything.  Unlike the C_k : D_k split, NO fixed number of planes recovers
+//   this — parent count per bucket is unbounded — so it is permanent.
 // AND ONE RESIDUAL THIS DID NOT TOUCH, PRE-DATING T20 AND STILL OPEN.  In the
 // `excess` regime a fragment's head registers NO tile (see the fit branch), so
 // its own co-located rear is attenuated by whatever tile the pixel happened to
@@ -2326,6 +2404,87 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 // A bucket with neither coverage nor alpha is SKIPPED.  A bucket with coverage
 // but no alpha still contributes its colour and still claims area.
 // ---------------------------------------------------------------------------
+// mergeOldestHeadTiles — capacity relief for the mosaic below.  Folds the two
+// OLDEST tiles into one, which is the pooled behaviour M1.P3.T20 had for ALL of
+// them, applied to the chains least likely to still be open (a residual is
+// allocated from the newest end).  Area is conserved, so the mosaic never gains
+// or loses any.
+//
+// THE MERGED TRANSMITTANCE IS THE MINIMUM, NOT THE AREA-WEIGHTED MEAN, and the
+// reason is the honest-alpha contract rather than a measurement: min <= the
+// mean, and a lower tile transmittance can only REDUCE the alpha a later
+// residual adds, so whatever the cap costs it costs downward — the direction
+// the contract permits.  Said plainly: over 80 000 randomised overflow pixels
+// the two forms were indistinguishable (identical worst readings in every row,
+// mean |error| within 0.02 points), so this is chosen on the argument and NOT
+// on the numbers; if a later corpus separates them, that measurement decides.
+DEEPC_HD inline void mergeOldestHeadTiles(float* __restrict__ tileT,
+                                          float* __restrict__ tileA,
+                                          int&                tileCount)
+{
+    if (tileCount < 2)
+        return;
+    tileT[0] = (tileT[0] < tileT[1]) ? tileT[0] : tileT[1];
+    tileA[0] = tileA[0] + tileA[1];
+    for (int t = 1; t < tileCount - 1; ++t) {
+        tileT[t] = tileT[t + 1];
+        tileA[t] = tileA[t + 1];
+    }
+    --tileCount;
+}
+
+// THE DEPTH OF THE HEAD-TILE STACK (M1.P3.T21).  ONE TILE PER PARENT WHOSE
+// RESIDUAL CHAIN IS STILL OPEN, plus the tiles of parents whose chains have
+// closed — nothing here can tell those apart, since a chain's end is not
+// recorded in any plane, so a tile is retired only by capacity.  Measured over
+// 20 000 randomised pixels of N equal-alpha parents (random weights summing to
+// 1, random part counts, random overlapping start buckets), judged against the
+// disjoint-tiling oracle `sum_j w_j*alpha_j` — worst UPWARD reading / mean
+// |error|:
+//
+//   parents          4               8              16              32
+//   M1.P3.T20  +21.86% / 2.32  +21.22% / 2.76  +22.75% / 3.10  +18.95% / 3.34
+//   depth 2     +0.000% / 2.28   +0.000% / 5.34   -0.357% / 9.18   -0.769% /11.83
+//   depth 4     +0.000% / 1.29   +0.000% / 2.27   -0.106% / 2.90   -0.160% / 3.00
+//   depth 8     +0.000% / 1.29   +0.000% / 2.25   -0.106% / 2.85   -0.149% / 2.96
+//
+// TWO TILES ALREADY REMOVE THE UPWARD ERROR ENTIRELY — past the cap the stack
+// folds its two oldest tiles together and a partly-covered frontier tile can no
+// longer split, and both of those OVER-occlude, which is the direction the
+// honest-alpha contract permits.  What the depth buys after that is the size of
+// the remaining DEFICIT.  On the random corpus above that knee is at 4 and 8,
+// 16 and 32 are indistinguishable out to 128 parents; on the WORST case the
+// unit suite pins — 32 equal parents of 32 parts each, i.e. 32 chains open at
+// once — it still matters: depth 8 reads -20.84%, depth 16 -5.13%.  16 is the
+// shipped depth for that row, and it costs nothing at the default K (577 vs
+// 581 ns/pixel, below this benchmark's own noise).
+//
+// COST.  A per-THREAD stack frame alive only inside one call: 2 floats per tile,
+// 128 bytes at depth 16, independent of K, of the band size, of the format and of
+// the thread count.  It adds NOTHING to the memory_limit formula
+// (`K*W*B*(C+3)*4`), which counts the bucket planes — no plane, and no
+// per-bucket state of any kind, is added by M1.P3.T21.  In time, on a
+// worst-case synthetic where EVERY bucket carries both new and co-located area
+// (4 channels, 20 000 pixels, best of 7), against M1.P3.T20's single tile:
+//
+//   K=16   319 -> 581 ns/pixel     K=64  1379 -> 2900     K=128  3009 -> 6901
+//
+// (depth 8 would read 577 / 2598 / 6030 — same at the default K, 14% cheaper at
+// K=128, and worse on the 32-chain row above.)
+//
+// i.e. the composite roughly doubles, on a pass that is O(K) per destination
+// pixel against the scatter's O(sum pi r^2) per fragment; the harness's own
+// render totals do not separate it from run-to-run variance.
+constexpr int kCompositeHeadTiles = 16;
+
+// Two is the floor, not a formality: mergeOldestHeadTiles() folds tiles 0 and 1
+// together, so a depth of 1 reads off the end of the array.  A mutation run that
+// set this to 1 to approximate M1.P3.T20's single tile SEGFAULTED the whole
+// harness rather than reporting a number; anyone re-running that comparison has
+// to revert the rule, not shrink the stack.
+static_assert(kCompositeHeadTiles >= 2,
+              "the head-tile merge needs at least two tiles");
+
 DEEPC_HD inline void compositePixelCoveragePartition(
     const float* __restrict__ bucketColor,
     const float* __restrict__ bucketAlpha,
@@ -2358,19 +2517,25 @@ DEEPC_HD inline void compositePixelCoveragePartition(
     float tClaimed   = 1.0f;
     float accAlpha   = 0.0f;
 
-    // THE HEAD TRANSMITTANCE (M1.P3.T20).  The transmittance of the SUB-AREA a
-    // co-located deposit lands on, as opposed to `tClaimed`, which is the mean
-    // over EVERYTHING claimed so far.  A co-located deposit sits on area its own
-    // parent's head claimed — one bucket in front of it for a fractional split,
-    // the run of buckets in front of it for a volumetric parent's parts, and
-    // THIS SAME BUCKET for a same-pixel collision group (M1.P3.T13/T15, where a
-    // non-head fragment's co-located area lands in the very bucket its group's
-    // head claimed).  So the value a residual is attenuated by is the
-    // area-weighted merge of what this bucket just claimed with what the last
-    // one left behind — `headArea` is the area `tHead` describes, and it is the
-    // weight in that merge.  See the header block for what this fixes.
-    float tHead      = 1.0f;
-    float headArea   = 0.0f;
+    // THE HEAD-TILE MOSAIC (M1.P3.T20, made plural at M1.P3.T21).  The
+    // transmittance of the SUB-AREA a co-located deposit lands on, as opposed
+    // to `tClaimed`, which is the mean over EVERYTHING claimed so far.  A
+    // co-located deposit sits on area its own parent's head claimed — one
+    // bucket in front of it for a fractional split, the run of buckets in front
+    // of it for a volumetric parent's parts, and THIS SAME BUCKET for a
+    // same-pixel collision group (M1.P3.T13/T15, where a non-head fragment's
+    // co-located area lands in the very bucket its group's head claimed).
+    //
+    // T20 carried ONE such tile, so a bucket that both claimed area and
+    // continued a chain had to discard one of the two and the dropped parent's
+    // later parts were attenuated by an unrelated tile — up to +18.3% HIGH on
+    // two fog slabs at overlapping depths.  The stack below carries the tiles
+    // side by side instead, newest LAST, and a residual is ALLOCATED across
+    // them by area from the newest end.  See "THE HEAD-TILE STACK" in the
+    // header block for the derivation, the LIFO argument and the depth.
+    float tileT[kCompositeHeadTiles];
+    float tileA[kCompositeHeadTiles];
+    int   tileCount = 0;
 
     for (int k = 0; k < bucketCount; ++k) {
         const std::ptrdiff_t ko = static_cast<std::ptrdiff_t>(k) * pixelCount;
@@ -2441,13 +2606,14 @@ DEEPC_HD inline void compositePixelCoveragePartition(
         const float resShare = (a > 0.0f) ? (aRes / a) : 0.0f;
         const float covShare = 1.0f - resShare;
 
-        // What this bucket leaves behind for the co-located deposits that
-        // follow it: `claimT` over `claimA` for the area it covers itself,
-        // `chainT` over `chainA` for a residual chain it continues.  Negative
-        // means "this bucket contributes no such area", which is what keeps a
-        // bucket that only carries colour from resetting the chain.
+        // The tile this bucket leaves behind for the co-located deposits that
+        // follow it: `claimT` over `claimA`, the area it covers itself.  A
+        // chain this bucket CONTINUES needs no such pair since M1.P3.T21 — its
+        // tile is already on the stack and is attenuated there in place.
+        // Negative means "this bucket claims no area of its own", which is what
+        // keeps a bucket that only carries colour from touching the mosaic.
         float claimT = -1.0f, claimA = 0.0f;
-        float chainT = -1.0f, chainA = 0.0f;
+        float claimRingT = -1.0f, claimRingA = 0.0f;
 
         if (cov > 0.0f) {
             // <= 1 by construction (both branches above bound aCov by cov);
@@ -2512,9 +2678,9 @@ DEEPC_HD inline void compositePixelCoveragePartition(
                 tClaimed *= att;
 
                 // A layer spread over the whole claimed share also covers
-                // whatever a chain in progress — and whatever this bucket's own
-                // fit share — is sitting on.
-                tHead    *= att;
+                // every tile of the mosaic — and this bucket's own fit share.
+                for (int t = 0; t < tileCount; ++t)
+                    tileT[t] *= att;
                 if (claimT >= 0.0f)
                     claimT *= att;
             }
@@ -2536,16 +2702,55 @@ DEEPC_HD inline void compositePixelCoveragePartition(
             // layer is BEHIND the head that claimed the area it sits on, and
             // behind nothing else at this pixel by construction — the pooled
             // mean folds in area belonging to OTHER parents, which is what made
-            // a depth ramp lose up to 38.9% of an alpha<1 surface.  When
-            // nothing has claimed any area at all, `mergeArea` is 0 and tHead is
-            // still exactly 1, so this is the same unoccluded deposit the pre-T9
-            // `claimed == 0` branch made — bit for bit.
-            const float mergeArea = claimA + headArea;
-            const float tHeadIn   =
-                (mergeArea > 0.0f)
-                    ? ((claimA > 0.0f ? claimA * claimT : 0.0f)
-                       + headArea * tHead) / mergeArea
-                    : tHead;
+            // a depth ramp lose up to 38.9% of an alpha<1 surface.
+            //
+            // ALLOCATED ACROSS THE MOSAIC BY AREA, NEWEST TILE FIRST
+            // (M1.P3.T21).  `resArea` of co-located area arrived; it lands on
+            // the tiles the chains in front of it left, and only what does not
+            // fit on those lands on the tile THIS bucket just claimed.  Newest
+            // first because the newest open chain is the one a bucket's own
+            // residual continues — that is the dense depth ramp, where bucket k
+            // carries fragment k's head and fragment k-1's rear and the rear
+            // must see its own head rather than a fresher one.  Each tile is
+            // then attenuated by the share of the residual that landed ON IT,
+            // so two parents' chains stop occluding each other.
+            //
+            // Normalised by the area actually allocated, not by `resArea`: a
+            // rear part's disc can be denser than its head's (THE FOURTH PLANE
+            // above), so `resArea` can exceed everything claimed, and dividing
+            // by it would silently DROP the overhanging alpha rather than
+            // attenuate it.  When nothing has claimed any area at all, nothing
+            // is allocated and `tHeadIn` is exactly 1, which is the same
+            // unoccluded deposit the pre-T9 `claimed == 0` branch made — bit
+            // for bit.
+            float need = resArea;
+            float tSum = 0.0f;
+            float aSum = 0.0f;
+            int   lastTile = tileCount;         // tiles [lastTile, tileCount) took some
+            float lastTake = 0.0f;              // ...and the OLDEST of them took this
+            for (int t = tileCount - 1; t >= 0 && need > 0.0f; --t) {
+                const float s = (tileA[t] < need) ? tileA[t] : need;
+                if (!(s > 0.0f))
+                    continue;
+                tSum += s * tileT[t];
+                aSum += s;
+                need -= s;
+                lastTile = t;
+                lastTake = s;
+            }
+            // The overflow — and, when no chain is open, the whole of it —
+            // lands on this bucket's own fit share.  That is the M1.P3.T13/T15
+            // same-pixel collision shape, where a group's non-head fragment
+            // deposits its co-located area into the very bucket the group's
+            // head claimed.
+            float claimTake = 0.0f;
+            if (claimT >= 0.0f && need > 0.0f && claimA > 0.0f) {
+                claimTake = (claimA < need) ? claimA : need;
+                tSum += claimTake * claimT;
+                aSum += claimTake;
+                need -= claimTake;
+            }
+            const float tHeadIn = (aSum > 0.0f) ? (tSum / aSum) : 1.0f;
 
             accAlpha += aRes * tHeadIn;
             for (int c = 0; c < channelCount; ++c) {
@@ -2555,6 +2760,63 @@ DEEPC_HD inline void compositePixelCoveragePartition(
 
             if (resArea > 0.0f) {
                 const float resLocal = clampf(aRes / resArea, 0.0f, 1.0f);
+
+                // EACH TILE THE RESIDUAL REACHED LOSES `resLocal` — its
+                // OWN per-unit opacity `aRes / D_k`, which THE FOURTH PLANE
+                // above shows is exactly a split parent's `a_p` at any radius.
+                // A tile it never reached is untouched, which is what stops two
+                // overlapping parents' chains from occluding each other.
+                for (int t = lastTile + 1; t < tileCount; ++t)
+                    tileT[t] = clampf(tileT[t] * (1.0f - resLocal), 0.0f, 1.0f);
+
+                // THE OLDEST TILE REACHED MAY BE ONLY PARTLY COVERED, AND IT
+                // SPLITS RATHER THAN AVERAGING.  Behind focus a parent's parts
+                // rasterise ever WIDER discs, so each part's per-pixel weight is
+                // smaller than its head's and every residual covers only a core
+                // of the tile in front of it.  Scaling `resLocal` by the covered
+                // share instead — treating the tile as one uniform area — is
+                // algebraically M1.P3.T9's rejected `claimedArea` divisor and
+                // moves that task's pinned behind-focus residue from 61.00% to
+                // 70.53% (measured here, matching what T9 and M1.P3.T17
+                // recorded).  Splitting keeps the covered core and the
+                // uncovered ring as separate tiles: the core carries the
+                // occlusion forward for the parts still to come — which is the
+                // number T9 pinned, bit for bit — while the ring keeps its own
+                // transmittance for anything wide enough to reach it, which is
+                // what the single carried tile used to throw away.
+                if (lastTile < tileCount) {
+                    const float ring = tileA[lastTile] - lastTake;
+                    // The split needs a free slot and MUST NOT make one by
+                    // merging: mergeOldestHeadTiles() renumbers the stack, and
+                    // `lastTile` was resolved before it.  A full stack takes
+                    // the whole-tile branch instead, which over-occludes the
+                    // ring — downward, the direction the contract permits.
+                    if (ring > 0.0f && lastTake > 0.0f
+                        && tileCount < kCompositeHeadTiles) {
+                        for (int t = tileCount; t > lastTile; --t) {
+                            tileT[t] = tileT[t - 1];
+                            tileA[t] = tileA[t - 1];
+                        }
+                        ++tileCount;
+                        tileA[lastTile]     = ring;             // uncovered: T unchanged
+                        tileA[lastTile + 1] = lastTake;
+                        tileT[lastTile + 1] =
+                            clampf(tileT[lastTile + 1] * (1.0f - resLocal), 0.0f, 1.0f);
+                    } else if (lastTake > 0.0f) {
+                        tileT[lastTile] =
+                            clampf(tileT[lastTile] * (1.0f - resLocal), 0.0f, 1.0f);
+                    }
+                }
+
+                // The share that landed on THIS bucket's own claim splits the
+                // same way; both halves are pushed at the bottom of the loop,
+                // uncovered first so the covered core stays the newest tile.
+                if (claimTake > 0.0f && claimA > 0.0f) {
+                    claimRingA = claimA - claimTake;
+                    claimRingT = claimT;
+                    claimA     = claimTake;
+                    claimT     = clampf(claimT * (1.0f - resLocal), 0.0f, 1.0f);
+                }
 
                 // NOT min(aRes, resArea): see the header block above for why
                 // that clamp destroyed a split parent's rear parts.  resLocal
@@ -2570,8 +2832,6 @@ DEEPC_HD inline void compositePixelCoveragePartition(
                     // occluded the WHOLE claimed area with one parent's part.
                     tClaimed = clampf(tClaimed - (aRes * tHeadIn) / claimedArea,
                                       0.0f, 1.0f);
-                    chainT   = tHeadIn * (1.0f - resLocal);
-                    chainA   = resArea;
                 } else {
                     // Nothing had claimed any area, so this layer is the first
                     // thing at this pixel: it claims its OWN area and becomes
@@ -2586,74 +2846,62 @@ DEEPC_HD inline void compositePixelCoveragePartition(
                     claimedArea = claim;
                     freeArea   -= claim;
                     tClaimed    = 1.0f - resLocal;
-                    chainT      = tHeadIn * (1.0f - resLocal);
-                    chainA      = resArea;
+
+                    // It is also the mosaic's first tile — nothing had claimed
+                    // any area, so the stack is empty and this is a plain push.
+                    tileT[0]  = clampf(tHeadIn * (1.0f - resLocal), 0.0f, 1.0f);
+                    tileA[0]  = resArea;
+                    tileCount = 1;
                 }
             }
         }
 
-        // Carry the head transmittance forward.  A bucket that both claimed
-        // area of its own AND continued a chain leaves two candidate tiles
-        // behind, and the pixel's own area is what decides between them:
+        // PUSH THIS BUCKET'S OWN TILE, NEWEST LAST (M1.P3.T21).  T20 carried a
+        // single tile and had to CHOOSE here between the area this bucket
+        // claimed and the chain it continued, and discarding either is free
+        // only while that one has no deposits left.  Two multi-part parents at
+        // OVERLAPPING depth ranges both have deposits left, which is what read
+        // up to +18.3% HIGH.  Both survive now: the chain's tiles were
+        // attenuated in place above, and the claim goes on top of them.
         //
-        //   * `claimA + chainA > claimedArea` — the two tiles CANNOT be
-        //     disjoint, so the residual sat on the very tile this bucket
-        //     claimed and `chainT` already carries that tile's whole occlusion
-        //     (head first, then residual).  Carry the chain.  This is the
-        //     same-pixel collision shape (M1.P3.T13/T15) and the two-layer
-        //     flat field whose layers share one bucket pair, and it is what
-        //     keeps both bit-identical to the pre-T20 composite.
-        //   * otherwise the tiles fit side by side, and the next co-located
-        //     deposit is the rear half of the head this bucket just claimed —
-        //     one bucket in front of it, by the fractional split's own
-        //     construction.  Carry the claim.  This is a depth ramp, where
-        //     every bucket carries one fragment's head and the previous
-        //     fragment's rear, and it is what takes scene (g)'s alpha<1 ramp
-        //     from -18.2% to exact.
+        // NEWEST LAST is the whole of the ordering rule, and it is what the
+        // discarded T20 branch got right on a depth ramp: the residual arriving
+        // in the next bucket is the rear of the head THIS bucket just claimed,
+        // so it must be allocated from this end first.  T20's other branch --
+        // the residual sitting on the very tile this bucket claimed, i.e. the
+        // M1.P3.T13/T15 same-pixel collision shape -- is now the OVERFLOW case
+        // in the allocation above, and reads bit-identically.
         //
-        // Merging the two by area instead reads -5.9% on that ramp (N=16,
-        // alpha 0.90), fails 40 unit assertions and moves harness g4 to 0.0913
-        // against its 0.0543 pin, because the question is not "what is the
-        // mean" but "which tile does the NEXT deposit land on".  (T20 also
-        // reported merging as +5.2% on the collision shape; T20's review could
-        // not reproduce that — on the hand-built shape the unit suite pins,
-        // merging reads exactly 0.600000, the same as this rule.  The rendered
-        // and unit evidence above stands on its own.)
-        //
-        // WHAT THE `else` COSTS, found at T20's review.  Discarding the chain
-        // is only free when the chain has no deposits left.  Two multi-part
-        // parents at OVERLAPPING depth ranges both have deposits left, and the
-        // dropped one is then attenuated by the other's tile: up to +18.3%
-        // HIGH, where the pre-T20 composite read 4-16% LOW.  See the header
-        // block and the unit suite's "staggered multi-part parents" pin.
-        //
-        // The 1e-6 slack is not a fudge: on a depth ramp the two tiles sum to
-        // EXACTLY the claimed area at the second bucket (one fragment's head
-        // plus the previous fragment's rear, both of width 1/N, against a
-        // claimed 2/N), and `claimedArea` is an accumulated sum rather than a
-        // recomputed one, so a bare `>` would flip on float dust in the case
-        // that has to take the `else`.
-        if (chainT >= 0.0f && claimT >= 0.0f) {
-            if (chainA + claimA > claimedArea * (1.0f + 1e-6f)) {
-                tHead    = chainT;
-                headArea = chainA;
-            } else {
-                tHead    = claimT;
-                headArea = claimA;
-            }
-        } else if (chainT >= 0.0f) {
-            tHead    = chainT;
-            headArea = chainA;
-        } else if (claimT >= 0.0f) {
-            tHead    = claimT;
-            headArea = claimA;
+        // The stack is bounded, so a pixel deep enough to overflow it merges
+        // its two OLDEST tiles by area -- the pooled behaviour T20 had for all
+        // of them, applied to the chains least likely to still be open, since a
+        // residual is allocated from the newest end.  Area is conserved by the
+        // merge, so the mosaic never gains or loses any.
+        if (claimRingT >= 0.0f && claimRingA > 0.0f) {
+            if (tileCount == kCompositeHeadTiles)
+                mergeOldestHeadTiles(tileT, tileA, tileCount);
+            tileT[tileCount] = claimRingT;
+            tileA[tileCount] = claimRingA;
+            ++tileCount;
+        }
+        if (claimT >= 0.0f && claimA > 0.0f) {
+            if (tileCount == kCompositeHeadTiles)
+                mergeOldestHeadTiles(tileT, tileA, tileCount);
+            tileT[tileCount] = claimT;
+            tileA[tileCount] = claimA;
+            ++tileCount;
         }
 
-        // `tHead` joins the early-out: the claimed mean can round to zero while
-        // a chain's own sub-area still transmits, and a residual behind it
-        // would then be dropped rather than attenuated.
-        if (!(freeArea > 0.0f) && !(tClaimed > 0.0f) && !(tHead > 0.0f))
-            break;                      // fully opaque: nothing behind shows
+        // The mosaic joins the early-out: the claimed mean can round to zero
+        // while one tile's own sub-area still transmits, and a residual behind
+        // it would then be dropped rather than attenuated.
+        if (!(freeArea > 0.0f) && !(tClaimed > 0.0f)) {
+            bool tileOpen = false;
+            for (int t = 0; t < tileCount; ++t)
+                if (tileT[t] > 0.0f) { tileOpen = true; break; }
+            if (!tileOpen)
+                break;                  // fully opaque: nothing behind shows
+        }
     }
 
     // THE COLOUR IS RESCALED WITH THE ALPHA, NOT LEFT BEHIND (M1.P3.T4 review).
