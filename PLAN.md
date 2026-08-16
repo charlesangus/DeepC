@@ -2,7 +2,7 @@
 title: DeepCDefocus — deep-input, flat-output defocus node
 status: running
 current: M1.P3.T12
-pm_heartbeat: 2026-07-27T14:05:00-04:00
+pm_heartbeat: 2026-08-16T02:45:00-04:00
 ship: pr-per-milestone
 ---
 
@@ -106,13 +106,16 @@ CMake build had never passed an `-O` flag and the shipped plugin contained **zer
 against 402 at `-O3`. T13 and T15 have since closed every same-pixel bucket-collision hole: size-0 parity goes from 2.6e-01
 with ~100% of pixels wrong to ≤5.8e-07 with none, across point, volumetric and mixed content, with the
 holdout connected as well as disconnected. Validation scene (l) is closed with them.
-`current: M1.P3.T12` — the validation-scene sweep (a)–(l) plus the bucket-composite and holdout-
-interpolant bake-offs. Note T5's own size-0 parity clause now passes; its abort-recovery clause remains
-unverified and needs an interactive pass, since headless Nuke cannot trigger a recoverable mid-cook
-cancel.
-Remaining in this milestone: P3 T12, then Phase 1.4 and Phase 1.5. Twelve tasks
-have now been added by execution findings (M1.P3.T0, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, plus
-the enlarged M1.P3.T4 test list).
+`current: M1.P3.T12` — **T12 was split four ways on 2026-08-16** (it bundled a harness build, a
+twelve-scene sweep, two independent decisions and two source deletions — past the sizing rule):
+**T12** = headless harness + validation scenes (a)–(f), **T16** = scenes (g)–(l), **T17** = the
+bucket-composite bake-off + delete the loser, **T18** = the holdout-interpolant bake-off + delete the
+losers. They run in that order. Note T5's own size-0 parity clause now passes; its abort-recovery clause
+remains unverified and needs an interactive pass, since headless Nuke cannot trigger a recoverable
+mid-cook cancel — validation scene (e)'s `Escape` clause is blocked on the same thing.
+Remaining in this milestone: P3 T12, T16, T17, T18, then Phase 1.4 and Phase 1.5. Fifteen tasks
+have now been added by execution findings (M1.P3.T0, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16,
+T17, T18, plus the enlarged M1.P3.T4 test list).
 No PR yet — `ship: pr-per-milestone` puts that at M1's verification gate. The branch
 `claude/deep-defocus-node-plan-o0ld83` is committed but NOT pushed.
 

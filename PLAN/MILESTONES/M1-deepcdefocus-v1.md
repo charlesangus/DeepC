@@ -874,61 +874,112 @@ verified.
     suite's established bar.
   - size: L
 
-- [ ] M1.P3.T12 — Validation scenes (a)–(l) and both bake-off decisions
-  - files: `src/DeepCDefocus.cpp`, `src/DeepCDefocusScatter.h`/`.cpp` (deleting losing paths), this
-    file's `## Decisions`
-  - approach: M1.P3.T15 has landed, so the holdout-connected gap and the cross-kind residual are both
-    closed and the bake-off is a fair comparison on mixed content. Carry these into the sweep:
+> **T12 was split at 2026-08-16** (sizing rule, §6): as written it was a harness build, a
+> twelve-scene sweep, two independent bake-off decisions and two source deletions in one task —
+> far past "one coherent change". It is now **T12** (harness + scenes a–f), **M1.P3.T16**
+> (scenes g–l), **M1.P3.T17** (bucket-composite bake-off) and **M1.P3.T18** (holdout-interpolant
+> bake-off), which must run in that order. See this file's Decisions.
+
+- [ ] M1.P3.T12 — Headless validation harness + scenes (a)–(f)
+  - files: `tests/nuke/` (new — harness + scene builders, Python)
+  - approach: with M1.P3.T5's serial wiring in place and T13/T15 landed, build the **scripted
+    headless harness** every remaining validation task reuses, then run **scenes (a)–(f)** of the
+    Design reference's list through it: `NUKE_PATH=<build dir> /usr/local/Nuke17.0v3/Nuke17.0 -t
+    <script.py>`. The harness must build each scene from Python nodes (no committed `.nk` — that is
+    M1.P5.T3's job), render, and report **numeric** pass/fail against each scene's stated check,
+    not eyeballed pixels. It must expose `combine`, `holdoutInterp`, `K` and `pre_merge` as harness
+    parameters, since T16/T17/T18 drive the same scenes at different settings.
+    Carry these findings in:
     **scene (b) must be built with `DeepHoldout2`, not `DeepHoldout`** — the latter's input 1 is a 2D
-    depth image and cannot take a deep input, which is what made it look unbuildable headless; pick the
-    reference deliberately, since `DeepHoldout2`'s flatten differs from volumetric `DeepToImage` by
-    |dc| 3.8e-03 on 11.9% of pixels on volumetric spans. **Expect holdout scenes near scene (f) to show
-    the M1.P3.T10 log-chord erasure** — that is the documented residual, not a T12 defect (Midpoint step
-    reads 16 wrong pixels there against Log chord's 157, which is itself evidence for T11's bake-off).
-    Connecting even a *non-occluding* holdout still moves defocused pixels by up to 1.78e-01 through
-    merge regrouping, so set `pre_merge` explicitly, as already instructed.
-    With M1.P3.T5's serial wiring in place, run **validation scenes (a)–(l)** from the
-    Design reference against it in the local Nuke install (scripted headless — `NUKE_PATH=<dir>
-    /usr/local/Nuke17.0v3/Nuke17.0 -t <script.py>`). All must pass before Phase 1.4 changes the
-    execution model. **This is the milestone's core correctness gate.** Committed `.nk` scripts are
-    M1.P5.T3's job, not this task's — here they can be built in the harness.
-  - verify: every scene (a)–(l) passes its stated check. Plus the two decisions below, each recorded
-    in this file's Decisions with its comparison, and each losing path plus its flag **deleted** before
-    the milestone gate.
-    It **decides the bucket-composite question**: render scenes (c), (f), (g) and (i) through both of
-    M1.P3.T2's candidates, pick the one whose pixels are right, record the outcome and the
-    comparison in this file's Decisions, and delete the losing path plus its flag before the
-    milestone gate. **Set `ScatterParams::combine` explicitly for each render** — never rely on the
-    provisional default (see Decisions). Scene (g) needs a **steep** ramp: the deficit scales with how
-    many buckets a destination pixel's CoC neighbourhood straddles, not with K alone (a gentle ramp
-    lost only 4.8% end-to-end versus 35.6% in the synthetic K=16 worst case), so a shallow ramp would
-    understate the very effect being judged. **It also decides M1.P3.T11's `interpAtBucket` variant** —
-    the erase-FG-in-front vs leak-BG-behind trade, judged from scenes (e) and (f); record the outcome
-    here and delete the losing variants with the flag, same discipline as the bucket composite. That
-    bake-off **must include a genuinely dense volumetric holdout** — many samples in depth, not a
-    single fog-slab sample: T11's review disproved the assumption that these variants only affect
-    fully-opaque content, since a run of α<1 samples underflows the transmittance product to bitwise
-    zero at ordinary counts (46 at α=0.9) and the three then diverge hard. Do not write the comparison
-    up as risk-free on α<1 content.
-    Note from T4: the `over`-vs-partition discriminator is **not** a flat single-depth field (both give
-    α=1 there, since saturation clamps) — it is a field whose fragments land in *different* buckets with
-    `frac == 0`, which is what scene (g)'s steep ramp must actually produce. The behind-focus residue
-    and the interpolant divergence are now pinned by tests, so a bake-off that moves them fails the
-    suite and needs adjudication rather than a silent tolerance bump.
-    Report scenes (f)/(g) fog density against M1.P3.T8's
-    coverage-head fix, and expect a residual ~4%/layer loss where fragments with *different* split
-    fractions share a bucket (measured: two fully-covering 50% fog layers give 0.7297 vs the exact
-    0.75) — it is identical under both candidates, so it does not bias the comparison.
-    **Set `pre_merge` explicitly too** — since M1.P3.T8 it moves the coverage plane, which is what
-    diagnoses scene (i). **Report band-alpha and flat-field readings separately**: the same input reads
-    two orders of magnitude apart between them (a full-range α=0.9 fog slab is +6.65% as an isolated
-    band-alpha sum and 0.8999999 as a flat field), so weigh scenes (f)/(g) *interiors* separately from
-    scene (i)-style sparse content, and do not read a sparse-content number as a fog-interior one. In
-    front of focus candidate 2 is now exact, so the comparison is fair; behind focus expect the
-    structural +45.2/+51.2/+59.1% at 3/4/8 buckets under *both* candidates (plain `over` tracks the
+    depth image and cannot take a deep input, which is what made it look unbuildable headless; pick
+    the reference deliberately, since `DeepHoldout2`'s flatten differs from volumetric `DeepToImage`
+    by |dc| 3.8e-03 on 11.9% of pixels on volumetric spans. Scene (a)'s parity tolerances are the
+    three scoped ones in the Design reference's scene list (≤2e-07 absolute, **not** 0 ULP), and its
+    volumetric row **must pin `volumetric_composition` ON** on the `DeepToImage` it compares against.
+    **Expect scene (f) to show the M1.P3.T10 log-chord erasure** — that is the documented residual,
+    not a T12 defect, and T18 is where it is judged; report it, do not "fix" it here. Connecting even
+    a *non-occluding* holdout moves defocused pixels by up to 1.78e-01 through merge regrouping, so
+    **set `pre_merge` and `combine` explicitly in every render** — never rely on a default.
+    **Scene (e)'s `Escape` mid-cook cancel clause cannot be exercised headless** (same limitation
+    M1.P3.T5 hit: `nuke.cancel()` from a timer thread does nothing, `SIGINT` kills the process) —
+    run the rest of (e), and leave the cancel clause to the interactive pass M1.P3.T5 already owes.
+    Report band-alpha and flat-field readings **separately**: the same input reads two orders of
+    magnitude apart between them (a full-range α=0.9 fog slab is +6.65% as an isolated band-alpha sum
+    and 0.8999999 as a flat field). Report scene (f) fog density against M1.P3.T8's coverage-head
+    fix, and expect a residual ~4%/layer loss where fragments with *different* split fractions share
+    a bucket (measured: two fully-covering 50% fog layers give 0.7297 vs the exact 0.75).
+    This task changes **no** source under `src/` — if a scene fails, report it with numbers; the fix
+    is a new task, not a silent edit.
+  - verify: scenes (a)–(f) each pass their stated check with reported numbers, or are reported as
+    failing with a measured magnitude and the pixel population affected. The harness re-runs from a
+    single command and is committed. Local build and both unit suites stay green.
+  - size: L
+
+- [ ] M1.P3.T16 — Validation scenes (g)–(l) on T12's harness
+  - files: `tests/nuke/` (extending T12's harness)
+  - approach: run the remaining six Design-reference scenes through T12's harness: (g) banding on a
+    ground plane receding through focus, (h) overlap normalization, (i) sparse reveal / coverage
+    deficit, (j) anamorphic, (k) proxy + ray-distance, (l) small-CoC transition.
+    **Scene (g) needs a *steep* ramp**: the bucket deficit scales with how many buckets a destination
+    pixel's CoC neighbourhood straddles, not with K alone (a gentle ramp lost only 4.8% end-to-end
+    versus 35.6% in the synthetic K=16 worst case), so a shallow ramp understates the effect T17 must
+    judge — and note from M1.P3.T4 that the `over`-vs-partition discriminator is a field whose
+    fragments land in *different* buckets with `frac == 0`, which is exactly what this ramp must
+    produce. Compare K=8 vs K=16 vs K=64 as the scene specifies. **Scene (i) must NOT be built via
+    `DeepMerge`** — those scenes carry full occluded information and cannot show the deficit; the
+    expected result is the *documented* honest alpha dip, so it passes by matching the spec, not by
+    the dip's absence, and `pre_merge` moves the coverage plane that diagnoses it, so set it
+    explicitly both ways. Scene (l) was closed by T13/T15 — re-confirm it here rather than assuming.
+    Same discipline as T12: `combine`/`holdoutInterp`/`pre_merge` explicit in every render, and
+    **no `src/` changes** — a failure is reported with numbers, not patched here.
+  - verify: scenes (g)–(l) each pass their stated check with reported numbers, or are reported as
+    failing with a measured magnitude and affected pixel population. Scene (g) is reported at K=8/16/64
+    under **both** `combine` candidates, so T17 inherits the comparison rather than re-rendering it.
+    Local build and both unit suites stay green.
+  - size: L
+
+- [ ] M1.P3.T17 — Decide the bucket composite, delete the loser (needs T12 + T16)
+  - files: `src/DeepCDefocusScatter.h`/`.cpp`, `src/DeepCDefocus.cpp`, `tests/`, this file's
+    `## Decisions`
+  - approach: decide between `BucketCombine::FrontToBackOver` and `BucketCombine::CoveragePartition`
+    (`src/DeepCDefocusScatter.h:1079`) **from rendered pixels**, per the 2026-07-26 answer to the
+    bucket-composite alpha deficit. Judge on scenes **(c), (f), (g), (i)** rendered through both
+    candidates on T12/T16's harness — `ScatterParams::combine` set explicitly for each render, never
+    the provisional default. Weigh scenes (f)/(g) *interiors* separately from scene (i)-style sparse
+    content (band-alpha vs flat-field readings differ by two orders of magnitude on the same input).
+    In front of focus candidate 2 is now exact, so the comparison is fair; **behind focus, expect the
+    structural +45.2/+51.2/+59.1% at 3/4/8 buckets under *both* candidates** (plain `over` tracks the
     same numbers because it ignores the area planes entirely) — that residue is settled and is not a
-    reason to prefer either. When the winner is chosen, delete the losing path, its flag, **and** the
-    plane it doesn't read.
+    reason to prefer either. The ~4%/layer different-split-fraction loss is likewise identical under
+    both and does not bias the comparison. Then **delete the losing path, its enum value, its flag,
+    and the accumulation plane the winner does not read**, and prune the tests that only existed to
+    pin the loser. The behind-focus residue is pinned by tests, so a change that moves it fails the
+    suite and needs adjudication here rather than a silent tolerance bump.
+  - verify: the decision is recorded in this file's `## Decisions` with the side-by-side numbers that
+    drove it. The losing path, flag and unread plane are gone from `src/` (grep clean). Local build
+    and both unit suites green. Scenes (c), (f), (g), (i) re-run on the surviving path and still meet
+    their checks.
+  - size: L
+
+- [ ] M1.P3.T18 — Decide the holdout interpolant, delete the losers (needs T12 + T16)
+  - files: `src/DeepCDefocusMath.h`, `src/DeepCDefocusScatter.h`/`.cpp`, `src/DeepCDefocus.cpp`,
+    `tests/`, this file's `## Decisions`
+  - approach: decide among `HoldoutInterp::{LogChord, MidpointStep, LinearInT}`
+    (`src/DeepCDefocusMath.h:462`) — M1.P3.T11's erase-FG-in-front vs leak-BG-behind trade — judged
+    from scenes **(e)** and **(f)** on T12's harness, plus **a genuinely dense volumetric holdout**
+    (many samples in depth, not a single fog slab). That last case is mandatory: T11's review
+    disproved the assumption that these variants only affect fully-opaque content, since a run of α<1
+    samples underflows the transmittance product to bitwise zero at ordinary counts (46 at α=0.9) and
+    the three then diverge hard — so do **not** write the comparison up as risk-free on α<1 content.
+    The M1.P3.T10 log-chord erasure is the thing being judged, not a defect to route around (Midpoint
+    step read 16 wrong pixels near scene (f) against Log chord's 157). Then **delete the losing
+    variants and the flag**, same discipline as T17, and prune the tests that only pinned them. The
+    interpolant divergence is pinned by tests; a change that moves it fails the suite and is
+    adjudicated here.
+  - verify: the decision is recorded in this file's `## Decisions` with the side-by-side numbers,
+    including the dense-volumetric-holdout case. Losing variants and the flag are gone from `src/`
+    (grep clean). Local build and both unit suites green. Scenes (b), (e), (f) re-run on the
+    surviving variant and still meet their checks.
   - size: L
 
 ## Phase 1.4: Concurrency + performance
@@ -1031,6 +1082,15 @@ verified.
   - size: M
 
 ## Decisions
+
+- 2026-08-16 — **M1.P3.T12 split four ways** (T12 harness + scenes a–f, T16 scenes g–l, T17
+  bucket-composite bake-off, T18 holdout-interpolant bake-off): as written it bundled a harness
+  build, a twelve-scene sweep, two independent decisions and two source deletions, well past the
+  format's one-coherent-change sizing rule, and its verify depended on work inside itself. The two
+  bake-offs are genuinely independent of each other (different flags, different scenes, different
+  files), so they parallelise conceptually even though both need the harness first. Ordering is
+  T12 → T16 → T17 → T18. No scope was dropped in the split; the scene list, both bake-offs and the
+  delete-the-loser discipline all survive verbatim in the new tasks.
 
 - 2026-07-27 — **M1.P3.T15 closed the last three same-pixel holes, and needed THREE mechanisms where the
   plan prescribed one.** Both deviations were forced by measurement, and both were independently
