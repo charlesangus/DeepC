@@ -290,7 +290,7 @@ every check (one nobody has made fail proves nothing), band pins rather than bou
 validate re-pins against an independent oracle rather than against the new output, and give every XFAIL
 a hard outer bound so it cannot swallow a later regression.
 
-Remaining in this milestone: P3 T18, then Phase 1.4 and Phase 1.5. Twenty tasks
+Remaining in this milestone: P3 T24, T18, then Phase 1.4 and Phase 1.5. Twenty-one tasks
 have now been added by execution findings (M1.P3.T0, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16,
 T17, T18, T19, T20, T21, T22, T23, T24, plus the enlarged M1.P3.T4 test list).
 No PR yet — `ship: pr-per-milestone` puts that at M1's verification gate. The branch
