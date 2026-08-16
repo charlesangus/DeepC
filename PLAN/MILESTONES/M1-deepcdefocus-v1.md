@@ -1304,6 +1304,48 @@ verified.
     bound raised; local build and both unit suites green.
   - size: L
 
+- [ ] M1.P3.T24 — Gate and rule on the low-α ramp over-read (the target M1.P3.T23 never measured)
+  - files: `tests/nuke/scenes.py`, `src/DeepCDefocusScatter.h`, `tests/test_defocus_scatter.cpp`,
+    this file's `## Decisions`
+  - approach: **M1.P3.T23 discharged the user's "keep iterating" mandate on the `f3e`/`f3f` over-read
+    and returned a measured negative result. This is a *different* target that its search never
+    touched**, and it is the more ordinary content of the two.
+    On **scene (g)'s α<1 ramp — the `g4` rig, NOT the `f3e`/`f3f` family** — the over-read scales
+    **inversely** with α: **+6.526% at α=0.10 (K=2/4), +5.926% at α=0.10 (K=16)**, +5.166%/+3.399% at
+    α=0.30, +3.757%/+0.897% at α=0.50, and −3.253% at α=0.90 (which is `g4`'s own 0.0325 pin, and is
+    what validates the probe). It is **invented alpha in the forbidden direction, on ordinary content,
+    at the shipping default K, and it is ungated at α ≤ 0.30.**
+    **Read this history before starting.** T23 reported these figures "did not reproduce, by a factor
+    of ~18" and proposed the plan had transposed them. **That was wrong — T23 measured the wrong rig**,
+    the `f3e`/`f3f` family instead of scene (g)'s ramp, where the α scaling genuinely runs the other
+    way (twins read +0.370% at α=0.10). Its own table then self-contradicted the claim, α=0.30 at 10:1
+    reading +6.49%. The review rebuilt the correct rig and reproduced the plan's figures to three
+    digits. This is the **seventh** instance of the milestone's standing lesson and the first committed
+    by a *correction* rather than an original claim — so **render scene (g)'s ramp, not
+    `unequalDensityCell()`**, and say which rig every number came from.
+    **Gate first, then rule** — the same discipline M1.P3.T22 established. `g4` currently pins one α;
+    extend it to the α arm with a hard bound so the defect is visible before anything is changed.
+    **What T23 established, which applies here too**: ordering alone is zero-sum; the four-plane layout
+    cannot reach the coincident-span degeneracy; the dropped term is a **covariance** (the composite
+    forms `E[a_res]·E[1−a_head]` where truth wants `E[a_res·(1−a_head)]`), and a **second-moment plane**
+    is the cheapest thing that sees it — the review's opacity-band prototype (`Σ wᵢaᵢ²`) reaches the
+    cell T23 called unreachable at zero cost on both trade axes, but doubles `f3c`/`f3d` and leaves the
+    staggered half untouched. **That is the direction if a fix is attempted; it is not endorsed**, and
+    its memory must be weighed against the standing High memory risk.
+    **A negative result is again a legitimate outcome.** If no rule beats the trade here either, the
+    ruling is: bound it, document it in node help alongside the coverage-deficit spec, and stop — but
+    it must be an explicit ruling with the numbers, not a deferral, and **not** the "low α is mild"
+    reading that T23's retracted correction would have shipped.
+  - verify: the low-α arm is gated with a hard bound and the gate is **mutation-tested in both
+    directions**, so it cannot be satisfied by trading the error's sign. Then either the over-read is
+    materially reduced with the remainder bounded, or it is explicitly accepted and documented. Either
+    way: α ∈ {0.10, 0.30, 0.50, 0.90, 0.99} × K ∈ {4..128} reported **from the `g4` rig**, with the rig
+    named in every figure. T21's gains hold (staggered sweep zero cells >+0.5%), `f3c`/`f3d`/`f3i`/
+    `g1`/`g2`/`g3` do not regress, and scene (a) parity stays ≤2e-07 with `a3`'s remaining margin
+    (1.192e-07 of 2.4e-07) not spent. Harness green with no XFAIL bound raised; local build and both
+    unit suites green.
+  - size: L
+
 - [ ] M1.P3.T18 — Decide the holdout interpolant, delete the losers (needs T12 + T16)
   - files: `src/DeepCDefocusMath.h`, `src/DeepCDefocusScatter.h`/`.cpp`, `src/DeepCDefocus.cpp`,
     `tests/`, this file's `## Decisions`
