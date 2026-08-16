@@ -4,7 +4,7 @@
 #
 #   tests/nuke/run_validation.sh                       # scenes (a)-(l), defaults
 #   tests/nuke/run_validation.sh --scenes g,h --k 64
-#   tests/nuke/run_validation.sh --combine over --holdout-interp midpoint
+#   tests/nuke/run_validation.sh --holdout-interp midpoint
 #
 # Nothing here is tied to one machine: the Nuke executable and the plugin
 # directory come from the environment, with a search over the usual locations

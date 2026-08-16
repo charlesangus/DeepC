@@ -7,10 +7,12 @@ Everything in here runs *inside* Nuke's terminal interpreter:
 The harness owns three things:
 
   * ``Settings`` — the knob values every render must set EXPLICITLY.  The
-    milestone forbids relying on a default for ``combine``, ``holdoutInterp``,
-    ``K`` and ``pre_merge`` (a non-occluding holdout alone moves defocused
-    pixels by up to 1.78e-01 through merge regrouping), so ``makeDefocus()``
-    writes all of them on every node it builds.
+    milestone forbids relying on a default for ``holdoutInterp``, ``K`` and
+    ``pre_merge`` (a non-occluding holdout alone moves defocused pixels by up
+    to 1.78e-01 through merge regrouping), so ``makeDefocus()`` writes all of
+    them on every node it builds.  ``combine`` was a fourth until M1.P3.T17
+    decided the bucket composite from rendered pixels and deleted the loser,
+    its enum, its knob and this harness flag with it.
   * scene plumbing — format setup, deep-source builders, and ``render()``,
     which flattens an Op to an uncompressed 32-bit-float EXR and reads the
     pixels straight back (Nuke's Python has no numpy/OpenImageIO).
@@ -34,18 +36,14 @@ from exrio import readExr                                       # noqa: E402
 #
 # Indices, not labels: Enumeration_knob.setValue(str) matches the *label*, and
 # the labels are cosmetic while the indices are the enum values the scatter
-# core reads (src/DeepCDefocus.cpp, bucketCombineNames / holdoutInterpNames).
+# core reads (src/DeepCDefocus.cpp, holdoutInterpNames).
 
 COC_MODE = {"physical": 0, "manual": 1}
-
-BUCKET_COMBINE = {"over": 0, "partition": 1}
-BUCKET_COMBINE_LABEL = {0: "FrontToBackOver", 1: "CoveragePartition"}
 
 HOLDOUT_INTERP = {"logchord": 0, "midpoint": 1, "lineart": 2}
 HOLDOUT_INTERP_LABEL = {0: "LogChord", 1: "MidpointStep", 2: "LinearInT"}
 
 # Index -> option name, so Settings.derive() can rebuild a Settings from one.
-BUCKET_COMBINE_NAME = dict((v, k) for k, v in BUCKET_COMBINE.items())
 HOLDOUT_INTERP_NAME = dict((v, k) for k, v in HOLDOUT_INTERP.items())
 
 RGBA = ("R", "G", "B", "A")
@@ -71,11 +69,10 @@ class Settings(object):
     """Harness-wide knob settings. T16/T17/T18 drive the same scenes through
     different values of these; nothing here is allowed to be implicit."""
 
-    def __init__(self, k=16, combine="partition", holdoutInterp="logchord",
+    def __init__(self, k=16, holdoutInterp="logchord",
                  preMerge=True, mergeTolerance=0.25, maxRadius=100,
                  tmpDir=None, keepRenders=False, verbose=False):
         self.k = int(k)
-        self.combine = BUCKET_COMBINE[combine]
         self.holdoutInterp = HOLDOUT_INTERP[holdoutInterp]
         self.preMerge = bool(preMerge)
         self.mergeTolerance = float(mergeTolerance)
@@ -90,14 +87,12 @@ class Settings(object):
     def derive(self, **overrides):
         """A copy with some knobs changed, sharing the render counter/tmp dir.
 
-        Scene (g) has to render one scene at K=8/16/64 under BOTH bucket
-        combines in a single pass (M1.P3.T17 inherits that table rather than
-        re-rendering it), and scene (i) has to render with ``pre_merge`` both
-        ways.  Cloning keeps every OTHER knob at the run's settings, so a sweep
-        cell still differs from the run in exactly one stated way.
+        Scene (g) has to render one scene at K=8/16/64 in a single pass, scene
+        (l) the same, and scene (i) has to render with ``pre_merge`` both ways.
+        Cloning keeps every OTHER knob at the run's settings, so a sweep cell
+        still differs from the run in exactly one stated way.
         """
         clone = Settings(k=self.k,
-                         combine=BUCKET_COMBINE_NAME[self.combine],
                          holdoutInterp=HOLDOUT_INTERP_NAME[self.holdoutInterp],
                          preMerge=self.preMerge,
                          mergeTolerance=self.mergeTolerance,
@@ -105,9 +100,7 @@ class Settings(object):
                          tmpDir=self.tmpDir, keepRenders=self.keepRenders,
                          verbose=self.verbose)
         for key, value in overrides.items():
-            if key == "combine":
-                clone.combine = BUCKET_COMBINE[value]
-            elif key == "holdoutInterp":
+            if key == "holdoutInterp":
                 clone.holdoutInterp = HOLDOUT_INTERP[value]
             elif key == "k":
                 clone.k = int(value)
@@ -123,9 +116,9 @@ class Settings(object):
         return clone
 
     def describe(self):
-        return ("K=%d  combine=%s  holdoutInterp=%s  pre_merge=%s  "
+        return ("K=%d  holdoutInterp=%s  pre_merge=%s  "
                 "merge_tolerance=%.3f  max_radius=%d"
-                % (self.k, BUCKET_COMBINE_LABEL[self.combine],
+                % (self.k,
                    HOLDOUT_INTERP_LABEL[self.holdoutInterp],
                    "on" if self.preMerge else "off",
                    self.mergeTolerance, self.maxRadius))
@@ -259,11 +252,12 @@ def makeDefocus(settings, source, holdout=None, size=0.0,
     node["max_radius"].setValue(settings.maxRadius)
     node["channels"].setValue(channels)
 
-    # The four harness parameters, always explicit (milestone Decisions).
+    # The harness parameters, always explicit (milestone Decisions).  There
+    # were four until M1.P3.T17 deleted `bucket_combine` along with the losing
+    # bucket composite.
     node["depth_layers"].setValue(settings.k)
     node["pre_merge"].setValue(settings.preMerge)
     node["merge_tolerance"].setValue(settings.mergeTolerance)
-    node["bucket_combine"].setValue(settings.combine)
     node["holdout_interp"].setValue(settings.holdoutInterp)
 
     for knobName, value in overrides.items():

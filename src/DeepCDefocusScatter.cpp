@@ -1621,6 +1621,13 @@ void resolveBandCPU(const ScatterParams& params,
                     float* __restrict__  outColor,
                     float* __restrict__  outAlpha)
 {
+    // `params` selected the bucket composite until M1.P3.T17 deleted the
+    // losing candidate; the parameter is KEPT because it is the pipeline's
+    // documented shape (scatterBandCPU/resolveBandCPU take the same
+    // ScatterParams, and M2's per-band kernel state will land in it), and
+    // because dropping it would churn every call site for no behaviour change.
+    (void)params;
+
     BucketPlaneView view = planes.view();
     if (!view.valid() || outAlpha == nullptr)
         return;
@@ -1635,47 +1642,21 @@ void resolveBandCPU(const ScatterParams& params,
     saturateBucketPlanes(view.color, view.alpha,
                          view.bucketCount, view.channelCount, view.pixelCount);
 
-    switch (params.combine) {
-    case BucketCombine::FrontToBackOver:
-        compositeBucketsFrontToBack(view.color, view.alpha,
-                                    view.bucketCount, view.channelCount,
-                                    view.pixelCount, outColor, outAlpha);
-        return;
-
-    case BucketCombine::CoveragePartition:
-        for (std::ptrdiff_t i = 0; i < view.pixelCount; ++i) {
-            compositePixelCoveragePartition(view.color + i,
-                                            view.alpha + i,
-                                            view.weight + i,
-                                            view.colocated + i,
-                                            view.bucketCount,
-                                            view.channelCount,
-                                            view.pixelCount,
-                                            outColor + i,
-                                            outAlpha + i);
-        }
-        return;
-
-    default:
-        // Unreachable; the node's switches all carry a default + a trailing
-        // return by standing convention.  It routes to the same rule as
-        // ScatterParams' own default, so a garbage enum value renders what an
-        // unset one would rather than silently switching candidates — and
-        // NOT to plain `over`, which is the candidate measured (M1.P3.T2
-        // review) to deposit up to +94% too much alpha for a fragment split
-        // across two buckets at partial kernel coverage.
-        for (std::ptrdiff_t i = 0; i < view.pixelCount; ++i) {
-            compositePixelCoveragePartition(view.color + i,
-                                            view.alpha + i,
-                                            view.weight + i,
-                                            view.colocated + i,
-                                            view.bucketCount,
-                                            view.channelCount,
-                                            view.pixelCount,
-                                            outColor + i,
-                                            outAlpha + i);
-        }
-        return;
+    // The bucket composite.  ONE rule since M1.P3.T17 decided the bake-off
+    // from rendered pixels: plain front-to-back `over` of the planes is gone,
+    // along with the enum that used to select between them (see
+    // "THE BUCKET COMPOSITE — DECIDED" in DeepCDefocusScatter.h for the
+    // measured reasons and for the one regime the deleted rule was better in).
+    for (std::ptrdiff_t i = 0; i < view.pixelCount; ++i) {
+        compositePixelCoveragePartition(view.color + i,
+                                        view.alpha + i,
+                                        view.weight + i,
+                                        view.colocated + i,
+                                        view.bucketCount,
+                                        view.channelCount,
+                                        view.pixelCount,
+                                        outColor + i,
+                                        outAlpha + i);
     }
 }
 

@@ -35,6 +35,23 @@ namespace {
 // Shared test fixtures
 // ---------------------------------------------------------------------------
 
+// Front-to-back `over` of a pixel's K bucket alphas, i.e. 1 - prod(1 - a_k).
+//
+// This is a TEST-LOCAL ORACLE, not a production path: it used to be
+// compositePixelFrontToBack(), which M1.P3.T17 deleted with the bucket-
+// composite candidate that called it.  The identity it is used for below
+// belongs to the FRAGMENT SPLIT, not to the composite — partitionAlpha()'s
+// whole contract is that the two deposits reconstruct the parent under `over`
+// (`1 - (1-a0)(1-a1) == alpha`), and that contract survived the deletion.  So
+// the tests keep their oracle and lose their dependency on the dead code.
+inline float overCompositeAlpha(const float* bucketAlpha, int bucketCount)
+{
+    float transmittance = 1.0f;
+    for (int k = 0; k < bucketCount; ++k)
+        transmittance *= (1.0f - clampf(bucketAlpha[k], 0.0f, 1.0f));
+    return clampf(1.0f - transmittance, 0.0f, 1.0f);
+}
+
 // A "no-saturation" physical rig: 50mm f/2.8 lens, 36mm filmback, 1920px
 // format, focused at 10m, over a depth range of [1m, 100m]. Chosen so the
 // resulting CoC never reaches max_radius=100px anywhere in that range (see
@@ -1158,15 +1175,9 @@ TEST_CASE("Flat opaque field: fractional two-bucket deposit + front-to-back comp
     bucketAlpha[static_cast<std::size_t>(dep.index0)] += dep.alpha0;
     bucketAlpha[static_cast<std::size_t>(dep.index1)] += dep.alpha1;
 
-    float dummyInColor = 0.0f;
-    float dummyOutColor = 0.0f;
-    float outAlpha = 0.0f;
-    // channelCount = 0: isolates the alpha-plane composite, color pointers
-    // are never dereferenced (see compositePixelFrontToBack's loop bounds).
-    // Two distinct dummies (rather than one shared pointer) so the call
-    // doesn't alias the function's two `__restrict__` parameters.
-    compositePixelFrontToBack(&dummyInColor, bucketAlpha.data(), bucketCount,
-                              /*channelCount*/ 0, /*pixelCount*/ 1, &dummyOutColor, &outAlpha);
+    // Alpha only: this identity is the split's, and colour follows it by
+    // construction (premultiplied colour is scaled by alpha_i/alpha).
+    const float outAlpha = overCompositeAlpha(bucketAlpha.data(), bucketCount);
 
     CHECK(outAlpha == doctest::Approx(1.0f).epsilon(1e-6));
 }
@@ -1471,12 +1482,7 @@ TEST_CASE("Composition contract: bucketOfContaining (correct) exactly reconstruc
             bucketAlpha[static_cast<std::size_t>(dep.index0)] += dep.alpha0;
             bucketAlpha[static_cast<std::size_t>(dep.index1)] += dep.alpha1;
         }
-        float dummyInColor = 0.0f;
-        float dummyOutColor = 0.0f;
-        float outAlpha = 0.0f;
-        compositePixelFrontToBack(&dummyInColor, bucketAlpha.data(), buckets.bucketCount(),
-                                  /*channelCount*/ 0, /*pixelCount*/ 1, &dummyOutColor, &outAlpha);
-        return outAlpha;
+        return overCompositeAlpha(bucketAlpha.data(), buckets.bucketCount());
     };
 
     const float compliant = composite(/*useContract*/ true);
@@ -1552,11 +1558,8 @@ TEST_CASE("Composition contract: bucketOfContaining reconstruction stays continu
             bucketAlpha[static_cast<std::size_t>(dep.index0)] += dep.alpha0;
             bucketAlpha[static_cast<std::size_t>(dep.index1)] += dep.alpha1;
         }
-        float dummyInColor = 0.0f;
-        float dummyOutColor = 0.0f;
-        float outAlpha = 0.0f;
-        compositePixelFrontToBack(&dummyInColor, bucketAlpha.data(), buckets.bucketCount(),
-                                  0, 1, &dummyOutColor, &outAlpha);
+        const float outAlpha = overCompositeAlpha(bucketAlpha.data(),
+                                                  buckets.bucketCount());
 
         // Absolute bounds tied to the Decisions log's measured "max alpha step
         // 6e-08": re-measured over a 5x finer sweep of this rig the worst
@@ -1572,114 +1575,3 @@ TEST_CASE("Composition contract: bucketOfContaining reconstruction stays continu
     }
 }
 
-// ===========================================================================
-// Composite identities
-// ===========================================================================
-
-TEST_CASE("compositePixelFrontToBack reproduces manual sequential front-to-back over "
-          "(the sharp-path / tidy composite identity)")
-{
-    // The sharp fast path composites fragments directly into their own
-    // bucket, depth-ordered within the pixel -- i.e. it degenerates to a
-    // plain sequential `over` of depth-sorted fragments. This checks that
-    // compositePixelFrontToBack(), given one fragment per bucket in
-    // front-to-back order, reproduces that same manual sequential over.
-    const int n = 4;
-    const float alpha[4] = {0.2f, 0.5f, 0.9f, 0.3f};
-    const float color[4] = {0.2f, 0.5f, 0.9f, 0.3f}; // premultiplied "white": color == alpha
-
-    // Manual sequential over.
-    float manualColor = 0.0f;
-    float manualAlpha = 0.0f;
-    float T = 1.0f;
-    for (int i = 0; i < n; ++i) {
-        manualColor += T * color[i];
-        manualAlpha += T * alpha[i];
-        T *= (1.0f - alpha[i]);
-    }
-
-    float outColor = 0.0f;
-    float outAlpha = 0.0f;
-    compositePixelFrontToBack(color, alpha, n, /*channelCount*/ 1, /*pixelCount*/ 1, &outColor, &outAlpha);
-
-    CHECK(outColor == doctest::Approx(manualColor).epsilon(1e-6));
-    CHECK(outAlpha == doctest::Approx(manualAlpha).epsilon(1e-6));
-
-    // The manual loop above is the same recurrence the function implements, so
-    // on its own it is close to a tautology. These two are independent of it:
-    //   1. the closed form  A_out = 1 - prod(1 - alpha_k)
-    //      = 1 - 0.8*0.5*0.1*0.7 = 1 - 0.028 = 0.972
-    //   2. premultiplied WHITE (color == alpha per bucket) must composite to
-    //      colour == alpha, for any bucket alphas -- the flat-field/energy
-    //      statement, and the reason `color` mirrors `alpha` in this fixture.
-    CHECK(outAlpha == doctest::Approx(0.972).epsilon(1e-6));
-    CHECK(outColor == doctest::Approx(outAlpha).epsilon(1e-6));
-
-    SUBCASE("full occlusion short-circuit: an opaque fragment blocks everything behind it")
-    {
-        const float alphaOccluded[3] = {0.3f, 1.0f, 1.0f}; // bucket 2 is unreachable
-        const float colorOccluded[3] = {0.3f, 1.0f, 0.0f}; // bucket 2's colour must not leak through
-        float oc = 0.0f, oa = 0.0f;
-        compositePixelFrontToBack(colorOccluded, alphaOccluded, 3, 1, 1, &oc, &oa);
-        CHECK(oa == doctest::Approx(1.0f));
-        CHECK(oc == doctest::Approx(0.3f + 0.7f * 1.0f)); // == 1.0
-    }
-}
-
-TEST_CASE("compositeBucketsFrontToBack: the whole-band driver indexes the documented "
-          "plane layout and agrees with the per-pixel primitive")
-{
-    // As with saturateBucketPlanes above, the per-pixel primitive's tests say
-    // nothing about the driver's bucket/channel/pixel index arithmetic (a
-    // mutation reading every pixel's alpha from pixel 0 survives all of them).
-    // Every pixel here gets a DIFFERENT alpha profile, so any cross-pixel
-    // aliasing shows up.
-    const int bucketCount = 3;
-    const int channelCount = 2;
-    const std::ptrdiff_t pixelCount = 4;
-
-    std::vector<float> color(static_cast<std::size_t>(bucketCount * channelCount) * 4, 0.0f);
-    std::vector<float> alpha(static_cast<std::size_t>(bucketCount) * 4, 0.0f);
-
-    auto colorAt = [&](int k, int c, int i) -> float& {
-        return color[static_cast<std::size_t>((k * channelCount + c) * pixelCount + i)];
-    };
-    auto alphaAt = [&](int k, int i) -> float& {
-        return alpha[static_cast<std::size_t>(k * pixelCount + i)];
-    };
-
-    const float alphaIn[3][4] = {{0.10f, 0.60f, 0.00f, 1.00f},
-                                 {0.25f, 0.10f, 0.50f, 0.40f},
-                                 {0.80f, 0.30f, 0.20f, 0.90f}};
-    const float unpremult[2] = {0.4f, 0.85f};
-
-    for (int k = 0; k < bucketCount; ++k)
-        for (int i = 0; i < pixelCount; ++i) {
-            alphaAt(k, static_cast<int>(i)) = alphaIn[k][i];
-            for (int c = 0; c < channelCount; ++c)
-                colorAt(k, c, static_cast<int>(i)) = alphaIn[k][i] * unpremult[c];
-        }
-
-    std::vector<float> outColor(static_cast<std::size_t>(channelCount) * 4, -1.0f);
-    std::vector<float> outAlpha(4, -1.0f);
-    compositeBucketsFrontToBack(color.data(), alpha.data(), bucketCount, channelCount,
-                                pixelCount, outColor.data(), outAlpha.data());
-
-    for (int i = 0; i < pixelCount; ++i) {
-        // Independent closed form: A = 1 - prod(1 - alpha_k) for THIS pixel.
-        float t = 1.0f;
-        for (int k = 0; k < bucketCount; ++k)
-            t *= (1.0f - alphaIn[k][i]);
-        const float expectedAlpha = 1.0f - t;
-
-        CHECK(outAlpha[static_cast<std::size_t>(i)]
-              == doctest::Approx(expectedAlpha).epsilon(1e-6));
-
-        // Constant unpremultiplied colour across all buckets => the composited
-        // premultiplied colour is expectedAlpha * unpremult, per channel.
-        for (int c = 0; c < channelCount; ++c) {
-            const float got = outColor[static_cast<std::size_t>(c * pixelCount + i)];
-            CHECK(got == doctest::Approx(expectedAlpha * unpremult[c]).epsilon(1e-6));
-        }
-    }
-}

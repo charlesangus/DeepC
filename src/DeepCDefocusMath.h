@@ -1929,7 +1929,8 @@ DEEPC_HD inline void saturateBucketPixel(float* __restrict__ color,
 // saturateBucketPlanes — saturation pass over a whole band's bucket planes
 //
 // Host-side driver over the layout documented above; runs after scatter and
-// before compositeBucketsFrontToBack().
+// before the bucket composite (compositePixelCoveragePartition, in
+// DeepCDefocusScatter.h).
 // ---------------------------------------------------------------------------
 inline void saturateBucketPlanes(float* __restrict__ color,
                                  float* __restrict__ alpha,
@@ -1944,97 +1945,6 @@ inline void saturateBucketPlanes(float* __restrict__ color,
 
         for (std::ptrdiff_t i = 0; i < pixelCount; ++i)
             saturateBucketPixel(bucketColor + i, bucketAlpha + i, channelCount, pixelCount);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// compositePixelFrontToBack — over-composite the K bucket planes at one pixel
-//
-// The planes hold PREMULTIPLIED colour, bucket 0 nearest the camera, so this
-// is the standard front-to-back over:
-//
-//   out += T * color[k];   outAlpha += T * alpha[k];   T *= (1 - alpha[k])
-//
-// which yields outAlpha = 1 - prod(1 - alpha[k]) — exactly 1 as soon as any
-// bucket is opaque, hence the flat-opaque-field identity (validation scene
-// (c)) given the transmittance-preserving fragment split.
-//
-// Alpha is clamped into [0,1] before use: after saturateBucketPlanes() that
-// is a no-op, but it guarantees the transmittance stays in [0,1] even if a
-// caller composites unsaturated planes, rather than letting a negative
-// (1 - alpha) flip the sign of everything behind it.
-//
-// outColor/outAlpha are OVERWRITTEN, not accumulated.
-// ---------------------------------------------------------------------------
-DEEPC_HD inline void compositePixelFrontToBack(const float* __restrict__ bucketColor,
-                                               const float* __restrict__ bucketAlpha,
-                                               int bucketCount,
-                                               int channelCount,
-                                               std::ptrdiff_t pixelCount,
-                                               float* __restrict__ outColor,
-                                               float* __restrict__ outAlpha)
-{
-    for (int c = 0; c < channelCount; ++c)
-        outColor[static_cast<std::ptrdiff_t>(c) * pixelCount] = 0.0f;
-
-    float transmittance = 1.0f;
-    float accAlpha      = 0.0f;
-
-    for (int k = 0; k < bucketCount; ++k) {
-        const float a = clampf(bucketAlpha[static_cast<std::ptrdiff_t>(k) * pixelCount],
-                               0.0f, 1.0f);
-        const float* __restrict__ src = bucketColor
-            + static_cast<std::ptrdiff_t>(k) * channelCount * pixelCount;
-
-        for (int c = 0; c < channelCount; ++c) {
-            const std::ptrdiff_t o = static_cast<std::ptrdiff_t>(c) * pixelCount;
-            outColor[o] += transmittance * src[o];
-        }
-
-        accAlpha      += transmittance * a;
-        transmittance *= (1.0f - a);
-
-        if (!(transmittance > 0.0f))    // fully occluded: nothing behind shows
-            break;
-    }
-
-    *outAlpha = clampf(accAlpha, 0.0f, 1.0f);
-}
-
-// ---------------------------------------------------------------------------
-// compositeBucketsFrontToBack — composite a whole band's bucket planes
-//
-// Host-side driver; the final step of a band, after scatter and saturation.
-//
-// Pixel-outer / bucket-inner deliberately: the alternative (bucket-outer, so
-// the inner loop is a contiguous vectorizable multiply-add) needs a per-pixel
-// transmittance plane to carry state across bucket iterations, i.e. a caller
-// scratch buffer, and buys little — this pass touches K*(C+1)*pixelCount
-// floats exactly once either way, against the scatter's O(sum of pi*r^2), and
-// the K*C planes a single pixel steps through stay resident in L1 for the
-// whole row (32KB at the K=128 / C=4 worst case).  If profiling ever
-// contradicts that, the bucket-outer form plus a transmittance plane is a
-// drop-in replacement for this function alone.
-//
-// outColor is channelCount planes of pixelCount floats, outAlpha one; both
-// are overwritten.
-// ---------------------------------------------------------------------------
-inline void compositeBucketsFrontToBack(const float* __restrict__ bucketColor,
-                                        const float* __restrict__ bucketAlpha,
-                                        int bucketCount,
-                                        int channelCount,
-                                        std::ptrdiff_t pixelCount,
-                                        float* __restrict__ outColor,
-                                        float* __restrict__ outAlpha)
-{
-    for (std::ptrdiff_t i = 0; i < pixelCount; ++i) {
-        compositePixelFrontToBack(bucketColor + i,
-                                  bucketAlpha + i,
-                                  bucketCount,
-                                  channelCount,
-                                  pixelCount,
-                                  outColor + i,
-                                  outAlpha + i);
     }
 }
 

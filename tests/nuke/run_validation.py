@@ -8,8 +8,9 @@ or, more simply, through the wrapper that locates both for you:
 
     tests/nuke/run_validation.sh
 
-Options (all four bake-off knobs are harness parameters, because M1.P3.T16,
-T17 and T18 drive these same scenes at different settings):
+Options (the remaining bake-off knob and the sweep parameters are harness
+options, because M1.P3.T16 and T18 drive these same scenes at different
+settings; ``--combine`` went with the bucket composite M1.P3.T17 deleted):
 
 Both ``--option value`` and ``--option=value`` are accepted.  Through the
 wrapper either form works; calling Nuke directly you must use ``=`` for any
@@ -19,7 +20,6 @@ it to ``sys.argv``.
 
     --scenes a,b,...,l      which scenes to run          (default: all)
     --k N                   depth_layers                 (default: 16)
-    --combine over|partition                             (default: partition)
     --holdout-interp logchord|midpoint|lineart           (default: logchord)
     --pre-merge on|off                                   (default: on)
     --merge-tolerance F                                  (default: 0.25)
@@ -44,7 +44,7 @@ import traceback
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from harness import (                                           # noqa: E402
-    BUCKET_COMBINE, FAIL, HOLDOUT_INTERP, PASS, SKIP, XFAIL,
+    FAIL, HOLDOUT_INTERP, PASS, SKIP, XFAIL,
     Check, Settings,
 )
 from scenes import SCENES                                       # noqa: E402
@@ -54,7 +54,6 @@ def parseArgs(argv):
     options = {
         "scenes": "abcdefghijkl",
         "k": 16,
-        "combine": "partition",
         "holdoutInterp": "logchord",
         "preMerge": True,
         "mergeTolerance": 0.25,
@@ -95,13 +94,6 @@ def parseArgs(argv):
             i += step
         elif arg == "--k":
             options["k"] = int(nextValue())
-            i += step
-        elif arg == "--combine":
-            value = nextValue()
-            if value not in BUCKET_COMBINE:
-                raise SystemExit("--combine must be one of %s"
-                                 % "|".join(sorted(BUCKET_COMBINE)))
-            options["combine"] = value
             i += step
         elif arg == "--holdout-interp":
             value = nextValue()
@@ -186,7 +178,7 @@ def main(argv):
     if not os.path.isdir(tmpDir):
         os.makedirs(tmpDir)
 
-    settings = Settings(k=options["k"], combine=options["combine"],
+    settings = Settings(k=options["k"],
                         holdoutInterp=options["holdoutInterp"],
                         preMerge=options["preMerge"],
                         mergeTolerance=options["mergeTolerance"],

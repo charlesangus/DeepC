@@ -35,6 +35,13 @@ front-to-back at the end:
   0.75), so linear weights + over-compositing + flat-field `alpha ≡ 1` are mutually exclusive.
   See Decisions. Mandatory fix for layer-transition banding, except at α→1 where the
   transmittance form is necessarily a no-op (also in Decisions).
+  **READ THAT JUSTIFICATION AS `over`-SPECIFIC SINCE M1.P3.T17.** "Cannot survive the front-to-back
+  bucket composite" was written when the composite *was* plain `over`; T17 deleted `over` and the
+  shipped composite is `compositePixelCoveragePartition()`, which reconstructs a split fragment from
+  the area planes rather than from the split's `over` identity. The transmittance form is therefore
+  no longer *required* by the composite, and on a depth ramp it is what costs harness `g4` up to
+  16.1% of an α<1 surface's alpha (Decisions, 2026-08-16). Do not re-derive "the split must be
+  transmittance-preserving" from this bullet without re-reading that entry.
 - **Normalization**: each bucket accumulates `(Σ color·w·vis, Σ alpha·w·vis, Σ w·vis)` — a
   coverage/weight plane alongside color. Since M1.P3.T9 that `Σ w·vis` is **two** planes, not one:
   *new area* (deposits that claim area a pixel didn't have) and *co-located area* (deposits carrying
@@ -282,6 +289,7 @@ l. small-CoC transition: shallow depth ramp crossing 0–2px CoC ⇒ no chatter/
 | CoC field's own interior extremum (`l6`) | Low | Where the radius field has an interior extremum, normalised-kernel scatter under-delivers ~2/3 of the field's local slope at the apex (0.990 at slope 0.0195, 0.971 at 0.0391). **Inherent, not quantisation** — it survives an exact per-pixel kernel with no grid at all, and is invariant to K and to the bucket-composite candidate. Exposed (not caused) by M1.P3.T19, which stopped the coarse grid flattening the extremum neighbourhood onto one disc. Accepted for v1 as a bounded XFAIL; a v2 note |
 | Correct number, wrong explanation | Med | Twice at M1.P3.T19 a re-pinned constant was right while its stated mechanism was fabricated; only an independent grid-free oracle caught it. Validate re-pins against an oracle, never against the new output, and **band** pins rather than bounding them on one side — a one-sided pin there would have passed a full revert of the fix |
 | `pre_merge` lossy at its shipping default | Med | Losslessness holds only when grouped radii share a kernel bin; at the 0.25px default two layers 0.20px apart straddling a bin edge move 9.0e-02 on 100% of pixels. Two separate probes concluded "unreachable"/"exactly lossless" because they happened to group nothing. `merge_tolerance`'s default needs a review at Phase 1.4 |
+| Alpha<1 receding content loses up to 16% of its alpha | High | Found at M1.P3.T17's bake-off. An ordinary semi-transparent surface receding through focus reads −12.5/−16.1/−9.2% at α=0.99/0.90/0.50 (K=16) and **diverges** in K (−5.0 → −26.6% at K=8 → 128 at α=0.5), where the same content at α=1 reads −0.4% and converges. Controls exclude the kernel, the sharp path and depth quantisation (constant depth is exact under both candidates at every K and radius). **Mechanism isolated at T17's review**: the composite's single scalar `tClaimed` cannot represent a claimed area that a depth ramp has made a mosaic of differently-transmissive sub-areas — reproduced on hand-built planes with no kernel at all (−17.4% at α=0.9/N=16, exact at α=1, exact when the fragments share a bucket pair, −38.9% at split fraction 0.25). The deleted candidate was also wrong here but **better at every K and every α<1 tested** (−1.0/−6.6/−15.3/−18.3% at K=8/16/64/128 against −11.4/−16.1/−23.0/−27.5%), by 1.5–3×; it is not a reason to reopen T17 because it diverges in K too and fails identities partition satisfies exactly, but it is not merely "less bad by a hair" either. Bounded XFAIL `g4`; owed a fix or an accepted-residual ruling at Phase 1.4/1.5, and the check must be RE-PINNED by whatever commit fixes it |
 | Documented residual masking a later regression | Med | An unbounded XFAIL swallows anything that lands on top of it. Every harness XFAIL now carries a hard outer bound that flips it to FAIL on drift; new XFAILs must too |
 | Request/engine channel divergence | Low | Single `neededDeepChannels()` helper |
 | Edge darkening at bbox borders | Low | Output bbox padded by `max_radius` so scattered energy is retained |
@@ -741,7 +749,9 @@ verified.
     `[0, max_radius]`; see Decisions for both halves of this.
     `computeBand(b)` — given the
     global boundaries, fetch source rows for `band ± maxRadius`, run T1's SoA flatten, T3's
-    holdout LUT, T2's scatter, saturate, `compositeBucketsFrontToBack()`, write.
+    holdout LUT, T2's scatter, saturate, the bucket composite (`compositeBucketsFrontToBack()` when
+    this was written; `compositePixelCoveragePartition()` since M1.P3.T17 deleted the other
+    candidate), write.
     **Holdout obligations from M1.P3.T3's review**: skip the fetch/append loop **entirely** when the
     holdout is unconnected or the band doesn't intersect its bbox (`begin(N)` with no appends is
     well-defined and lands on the same disabled view) — discovering emptiness by running the per-pixel
@@ -754,9 +764,10 @@ verified.
     two bands, and per-band sets put a seam along every boundary (measured: the same fragment reads vis
     0.0448 in one band and 1.0000 in the next). Both run under
     a single frame-wide lock in this phase (no per-band concurrency yet — that's Phase 1.4) so
-    correctness lands before concurrency is introduced. Set `ScatterParams::combine`, `holdoutInterp`
-    and `pre_merge` from the knobs explicitly — never rely on a default (M1.P3.T12 must be able to
-    render each candidate).
+    correctness lands before concurrency is introduced. Set `holdoutInterp` and `pre_merge` from the
+    knobs explicitly — never rely on a default (M1.P3.T18 must be able to render each candidate).
+    This clause named `ScatterParams::combine` first; M1.P3.T17 decided that bake-off and deleted the
+    field, so there is nothing left to select there.
   - verify: the local build compiles and `DeepCDefocus.so` is produced; both unit suites stay green;
     in headless Nuke the node renders a defocused frame end to end on a simple deep scene (not black,
     not garbage, bbox padded, sparse regions still exactly black), **scene (a)'s size-0 flatten parity
@@ -1000,7 +1011,7 @@ verified.
     suites green.
   - size: M
 
-- [ ] M1.P3.T17 — Decide the bucket composite, delete the loser (needs T12 + T16)
+- [x] M1.P3.T17 — Decide the bucket composite, delete the loser (needs T12 + T16)
   - files: `src/DeepCDefocusScatter.h`/`.cpp`, `src/DeepCDefocus.cpp`, `tests/`, this file's
     `## Decisions`
   - approach: decide between `BucketCombine::FrontToBackOver` and `BucketCombine::CoveragePartition`
@@ -1049,6 +1060,82 @@ verified.
     drove it. The losing path, flag and unread plane are gone from `src/` (grep clean). Local build
     and both unit suites green. Scenes (c), (f), (g), (i) re-run on the surviving path and still meet
     their checks.
+  - size: L
+  - **DONE 2026-08-16. `CoveragePartition` wins; `FrontToBackOver` is deleted.** Full numbers in
+    `## Decisions`. Harness **PASS=76 FAIL=0 XFAIL=12 SKIP=1, exit 0** (from 77/0/18/1): the eight
+    scene-(g) rows that rendered the losing candidate are gone (7 XFAIL + 1 PASS) and one new bounded
+    XFAIL `g4` is added; **every other reading in the suite is bit-identical to the pre-deletion run**,
+    verified by diffing the two tables. Both unit suites green (27 cases / 141,034 assertions and
+    53 / 175,179). Nothing in `src/` mentions the deleted rule except the two comment blocks that
+    record why it went. **There was no unread accumulation plane to delete** — the surviving composite
+    reads all four, and the two area planes are exactly what the loser ignored.
+    **It found a new residual on the winner** (`g4`, see Decisions): the same scene-(g) ramp at
+    **α < 1** reads −16.1% at K=16/α=0.90 and diverges in K to −26.6% at K=128, against −0.4% on the
+    opaque twin. Three controls attribute it to the transmittance split's recombination and exclude
+    the kernel, the sharp path and depth quantisation; the exact pooling term is **not** isolated and
+    is recorded as unproven rather than guessed. Pinned as a **banded** XFAIL (0.1607 ± 0.025) at a
+    fixed K=16, mutation-tested against three separate mutations of the composite (0.1020 / 0.0777 /
+    0.1925 — all three FAIL the band). **It is a Phase 1.4/1.5 follow-up, and it is the largest
+    known error in the shipped node.**
+  - **REVIEWED 2026-08-16 (independent). The decision stands; five things were corrected.** The
+    reviewer re-derived it from its own renders rather than auditing the numbers in place: it built
+    the pre-deletion tree at `6cbf28b` in a worktree and re-ran the harness under `--combine over`,
+    reproducing `f1` = 2.500e-01 (and confirming `2·vis − vis²` at all six strips whose depth splits,
+    while the two strips at the depth range's endpoints, which have no split partner, read EXACT —
+    so the error tracks the depth split itself and is not an artefact of how scene (f) is built),
+    scene (l)'s five readings, scene (c)'s c4, and scene (g)'s whole K
+    sweep at α = 0.99 / 0.90 / 0.50 to the sixth decimal. The bit-identical claim was verified by
+    diffing the two full report tables: the ONLY differences are the eight deleted rows, the g1/g2/g3
+    label renames, two note-text edits and the new `g4` — every numeric reading is unchanged. Both
+    unit suites reproduce at 27/141,034 and 53/175,179. Corrections: **(1)** `g4`'s mechanism is no
+    longer unproven — it is isolated above; **(2)** scene (i) is not literally candidate-blind (i7 /
+    i7d differ); **(3)** partition's errors are not all deficits at row granularity; **(4)** scene
+    (l)'s cost is 1.33 code values, not ~1, and `l5` ships at 6% of gate where the deleted candidate
+    was at 25%; **(5)** `G1_HARD` was left at 1.5e-01, sized across BOTH candidates, against a
+    surviving worst reading of 1.048e-02 — 14x, wide enough to swallow an order of magnitude of new
+    defect. Re-sized to 3.5e-02 (g2 and g3 were already ~3x and are unchanged). The three tests that
+    lost `compositePixelFrontToBack()` as an oracle were mutation-tested with a linear
+    `partitionAlpha()` and all three still FAIL, so none went circular. `g4`'s band was
+    mutation-tested with a fourth, independent mutation (area-weighting the residual's occlusion,
+    which is algebraically the pre-T9 divisor): 0.0777, FAIL.
+
+- [ ] M1.P3.T20 — Rule on the α<1 receding-content residual (`g4`) — run BEFORE T18
+  - files: `src/DeepCDefocusScatter.h`/`.cpp`, `src/DeepCDefocusMath.h`, `tests/test_defocus_scatter.cpp`,
+    `tests/nuke/scenes.py`, this file's `## Decisions`
+  - approach: **this is the largest known error in the shipped node** and it is not acceptable to
+    carry it to a milestone gate as a floating obligation. An ordinary semi-transparent surface
+    receding through focus loses **−12.5 / −16.1 / −9.2%** of its alpha at α=0.99/0.90/0.50 (K=16) and
+    **diverges in K** (−5.0 → −26.6% at K=8 → 128 at α=0.5), worst case **−38.9%** at split fraction
+    0.25. The mechanism was isolated at M1.P3.T17's review on hand-built planes with no kernel at all,
+    so it is not a scene or kernel artefact: the composite's single scalar `tClaimed` cannot represent
+    a claimed area that a depth ramp has made a mosaic of differently-transmissive sub-areas.
+    **It must run before M1.P3.T18** — the fix changes the split or the composite, which moves every
+    rendered pixel, and T18 decides the holdout interpolant from rendered pixels. Same reasoning that
+    put T19 before T17.
+    **Lead (b) is the one to try first**, and M1.P3.T17 is what made it available: the transmittance
+    split (`α_i = 1 − (1−α)^{w_i}`) exists *only* so two deposits reconstruct the parent under the
+    front-to-back `over` that T17 has now **deleted**. With that composite gone its rationale is gone
+    with it, and on the isolated rig a **linear** split (`α_i = α·w_i`, each half claiming its own new
+    area rather than arriving co-located) is **exact** — 0.900000 / 0.500000 at every N and both split
+    fractions, where the transmittance split reads −17.4% / −22.4%. But that is arithmetic on one
+    synthetic pixel: it says nothing yet about volumetric parents, holdouts, within-bucket ordering, or
+    the depth-interpolation continuity the transmittance form was *also* chosen for. **Establish those
+    four before adopting it**, and note the Design reference's own justification for the transmittance
+    split is `over`-specific and must not be re-derived from (it is already flagged in place).
+    **Lead (a) is disproved as a free fix and must not be re-tried on its own**: area-weighting the
+    second consequence is algebraically identical to reverting the residual divisor to the pre-M1.P3.T9
+    `claimedArea`; it takes `g4` from 0.1607 to 0.0777 and improves g1/g2/g3, but moves T9's pinned
+    behind-focus residue from 61.00% to 70.53% and fails the unit suite. T9 already adjudicated that
+    trade.
+    If neither lead survives contact, **an accepted-residual ruling is a legitimate outcome** — but it
+    must be an explicit ruling with the node-help text to match, not a deferral.
+  - verify: either `g4` is fixed — in which case **re-pin it in the same commit**, since it is banded
+    and can never PASS as written — or the residual is explicitly accepted, documented in node help
+    alongside the coverage-deficit spec, and the band re-stated as intended behaviour. Either way:
+    the K-divergence at α<1 is characterised across K ∈ {8,16,64,128} and both split fractions; T9's
+    pinned behind-focus residue and every other pinned constant either hold or are re-pinned against
+    an **independent oracle** with the mechanism stated; the harness stays green with no XFAIL bound
+    raised; local build and both unit suites green.
   - size: L
 
 - [ ] M1.P3.T18 — Decide the holdout interpolant, delete the losers (needs T12 + T16)
@@ -1185,6 +1272,145 @@ verified.
   - size: M
 
 ## Decisions
+
+- 2026-08-16 — **M1.P3.T17: the bucket composite is `CoveragePartition`. `FrontToBackOver` is deleted.**
+  Decided from rendered pixels, every render setting `ScatterParams::combine` explicitly, on the
+  post-T19 plugin (`6cbf28b`). It is **not** a clean sweep — `over` wins several readings and they are
+  reported below rather than dropped — but the two candidates fail in different *classes*, and only one
+  of them breaks identities on the simplest content the node has.
+  **The four scenes T17 was told to judge on.**
+  - **(c) does not discriminate**, confirming T16: every check PASSes under both. c1 `|α−1|` is 0.000e+00
+    under both; c3 band-alpha ratio 8.984e-06 under both; c4 (α=0.9 full-range fog flat field) is the one
+    row that moves and it favours `over` — 2.742e-07 against partition's 1.397e-05, both four decades
+    inside the gate.
+  - **(f) is where `over` dies.** `f1` — eight opaque point strips at size 0 behind an α=0.9 fog holdout,
+    against the analytic `(1−α)^t`, i.e. the simplest content the node renders — reads **4.367e-08 under
+    partition and 2.500e-01 under `over`, a hard FAIL**. The mechanism is now *derived and confirmed at
+    every strip, not guessed*: an opaque fragment's transmittance split is a no-op (`a₀ = a₁ = 1`), so
+    both bucket deposits carry the full `1·vis`, and `over` composites them as two independent layers,
+    giving `2·vis − vis²` instead of `vis`. Measured against predicted, per strip: 0.6683→**0.8900**
+    (predicted 0.8899), 0.5012→**0.7512** (0.7512), 0.3758→**0.6104** (0.6104), 0.1585→**0.2919**
+    (0.2919). The error is `vis(1−vis)`, maximal **0.25 at vis = 0.5**, i.e. a **+50% relative** error on
+    the node's differentiating feature, K-independent and unreachable by any knob. `f2`'s erasure
+    profile is the same law applied again (partition 0.2512 at the onset probe, `over` 0.4393 = 2v−v²).
+    `f3c`/`f3d` at K=16 favour `over` (+0.074% / +0.967% against partition's −0.113% / −1.675%) and are
+    reported as such; at K=4 the ordering reverses (`over` +2.194% / +4.799%).
+  - **(g) is decisive, and reproduces post-T19 in both framings.** Interior flat-field alpha on the
+    opaque receding plane, K=8/16/64, **with** the ±2.5 px focus-row exclusion: partition
+    0.989516 / 0.995554 / **1.000000** (`|α−1|` 1.048e-02 / 4.446e-03 / **2.799e-07**) against `over`
+    0.997177 / 0.978471 / **0.922108** (2.823e-03 / 2.153e-02 / **7.789e-02**). **Without** the exclusion
+    (T19 having removed its original justification): partition 0.990084 / 0.994916 / 0.998101
+    (9.916e-03 / 5.084e-03 / 1.899e-03) against `over` 0.997437 / 0.980542 / 0.929502 (2.563e-03 /
+    1.946e-02 / 7.050e-02). Same verdict either way — partition converges in K, `over` diverges — and
+    the exclusion only caps partition's K=64 reading at the six focus rows' content-driven term (worst
+    row y=127, radius 0.50 px, 0.925927). **Population is the sharper reading than magnitude**: g2 puts
+    `over` over 1/255 on **112/112 and 112/112** interior rows at K=8/16 against partition's 51/112 and
+    23/112, i.e. `over`'s banding is the whole field and partition's is localised. g3 (worst row-to-row
+    seam) favours `over` at K=8/16 (3.012e-03 / 5.183e-03 against 3.191e-02 / 2.883e-02) and partition
+    at K=64 (3.576e-07 against 1.582e-02); read with the medians it is one spike against a flat field
+    (partition's median step at K=16 is 1.788e-07) versus a permanently stepping one (`over`'s 7.492e-04).
+  - **(i) does not discriminate on any of its spec checks** — i1–i5 are identical to the digit under
+    both candidates (dip min 0.513260, width 24 px, i3b 1.472e-05, fabricated blue 0.000e+00,
+    DeepMerge twin 1.000000). Expected: the silhouette has one sample per pixel and total coverage < 1
+    through the dip, so every bucket is pure `fit` and the two rules coincide there. **CORRECTED at
+    T17's review: "every reading" was too strong** — i7 and i7d, the `pre_merge`-reachability probes,
+    read 9.0e-02 under the shipped composite against 1.6e-01 under the deleted one, on the
+    bin-straddling pair that is *not* pure-`fit` content. Both PASS either way and neither is a
+    bake-off criterion, but the scene is not literally candidate-blind. Scene (i) is a spec check,
+    not a bake-off scene.
+  **The contrary evidence, explained rather than dropped.** Scene (l) favours `over` across the board —
+  `l1` 4.296e-04 against 2.176e-03, `l2` 4.175e-04 against 1.950e-03, `l3` 2.186e-04 against 5.226e-03,
+  `l5` 2.935e-03 against 3.667e-03 (`l6` is 9.937e-03 under both, confirming it is the field's extremum
+  and not the composite). **The first hypothesis — that an opaque field's `max` is pinned at 1.000000 by
+  the saturation clamp, so `|α−1|` one-sidedly rewards `over`'s bias — was PROPOSED AND REFUTED**: the
+  same three ramps re-rendered at α=0.5 and α=0.25 still favour `over` (worst-pixel 4.3e-03 / 2.2e-03
+  against partition's 5.7e-02 / 1.5e-02), so the advantage is real accuracy at small CoC, not an artefact
+  of the metric. The explanation that does survive is that **both of `over`'s failure modes are quenched
+  together below ~2.5 px**: its across-bucket deficit needs a destination pixel's coverage spread over
+  many buckets (a 0.5–2.5 px disc gathers from a handful of source pixels), and its split-fragment
+  inflation needs kernel weights well below 1 (they are near 1 at that radius). Partition's own residual
+  does *not* vanish with radius. Consistent with that, `over`'s advantage shrinks monotonically as the
+  CoC grows: 13× at scene (l)'s 0–2.5 px ramp at α=0.5, 1.8× at scene (g)'s 0–64 px ramp at the same
+  alpha. In absolute terms partition's whole scene-(l) disadvantage is about one 8-bit code value —
+  worst is `l3` at 5.226e-03, i.e. **1.33** code values (the review's arithmetic; "never more than
+  ~1" was a shade generous). **This is a recorded COST of the decision, not a wash:** `l5` sits at
+  3.667e-03 against a 3.9e-03 gate (6% of margin) under the shipped composite where the deleted one
+  read 2.935e-03 (25% of margin), so small-CoC content is the one regime where T17 shipped the worse
+  of the two and left less room for the next regression.
+  **A NEW residual on the WINNER, found by this bake-off and larger than anything scene (l) shows.**
+  Scene (g)'s ramp at **α < 1** — an ordinary semi-transparent receding surface, one sample per pixel —
+  breaks partition's K-convergence outright. At K=16: partition −12.527% at α=0.99, −16.065% at α=0.90,
+  −9.194% at α=0.50, against `over`'s −5.703% / −6.551% / −1.308%. In K at α=0.5 partition **diverges**
+  (+0.331 / +0.331 / −5.000 / −9.194 / −13.713 / −19.645 / −26.622% at K=2/4/8/16/32/64/128) while `over`
+  goes +4.983 → −9.322% over the same sweep. Three controls, run before believing it: the source
+  flattens through stock `DeepToImage` to exactly 0.5000000 min/max/mean; the **same alpha at the same
+  16 px CoC radius with the depth ramp removed is exact under BOTH candidates at K=8 and K=64
+  (0.5000017)**, so neither the kernel nor the sharp path is involved; and the deficit vanishes at α=1,
+  which is exactly where the transmittance split `α_i = 1−(1−α)^{w_i}` degenerates to a no-op. So the
+  mechanism is **the transmittance split's recombination, not the kernel and not depth quantisation** —
+  that much is established. T17 recorded the *pooling* term itself as consistent with the
+  different-split-fraction residual (f3c/f3d) but **not isolated**, and said so rather than asserting
+  it.
+  **T17's REVIEW ISOLATED IT (2026-08-16), outside Nuke and with no kernel, no holdout, no flatten and
+  no depth quantisation in the rig.** Hand-built bucket planes, one destination pixel, N equal-weight
+  α-fragments each split 50/50 across a bucket pair, fed straight to
+  `compositePixelCoveragePartition()`; truth is α because the weights sum to 1:
+  | α | N=2 | N=16 | N=64 | all N in ONE bucket pair |
+  |---|-----|------|------|--------------------------|
+  | 1.00 | 0.000% | 0.000% | 0.000% | exact |
+  | 0.99 | −2.05% | −7.02% | −8.36% | exact |
+  | 0.90 | −4.11% | **−17.44%** | −21.63% | exact |
+  | 0.50 | −3.03% | −22.39% | −33.65% | exact |
+  That reproduces the sign, the α-dependence, the divergence in bucket count (≙ K), the exact
+  vanishing at α=1 and the exact constant-depth control, at the scene's own magnitude (−17.4% against
+  the rendered −16.1% at α=0.90/K=16). **The term is `tClaimed`.** The composite carries ONE scalar
+  transmittance for the whole claimed area, but a depth ramp makes every destination pixel's claimed
+  area a mosaic of disjoint sub-areas at different depths, each with its own transmittance. Two
+  consequences, both deficits: a fragment's co-located rear deposit is attenuated by the pooled
+  `tClaimed` instead of by its own head's `1−a₀`, and `tClaimed *= (1 − resLocal)` applies a
+  residual's occlusion to the *whole* claimed area rather than to the `resArea/claimedArea` share it
+  actually covers. At frac 0.25 rather than 0.50 the same rig reads **−38.9%** at N=16, so −16.1% is
+  not the worst case the mechanism admits.
+  **Two leads for the Phase 1.4/1.5 ruling, each with its evidence and neither a ruling.**
+  (a) Area-weighting that second consequence is *algebraically identical* to reverting the residual
+  divisor to the pre-M1.P3.T9 `claimedArea`: built and rendered, it takes `g4` from 0.1607 to 0.0777
+  and improves g1/g2/g3 as well, but it moves T9's pinned behind-focus residue from 61.00% to 70.53%
+  and FAILs `tests/test_defocus_scatter.cpp`. T9 already adjudicated that trade; it is not a free fix.
+  (b) The transmittance split exists *only* so the two deposits reconstruct the parent under the
+  `over` that T17 deleted. On the same isolated rig, a **linear** split (`αᵢ = α·wᵢ`, each half
+  claiming its own new area instead of one arriving co-located) is exact — 0.900000 / 0.500000 at
+  every N and at both split fractions, where the transmittance split reads −17.4% / −22.4%. That is
+  arithmetic on one synthetic pixel and says nothing yet about volumetric parents, holdouts,
+  within-bucket ordering or the depth-interpolation continuity the transmittance form was *also*
+  chosen for. It is a lead, not a mechanism claim.
+  Pinned as bounded XFAIL `g4`. **Promoted from a Phase 1.4/1.5 obligation to its own task,
+  M1.P3.T20, sequenced before M1.P3.T18** — it is the largest known error in the shipped node, a fix
+  moves every rendered pixel, and T18 decides from rendered pixels.
+  **Why partition still wins, given that.** `over` is **better** on this one class of content, and
+  the review's own K sweep says so more strongly than the entry above did: at α=0.90 `over` reads
+  −1.045 / −6.551 / −15.308 / −18.305% at K=8/16/64/128 against partition's −11.390 / −16.065 /
+  −22.994 / −27.494%, and it wins at every K and every α<1 tested, by 1.5–3×. It is still only *less*
+  bad (it diverges in K too), and it additionally fails identities partition satisfies exactly: the holdout law above (+50%
+  relative), the flat-opaque-across-buckets deficit (25.0/31.6/34.4/35.6% at 2/4/8/16 buckets, pinned in
+  `tests/test_defocus_scatter.cpp`), the isolated-bokeh inflation (up to **+93.8%**, i.e. a bokeh
+  highlight at double energy — the most visible artefact a defocus node can produce), and the
+  behind-focus structural residue (48.77/75.03/90.96/117.10% against partition's
+  36.86/50.25/56.31/61.00%). It also errs in **both** directions, which the node's honest-alpha contract
+  forbids in the upward one — `over` reads **+2.362%** on scene (g) at α=0.5/K=8 and +4.983% at K=2,
+  and inflates an isolated bokeh by +93.8%. (Corrected at T17's review: "every partition error
+  measured here is a deficit" holds for the *means* but not per row — partition's own row means run
+  as high as 0.937923 against α=0.90 at K=8. The asymmetry is one of degree, not of kind.) And `over` gets
+  monotonically worse as K rises, so the design's own stated mitigation for within-bucket ordering loss
+  is an anti-mitigation for it. A residual on the winner is a follow-up; an identity violation on the
+  loser is not fixable — `FrontToBackOver` reads neither area plane and has nothing to correct with.
+  **Deleted**: `BucketCombine`, `ScatterParams::combine`, the `bucket_combine` knob and
+  `clampedBucketCombine()`, `resolveBandCPU`'s switch, `compositePixelFrontToBack()` /
+  `compositeBucketsFrontToBack()`, the harness `--combine` flag and its scene-(g) candidate loop, and
+  the unit tests that existed only to pin `over`. **Deliberately KEPT**: all four accumulation planes —
+  T17's brief anticipated deleting "the accumulation plane the winner does not read", and there is
+  **none**: `compositePixelCoveragePartition()` reads colour, alpha, new area AND co-located area, and
+  the two area planes are precisely what the losing candidate ignored. Also kept: every test pinning
+  behaviour partition still has, including the behind-focus residue and the interpolant divergence.
 
 - 2026-08-16 — **M1.P3.T19 replaced the kernel's uniform radius grid with an adaptive one; the harness
   is green end to end for the first time** (PASS=77 FAIL=0 XFAIL=18 SKIP=1, exit 0). The deficit at a
@@ -1671,14 +1897,17 @@ verified.
   head-of-group bool through `FragmentRecord`/`SampleSoA`) and needs its own test coverage — the
   milestone's sizing rule says that is a new task, not an "and then also". **M1.P3.T5's bake-off is
   not meaningful on scenes (f)/(g)/(i) until T8 lands.**
-- 2026-07-26 — `ScatterParams::combine` defaults to `CoveragePartition`, but the default is
+- 2026-07-26 — **SUPERSEDED 2026-08-16 by M1.P3.T17** (which decided the bake-off from rendered
+  pixels and deleted `ScatterParams::combine` outright — there is no default left to be provisional
+  about, and no explicit-setting discipline left to keep). Kept for the history of how the default
+  was chosen. ~~`ScatterParams::combine` defaults to `CoveragePartition`, but the default is
   **provisional and non-authoritative**: M1.P3.T5 still decides from rendered pixels per the
   bucket-composite entry below. The default is not neutral (plain `over` is *known* to fail scene (c),
   so defaulting to it would ship a known-failing default while T5 runs), and post-fix
   CoveragePartition is the only candidate satisfying its own identities. To stop the default biasing
   anything, M1.P3.T4 and M1.P3.T5 must set `combine` explicitly in every case and every render. The
   review also fixed an unreachable `default:` branch that routed to `FrontToBackOver` while claiming
-  it was "the safer of the two" — no longer true.
+  it was "the safer of the two" — no longer true.~~
 - 2026-07-26 — A flat opaque field resolves to **0.9999992, not exactly 1.0**: the disc LUT's
   per-entry normalisation residual (~5e-8 each, over ~113 contributing fragments). The design
   reference's scene (c) says "alpha ≡ 1 exactly" and M1.P3.T2 initially reported exactly 1 — that

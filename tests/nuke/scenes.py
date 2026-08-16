@@ -11,7 +11,7 @@ import math
 import nuke
 
 from harness import (
-    BUCKET_COMBINE, BUCKET_COMBINE_LABEL, FORMAT_H, FORMAT_W, RGBA, SKIP, Check,
+    FORMAT_H, FORMAT_W, RGBA, SKIP, Check,
     boolCheck, channelStats, compareImages, constant2d, cropDeep, deepHoldout,
     deepMerge, deepMergeHoldout, deepToImage, depthRampLayer, formatBox,
     insetBox, makeDefocus, pointLayer, rectangle2d, render, resetScript,
@@ -273,8 +273,9 @@ def sceneC(settings):
     blurSum = channelStats(blurred, "A", paddedBox).total
     ratio = blurSum / sharpSum if sharpSum else float("nan")
     # Gate tightened at T12's review from 1e-03: the reading is 8.984e-06 and
-    # is INVARIANT across K=4/8/16/64/128 and both bucket-combine candidates
-    # (measured), so 1e-03 left two orders of magnitude of dead slack.
+    # is INVARIANT across K=4/8/16/64/128 and was invariant across both
+    # bucket-combine candidates too (measured, before M1.P3.T17 deleted one),
+    # so 1e-03 left two orders of magnitude of dead slack.
     checks.append(tolCheck("c", "c3 band-alpha sum ratio |defocus/sharp - 1|",
                            abs(ratio - 1.0), 1.0e-04,
                            population="sum %.4f vs %.4f" % (blurSum, sharpSum),
@@ -534,8 +535,13 @@ def sceneF(settings):
     # exponential fog span, so the log chord is exact here and the reading is
     # 4.367e-08 — measured invariant across K=4/8/16/32/64/128, all three
     # holdout interpolants, pre_merge on/off and merge_tolerance 0.25/2.0.
-    # (It is 2.5e-01 under combine=FrontToBackOver, which the old gate also
-    # caught; 1e-06 additionally catches anything smaller than a quarter.)
+    # THIS IS THE READING THAT DECIDED M1.P3.T17.  Under the deleted bucket
+    # composite it was 2.500e-01: an opaque fragment's transmittance split is a
+    # no-op, so both bucket deposits carried the full `1*vis` and plain `over`
+    # composited them as independent layers, rendering `2*vis - vis^2` where the
+    # truth is `vis` — +50% relative at vis = 0.5, on the node's differentiating
+    # feature, at size 0.  Confirmed to four decimals at every strip above.
+    # 1e-06 catches anything smaller than a quarter of that.
     checks.append(tolCheck("f", "f1 fog-slab vis vs analytic (1-a)^t",
                            worst, 1.0e-06,
                            population="worst strip %d (z=%.1f) of %d"
@@ -697,13 +703,13 @@ def sceneF(settings):
             population="interior flat field, %d px" % stats.count,
             # The Decisions entry of 2026-07-26 calls this a "~4%/layer LOSS"
             # and "identical under both bucket-combine candidates". Neither
-            # holds as stated: the deviation is SIGNED and flips with the
-            # candidate (T12 review measured -0.113%/-1.675% under
-            # CoveragePartition against +0.074%/+0.967% under
-            # FrontToBackOver), so T17 must not treat it as a common-mode term.
+            # held as stated: the deviation is SIGNED and flipped with the
+            # candidate (-0.113%/-1.675% under the shipped composite against
+            # +0.074%/+0.967% under the one M1.P3.T17 deleted), which is why
+            # T17 weighed it as evidence rather than as a common-mode term.
             note="documented different-split-fraction residual (Decisions "
                  "2026-07-26); signed, and NOT candidate-independent as that "
-                 "entry states — see the T12 review"
+                 "entry states — see the T12 review and M1.P3.T17"
                  if documented else "",
             expectedFailure=documented,
             hardTol=hardPct,
@@ -877,16 +883,23 @@ def sceneG(settings):
         from every reading here.
 
     ON THAT EXCLUSION (re-measured at M1.P3.T19, which removed the reason the
-    exclusion was originally given — kernel-bin quantisation).  Without it:
-    g1 partition 9.916e-03 / 5.084e-03 / 1.899e-03 at K=8/16/64 (with:
-    1.048e-02 / 4.446e-03 / 2.799e-07); g1 over 2.563e-03 / 1.946e-02 /
-    7.050e-02 (with: 2.823e-03 / 2.153e-02 / 7.789e-02); g2 partition
-    7.407e-02 at BOTH K=8 and K=16 (with: 4.909e-02 / 4.657e-02); g3 partition
-    3.191e-02 / 2.883e-02 / 7.407e-02 (with: 3.191e-02 / 2.883e-02 /
-    3.576e-07).  Nothing crosses an XFAIL hard bound either way, but the focus
-    rows contribute one identical 7.407e-02 figure to g2 at every K and to g3
-    at K=64 — i.e. they swamp exactly the two metrics built to ISOLATE the
-    bucketing.  The exclusion stays; only its justification changed.
+    exclusion was originally given — kernel-bin quantisation; and AGAIN at
+    M1.P3.T17 on the post-T19 plugin, both framings, since the bake-off's brief
+    required the unexcluded reading).  Without it: g1 9.916e-03 / 5.084e-03 /
+    1.899e-03 at K=8/16/64 (with: 1.048e-02 / 4.446e-03 / 2.799e-07); the
+    deleted candidate 2.563e-03 / 1.946e-02 / 7.050e-02 (with: 2.823e-03 /
+    2.153e-02 / 7.789e-02); g2 7.407e-02 at BOTH K=8 and K=16 (with: 4.909e-02
+    / 4.657e-02); g3 3.191e-02 / 2.883e-02 / 7.407e-02 (with: 3.191e-02 /
+    2.883e-02 / 3.576e-07).  Nothing crosses an XFAIL hard bound either way,
+    the verdict at T17 was the same both ways, but the focus rows contribute
+    one identical 7.407e-02 figure to g2 at every K and to g3 at K=64 — i.e.
+    they swamp exactly the two metrics built to ISOLATE the bucketing.  The
+    exclusion stays; only its justification changed.
+
+    g4 (added at M1.P3.T17) runs the same ramp at alpha < 1, where the fragment
+    split is not a no-op and the saturation clamp does not hide the positive
+    half of the error.  See its comment: it is the largest residual the
+    bucket-composite bake-off found on the composite it kept.
     """
     checks = []
     size = 86.0
@@ -937,78 +950,90 @@ def sceneG(settings):
             note="single-scanline probe; slope %.4f px/row, %.1f px at the "
                  "frame edge" % (slope, edgeRadius)))
 
-    # --- g1: the K x combine table M1.P3.T17 inherits.
+    # --- g1: the K sweep on the shipped bucket composite.
+    #
+    # This used to be a K x combine table, rendered under both candidates in one
+    # pass so M1.P3.T17 could inherit it.  T17 ran, decided from these pixels,
+    # and deleted the loser; the readings it decided on are in the milestone
+    # Decisions (the deleted candidate went -0.28% / -2.15% / -7.79% at
+    # K=8/16/64 here, DIVERGING in K, against the surviving rule's -1.05% /
+    # -0.44% / -2.8e-05%, and was over 1/255 on 112 of 112 interior rows at
+    # both K=8 and K=16 against 51 and 23).  What is left is the surviving
+    # rule's own residual, which is still a documented one.
     #
     # HARD BOUNDS on the XFAILs below.  The bucket-composite deficit this scene
-    # measures is documented and is exactly what M1.P3.T17 must judge, so it is
-    # XFAIL rather than FAIL — but an unbounded XFAIL would swallow a *new*
-    # defect landing on top of the old one and hand T17 a corrupted table.  The
-    # bounds are ~2-3x the worst reading on record (g1 7.8e-02, g2 9.6e-02,
-    # g3 3.1e-02, all at M1.P3.T16); past them the reading is a regression, not
-    # the residual, and the check goes back to a hard FAIL.
-    G1_HARD, G2_HARD, G3_HARD = 1.5e-01, 1.5e-01, 1.0e-01
+    # measures is documented, so it is XFAIL rather than FAIL — but an unbounded
+    # XFAIL would swallow a *new* defect landing on top of the old one.  The
+    # bounds are ~3x the worst reading ON THE SHIPPED COMPOSITE, past which the
+    # reading is a regression rather than the residual and the check goes back
+    # to a hard FAIL.
+    #
+    # RE-SIZED ONTO THE SURVIVOR at M1.P3.T17's review.  They were originally
+    # 2-3x the worst reading at M1.P3.T16 ACROSS BOTH candidates (g1 7.8e-02,
+    # g2 9.6e-02, g3 3.1e-02), and T17 left them there after deleting the
+    # candidate that produced the g1 and g2 maxima.  g2 and g3 were unaffected
+    # (their worst survivor readings, 4.909e-02 and 3.191e-02, are ~3x inside
+    # 1.5e-01 and 1.0e-01 already), but g1's worst survivor reading is 1.048e-02
+    # against a 1.5e-01 bound — 14x, i.e. wide enough to swallow an order of
+    # magnitude of new defect, which is exactly what a hard bound exists to stop.
+    # Tightened to 3.5e-02 (3.3x the K=8 reading, the largest of the three).
+    G1_HARD, G2_HARD, G3_HARD = 3.5e-02, 1.5e-01, 1.0e-01
     profiles = {}
     seams = {}
-    for combine in ("partition", "over"):
-        for k in (8, 16, 64):
-            cell = settings.derive(k=k, combine=combine)
-            resetScript()
-            image = render(cell,
-                           makeDefocus(cell, groundPlane(), size=size,
-                                       focusDistance=GROUND_FOCUS,
-                                       cocMode="manual"),
-                           "g_ramp_%s_k%d" % (combine, k))
-            profile = (rowMeans(image, "A", lowBox)
-                       + rowMeans(image, "A", highBox))
-            redProfile = (rowMeans(image, "R", lowBox)
-                          + rowMeans(image, "R", highBox))
-            profiles[(combine, k)] = profile
-            mean = sum(profile) / len(profile)
-            worstStep, medianStep, stepAt = stepProfile(profile)
-            seams[(combine, k)] = (worstStep, medianStep, stepAt)
-            # The colour must track alpha exactly: this input is a single
-            # premultiplied colour, so R == 0.40*A everywhere or the composite
-            # has desynced the premultiplied pair (a defect shape this milestone
-            # has now hit three times).
-            worstRatio = max(abs(redProfile[i] - GROUND_COLOR[0] * profile[i])
-                             for i in range(len(profile)))
-            checks.append(tolCheck(
-                "g", "g1 %s K=%-2d interior flat-field alpha |a-1|"
-                     % (BUCKET_COMBINE_LABEL[cell.combine], k),
-                abs(mean - 1.0), 1.0e-03,
-                population="%d rows x %d px, |y-128| >= %d"
-                           % (rowCount, colCount, band),
-                note="mean %.6f (%+.3f%%) min %.6f (y=%d) max %.6f; worst "
-                     "row step %.3e at y=%d (median %.3e); colour:alpha "
-                     "residual %.2e"
-                     % (mean, (mean - 1.0) * 100.0, min(profile),
-                        profileRow(profile.index(min(profile))), max(profile),
-                        worstStep, profileRow(stepAt), medianStep, worstRatio),
-                expectedFailure=True, hardTol=G1_HARD))
+    for k in (8, 16, 64):
+        cell = settings.derive(k=k)
+        resetScript()
+        image = render(cell,
+                       makeDefocus(cell, groundPlane(), size=size,
+                                   focusDistance=GROUND_FOCUS,
+                                   cocMode="manual"),
+                       "g_ramp_k%d" % k)
+        profile = (rowMeans(image, "A", lowBox)
+                   + rowMeans(image, "A", highBox))
+        redProfile = (rowMeans(image, "R", lowBox)
+                      + rowMeans(image, "R", highBox))
+        profiles[k] = profile
+        mean = sum(profile) / len(profile)
+        worstStep, medianStep, stepAt = stepProfile(profile)
+        seams[k] = (worstStep, medianStep, stepAt)
+        # The colour must track alpha exactly: this input is a single
+        # premultiplied colour, so R == 0.40*A everywhere or the composite
+        # has desynced the premultiplied pair (a defect shape this milestone
+        # has now hit three times).
+        worstRatio = max(abs(redProfile[i] - GROUND_COLOR[0] * profile[i])
+                         for i in range(len(profile)))
+        checks.append(tolCheck(
+            "g", "g1 K=%-2d interior flat-field alpha |a-1|" % k,
+            abs(mean - 1.0), 1.0e-03,
+            population="%d rows x %d px, |y-128| >= %d"
+                       % (rowCount, colCount, band),
+            note="mean %.6f (%+.3f%%) min %.6f (y=%d) max %.6f; worst "
+                 "row step %.3e at y=%d (median %.3e); colour:alpha "
+                 "residual %.2e"
+                 % (mean, (mean - 1.0) * 100.0, min(profile),
+                    profileRow(profile.index(min(profile))), max(profile),
+                    worstStep, profileRow(stepAt), medianStep, worstRatio),
+            expectedFailure=True, hardTol=G1_HARD))
 
     # --- g2: the part of the banding that is ATTRIBUTABLE TO BUCKETING.
     # A seam the eye can see is a step of about 1/255 in the 8-bit result, so
     # that is the gate; K=64 is the reference because it is the finest bucketing
     # the scene renders, and the difference cancels every K-invariant term
     # (kernel-bin quantisation, the varying-radius scatter residual).
-    for combine in ("partition", "over"):
-        reference = profiles[(combine, 64)]
-        for k in (8, 16):
-            profile = profiles[(combine, k)]
-            deltas = [abs(a - b) for a, b in zip(profile, reference)]
-            worst = max(deltas)
-            over = sum(1 for d in deltas if d > 1.0 / 255.0)
-            label = BUCKET_COMBINE_LABEL[BUCKET_COMBINE[combine]]
-            checks.append(tolCheck(
-                "g", "g2 %s K=%-2d bucket-attributable banding vs K=64"
-                     % (label, k),
-                worst, 1.0 / 255.0,
-                population="%d/%d interior rows over 1/255" % (over, rowCount),
-                note="max |rowMean(K=%d) - rowMean(K=64)|; worst row y=%d "
-                     "(radius %.2f px)"
-                     % (k, profileRow(deltas.index(worst)),
-                        groundRadius(size, profileRow(deltas.index(worst)))),
-                expectedFailure=True, hardTol=G2_HARD))
+    reference = profiles[64]
+    for k in (8, 16):
+        deltas = [abs(a - b) for a, b in zip(profiles[k], reference)]
+        worst = max(deltas)
+        overCount = sum(1 for d in deltas if d > 1.0 / 255.0)
+        checks.append(tolCheck(
+            "g", "g2 K=%-2d bucket-attributable banding vs K=64" % k,
+            worst, 1.0 / 255.0,
+            population="%d/%d interior rows over 1/255" % (overCount, rowCount),
+            note="max |rowMean(K=%d) - rowMean(K=64)|; worst row y=%d "
+                 "(radius %.2f px)"
+                 % (k, profileRow(deltas.index(worst)),
+                    groundRadius(size, profileRow(deltas.index(worst)))),
+            expectedFailure=True, hardTol=G2_HARD))
 
     # --- g3: the scene's OWN stated criterion — "no visible seams at bucket
     # boundaries at K=16; compare K=8 vs K=64".  g1 (a mean) and g2 (a
@@ -1017,22 +1042,112 @@ def sceneG(settings):
     # milestone's banding scene never gated the thing it is named after.  The
     # median step is carried alongside so the reading can be read as "a spike
     # against a flat neighbourhood" rather than "the profile is that noisy".
-    for combine in ("partition", "over"):
-        for k in (8, 16, 64):
-            worstStep, medianStep, stepAt = seams[(combine, k)]
-            label = BUCKET_COMBINE_LABEL[BUCKET_COMBINE[combine]]
-            row = profileRow(stepAt)
-            checks.append(tolCheck(
-                "g", "g3 %s K=%-2d worst seam (row-to-row step in the profile)"
-                     % (label, k),
-                worstStep, 1.0 / 255.0,
-                population="%d interior rows; median step %.3e"
-                           % (rowCount, medianStep),
-                note="worst step at y=%d (radius %.2f px), %.0fx the median; "
-                     "1/255 is the step an 8-bit view resolves"
-                     % (row, groundRadius(size, row),
-                        (worstStep / medianStep) if medianStep > 0.0 else 0.0),
-                expectedFailure=True, hardTol=G3_HARD))
+    for k in (8, 16, 64):
+        worstStep, medianStep, stepAt = seams[k]
+        row = profileRow(stepAt)
+        checks.append(tolCheck(
+            "g", "g3 K=%-2d worst seam (row-to-row step in the profile)" % k,
+            worstStep, 1.0 / 255.0,
+            population="%d interior rows; median step %.3e"
+                       % (rowCount, medianStep),
+            note="worst step at y=%d (radius %.2f px), %.0fx the median; "
+                 "1/255 is the step an 8-bit view resolves"
+                 % (row, groundRadius(size, row),
+                    (worstStep / medianStep) if medianStep > 0.0 else 0.0),
+            expectedFailure=True, hardTol=G3_HARD))
+
+    # --- g4: THE SAME RAMP AT alpha < 1.  Found at M1.P3.T17, and the largest
+    # residual the bucket-composite bake-off turned up on the composite it KEPT.
+    #
+    # g1-g3 all run on an OPAQUE plane, where the fragment split
+    # `alpha_i = 1 - (1-alpha)^{w_i}` is an identity no-op (a0 == a1 == 1) and
+    # the saturation pass clamps every positive excursion to exactly 1 — so an
+    # opaque field cannot show either half of the split's recombination error.
+    # An ordinary semi-transparent receding surface does, and it is big: at
+    # K=16 the interior mean reads -12.5% at alpha 0.99, -16.1% at 0.90 and
+    # -9.2% at 0.50, and it DIVERGES in K (-5.0 / -9.2 / -13.7 / -19.6 / -26.6%
+    # at K=8/16/32/64/128 at alpha 0.5), which is the opposite of g1's
+    # opaque-field convergence.
+    #
+    # THREE CONTROLS ran at M1.P3.T17 before this was believed, and they are
+    # what attribute it: the source flattens through stock DeepToImage to
+    # exactly 0.5000000 min/max/mean; the same alpha at the same 16 px CoC with
+    # the DEPTH RAMP REMOVED is exact (0.5000017) at K=8 and K=64, so neither
+    # the kernel nor the sharp path is involved; and it vanishes at alpha 1,
+    # which is exactly where the split degenerates.  T17 recorded the pooling
+    # term itself as consistent with the different-split-fraction residual
+    # (f3c/f3d) but NOT isolated, and said so rather than asserting it.
+    #
+    # T17'S REVIEW ISOLATED IT.  Hand-built bucket planes, one pixel, N
+    # equal-weight alpha-fragments each split 50/50 across their OWN bucket
+    # pair, fed straight to compositePixelCoveragePartition() with no kernel,
+    # no holdout, no flatten and no quantisation anywhere: -4.11 / -17.44 /
+    # -21.63% at N=2/16/64 for alpha 0.90, EXACT at alpha 1, and EXACT at
+    # every N when all the fragments share one bucket pair (the rendered
+    # no-ramp control, reproduced in arithmetic).  The term is `tClaimed`: the
+    # composite carries ONE scalar transmittance for the whole claimed area,
+    # while a depth ramp makes that area a mosaic of disjoint sub-areas at
+    # different depths each with its own.  A fragment's co-located rear deposit
+    # is then attenuated by the pooled value instead of by its own head's
+    # (1-a0), and `tClaimed *= (1 - resLocal)` applies a residual's occlusion
+    # to the whole claimed area rather than to the resArea/claimedArea share it
+    # covers.  At frac 0.25 the same rig reads -38.9% at N=16, so 16.1% is not
+    # the worst case the mechanism admits.  See the milestone Decisions entry
+    # for the two Phase 1.4/1.5 leads and why neither is free.
+    #
+    # PINNED AS A BAND, not as a ceiling, and K IS FIXED AT 16 here rather than
+    # taken from --k: the reading is monotone in K, so a one-sided bound would
+    # be satisfied by every improvement AND by a --k that moved it, and neither
+    # is what this check is for.  MUTATION-TESTED at M1.P3.T17 against three
+    # separate mutations of compositePixelCoveragePartition() — scaling the
+    # co-located residual's alpha by 0.75 (reads 0.1020), reverting the
+    # residual divisor to the pre-T9 claimedArea (0.0777), and attenuating the
+    # residual twice (0.1925).  All three land outside the band; the widest
+    # half-width that still catches all three is 0.0318, so 0.025 is used.
+    # A FOURTH, INDEPENDENT MUTATION at T17's review — area-weighting the
+    # residual's occlusion by resArea/claimedArea, which is algebraically the
+    # pre-T9 divisor — reads 0.0777 and FAILs the band too, so the band
+    # discriminates against a mutation nobody who wrote it had in hand.
+    #
+    # THIS CHECK CANNOT PASS, BY CONSTRUCTION: it is a band around a defect, so
+    # FIXING the defect turns it FAIL, not PASS.  That is deliberate (a ceiling
+    # would be satisfied by any improvement and by any K change), but it means
+    # whoever rules on this at Phase 1.4/1.5 must RE-PIN this check in the same
+    # commit as the fix — a red suite there is the check working, not a
+    # regression.
+    G4_PIN, G4_BAND = 0.1607, 0.025
+    g4K = 16
+    g4Alpha = 0.90
+    g4Colour = tuple(c * g4Alpha for c in GROUND_COLOR[:3]) + (g4Alpha,)
+    g4Cell = settings.derive(k=g4K)
+    resetScript()
+    fogImage = render(g4Cell,
+                      makeDefocus(g4Cell, groundPlane(color=g4Colour),
+                                  size=size, focusDistance=GROUND_FOCUS,
+                                  cocMode="manual"),
+                      "g_ramp_alpha%g" % g4Alpha)
+    fogProfile = (rowMeans(fogImage, "A", lowBox)
+                  + rowMeans(fogImage, "A", highBox))
+    fogMean = sum(fogProfile) / len(fogProfile)
+    fogDeficit = 1.0 - fogMean / g4Alpha
+    fogBad = sum(1 for v in fogProfile
+                 if abs(v - g4Alpha) > g4Alpha / 255.0)
+    checks.append(boolCheck(
+        "g", "g4 K=%d interior flat-field alpha at alpha %.2f (the alpha<1 "
+             "residual)" % (g4K, g4Alpha),
+        False,
+        "%.4f low (%.6f vs %.2f)" % (fogDeficit, fogMean, g4Alpha),
+        "0.0000 (xfail %.4f +/- %.4f)" % (G4_PIN, G4_BAND),
+        population="%d/%d interior rows over A/255" % (fogBad, rowCount),
+        note="min %.6f (y=%d) max %.6f; the opaque twin (g1, same rig, K=%d) "
+             "reads %+.3f%% — the whole gap is the transmittance split, which "
+             "is a no-op at alpha 1 (M1.P3.T17)"
+             % (min(fogProfile),
+                profileRow(fogProfile.index(min(fogProfile))),
+                max(fogProfile), g4K,
+                (sum(profiles[g4K]) / len(profiles[g4K]) - 1.0) * 100.0),
+        expectedFailure=True, hardTol=G4_BAND,
+        hardValue=abs(fogDeficit - G4_PIN)))
     return checks
 
 
@@ -1835,19 +1950,29 @@ def sceneL(settings):
     #     not the kernel;
     #   * K=64's worst is 0.992598 at y=103 (radius 0.488 px, the sharp<->disc
     #     threshold), where K=8 and K=16 both read 1.000000.
-    # Two independent facts put all of that on the BUCKET COMPOSITE — i.e. on
-    # M1.P3.T17, not on DiscKernelLUT: it appears only as K rises, and it is
-    # candidate-dependent (the same K=64 row reads 0.999666 under
-    # FrontToBackOver against 0.992598 under CoveragePartition, and the whole
-    # check reads 2.186e-04 instead of 5.226e-03).  The old 0.5px grid hid it
-    # by rasterising every radius in [0.25, 0.75] as the same delta, so no
-    # neighbour spilled across a bucket boundary at all.
+    # Two independent facts put all of that on the BUCKET COMPOSITE, not on
+    # DiscKernelLUT: it appears only as K rises, and it was candidate-dependent
+    # (the same K=64 row read 0.999666 under the composite M1.P3.T17 deleted
+    # against 0.992598 under the one it kept, and the whole check read 2.186e-04
+    # instead of 5.226e-03).  The old 0.5px grid hid it by rasterising every
+    # radius in [0.25, 0.75] as the same delta, so no neighbour spilled across a
+    # bucket boundary at all.
+    #
+    # THIS WHOLE SCENE FAVOURED THE DELETED CANDIDATE (l1 4.296e-04 against
+    # 2.176e-03, l2 4.175e-04 / 1.950e-03, l3 2.186e-04 / 5.226e-03, l5
+    # 2.935e-03 / 3.667e-03) and M1.P3.T17 kept the other one anyway — see the
+    # Decisions entry for why, and for the alpha-0.5 and alpha-0.25 re-renders
+    # that refuted the first explanation offered for it.  Below ~2.5 px BOTH of
+    # the deleted rule's failure modes are quenched at once; its advantage
+    # shrinks monotonically as the CoC grows and never exceeded ~1 8-bit code
+    # value here.
     #
     # T19 did NOT make any pixel here worse: the worst row reads 0.799119 at
     # every K before this task and 0.9926 or better at every K after it.  What
     # changed is that the metric — spread of the minimum across K — is no
     # longer pinned by a K-invariant trough, so it now shows the composite.
-    # M1.P3.T17 will move this number; re-read it there.
+    # M1.P3.T17 read it and did not move it: the composite it kept is the one
+    # this check already measured.
     # Bounded so a real regression on top of it still FAILs.
     spread = max(abs(min(profiles[k]) - min(profiles[settings.k]))
                  for k in profiles)
@@ -1949,8 +2074,9 @@ def sceneL(settings):
     # rather than an assertion that it is:
     #   * it is not the bucket composite either: a kernel-only model with NO
     #     buckets at all reproduces this reading exactly (0.990063), and the
-    #     rendered value does not move between the two `combine` candidates
-    #     (9.937e-03 under both, against l3's 5.226e-03 / 2.186e-04 split);
+    #     rendered value did not move between the two `combine` candidates
+    #     (9.937e-03 under both, against l3's 5.226e-03 / 2.186e-04 split) —
+    #     re-confirmed at M1.P3.T17, which is why the deletion left it alone;
     #   * it is pinned to a POSITION, not to a RADIUS.  A bin-quantisation
     #     artefact lives at whatever pixels carry the offending radius; this one
     #     stays at the field extremum when `size` is doubled, i.e. when the

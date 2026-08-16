@@ -39,8 +39,8 @@
 //                      nothing.
 //    - scatterBandCPU() : the scatter core proper — fragments -> planes.
 //    - resolveBandCPU() : saturate-down, then combine the planes into the
-//                      band's flat output by one of the two candidate
-//                      bucket-composite rules (see BucketCombine).
+//                      band's flat output by the bucket composite decided
+//                      from pixels at M1.P3.T17.
 //
 //  The per-fragment / per-span / per-pixel BODIES of all of the above live in
 //  this header marked DEEPC_HD; only the loop drivers and the allocations are
@@ -1045,58 +1045,54 @@ bool checkCompositionContract(const SampleSoA& soa,
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
-// BucketCombine — the two candidate bucket-composite rules
+// THE BUCKET COMPOSITE — DECIDED (M1.P3.T17, 2026-08-16)
 //
-// BOTH ARE BUILT ON PURPOSE and the choice is made from rendered pixels at
-// M1.P3.T5, not from identities (milestone Decisions, 2026-07-26, "Bucket-
-// composite alpha deficit"); the loser is deleted before the milestone gate.
-// It is a runtime enum, not a preprocessor flag, precisely so T5 can render
-// both from one build.
+// Two candidate rules were built and carried behind a runtime enum so the
+// choice could be made from RENDERED PIXELS rather than from identities
+// (milestone Decisions, 2026-07-26, "Bucket-composite alpha deficit").  The
+// bake-off ran at M1.P3.T17 on validation scenes (c), (f), (g) and (i) at
+// K=8/16/64, plus scene (l), and `compositePixelCoveragePartition()` below WON.
+// There is no enum, no flag and no switch any more: it is the only rule.
 //
-//   FrontToBackOver    the design reference's original rule: plain
-//                      front-to-back `over` of the K planes, ignoring the
-//                      coverage plane.  Conventional, and what classical
-//                      layered DOF does.  Its known failure: distinct opaque
-//                      fragments whose disc weights sum to exactly 1 at a
-//                      destination pixel but land in DIFFERENT buckets
-//                      composite to 1 - prod(1 - W_k) < 1 — a measured 25.0%
-//                      alpha deficit across 2 buckets, 31.6% / 4, 34.4% / 8,
-//                      35.6% / 16.  It worsens with K, so the K knob is not a
-//                      mitigation, and it fails validation scenes (c) and (g)
-//                      as written.  M1.P3.T2's review found a SECOND, opposite
-//                      failure it cannot avoid either: because pixel-integrated
-//                      alpha is linear in kernel weight while `over` is not,
-//                      one fragment split across two buckets over-composites to
-//                      more than it deposited wherever its kernel weight is
-//                      below 1 — measured +93.8% worst case over 3000 random
-//                      (alpha, fraction, radius) triples, i.e. an isolated
-//                      opaque bokeh at DOUBLE energy (band alpha sum 1.988 for
-//                      one alpha-1 fragment), and a defocused opaque edge's
-//                      alpha/colour ramp inflated from 0.437 to 0.683.  This
-//                      candidate has no coverage plane to correct it with.
+// WHAT WAS DELETED, and why it is not worth resurrecting — plain front-to-back
+// `over` of the K planes, ignoring both area planes (the design reference's
+// original sketch, and what classical layered DOF does).  It failed on:
 //
-//   CoveragePartition  front-to-back with occlusion driven off the `sum of
-//                      w*vis` COVERAGE plane: coverage that still fits inside
-//                      the destination pixel's unclaimed area is ADDITIVE (it
-//                      is disjoint from everything already composited, so
-//                      nothing occludes it) and only the excess is
-//                      `over`-attenuated.  See
-//                      compositePixelCoveragePartition() for the model, the
-//                      reduction proofs and the measured numbers.  No direct
-//                      published precedent, hence the empirical bake-off.
+//   * THE HOLDOUT LAW.  An opaque fragment's transmittance split is a no-op
+//     (a0 == a1 == alpha == 1), so both bucket deposits carry the full
+//     `1*vis` and `over` composites them as independent layers: it renders
+//     `2*vis - vis^2` where the truth is `vis`.  Error `vis*(1 - vis)`, worst
+//     0.25 at vis == 0.5, i.e. +50% RELATIVE on the node's differentiating
+//     feature, at size 0, K-independent.  Confirmed to four decimals at every
+//     probe depth of harness check `f1` (0.5012 -> 0.7512, 0.3758 -> 0.6104,
+//     0.1585 -> 0.2919), against 4.367e-08 for the surviving rule.
+//   * FLAT OPAQUE ACROSS BUCKETS.  Distinct opaque fragments whose disc
+//     weights sum to exactly 1 at a destination pixel but land in DIFFERENT
+//     buckets composite to 1 - prod(1 - W_k) < 1 — 25.0% alpha deficit across
+//     2 buckets, 31.6% / 4, 34.4% / 8, 35.6% / 16.  It WORSENS with K, so the
+//     design's own K knob is an anti-mitigation for it: scene (g)'s opaque
+//     receding plane read -0.28% / -2.15% / -7.79% at K=8/16/64 where the
+//     surviving rule read -1.05% / -0.44% / -2.8e-05%.
+//   * THE OPPOSITE FAILURE, WHICH IT CANNOT AVOID EITHER.  Pixel-integrated
+//     alpha is linear in kernel weight while `over` is not, so one fragment
+//     split across two buckets over-composites to more than it deposited
+//     wherever its kernel weight is below 1 — +93.8% worst case over 3000
+//     random (alpha, fraction, radius) triples, i.e. an isolated opaque bokeh
+//     at DOUBLE energy, and a defocused opaque edge's alpha/colour ramp
+//     inflated from 0.437 to 0.683.  Erring HIGH is what the node's
+//     honest-alpha contract forbids outright.
 //
-// The default is CoveragePartition: FrontToBackOver is *known* to fail scene
-// (c)'s alpha == 1 identity AND to double an isolated bokeh's energy (above),
-// so defaulting to it would ship a known-failing default while T5 runs.  That
-// default is provisional, not the decision — M1.P3.T5 must render BOTH
-// explicitly rather than relying on whatever this enum initialises to, and
-// M1.P3.T4's tests must set `combine` explicitly in every case for the same
-// reason.
+// It had NO plane to correct any of that with, which is the structural reason
+// the decision was not close: this rule reads the coverage and co-located area
+// planes and has been corrected against measurement twice (M1.P3.T8, T9).
+//
+// WHAT `over` WON, recorded so it is not rediscovered as a surprise: small-CoC
+// content (harness l1/l2/l3/l5 all favour it, by 2-13x but never by more than
+// ~1 8-bit code value), because BOTH its failure modes are quenched below
+// ~2.5 px — its across-bucket deficit needs coverage spread over many buckets,
+// and its split inflation needs kernel weights well below 1.  Its advantage
+// shrinks monotonically as the CoC grows.
 // ---------------------------------------------------------------------------
-enum class BucketCombine : std::uint8_t {
-    FrontToBackOver   = 0,
-    CoveragePartition = 1
-};
 
 // ---------------------------------------------------------------------------
 // BucketPlaneView — POD, non-owning view of one band's accumulation planes
@@ -1546,12 +1542,9 @@ struct ScatterParams {
     // ("never reaches the sampler for radius < 0.5px") true from this side.
     float sharpRadiusPx = kSharpRadiusPx;
 
-    // Which of the two candidate bucket composites resolveBandCPU() runs.
-    BucketCombine combine = BucketCombine::CoveragePartition;
-
     // Which of interpAtBucket()'s three opaque-step candidates the holdout
-    // LUT lookup uses (M1.P3.T11) -- a runtime knob, like `combine` above, not
-    // a build-time flag: M1.P3.T5 must be able to render all three off the
+    // LUT lookup uses (M1.P3.T11) -- a runtime knob, not a build-time flag:
+    // M1.P3.T18 must be able to render all three off the
     // same binary.  Only observable when a holdout is connected AND a
     // fragment's far LUT boundary transmittance is bitwise 0.0f (T1 == 0).
     // That is USUALLY a fully-opaque sample but is not exclusively one -- a
@@ -1987,12 +1980,12 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 }
 
 // ---------------------------------------------------------------------------
-// compositePixelCoveragePartition — CANDIDATE 2.  THE PER-PIXEL BODY.
+// compositePixelCoveragePartition — THE BUCKET COMPOSITE.  THE PER-PIXEL BODY.
 //
-// Same pointer conventions as DeepCDefocusMath.h's
-// compositePixelFrontToBack() (pointers pre-offset to their pixel, everything
-// else derived from pixelCount) plus the coverage plane, so the two candidates
-// are drop-in alternatives for each other.
+// The rule M1.P3.T17 kept (see "THE BUCKET COMPOSITE — DECIDED" above).
+// Pointers are pre-offset to their pixel and everything else is derived from
+// pixelCount, exactly as the deleted candidate's body was, so the M3 CUDA seam
+// is unchanged by the decision.
 //
 // THE MODEL.  Front-to-back over a pixel that is treated as a unit AREA, not
 // as a single point sample:
@@ -2180,10 +2173,11 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 //   +0.33%  (the residue is that span's behind-focus half)
 //
 // (2 buckets is unchanged by construction: with one residual there is no later
-// part for the corrected transmittance to occlude.)  FrontToBackOver reads
-// neither area plane and is untouched by all of this; on the same rig it reads
-// +51.7 / +93.4 / +118.2 / +120.8% in front of focus and +49.1 / +75.3 / +91.1 /
-// +117.1% behind it.
+// part for the corrected transmittance to occlude.)  The candidate M1.P3.T17
+// deleted read neither area plane and was untouched by all of this; on the same
+// rig it read +51.7 / +93.4 / +118.2 / +120.8% in front of focus and +49.1 /
+// +75.3 / +91.1 / +117.1% behind it, which is why the comparison at T17 was
+// made on scenes rather than on this one number.
 //
 // Net over 219 randomised single-parent cases spanning both sides of focus:
 // mean |band-alpha error| 20.51% -> 5.55%, worst 121.47% -> 62.76%.  Over 300
@@ -2488,7 +2482,7 @@ void scatterBandCPU(const ScatterParams& params,
 //      section for the measured over-count it exists to correct.  Scaling up
 //      would fabricate coverage and hide validation scene (i)'s honest alpha
 //      dip, which is specified behaviour for this node.
-//   2. the bucket composite selected by params.combine.
+//   2. compositePixelCoveragePartition(), the bucket composite (M1.P3.T17).
 //
 // outColor is `channelCount` planes of `pixelCount` floats
 // (outColor[c*pixelCount + i]); outAlpha is one.  Both are OVERWRITTEN.

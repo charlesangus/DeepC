@@ -797,7 +797,7 @@ FlattenParams makeFlattenParams(const CocParams& p, int channelCount,
     return fp;
 }
 
-ScatterParams makeScatterParams(int w, int h, BucketCombine combine,
+ScatterParams makeScatterParams(int w, int h,
                                 HoldoutInterp interp = HoldoutInterp::LogChord)
 {
     ScatterParams sp;
@@ -806,9 +806,11 @@ ScatterParams makeScatterParams(int w, int h, BucketCombine combine,
     sp.bandWidth = w;
     sp.bandHeight = h;
     sp.sharpRadiusPx = kSharpRadiusPx;
-    // EXPLICIT IN EVERY CASE, never the provisional default (Decisions,
-    // 2026-07-26: the default is non-authoritative until M1.P3.T5 decides).
-    sp.combine = combine;
+    // `combine` used to be set here, EXPLICITLY in every case, because the
+    // bucket-composite default was non-authoritative while two candidates
+    // existed.  M1.P3.T17 decided that from rendered pixels and deleted the
+    // loser, so there is one composite and nothing to select.  `holdoutInterp`
+    // keeps the discipline until M1.P3.T18 does the same for it.
     sp.holdoutInterp = interp;
     return sp;
 }
@@ -1158,19 +1160,20 @@ TEST_CASE("the tidy pre-pass is correctness-required: coincident samples over-co
 
     const int W = 32, H = 32;
     DiscKernelLUT lut(0.0f, 4.0f, 1.0f, 1.0f);
-    for (BucketCombine combine : {BucketCombine::FrontToBackOver,
-                                  BucketCombine::CoveragePartition}) {
-        Band band;
-        band.K = bk.bucketCount(); band.C = 1; band.W = W; band.H = H;
-        HoldoutSoA noHoldout;
-        runBand(band, makeScatterParams(W, H, combine), soa, noHoldout, lut);
+    // Ran under both bucket-composite candidates until M1.P3.T17 deleted one;
+    // this identity was never a discriminator (a sharp fragment's whole weight
+    // lands in one pixel), which is exactly why it survives the deletion
+    // unchanged.
+    Band band;
+    band.K = bk.bucketCount(); band.C = 1; band.W = W; band.H = H;
+    HoldoutSoA noHoldout;
+    runBand(band, makeScatterParams(W, H), soa, noHoldout, lut);
 
-        // A sharp fragment deposits weight 1 into its own pixel, so the band
-        // integral IS that pixel and it must be the sequential `over`.
-        CHECK(std::fabs(bandAlphaSum(band) - expectedAlpha) <= 1e-6);
-        CHECK(std::fabs(bandColorSum(band, 0) - expectedColor) <= 1e-6);
-        CHECK(std::fabs(static_cast<double>(band.outAlpha(16, 16)) - expectedAlpha) <= 1e-6);
-    }
+    // A sharp fragment deposits weight 1 into its own pixel, so the band
+    // integral IS that pixel and it must be the sequential `over`.
+    CHECK(std::fabs(bandAlphaSum(band) - expectedAlpha) <= 1e-6);
+    CHECK(std::fabs(bandColorSum(band, 0) - expectedColor) <= 1e-6);
+    CHECK(std::fabs(static_cast<double>(band.outAlpha(16, 16)) - expectedAlpha) <= 1e-6);
 }
 
 TEST_CASE("flatten sanitisation: non-finite depths, inverted spans and zero-alpha samples")
@@ -1403,7 +1406,7 @@ TEST_CASE("channel counts: the flatten sizes its staging from the SoA, the scatt
         planes.allocate(K, /*channelCount*/ 1, W, H);        // ...ONE plane
         planes.zero();
         HoldoutSoA none;
-        scatterOnThread(makeScatterParams(W, H, BucketCombine::CoveragePartition),
+        scatterOnThread(makeScatterParams(W, H),
                         soa, none, lut, planes);
 
         // With one colour plane per bucket, a scatter that wrote three channels
@@ -1683,7 +1686,7 @@ TEST_CASE("size-0 flatten is a DeepToImage `over` of the pixel, at every K and b
                 band.K = K; band.C = C; band.W = W; band.H = H;
                 HoldoutSoA noHoldout;
                 DiscKernelLUT kernel(0.0f, 1.0f, 1.0f, 1.0f);
-                runBand(band, makeScatterParams(W, H, BucketCombine::CoveragePartition),
+                runBand(band, makeScatterParams(W, H),
                         soa, noHoldout, kernel, /*useThread*/ false);
 
                 double worstAlpha = 0.0, worstColor = 0.0;
@@ -2182,7 +2185,7 @@ TEST_CASE("size-0 flatten is a DeepToImage `over` for MIXED point+volumetric con
         Band band;
         band.K = K; band.C = C; band.W = W; band.H = H;
         DiscKernelLUT kernel(0.0f, 1.0f, 1.0f, 1.0f);
-        runBand(band, makeScatterParams(W, H, BucketCombine::CoveragePartition),
+        runBand(band, makeScatterParams(W, H),
                 soa, view, kernel, /*useThread*/ false);
 
         double worstAlpha = 0.0, worstColor = 0.0;
@@ -2249,7 +2252,7 @@ TEST_CASE("with a holdout connected, two sharp samples IN FRONT of a card read t
         Band band;
         band.K = K; band.C = 1; band.W = W; band.H = H;
         DiscKernelLUT kernel(0.0f, 1.0f, 1.0f, 1.0f);
-        runBand(band, makeScatterParams(W, H, BucketCombine::CoveragePartition),
+        runBand(band, makeScatterParams(W, H),
                 soa, view, kernel, /*useThread*/ false);
 
         CHECK(std::fabs(static_cast<double>(band.outAlpha(4, 4)) - truth) <= 2e-07);
@@ -2298,7 +2301,7 @@ TEST_CASE("the per-bucket attenuation needs no holdout gate: each fragment keeps
     Band band;
     band.K = K; band.C = 1; band.W = W; band.H = H;
     DiscKernelLUT kernel(0.0f, 1.0f, 1.0f, 1.0f);
-    runBand(band, makeScatterParams(W, H, BucketCombine::CoveragePartition),
+    runBand(band, makeScatterParams(W, H),
             soa, lut.view(), kernel, /*useThread*/ false);
 
     CHECK(std::fabs(static_cast<double>(band.outAlpha(4, 4)) - 0.5) <= 2e-06);
@@ -2347,7 +2350,7 @@ TEST_CASE("two opaque layers at one pixel read exactly 1.000000 at any alpha pai
         band.K = K; band.C = C; band.W = W; band.H = H;
         DiscKernelLUT kernel(0.0f, std::max(1.0f, sizePx + 1.0f), 1.0f, 1.0f);
         HoldoutSoA noHoldout;
-        runBand(band, makeScatterParams(W, H, BucketCombine::CoveragePartition),
+        runBand(band, makeScatterParams(W, H),
                 soa, noHoldout, kernel, /*useThread*/ false);
 
         // 1e-6, NOT equality: the disc LUT's ~5e-8 per-entry normalisation
@@ -2408,7 +2411,7 @@ TEST_CASE("the bucket alphas MULTIPLY to the pixel's flatten: 1 - prod(1 - A_k) 
         HoldoutSoA noHoldout;
         DiscKernelLUT kernel(0.0f, 1.0f, 1.0f, 1.0f);
         ScatterScratch ss;
-        scatterBandCPU(makeScatterParams(W, H, BucketCombine::CoveragePartition),
+        scatterBandCPU(makeScatterParams(W, H),
                        soa, noHoldout, kernel, band.planes, ss);
 
         double t = 1.0;
@@ -2640,7 +2643,7 @@ TEST_CASE("the `no area at all` deposit is REACHABLE through the flatten on BOTH
         band.K = K; band.C = 1; band.W = W; band.H = H;
         HoldoutSoA noHoldout;
         DiscKernelLUT kernel(20.0f, 1.0f, 1.0f, 1.0f);
-        runBand(band, makeScatterParams(W, H, BucketCombine::CoveragePartition),
+        runBand(band, makeScatterParams(W, H),
                 soa, noHoldout, kernel, /*useThread*/ false);
 
         const std::ptrdiff_t px = band.pixels();
@@ -2810,7 +2813,7 @@ TEST_CASE("the collision case from the brief resolves to the flatten, not to a f
         Band band;
         band.K = 8; band.C = 1; band.W = W; band.H = H;
         HoldoutSoA noHoldout;
-        runBand(band, makeScatterParams(W, H, BucketCombine::CoveragePartition),
+        runBand(band, makeScatterParams(W, H),
                 soa, noHoldout, kernel);
 
         CHECK(std::fabs(static_cast<double>(band.outAlpha(4, 4)) - truth) <= 2e-06);
@@ -2941,7 +2944,7 @@ TEST_CASE("the collision merge is bounded: different kernels are not collapsed, 
         band.K = 4; band.C = 1; band.W = W2; band.H = H2;
         HoldoutSoA noHoldout;
         DiscKernelLUT k2(0.0f, 40.0f, 1.0f, 1.0f);
-        runBand(band, makeScatterParams(W2, H2, BucketCombine::CoveragePartition),
+        runBand(band, makeScatterParams(W2, H2),
                 soa, noHoldout, k2);
         CHECK(bandAlphaSum(band) == doctest::Approx(1.0).epsilon(1e-5));
     }
@@ -2983,7 +2986,7 @@ TEST_CASE("the collision merge is bounded: different kernels are not collapsed, 
         band.K = qb.bucketCount(); band.C = 1; band.W = W2; band.H = H2;
         HoldoutSoA noHoldout;
         DiscKernelLUT k2(0.0f, 60.0f, 1.0f, 1.0f);
-        runBand(band, makeScatterParams(W2, H2, BucketCombine::CoveragePartition),
+        runBand(band, makeScatterParams(W2, H2),
                 soa, noHoldout, k2);
         double newArea = 0.0;
         for (int k = 0; k < band.K; ++k)
@@ -3109,7 +3112,7 @@ TEST_CASE("the collision merge is bounded: different kernels are not collapsed, 
         band2.K = K2; band2.C = 1; band2.W = W2; band2.H = H2;
         HoldoutSoA noHoldout2;
         DiscKernelLUT k3(0.0f, 1.0f, 1.0f, 1.0f);
-        runBand(band2, makeScatterParams(W2, H2, BucketCombine::CoveragePartition),
+        runBand(band2, makeScatterParams(W2, H2),
                 soa2, noHoldout2, k3, /*useThread*/ false);
         // Two opaque layers at one pixel flatten to one opaque pixel.
         CHECK(std::fabs(static_cast<double>(band2.outAlpha(4, 4)) - 1.0) <= 2e-06);
@@ -3180,7 +3183,7 @@ TEST_CASE("no step at the sharp threshold: a 0-2px ramp over a two-layer flat fi
         band.K = K; band.C = C; band.W = W; band.H = H;
         HoldoutSoA noHoldout;
         DiscKernelLUT kernel(0.0f, std::max(1.0f, rMax), 1.0f, 1.0f);
-        runBand(band, makeScatterParams(W, H, BucketCombine::CoveragePartition),
+        runBand(band, makeScatterParams(W, H),
                 soa, noHoldout, kernel, /*useThread*/ false);
 
         const double v = band.outAlpha(W / 2, H / 2);
@@ -3249,7 +3252,7 @@ TEST_CASE("the collision merge does not carry a fragment across a holdout bracke
         band.K = K; band.C = C; band.W = W; band.H = H;
         DiscKernelLUT kernel(0.0f, 1.0f, 1.0f, 1.0f);
         HoldoutSoA view = lut.view();
-        runBand(band, makeScatterParams(W, H, BucketCombine::CoveragePartition),
+        runBand(band, makeScatterParams(W, H),
                 soa, view, kernel, /*useThread*/ false);
 
         if (connected) {
@@ -3316,7 +3319,7 @@ TEST_CASE("pre_merge does not carry a fragment across a holdout bracket either "
         band.K = K; band.C = C; band.W = W; band.H = H;
         DiscKernelLUT kernel(0.0f, 60.0f, 1.0f, 1.0f);
         HoldoutSoA view = lut.view();
-        runBand(band, makeScatterParams(W, H, BucketCombine::CoveragePartition),
+        runBand(band, makeScatterParams(W, H),
                 soa, view, kernel, /*useThread*/ false);
         // The front sample survives whole; the back one is behind an opaque card.
         CHECK(std::fabs(static_cast<double>(band.outAlpha(4, 4)) - 0.5) <= 2e-06);
@@ -3363,7 +3366,7 @@ TEST_CASE("scatterBandCPU's deposits match an independent rasterisation, plane f
         }
         REQUIRE(soa.fragmentCount() >= 7);
 
-        const ScatterParams sp = makeScatterParams(W, H, BucketCombine::CoveragePartition);
+        const ScatterParams sp = makeScatterParams(W, H);
         Band band;
         band.K = bk.bucketCount(); band.C = C; band.W = W; band.H = H;
         band.planes.allocate(band.K, band.C, W, H);
@@ -3386,7 +3389,7 @@ TEST_CASE("scatterBandCPU's deposits match an independent rasterisation, plane f
         std::vector<SampleRecord> v{makeSample(3.0f, 3.0f, 0.8f, {0.16f, 0.44f, 0.72f})};
         flattenPixelToSoA(fp, bk, 120, 214, v, scratch, soa, nullptr);
 
-        ScatterParams sp = makeScatterParams(W, H, BucketCombine::CoveragePartition);
+        ScatterParams sp = makeScatterParams(W, H);
         sp.bandX = 100;
         sp.bandY = 200;
 
@@ -3438,7 +3441,7 @@ TEST_CASE("scatterBandCPU's deposits match an independent rasterisation, plane f
                               (i < 3) ? partA : partB, nullptr);
         }
 
-        const ScatterParams sp = makeScatterParams(W, H, BucketCombine::CoveragePartition);
+        const ScatterParams sp = makeScatterParams(W, H);
         HoldoutSoA noHoldout;
 
         BucketPlanes one;
@@ -3497,7 +3500,7 @@ TEST_CASE("the deposit invariant: new area + co-located area == the fragments' o
             ++expectedHeads;
     }
 
-    const ScatterParams sp = makeScatterParams(W, H, BucketCombine::CoveragePartition);
+    const ScatterParams sp = makeScatterParams(W, H);
     Band band;
     band.K = bk.bucketCount(); band.C = 1; band.W = W; band.H = H;
     band.planes.allocate(band.K, 1, W, H);
@@ -3522,7 +3525,7 @@ TEST_CASE("the deposit invariant: new area + co-located area == the fragments' o
 }
 
 TEST_CASE("single-fragment energy identity over 3000 random (alpha, split fraction, radius): "
-          "CoveragePartition conserves, FrontToBackOver inflates")
+          "the bucket composite conserves")
 {
     // The mutation-resistant gate for the whole coverage-plane defect class.
     // One fragment, fractionally split across two bucket centres, at any kernel
@@ -3538,13 +3541,10 @@ TEST_CASE("single-fragment energy identity over 3000 random (alpha, split fracti
     const float unpremult[2] = {0.25f, 0.9f};
 
     double worstPartitionAlpha = 0.0, worstPartitionColor = 0.0;
-    double worstOverAlpha = 0.0;
 
     std::thread worker([&] {
-        for (int candidate = 0; candidate < 2; ++candidate) {
-            const BucketCombine combine = (candidate == 0) ? BucketCombine::CoveragePartition
-                                                            : BucketCombine::FrontToBackOver;
-            Lcg rng(0x5EED1234u);       // same corpus for both candidates
+        {
+            Lcg rng(0x5EED1234u);
             for (int trial = 0; trial < 3000; ++trial) {
                 const float alpha  = rng.range(0.01f, 1.0f);
                 const float frac   = rng.unit();
@@ -3571,19 +3571,15 @@ TEST_CASE("single-fragment energy identity over 3000 random (alpha, split fracti
                 Band band;
                 band.K = K; band.C = C; band.W = W; band.H = H;
                 HoldoutSoA noHoldout;
-                runBand(band, makeScatterParams(W, H, combine), soa, noHoldout, lut,
+                runBand(band, makeScatterParams(W, H), soa, noHoldout, lut,
                         /*useThread*/ false);
 
                 const double relAlpha = std::fabs(bandAlphaSum(band) - alpha) / alpha;
                 const double relColor =
                     std::fabs(bandColorSum(band, 1) - alpha * unpremult[1]) / (alpha * unpremult[1]);
 
-                if (candidate == 0) {
-                    worstPartitionAlpha = std::max(worstPartitionAlpha, relAlpha);
-                    worstPartitionColor = std::max(worstPartitionColor, relColor);
-                } else {
-                    worstOverAlpha = std::max(worstOverAlpha, relAlpha);
-                }
+                worstPartitionAlpha = std::max(worstPartitionAlpha, relAlpha);
+                worstPartitionColor = std::max(worstPartitionColor, relColor);
             }
         }
     });
@@ -3596,14 +3592,11 @@ TEST_CASE("single-fragment energy identity over 3000 random (alpha, split fracti
     // mislabel at alpha 0.1).
     CHECK(worstPartitionAlpha <= 3e-06);
     CHECK(worstPartitionColor <= 3e-06);
-
-    // PINNED, and it is a FAILURE of the other candidate, not a tolerance:
-    // plain `over` inflates an isolated split fragment by up to +91.55% on this
-    // corpus (Decisions: +93.8% on the reviewer's).  Asserted as a BAND, not a
-    // floor, so the case cannot silently stop discriminating the two
-    // candidates in either direction.
-    CHECK(worstOverAlpha > 0.85);
-    CHECK(worstOverAlpha < 1.00);
+    // The other bucket-composite candidate INFLATED this same corpus by up to
+    // +91.55% (Decisions: +93.8% on the reviewer's) -- an isolated opaque bokeh
+    // at double energy -- which is one of the four readings M1.P3.T17 deleted
+    // it on.  That half of this case went with it; the surviving half is the
+    // identity itself, which is what the shipped composite has to hold.
 }
 
 TEST_CASE("flat field identities: opaque field is alpha 1 to 1e-6 (NOT exactly 1), "
@@ -3638,16 +3631,14 @@ TEST_CASE("flat field identities: opaque field is alpha 1 to 1e-6 (NOT exactly 1
                     flattenPixelToSoA(fp, bk, x, y, v, scratch, soa, nullptr);
                 }
 
-            for (BucketCombine combine : {BucketCombine::FrontToBackOver,
-                                          BucketCombine::CoveragePartition}) {
+            {
                 CAPTURE(depth);
                 CAPTURE(alpha);
-                CAPTURE(static_cast<int>(combine));
 
                 Band band;
                 band.K = bk.bucketCount(); band.C = C; band.W = W; band.H = H;
                 HoldoutSoA noHoldout;
-                runBand(band, makeScatterParams(W, H, combine), soa, noHoldout, lut);
+                runBand(band, makeScatterParams(W, H), soa, noHoldout, lut);
 
                 const int cx = W / 2, cy = H / 2;
                 const double a = band.outAlpha(cx, cy);
@@ -3666,17 +3657,16 @@ TEST_CASE("flat field identities: opaque field is alpha 1 to 1e-6 (NOT exactly 1
     }
 }
 
-TEST_CASE("flat opaque field ACROSS buckets: CoveragePartition holds alpha 1, "
-          "FrontToBackOver shows its PINNED 25% deficit")
+TEST_CASE("flat opaque field ACROSS buckets: the bucket composite holds alpha 1")
 {
-    // The flat-opaque-across-buckets identity carried from M1.P1.T4, and the
-    // one configuration that actually discriminates the two candidates: a
-    // checkerboard of two depths sitting EXACTLY on two bucket centres, so
-    // every fragment's assignment is whole-weight (frac == 0) into one bucket
-    // and each bucket receives half the disc weight.  Front-to-back `over`
-    // then gives 1 - (1-0.5)^2 = 0.75 -- the documented 25.0%-across-2-buckets
-    // alpha deficit -- while the coverage partition adds the two disjoint
-    // half-coverages back to 1.
+    // The flat-opaque-across-buckets identity carried from M1.P1.T4, on the
+    // configuration that discriminated the two bucket-composite candidates at
+    // M1.P3.T17: a checkerboard of two depths sitting EXACTLY on two bucket
+    // centres, so every fragment's assignment is whole-weight (frac == 0) into
+    // one bucket and each bucket receives half the disc weight.  Plain
+    // front-to-back `over` gave 1 - (1-0.5)^2 = 0.75 here -- the documented
+    // 25.0%-across-2-buckets alpha deficit that got it deleted -- while the
+    // shipped composite adds the two disjoint half-coverages back to 1.
     const CocParams    p  = makeStandardRig(10.0f);
     const DepthBuckets bk = makeStandardBuckets(p);
     const int W = 48, H = 48;
@@ -3699,55 +3689,45 @@ TEST_CASE("flat opaque field ACROSS buckets: CoveragePartition holds alpha 1, "
             flattenPixelToSoA(fp, bk, x, y, v, scratch, soa, nullptr);
         }
 
-    double minAlpha[2] = {2.0, 2.0}, maxAlpha[2] = {-1.0, -1.0};
-    double ratio[2] = {0.0, 0.0};
-    for (int candidate = 0; candidate < 2; ++candidate) {
-        const BucketCombine combine = (candidate == 0) ? BucketCombine::FrontToBackOver
-                                                        : BucketCombine::CoveragePartition;
+    double minAlpha = 2.0, maxAlpha = -1.0, ratio = 0.0;
+    {
         Band band;
         band.K = bk.bucketCount(); band.C = 1; band.W = W; band.H = H;
         HoldoutSoA noHoldout;
-        runBand(band, makeScatterParams(W, H, combine), soa, noHoldout, lut);
+        runBand(band, makeScatterParams(W, H), soa, noHoldout, lut);
 
         for (int y = 16; y < 32; ++y)
             for (int x = 16; x < 32; ++x) {
-                minAlpha[candidate] = std::min(minAlpha[candidate],
-                                                static_cast<double>(band.outAlpha(x, y)));
-                maxAlpha[candidate] = std::max(maxAlpha[candidate],
-                                                static_cast<double>(band.outAlpha(x, y)));
+                minAlpha = std::min(minAlpha, static_cast<double>(band.outAlpha(x, y)));
+                maxAlpha = std::max(maxAlpha, static_cast<double>(band.outAlpha(x, y)));
             }
-        ratio[candidate] = band.outColor(0, 24, 24) / band.outAlpha(24, 24);
+        ratio = band.outColor(0, 24, 24) / band.outAlpha(24, 24);
     }
 
-    // PINNED: the deficit is 25.0% across two buckets (Decisions, 2026-07-26).
-    // Measured here 0.7479..0.7521 over the band interior.
+    // The composite holds the identity to 5e-3 (measured 0.995718 at the worst
+    // interior pixel: the two checkerboard depths rasterise DIFFERENT radii,
+    // 7.85px and 6.40px, so the two half-coverages do not tile the pixel
+    // perfectly).  BANDED, not floored: a floor at 0.9956 also accepts the OLD
+    // (pre-M1.P3.T19) kernel grid's 0.99927, so it would not notice the grid
+    // being coarsened back.
     //
-    // M1.P3.T19 MOVED THE SPREAD, AND TOWARD THE TRUTH.  A checkerboard is the
-    // Nyquist pattern, so what these bounds really measure is the kernels'
-    // response at (pi, pi): alpha == 1 + (C_A - C_B)/2 with
-    // C_r = sum (-1)^(dx+dy) w_r.  On the old uniform grid the two depths'
-    // radii, 7.85px and 6.40px, were SNAPPED to 8.00 and 6.50, and
+    // WHY THE BAND SITS WHERE IT DOES.  A checkerboard is the Nyquist pattern,
+    // so what it really measures is the kernels' response at (pi, pi):
+    // alpha == 1 + (C_A - C_B)/2 with C_r = sum (-1)^(dx+dy) w_r.  On the old
+    // uniform grid the two radii were SNAPPED to 8.00 and 6.50 and
     // (C_8.00 - C_6.50)/2 = -7.30e-04 -- a number that belonged to the
-    // snapping, not to the content.  On the refined grid they snap to 7.876923
-    // and 6.400000, giving -4.28e-03 against the UNQUANTISED -4.00e-03: the
-    // reading is now within 2.8e-04 of the exact answer instead of 3.3e-03
-    // away from it.  The pin got looser and more honest at the same time.
-    CHECK(minAlpha[0] > 0.7478);
-    CHECK(maxAlpha[0] < 0.7522);
-    // The partition candidate holds the identity to 5e-3 (measured 0.995718 at
-    // the worst interior pixel: the two checkerboard depths rasterise
-    // DIFFERENT radii, 7.85px and 6.40px, so the two half-coverages do not
-    // tile the pixel perfectly).  BANDED, not floored: a floor at 0.9956 also
-    // accepts the OLD grid's 0.99927, so it would not notice the grid being
-    // coarsened back -- which is the one thing the comment above claims this
-    // reading is evidence about.
-    CHECK(minAlpha[1] > 0.9954);
-    CHECK(minAlpha[1] < 0.9960);
-    CHECK(maxAlpha[1] <= 1.0);
-    // Both candidates keep the ratio: this is an alpha deficit, not a colour
-    // desync.
-    CHECK(std::fabs(ratio[0] - 0.8) <= 1e-05);
-    CHECK(std::fabs(ratio[1] - 0.8) <= 1e-05);
+    // snapping.  On the refined grid they snap to 7.876923 and 6.400000,
+    // giving -4.28e-03 against the UNQUANTISED -4.00e-03, i.e. within 2.8e-04
+    // of the exact answer instead of 3.3e-03 away from it.
+    //
+    // The deleted candidate read 0.7479..0.7521 on this same fixture -- the
+    // documented 25.0%-across-2-buckets deficit -- which is why this
+    // configuration was the bake-off's cleanest discriminator (M1.P3.T17).
+    CHECK(minAlpha > 0.9954);
+    CHECK(minAlpha < 0.9960);
+    CHECK(maxAlpha <= 1.0);
+    // The ratio holds: any error here is an alpha deficit, not a colour desync.
+    CHECK(std::fabs(ratio - 0.8) <= 1e-05);
 }
 
 TEST_CASE("saturation is down-only and preserves the colour:alpha ratio, on the real path")
@@ -3788,7 +3768,7 @@ TEST_CASE("saturation is down-only and preserves the colour:alpha ratio, on the 
             }
         }
 
-        const ScatterParams sp = makeScatterParams(W, H, BucketCombine::CoveragePartition);
+        const ScatterParams sp = makeScatterParams(W, H);
         Band band;
         band.K = bk.bucketCount(); band.C = C; band.W = W; band.H = H;
         band.planes.allocate(band.K, C, W, H);
@@ -3836,7 +3816,7 @@ TEST_CASE("saturation is down-only and preserves the colour:alpha ratio, on the 
         const float ch[1] = {0.4f * unpremult};
         soa.appendFragment(f, ch);
 
-        const ScatterParams sp = makeScatterParams(W, H, BucketCombine::CoveragePartition);
+        const ScatterParams sp = makeScatterParams(W, H);
         Band band;
         band.K = bk.bucketCount(); band.C = 1; band.W = W; band.H = H;
         HoldoutSoA noHoldout;
@@ -3859,7 +3839,7 @@ TEST_CASE("BucketPlanes::zero() clears ALL FOUR planes, so a band loop may reuse
     // into this one's composite.
     const int K = 4, C = 2, W = 10, H = 8;
     DiscKernelLUT lut(0.0f, 8.0f, 1.0f, 1.0f);
-    const ScatterParams sp = makeScatterParams(W, H, BucketCombine::CoveragePartition);
+    const ScatterParams sp = makeScatterParams(W, H);
     HoldoutSoA none;
 
     auto oneFragment = [&](int x, int bucket, float alpha) {
@@ -3959,7 +3939,7 @@ TEST_CASE("an ALPHA-ZERO fragment still deposits its colour: the cull is on alph
     planes.allocate(K, 1, W, H);
     planes.zero();
     HoldoutSoA none;
-    scatterOnThread(makeScatterParams(W, H, BucketCombine::CoveragePartition),
+    scatterOnThread(makeScatterParams(W, H),
                     soa, none, lut, planes);
 
     // The colour is split between the two buckets by the partition; the alpha
@@ -3968,56 +3948,6 @@ TEST_CASE("an ALPHA-ZERO fragment still deposits its colour: the cull is on alph
     CHECK(planeSum(planes.color, 3, px) == doctest::Approx(0.5f * 0.4f));
     CHECK(planeSum(planes.alpha, 2, px) == 0.0);
     CHECK(planeSum(planes.alpha, 3, px) == 0.0);
-}
-
-TEST_CASE("resolveBandCPU's default branch routes to CoveragePartition, NOT to plain `over`")
-{
-    // The milestone is explicit that an out-of-range `combine` must render what
-    // an unset one would and must NOT fall through to plain `over` (measured up
-    // to +94% alpha for a split fragment).  Every other case in this file sets
-    // the enum explicitly, so nothing exercised the default at all.
-    const int K = 4, W = 32, H = 32;
-    DiscKernelLUT lut(0.0f, 12.0f, 1.0f, 1.0f);
-
-    SampleSoA soa;
-    soa.begin(1, makeSingleChannelGroup(1));
-    FragmentRecord f;
-    f.x = W / 2; f.y = H / 2;
-    f.radius = 6.0f;
-    f.depth  = 5.0f;
-    f.alpha  = 0.9f;
-    BucketWeight bw;
-    bw.index = 1;
-    bw.frac  = 0.5f;                        // split across two buckets: the
-    f.deposit = fragmentDeposit(bw, 0.9f);  // configuration the two differ on
-    f.kind = FragmentKind::Point;
-    f.coverageHead = true;
-    const float ch[1] = {0.9f * 0.5f};
-    soa.appendFragment(f, ch);
-
-    auto run = [&](BucketCombine combine) {
-        Band band;
-        band.K = K; band.C = 1; band.W = W; band.H = H;
-        HoldoutSoA none;
-        ScatterParams sp = makeScatterParams(W, H, BucketCombine::CoveragePartition);
-        sp.combine = combine;               // set AFTER, so a garbage value survives
-        runBand(band, sp, soa, none, lut, /*useThread*/ false);
-        return std::vector<float>(band.alpha.begin(), band.alpha.end());
-    };
-
-    const std::vector<float> partition = run(BucketCombine::CoveragePartition);
-    const std::vector<float> over      = run(BucketCombine::FrontToBackOver);
-    const std::vector<float> garbage   = run(static_cast<BucketCombine>(99));
-
-    double sumP = 0.0, sumO = 0.0;
-    for (float v : partition) sumP += v;
-    for (float v : over)      sumO += v;
-    // The two candidates really do disagree on this fixture (+~60% for `over`),
-    // so "garbage == partition" is a statement with content.
-    REQUIRE(sumO > sumP * 1.2);
-
-    CHECK(garbage == partition);
-    CHECK_FALSE(garbage == over);
 }
 
 TEST_CASE("ScatterStats accounts for every fragment exactly once")
@@ -4064,7 +3994,7 @@ TEST_CASE("ScatterStats accounts for every fragment exactly once")
     ScatterScratch scratch;
     HoldoutSoA none;
     ScatterStats stats;
-    scatterBandCPU(makeScatterParams(W, H, BucketCombine::CoveragePartition),
+    scatterBandCPU(makeScatterParams(W, H),
                    soa, none, lut, planes, scratch, &stats);
 
     CHECK(stats.fragments == 5u);
@@ -4152,7 +4082,7 @@ TEST_CASE("parent reconstruction catches a MISLABEL that checkCompositionContrac
             Band band;
             band.K = bk.bucketCount(); band.C = 1; band.W = W; band.H = H;
             HoldoutSoA noHoldout;
-            runBand(band, makeScatterParams(W, H, BucketCombine::CoveragePartition),
+            runBand(band, makeScatterParams(W, H),
                     soa, noHoldout, lut);
             alphaSum[mislabel] = bandAlphaSum(band);
             colorSum[mislabel] = bandColorSum(band, 0);
@@ -4201,7 +4131,7 @@ TEST_CASE("volumetric parent reconstruction is EXACT in front of focus, at any p
             Band band;
             band.K = bk.bucketCount(); band.C = 1; band.W = W; band.H = H;
             HoldoutSoA noHoldout;
-            runBand(band, makeScatterParams(W, H, BucketCombine::CoveragePartition),
+            runBand(band, makeScatterParams(W, H),
                     soa, noHoldout, lut);
 
             // MEASURED <= 1e-07 relative at every one of these; 2e-06 is ~20x
@@ -4258,9 +4188,12 @@ TEST_CASE("behind focus the residue is structural: "
     // being flattered by kernel quantisation.  M1.P3.T17 inherits THESE
     // numbers, not the old ones -- the gap between the two candidates at 2
     // buckets narrows from 20.9 to 11.9 points (11.87 grid-free).
-    struct Case { int buckets; double partitionPct; double overPct; };
-    const Case cases[] = {{2, 36.86, 48.77}, {3, 50.25, 75.03},
-                          {4, 56.31, 90.96}, {8, 61.00, 117.12}};
+    // M1.P3.T17 re-rendered this comparison and deleted the other candidate;
+    // its column (48.77 / 75.03 / 90.96 / 117.12) is recorded in the milestone
+    // Decisions rather than pinned here, since there is nothing left to run it
+    // through.  These are the SHIPPED composite's numbers.
+    struct Case { int buckets; double partitionPct; };
+    const Case cases[] = {{2, 36.86}, {3, 50.25}, {4, 56.31}, {8, 61.00}};
 
     for (const Case& cs : cases) {
         CAPTURE(cs.buckets);
@@ -4269,17 +4202,14 @@ TEST_CASE("behind focus the residue is structural: "
             {makeSample(bk.boundary(0), bk.boundary(cs.buckets), alpha, {alpha * unpremult})});
         REQUIRE(soa.fragmentCount() == static_cast<std::size_t>(cs.buckets));
 
-        for (int candidate = 0; candidate < 2; ++candidate) {
-            const BucketCombine combine = (candidate == 0) ? BucketCombine::CoveragePartition
-                                                            : BucketCombine::FrontToBackOver;
+        {
             Band band;
             band.K = bk.bucketCount(); band.C = 1; band.W = W; band.H = H;
             HoldoutSoA noHoldout;
-            runBand(band, makeScatterParams(W, H, combine), soa, noHoldout, lut);
+            runBand(band, makeScatterParams(W, H), soa, noHoldout, lut);
 
             const double pct = (bandAlphaSum(band) - alpha) / alpha * 100.0;
-            const double want = (candidate == 0) ? cs.partitionPct : cs.overPct;
-            CAPTURE(candidate);
+            const double want = cs.partitionPct;
             CAPTURE(pct);
             CHECK(pct > want - 0.1);
             CHECK(pct < want + 0.1);
@@ -4314,16 +4244,12 @@ TEST_CASE("the four hand-built composite identities, with the fourth plane both 
                   {0.5f * unpremult, 0.5f * unpremult}, &c, &a);
         CHECK(a == doctest::Approx(0.75f).epsilon(1e-6));
         CHECK(c == doctest::Approx(0.75f * unpremult).epsilon(1e-6));
-
-        // Plain `over` agrees here -- dense scenes are `over`, identically.
-        float c2 = 0.0f, a2 = 0.0f;
-        std::vector<float> alpha{0.5f, 0.5f};
-        std::vector<float> color{0.5f * unpremult, 0.5f * unpremult};
-        compositePixelFrontToBack(color.data(), alpha.data(), 2, 1, 1, &c2, &a2);
-        CHECK(a2 == doctest::Approx(0.75f).epsilon(1e-6));
+        // 1 - 0.5*0.5 = 0.75 is ALSO what plain front-to-back `over` gives:
+        // dense scenes are `over`, identically, not approximately.  That is
+        // why this subcase never discriminated the two candidates.
     }
 
-    SUBCASE("receding opaque plane (four quarter-coverages) -> exactly 1, where `over` gives 0.684")
+    SUBCASE("receding opaque plane (four quarter-coverages) -> exactly 1")
     {
         composite({0.25f, 0.25f, 0.25f, 0.25f}, {0.25f, 0.25f, 0.25f, 0.25f},
                   {0.0f, 0.0f, 0.0f, 0.0f},
@@ -4331,13 +4257,9 @@ TEST_CASE("the four hand-built composite identities, with the fourth plane both 
                   &c, &a);
         CHECK(a == doctest::Approx(1.0f).epsilon(1e-6));
         CHECK(c == doctest::Approx(unpremult).epsilon(1e-6));
-
-        float c2 = 0.0f, a2 = 0.0f;
-        std::vector<float> alpha(4, 0.25f);
-        std::vector<float> color(4, 0.25f * unpremult);
-        compositePixelFrontToBack(color.data(), alpha.data(), 4, 1, 1, &c2, &a2);
-        // 1 - 0.75^4 = 0.68359375 exactly: the PINNED 31.6%-over-4-buckets deficit.
-        CHECK(a2 == doctest::Approx(0.68359375f).epsilon(1e-6));
+        // Plain front-to-back `over` gave 1 - 0.75^4 = 0.68359375 here, the
+        // 31.6%-over-4-buckets deficit M1.P3.T17 deleted it on.  There is no
+        // second composite left to run the contrast through.
     }
 
     SUBCASE("validation scene (i): an honest 60% coverage hole stays 0.6, never scaled up")
@@ -4542,7 +4464,7 @@ TEST_CASE("volumetric fog through the REAL path: a pixel whose alpha clamps keep
     Band band;
     band.K = K; band.C = 1; band.W = W; band.H = H;
     HoldoutSoA none;
-    runBand(band, makeScatterParams(W, H, BucketCombine::CoveragePartition), soa, none, lut);
+    runBand(band, makeScatterParams(W, H), soa, none, lut);
 
     int clamped = 0;
     double worst = 0.0;
@@ -4598,7 +4520,7 @@ TEST_CASE("pre_merge moves neither alpha nor coverage for a SINGLE parent")
                     Band band;
                     band.K = bk.bucketCount(); band.C = 1; band.W = W; band.H = H;
                     HoldoutSoA noHoldout;
-                    runBand(band, makeScatterParams(W, H, BucketCombine::CoveragePartition),
+                    runBand(band, makeScatterParams(W, H),
                             soa, noHoldout, lut);
                     alphaSum[pm] = bandAlphaSum(band);
                     for (int k = 0; k < band.K; ++k) {
@@ -4652,7 +4574,7 @@ TEST_CASE("pre_merge moves neither alpha nor coverage for a SINGLE parent")
             Band band;
             band.K = bk.bucketCount(); band.C = 1; band.W = W; band.H = H;
             HoldoutSoA noHoldout;
-            runBand(band, makeScatterParams(W, H, BucketCombine::CoveragePartition),
+            runBand(band, makeScatterParams(W, H),
                     soa, noHoldout, lut);
             alphaSum[pm] = bandAlphaSum(band);
             for (int k = 0; k < band.K; ++k)
@@ -4692,7 +4614,7 @@ TEST_CASE("pre_merge moves neither alpha nor coverage for a SINGLE parent")
         Band band;
         band.K = bk.bucketCount(); band.C = 1; band.W = W; band.H = H;
         HoldoutSoA noHoldout;
-        runBand(band, makeScatterParams(W, H, BucketCombine::CoveragePartition),
+        runBand(band, makeScatterParams(W, H),
                 soa, noHoldout, lut);
 
         double newArea = 0.0;
@@ -5159,7 +5081,7 @@ TEST_CASE("the holdout multiplies into the scatter's deposits, per DESTINATION p
         std::vector<SampleRecord> front{makeSample(3.0f, 3.0f, 0.8f, {0.4f})};
         flattenPixelToSoA(fp, bk, W / 2 - 4, H / 2, front, scratch, soa, nullptr);
 
-        const ScatterParams sp = makeScatterParams(W, H, BucketCombine::CoveragePartition);
+        const ScatterParams sp = makeScatterParams(W, H);
         BucketPlanes planes;
         planes.allocate(bk.bucketCount(), 1, W, H);
         planes.zero();
@@ -5194,7 +5116,7 @@ TEST_CASE("the holdout multiplies into the scatter's deposits, per DESTINATION p
                 {makeSample(depth, depth, 1.0f, {0.5f})});
             Band band;
             band.K = bk.bucketCount(); band.C = 1; band.W = W; band.H = H;
-            runBand(band, makeScatterParams(W, H, BucketCombine::CoveragePartition),
+            runBand(band, makeScatterParams(W, H),
                     soa, view, lut);
             CHECK(bandAlphaSum(band) == 0.0);
             CHECK(bandColorSum(band, 0) == 0.0);
@@ -5215,7 +5137,7 @@ TEST_CASE("the holdout multiplies into the scatter's deposits, per DESTINATION p
             CAPTURE(depth);
             const SampleSoA soa = flattenOnePixel(fp, bk, W / 2, H / 2,
                 {makeSample(depth, depth, 0.8f, {0.4f})});
-            const ScatterParams sp = makeScatterParams(W, H, BucketCombine::CoveragePartition);
+            const ScatterParams sp = makeScatterParams(W, H);
 
             BucketPlanes withHoldout, without;
             withHoldout.allocate(bk.bucketCount(), 1, W, H);
@@ -5253,7 +5175,7 @@ TEST_CASE("the holdout multiplies into the scatter's deposits, per DESTINATION p
 
         const SampleSoA soa = flattenOnePixel(fp, bk, W / 2, H / 2,
             {makeSample(3.0f, 3.0f, 0.8f, {0.4f})});
-        const ScatterParams sp = makeScatterParams(W, H, BucketCombine::CoveragePartition);
+        const ScatterParams sp = makeScatterParams(W, H);
 
         BucketPlanes a, b;
         a.allocate(bk.bucketCount(), 1, W, H);
@@ -5287,7 +5209,7 @@ TEST_CASE("the holdout multiplies into the scatter's deposits, per DESTINATION p
             {makeSample(6.0f, 6.0f, 0.8f, {0.4f})});
         Band band;
         band.K = bk.bucketCount(); band.C = 1; band.W = W; band.H = H;
-        runBand(band, makeScatterParams(W, H, BucketCombine::CoveragePartition),
+        runBand(band, makeScatterParams(W, H),
                 soa, view, lut);
         // Not erased: the short LUT was ignored rather than sampled.
         CHECK(bandAlphaSum(band) == doctest::Approx(0.8).epsilon(1e-5));
@@ -5359,7 +5281,7 @@ TEST_CASE("ScatterParams::holdoutInterp threads through scatterBandCPU on BOTH p
         for (int v = 0; v < 3; ++v) {
             Band band;
             band.K = bk.bucketCount(); band.C = 1; band.W = W; band.H = H;
-            runBand(band, makeScatterParams(W, H, BucketCombine::CoveragePartition, variants[v]),
+            runBand(band, makeScatterParams(W, H, variants[v]),
                     soa, view, lut);
             got[v] = bandAlphaSum(band);
         }
@@ -5397,7 +5319,7 @@ TEST_CASE("ScatterParams::holdoutInterp threads through scatterBandCPU on BOTH p
             BucketPlanes planes;
             planes.allocate(bk.bucketCount(), 1, W, H);
             planes.zero();
-            scatterOnThread(makeScatterParams(W, H, BucketCombine::CoveragePartition, variant),
+            scatterOnThread(makeScatterParams(W, H, variant),
                             soa, smallView, lut, planes);
             std::vector<float> got(planes.alpha.begin(), planes.alpha.end());
             if (reference.empty())

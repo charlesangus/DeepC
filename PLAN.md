@@ -1,8 +1,8 @@
 ---
 title: DeepCDefocus — deep-input, flat-output defocus node
 status: running
-current: M1.P3.T17
-pm_heartbeat: 2026-08-16T07:45:00-04:00
+current: M1.P3.T20
+pm_heartbeat: 2026-08-16T09:30:00-04:00
 ship: pr-per-milestone
 ---
 
@@ -92,10 +92,10 @@ node; v3 (Milestone 3) adds a CUDA backend behind the seams v1/v2 leave in place
 # Open questions
 
 (none awaiting a human answer — the bucket-composite alpha deficit found at M1.P1.T2 was answered
-2026-07-26: build both candidate composites behind an internal flag at M1.P3.T2 and decide from
-rendered pixels at M1.P3.T5's gate. See that milestone file's Decisions.)
+2026-07-26 by building both candidates behind an internal flag and deciding from rendered pixels;
+**M1.P3.T17 did that on 2026-08-16 and kept `CoveragePartition`**. See that milestone file's Decisions.)
 
-**Where things stand (2026-08-16T05:30-04:00).** Phases 1.0, 1.1 and 1.2 are complete and committed;
+**Where things stand (2026-08-16T09:30-04:00).** Phases 1.0, 1.1 and 1.2 are complete and committed;
 Phase 1.3 has T0, T1, T6, T2, T7, T8, T9, T3, T10, T11 and T4 done. **M1.P3.T5's wiring is landed and
 the node now genuinely defocuses**, but T5 is deliberately left OPEN: its review found that scene (a)'s
 size-0 parity gate fails (up to 2.4e-01, ~12% of pixels) because same-pixel fragments collide in one
@@ -115,6 +115,27 @@ the loser, **T18** = the holdout-interpolant bake-off + delete the losers. They 
 `tests/nuke/` is the milestone's validation gate — one command, numeric per-check gates, non-zero exit
 on failure, with `combine`/`holdoutInterp`/`K`/`pre_merge` as parameters so T17/T18 drive the same
 scenes at different settings. Full run: **PASS=74 FAIL=3 XFAIL=16 SKIP=1**.
+
+**T17 is done: the bucket composite is decided and the loser is deleted.** `CoveragePartition` wins
+on scenes (c)/(f)/(g)/(i) rendered through both candidates post-T19, every render setting `combine`
+explicitly. The deciding readings: harness `f1` — opaque point strips behind a fog holdout at size 0,
+the simplest content the node has — is 4.367e-08 under the winner and a hard-FAILing **2.500e-01**
+under plain `over`, whose mechanism is now *derived and confirmed at every strip* (an opaque
+fragment's transmittance split is a no-op, so `over` composites its two bucket deposits as
+independent layers and renders `2·vis − vis²` instead of `vis`, +50% relative at vis=0.5); and scene
+(g)'s ramp, where the winner converges in K (−1.05/−0.44/−2.8e-05% at K=8/16/64) while `over` diverges
+(−0.28/−2.15/−7.79%) and is over 1/255 on **112 of 112** interior rows against 51 and 23. Scene (c)
+does not discriminate and neither does scene (i). **Scene (l) favoured the loser at every check** and
+the first explanation offered for that (one-sided saturation flattering an opaque field) was
+**proposed and refuted** by re-rendering at α=0.5 and α=0.25; the surviving explanation is that both of
+`over`'s failure modes are quenched together below ~2.5 px, and its advantage never exceeded ~1 8-bit
+code value. The bake-off also found **a new, larger residual on the winner**: the same ramp at α<1
+loses **16.1%** of its alpha at K=16/α=0.90 and diverges in K to 26.6% at K=128, where the opaque twin
+loses 0.4%. Three controls attribute that to the transmittance split's recombination and exclude the
+kernel, the sharp path and depth quantisation; the exact pooling term is unproven and said to be so.
+It is pinned as a banded, mutation-tested XFAIL (`g4`) and owed a ruling at Phase 1.4/1.5 — it is now
+the largest known error in the shipped node. Harness **PASS=76 FAIL=0 XFAIL=12 SKIP=1, exit 0**, with
+every surviving reading bit-identical to the pre-deletion run.
 
 **T19 is done: the harness is now green end to end** — PASS=77 FAIL=0 XFAIL=18 SKIP=1, exit 0, for the
 first time in this milestone. T16's three FAILs were one real node defect: `DiscKernelLUT` quantised
@@ -147,22 +168,29 @@ every check (one nobody has made fail proves nothing), band pins rather than bou
 validate re-pins against an independent oracle rather than against the new output, and give every XFAIL
 a hard outer bound so it cannot swallow a later regression.
 
-Remaining in this milestone: P3 T17, T18, then Phase 1.4 and Phase 1.5. Sixteen tasks
+Remaining in this milestone: P3 T20, T18, then Phase 1.4 and Phase 1.5. Seventeen tasks
 have now been added by execution findings (M1.P3.T0, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16,
-T17, T18, T19, plus the enlarged M1.P3.T4 test list).
+T17, T18, T19, T20, plus the enlarged M1.P3.T4 test list).
 No PR yet — `ship: pr-per-milestone` puts that at M1's verification gate. The branch
 `claude/deep-defocus-node-plan-o0ld83` is committed but NOT pushed.
 
 **Carried obligations for whoever resumes:** M1.P3.T4 and M1.P3.T5
-must set `ScatterParams::combine` and `pre_merge` explicitly rather than relying on defaults, and T4
+must set `pre_merge` explicitly rather than relying on defaults (the same clause used to name
+`ScatterParams::combine`; M1.P3.T17 deleted that field, so only `pre_merge` and `holdoutInterp`
+remain), and T4
 owes a parent-reconstruction test, a `tidyOverlapping()` termination fuzz test, the single-fragment
 energy identity, a pinned behind-focus regression gate, and the colour:alpha ratio as a standing
 invariant (that same clamp-one-of-a-premultiplied-pair defect has now appeared three times); M1.P3.T5
 must apply the ray-distance correction in `computeDepthRange()` *and* pass the matching `depthScale` to
 the holdout SoA, skip the holdout append entirely when unconnected, avoid computing the matte AOV as
 `1 − boundaryT` in float, use a steep ramp for scene (g), report band-alpha and flat-field figures
-separately, build the holdout boundary set once per frame rather than per band, and decide both the
-bucket composite AND M1.P3.T11's interpolant variant from rendered scenes; M1.P4.T1 must budget on
-`(C+3)` plus the holdout term, at the revised 61 B/fragment logical / ≈100 B resident; and the milestone PR body must carry the shipped-node release note from
+separately, build the holdout boundary set once per frame rather than per band, and decide
+M1.P3.T11's interpolant variant from rendered scenes (the bucket-composite half of that clause was
+discharged by M1.P3.T17); M1.P4.T1 must budget on
+`(C+3)` plus the holdout term, at the revised 61 B/fragment logical / ≈100 B resident. **M1.P3.T17's
+α<1 receding-content residual is no longer a floating obligation — it is now M1.P3.T20**, sequenced
+before T18 for the same reason T19 preceded T17: a fix moves every rendered pixel and T18 decides from
+rendered pixels.
+And the milestone PR body must carry the shipped-node release note from
 `PLAN/DECISIONS/2026-07-26-tidyoverlapping-single-pass.md` and
 `PLAN/DECISIONS/2026-07-26-volumetric-tidying-semantics.md`.

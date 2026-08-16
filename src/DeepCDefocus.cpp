@@ -101,24 +101,19 @@ static const char* const worldUnitsNames[] = {
     "mm", "cm", "dm", "m", "in", "ft", nullptr
 };
 
-// --- BAKE-OFF KNOBS (M1.P3.T5, deleted at M1.P3.T12) ------------------------
+// --- BAKE-OFF KNOB (one left; M1.P3.T17 deleted the other) ------------------
 //
-// The milestone carries two undecided candidates that must be judged from
-// rendered pixels rather than derived: the bucket composite (Decisions,
-// 2026-07-26, "Bucket-composite alpha deficit") and the holdout interpolant's
-// opaque-step behaviour (M1.P3.T11).  Both are runtime enums in the scatter
-// core precisely so ONE build can render every candidate — but the scatter is
-// only reachable through this node, so without these two knobs M1.P3.T12 has
-// no way to select them.  Every render therefore sets `combine`,
-// `holdoutInterp` and `pre_merge` EXPLICITLY from knobs and never relies on a
-// default (the ScatterParams default is documented as provisional and
-// non-authoritative).
+// The milestone carried two undecided candidates that had to be judged from
+// rendered pixels rather than derived: the bucket composite and the holdout
+// interpolant's opaque-step behaviour (M1.P3.T11).  Each is a runtime enum in
+// the scatter core precisely so ONE build can render every candidate — but the
+// scatter is only reachable through this node, so without a knob the harness
+// has no way to select them.  Every render therefore sets `holdoutInterp` and
+// `pre_merge` EXPLICITLY and never relies on a default.
 //
-// M1.P3.T12 deletes the losing paths, their enum values and these two knobs.
-static const char* const bucketCombineNames[] = {
-    "Front-to-back over", "Coverage partition", nullptr
-};
-
+// **M1.P3.T17 decided the bucket composite from pixels and deleted the loser**,
+// so `bucket_combine` and its enum are gone; there is now one composite and no
+// selector.  M1.P3.T18 does the same for the holdout interpolant below.
 static const char* const holdoutInterpNames[] = {
     "Log chord", "Midpoint step", "Linear in T", nullptr
 };
@@ -164,8 +159,7 @@ class DeepCDefocus : public DD::Image::Iop
     float _mergeTolerance;       // Float, default 0.25px, 0-2px
     float _memoryLimit;          // Float GB, default 4.0, 1-64
 
-    // --- Bake-off (M1.P3.T5; both knobs deleted at M1.P3.T12) --------------
-    int   _bucketCombine;        // Enum {FrontToBackOver, CoveragePartition}
+    // --- Bake-off (the bucket composite's knob went at M1.P3.T17) ----------
     int   _holdoutInterp;        // Enum {LogChord, MidpointStep, LinearInT}
 
     // ----------------------------------------------------------------------
@@ -267,7 +261,6 @@ public:
         _preMerge(true),
         _mergeTolerance(0.25f),
         _memoryLimit(4.0f),
-        _bucketCombine(static_cast<int>(deepc::BucketCombine::CoveragePartition)),
         _holdoutInterp(static_cast<int>(deepc::HoldoutInterp::LogChord)),
         _proxyScale(1.0f),
         _formatHeightPx(1080.0f),
@@ -441,14 +434,8 @@ public:
         Tooltip(f, "Caps concurrent in-flight bands (floors at 1 band, then "
                     "shrinks the band height — never deadlocks at 0).");
 
-        // --- Bake-off (TEMPORARY — deleted at M1.P3.T12) -------------------
+        // --- Bake-off (TEMPORARY — deleted at M1.P3.T18) -------------------
         Divider(f, "Bake-off (temporary)");
-
-        Enumeration_knob(f, &_bucketCombine, bucketCombineNames,
-                         "bucket_combine", "bucket combine");
-        Tooltip(f, "TEMPORARY: which of the two candidate bucket composites "
-                    "resolves the depth buckets. Judged from rendered pixels at "
-                    "M1.P3.T12; the losing path and this knob are then deleted.");
 
         Enumeration_knob(f, &_holdoutInterp, holdoutInterpNames,
                          "holdout_interp", "holdout interp");
@@ -507,15 +494,8 @@ public:
         return std::min(gb, 1024.0) * 1024.0 * 1024.0 * 1024.0;
     }
 
-    // Bake-off selections, validated rather than cast (an out-of-range enum
+    // Bake-off selection, validated rather than cast (an out-of-range enum
     // index from a corrupted script must not become an undefined enum value).
-    deepc::BucketCombine clampedBucketCombine() const
-    {
-        return (_bucketCombine == static_cast<int>(deepc::BucketCombine::FrontToBackOver))
-             ? deepc::BucketCombine::FrontToBackOver
-             : deepc::BucketCombine::CoveragePartition;
-    }
-
     deepc::HoldoutInterp clampedHoldoutInterp() const
     {
         switch (_holdoutInterp) {
@@ -1054,10 +1034,9 @@ private:
         job.sp.bandX         = fc.box.x();
         job.sp.bandWidth     = W;
         job.sp.sharpRadiusPx = deepc::kSharpRadiusPx;
-        // BOTH bake-off selections come from knobs, explicitly. The scatter
-        // core's defaults are documented as provisional and non-authoritative
-        // (milestone Decisions), and M1.P3.T12 has to render each candidate.
-        job.sp.combine       = clampedBucketCombine();
+        // The remaining bake-off selection comes from its knob, explicitly:
+        // the scatter core's default is documented as provisional and
+        // non-authoritative, and M1.P3.T18 has to render each candidate.
         job.sp.holdoutInterp = clampedHoldoutInterp();
 
         for (int y0 = fc.box.y(); y0 < fc.box.t(); y0 += bandHeight) {
