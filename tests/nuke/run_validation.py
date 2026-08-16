@@ -1,4 +1,4 @@
-"""DeepCDefocus headless validation runner (M1.P3.T12).
+"""DeepCDefocus headless validation runner (M1.P3.T12, scenes g-l at T16).
 
 Run it through Nuke's terminal interpreter:
 
@@ -17,7 +17,7 @@ INTEGER value (``--k=64``, ``--max-radius=40``), because Nuke's own terminal
 argument parser consumes a bare integer as a frame range and never forwards
 it to ``sys.argv``.
 
-    --scenes a,b,c,d,e,f    which scenes to run          (default: all)
+    --scenes a,b,...,l      which scenes to run          (default: all)
     --k N                   depth_layers                 (default: 16)
     --combine over|partition                             (default: partition)
     --holdout-interp logchord|midpoint|lineart           (default: logchord)
@@ -52,7 +52,7 @@ from scenes import SCENES                                       # noqa: E402
 
 def parseArgs(argv):
     options = {
-        "scenes": "abcdef",
+        "scenes": "abcdefghijkl",
         "k": 16,
         "combine": "partition",
         "holdoutInterp": "logchord",
@@ -193,7 +193,7 @@ def main(argv):
                         maxRadius=options["maxRadius"],
                         tmpDir=tmpDir, keepRenders=options["keepRenders"])
 
-    print("DeepCDefocus headless validation — scenes (a)-(f)")
+    print("DeepCDefocus headless validation — scenes (a)-(l)")
     print("settings: %s" % settings.describe())
     print("renders:  %s%s" % (tmpDir,
                               "" if options["keepRenders"] else " (deleted)"))

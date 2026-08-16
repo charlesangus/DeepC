@@ -2,8 +2,8 @@
 #
 # One-command re-run of the DeepCDefocus headless validation harness.
 #
-#   tests/nuke/run_validation.sh                       # scenes (a)-(f), defaults
-#   tests/nuke/run_validation.sh --scenes c,f --k 64
+#   tests/nuke/run_validation.sh                       # scenes (a)-(l), defaults
+#   tests/nuke/run_validation.sh --scenes g,h --k 64
 #   tests/nuke/run_validation.sh --combine over --holdout-interp midpoint
 #
 # Nothing here is tied to one machine: the Nuke executable and the plugin
