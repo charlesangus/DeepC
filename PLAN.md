@@ -1,8 +1,8 @@
 ---
 title: DeepCDefocus — deep-input, flat-output defocus node
 status: running
-current: M1.P3.T16
-pm_heartbeat: 2026-08-16T04:15:00-04:00
+current: M1.P3.T19
+pm_heartbeat: 2026-08-16T05:30:00-04:00
 ship: pr-per-milestone
 ---
 
@@ -95,7 +95,7 @@ node; v3 (Milestone 3) adds a CUDA backend behind the seams v1/v2 leave in place
 2026-07-26: build both candidate composites behind an internal flag at M1.P3.T2 and decide from
 rendered pixels at M1.P3.T5's gate. See that milestone file's Decisions.)
 
-**Where things stand (2026-07-27T14:05-04:00).** Phases 1.0, 1.1 and 1.2 are complete and committed;
+**Where things stand (2026-08-16T05:30-04:00).** Phases 1.0, 1.1 and 1.2 are complete and committed;
 Phase 1.3 has T0, T1, T6, T2, T7, T8, T9, T3, T10, T11 and T4 done. **M1.P3.T5's wiring is landed and
 the node now genuinely defocuses**, but T5 is deliberately left OPEN: its review found that scene (a)'s
 size-0 parity gate fails (up to 2.4e-01, ~12% of pixels) because same-pixel fragments collide in one
@@ -105,28 +105,39 @@ at all. T14 has since fixed something wrong since the project began — `CMAKE_B
 CMake build had never passed an `-O` flag and the shipped plugin contained **zero** vectorized loops
 against 402 at `-O3`. T13 and T15 have since closed every same-pixel bucket-collision hole: size-0 parity goes from 2.6e-01
 with ~100% of pixels wrong to ≤5.8e-07 with none, across point, volumetric and mixed content, with the
-holdout connected as well as disconnected. Validation scene (l) is closed with them.
+holdout connected as well as disconnected. ~~Validation scene (l) is closed with them.~~ — retracted at
+T16; scene (l) fails on a *different* mechanism T13 never reached (see below).
 **T12 was split four ways on 2026-08-16** (it bundled a harness build, a twelve-scene sweep, two
 independent decisions and two source deletions — past the sizing rule): **T12** = headless harness +
 validation scenes (a)–(f), **T16** = scenes (g)–(l), **T17** = the bucket-composite bake-off + delete
 the loser, **T18** = the holdout-interpolant bake-off + delete the losers. They run in that order.
-**T12 is done and committed.** `tests/nuke/` is now the milestone's validation harness — one command,
-numeric gates, non-zero exit on failure, with `combine`/`holdoutInterp`/`K`/`pre_merge` as parameters
-so T16/T17/T18 drive the same scenes at different settings. Scenes (a)–(f) read **PASS=28 FAIL=0
-XFAIL=3 SKIP=1**; all three XFAILs were adjudicated as pre-existing and documented (the M1.P3.T10
-log-chord erasure, and the different-split-fraction fog residual, which is K-convergent). Its review
-also **corrected two plan errors**: the different-split-fraction residual is *not* candidate-independent
-(it is signed and flips sign between the two bucket-composite candidates, so it is evidence for T17,
-not noise), and the M1.P3.T10 erasure figure was understated — the erasure starts at the bracket's
-lower boundary, ≈100% of it, not 82%.
-`current: M1.P3.T16` — validation scenes (g)–(l) on that harness.
+**T12 and T16 are both done and committed, and the full scene sweep (a)–(l) is now in place.**
+`tests/nuke/` is the milestone's validation gate — one command, numeric per-check gates, non-zero exit
+on failure, with `combine`/`holdoutInterp`/`K`/`pre_merge` as parameters so T17/T18 drive the same
+scenes at different settings. Full run: **PASS=74 FAIL=3 XFAIL=16 SKIP=1**.
+
+**The three FAILs are one real node defect**, found at T16 and now **M1.P3.T19**: `DiscKernelLUT`
+quantises radius onto a 0.5 px grid, so adjacent scanlines straddling a bin edge rasterise different
+discs and leave a **one-scanline 20% dark trough** at CoC radius 0.762 px (35% on a radial ramp). It
+was derived from the LUT alone and matched in Nuke to six decimals, so the diagnosis is not in doubt.
+It is sequenced **before** the two bake-offs, because it changes every rendered pixel and T17/T18
+decide from rendered pixels. Execution order is now **T19 → T17 → T18**.
+
+The two reviews also corrected four plan errors, all of the same shape — a figure recorded from a
+measurement that never reached the phenomenon it claimed to bound: the different-split-fraction
+residual is *not* candidate-independent (it is signed and flips between the two bucket-composite
+candidates, so it is evidence for T17 rather than noise); the M1.P3.T10 erasure was understated (it
+starts at the bracket's lower boundary, ≈100% of it, not 82%); **T13's "scene (l) is closed" is
+retracted** (its synthetic corpus never crossed the 0.75 px bin edge); and `pre_merge` is both
+reachable at its shipping default *and* lossy there, not "lossless when radii are equal" — which
+earns `merge_tolerance`'s default a review at Phase 1.4.
 Note T5's size-0 parity clause now passes; its abort-recovery clause remains unverified and needs an
 interactive pass, since headless Nuke cannot trigger a recoverable mid-cook cancel — validation scene
 (e)'s `Escape` clause (harness check `e4`, SKIPped) is blocked on the same thing and is owed by the
 same interactive pass.
-Remaining in this milestone: P3 T16, T17, T18, then Phase 1.4 and Phase 1.5. Fifteen tasks
+Remaining in this milestone: P3 T19, T17, T18, then Phase 1.4 and Phase 1.5. Sixteen tasks
 have now been added by execution findings (M1.P3.T0, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16,
-T17, T18, plus the enlarged M1.P3.T4 test list).
+T17, T18, T19, plus the enlarged M1.P3.T4 test list).
 No PR yet — `ship: pr-per-milestone` puts that at M1's verification gate. The branch
 `claude/deep-defocus-node-plan-o0ld83` is committed but NOT pushed.
 

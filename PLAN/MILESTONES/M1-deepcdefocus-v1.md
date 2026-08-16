@@ -278,6 +278,9 @@ l. small-CoC transition: shallow depth ramp crossing 0–2px CoC ⇒ no chatter/
 | Same-pixel fragments colliding in one bucket | High | Additive within-bucket accumulation lets `newArea` exceed 1 per pixel; the composite then clamps `cov` and `a` together and loses both coverage and ordering — 1.000 against a true 0.781 on two samples. Breaks size-0 `DeepToImage` parity outright (up to 2.4e-01, 12% of pixels). Third instance of the double-count class. M1.P3.T13 |
 | Coverage plane double-counted, inflating alpha and colour | High | Fractional-split half found and fixed at M1.P3.T2's review (2.0 vs honest 1.0; deposit once, into the nearer bucket). Volumetric-split half still open — M1.P3.T8, which must land before M1.P3.T5's bake-off |
 | Build gate not actually building the node | Med | `src/CMakeLists.txt` never listed `DeepCDefocus`; every Phase 1.2/1.3 "local build clean" was compiled by hand instead. Registration pulled forward to M1.P3.T7 |
+| Kernel-bin quantisation trough on small CoC | High | `radiusToIndex()`'s 0.5px grid makes adjacent scanlines straddling a bin edge rasterise different discs: a one-scanline 20% dark trough at r=0.762px (35% on a radial ramp), colour tracking alpha so it reads as a visible dark line. Energy loss, not ripple — the compensating surplus is eaten by the saturation clamp. Found at M1.P3.T16; owned by M1.P3.T19, which must precede the T17/T18 bake-offs |
+| `pre_merge` lossy at its shipping default | Med | Losslessness holds only when grouped radii share a kernel bin; at the 0.25px default two layers 0.20px apart straddling a bin edge move 9.0e-02 on 100% of pixels. Two separate probes concluded "unreachable"/"exactly lossless" because they happened to group nothing. `merge_tolerance`'s default needs a review at Phase 1.4 |
+| Documented residual masking a later regression | Med | An unbounded XFAIL swallows anything that lands on top of it. Every harness XFAIL now carries a hard outer bound that flips it to FAIL on drift; new XFAILs must too |
 | Request/engine channel divergence | Low | Single `neededDeepChannels()` helper |
 | Edge darkening at bbox borders | Low | Output bbox padded by `max_radius` so scattered energy is retained |
 
@@ -887,7 +890,12 @@ verified.
 > twelve-scene sweep, two independent bake-off decisions and two source deletions in one task —
 > far past "one coherent change". It is now **T12** (harness + scenes a–f), **M1.P3.T16**
 > (scenes g–l), **M1.P3.T17** (bucket-composite bake-off) and **M1.P3.T18** (holdout-interpolant
-> bake-off), which must run in that order. See this file's Decisions.
+> bake-off). See this file's Decisions.
+>
+> **Execution order: T12 → T16 → T19 → T17 → T18.** T19 (the kernel-bin trough M1.P3.T16 found)
+> is sequenced *before* the two bake-offs on purpose: it changes `DiscKernelLUT`, so it moves every
+> rendered pixel, and T17/T18 decide from rendered pixels. Landing it afterwards would mean both
+> decisions were taken on pre-fix imagery and the inherited comparison tables would be stale.
 
 - [x] M1.P3.T12 — Headless validation harness + scenes (a)–(f)
   - files: `tests/nuke/` (new — harness + scene builders, Python)
@@ -924,7 +932,7 @@ verified.
     single command and is committed. Local build and both unit suites stay green.
   - size: L
 
-- [ ] M1.P3.T16 — Validation scenes (g)–(l) on T12's harness
+- [x] M1.P3.T16 — Validation scenes (g)–(l) on T12's harness
   - files: `tests/nuke/` (extending T12's harness)
   - approach: run the remaining six Design-reference scenes through T12's harness: (g) banding on a
     ground plane receding through focus, (h) overlap normalization, (i) sparse reveal / coverage
@@ -956,6 +964,40 @@ verified.
     evidence. Local build and both unit suites stay green.
   - size: L
 
+- [ ] M1.P3.T19 — Kernel-bin quantisation trough on small CoC (closes validation scene (l))
+  - files: `src/DeepCDefocusKernel.h`, `tests/test_defocus_scatter.cpp`, `tests/nuke/`
+  - approach: found at M1.P3.T16, whose review reproduced it **from first principles, independent of
+    the harness**. `DiscKernelLUT::radiusToIndex()` is `lround(radius / 0.5)`
+    (`src/DeepCDefocusKernel.h:503`), so kernel radius is quantised onto a 0.5 px grid with bin edges at
+    `radius = n·0.5 + 0.25`. Adjacent scanlines that straddle a bin edge rasterise *different* discs, and
+    the adjacent-row deficit is exactly `(f_r(0) − f_{r+0.5}(0))/2` — predicted from the LUT alone and
+    matched in Nuke to six decimals at every crossing: 0.5→1.0 **0.799119**, 1.0→1.5 0.905153, 1.5→2.0
+    0.948266, 2.0→2.5 0.973739. On a 0–2.5 px ramp that is a **one-scanline 20.09% dark trough** at CoC
+    radius 0.762 px, on 14 of 238 interior rows, every one within 1.8 scanlines of a bin edge (measured,
+    not asserted). **It is energy loss, not ripple**: the matching +5.2%/+7.8% surplus on the other side
+    of the edge is destroyed by the saturation clamp (profile max is exactly 1.0000000; net deficit 1.070
+    alpha-rows over 238). **Colour tracks alpha exactly** (R/A = 0.400000 everywhere), so it reads as a
+    visible one-pixel dark line across an opaque surface, not an alpha-only artefact. **The 1D ramp
+    understates it** — same slope turned diagonal reads 0.675220 (−32.5%) and radial 0.649560 (−35.0%).
+    **Four causes are already excluded and must not be re-investigated**: not the sharp-path threshold
+    (the r=0.5 LUT entry's centre weight is 1.000000, identical to the sharp path, so the 0.5 px crossing
+    produces no step at all — the worst is at 0.75 px); not LUT normalisation (every entry sums to
+    1 ± 2.2e-08); not bucketing (bit-identical at K=8/16/64); not a harness artefact (the same radius
+    held constant over the frame is flat to 0.0).
+    This is the "watch the 0.5–1.5px transition band for chatter; if it chatters, add a sharp↔defocused
+    blend zone rather than lowering the threshold" case the Design reference anticipated. Two shapes
+    worth trying: **interpolate between adjacent LUT entries**, or make the radius step **adaptive below
+    ~3 px**. Do not simply lower the threshold — the Design reference rules that out, and the trough is
+    at 0.762 px where the sharp path is not even engaged.
+  - verify: harness checks `l1`, `l2` and `l5` go from FAIL to PASS (gate 1/255 ≈ 3.9e-03), including
+    the diagonal and radial 2D ramps, which are the worst cases. Scene (g)'s readings, which currently
+    exclude rows within 2.5 px of focus to keep this artefact out of the bucket-composite numbers,
+    should be re-run **without** that exclusion and reported. No regression anywhere else in the harness
+    (scenes (a)–(f) are currently PASS=28 FAIL=0 XFAIL=3, and (g)–(k) must not move). Add a POD-level
+    unit test pinning the adjacent-bin deficit so this cannot silently return. Local build and both unit
+    suites green.
+  - size: M
+
 - [ ] M1.P3.T17 — Decide the bucket composite, delete the loser (needs T12 + T16)
   - files: `src/DeepCDefocusScatter.h`/`.cpp`, `src/DeepCDefocus.cpp`, `tests/`, this file's
     `## Decisions`
@@ -963,7 +1005,15 @@ verified.
     (`src/DeepCDefocusScatter.h:1079`) **from rendered pixels**, per the 2026-07-26 answer to the
     bucket-composite alpha deficit. Judge on scenes **(c), (f), (g), (i)** rendered through both
     candidates on T12/T16's harness — `ScatterParams::combine` set explicitly for each render, never
-    the provisional default. Weigh scenes (f)/(g) *interiors* separately from scene (i)-style sparse
+    the provisional default. **Re-render the table rather than quoting it**: M1.P3.T19 lands first and
+    changes `DiscKernelLUT`, so every number below moves. What you inherit from T16 is *where to look*,
+    not the figures. **Scene (c) no longer discriminates** — `over` passes it at K=8, so the design
+    reference's "plain `over` is known to fail scene (c)" is stale on constant-depth content. **Scene
+    (g)'s ramp is the decisive one**: pre-T19 it read 0.997176 / 0.978461 / 0.922105 at K=8/16/64 under
+    `over` against 0.989520 / 0.995558 / 1.000000 under `CoveragePartition` — opposite directions in K,
+    partition converging to exact, `over` diverging to −7.8%. Note T16 excluded rows within 2.5 px of
+    focus from scene (g) to keep T19's trough out of these numbers; once T19 has landed, re-run
+    **without** that exclusion. Weigh scenes (f)/(g) *interiors* separately from scene (i)-style sparse
     content (band-alpha vs flat-field readings differ by two orders of magnitude on the same input).
     In front of focus candidate 2 is now exact, so the comparison is fair; **behind focus, expect the
     structural +45.2/+51.2/+59.1% at 3/4/8 buckets under *both* candidates** (plain `over` tracks the
@@ -1001,7 +1051,12 @@ verified.
     step read 16 wrong pixels near scene (f) against Log chord's 157). Then **delete the losing
     variants and the flag**, same discipline as T17, and prune the tests that only pinned them. The
     interpolant divergence is pinned by tests; a change that moves it fails the suite and is
-    adjudicated here.
+    adjudicated here. **Re-render rather than quoting M1.P3.T12's figures** — T19 changes
+    `DiscKernelLUT` and moves every pixel. What T12 established and T19 will not change is the
+    *shape*: LogChord erases 78% of a `depthRange/K` bracket, MidpointStep 30%, LinearInT none
+    outright but ramps 0.95→0.25 across it, and the LogChord decay is `10^(−30·frac)` — i.e. it is
+    `kMinTransmittance = 1e-30` (`src/DeepCDefocusMath.h:61`) flooring `log T`, not a chord-accuracy
+    limit. That distinction matters: a floor is cheap to raise, an irreducible chord bound is not.
   - verify: the decision is recorded in this file's `## Decisions` with the side-by-side numbers,
     including the dense-volumetric-holdout case. Losing variants and the flag are gone from `src/`
     (grep clean). Local build and both unit suites green. Scenes (b), (e), (f) re-run on the
@@ -1050,9 +1105,17 @@ verified.
     collapses to near-serial under Nuke's row scheduling (check via thread activity during the
     profile run), implement the `Thread::spawn` prefetch-pool hedge described in the Design
     reference, reusing M1.P4.T1's claim/wait primitives.
+    **Also review `merge_tolerance`'s default here** (carried from M1.P3.T16's review). The knob is
+    documented as "lossless when radii are equal", but losslessness actually holds only when the
+    grouped radii land in the *same* `DiscKernelLUT` bin: at the 0.25px default, two same-pixel layers
+    0.20px apart that straddle a bin edge move **9.0e-02 on 100% of pixels**. So the shipping default
+    trades correctness for speed, silently. Decide from the perf numbers this task produces whether
+    0.25px is worth what it costs, and either re-document the knob honestly or lower the default —
+    note M1.P3.T19 may change the bin grid underneath this, so run it after T19.
   - verify: `-fopt-info-vec` output shows the scatter loop vectorized (or the omp-simd fallback
     does); the 2K/20spp synthetic scene completes in a time you record in this file's Decisions
-    section as the perf baseline for future regressions.
+    section as the perf baseline for future regressions. `merge_tolerance`'s default is either
+    changed or its docs corrected, with the speed-vs-accuracy numbers recorded.
   - size: M
 
 ## Phase 1.5: Integration polish
@@ -1108,6 +1171,41 @@ verified.
   - size: M
 
 ## Decisions
+
+- 2026-08-16 — **M1.P3.T16 completed the scene sweep; the harness is now the milestone's gate, and it
+  is red on one real defect.** Full run: **PASS=74 FAIL=3 XFAIL=16 SKIP=1**, exit 1. The three FAILs
+  are all validation scene (l) and are one genuine node defect, now **M1.P3.T19**. Consequences:
+  - **The 2026-07-27 entry claiming T13 closed scene (l) is retracted** (struck through in place). The
+    bucket-collision wander T13 fixed was real; the scene's own 0–2 px criterion nonetheless fails at
+    **2.009e-01**, 70× T13's recorded 2.906e-03, on a mechanism T13's synthetic corpus never reached.
+    A synthetic corpus that does not cross the artefact's trigger is not evidence that the scene passes.
+  - **`pre_merge`'s record is corrected twice over.** It *is* reachable at the **shipping default**
+    0.25 px — two same-pixel layers at CoC radius 1.2/1.4 px (0.20 apart, inside the default tolerance,
+    straddling the 1.25 px bin edge) move **9.0e-02 on 100% of pixels**. And the knob is therefore
+    **lossy at its default**, not "lossless when radii are equal": losslessness holds only when the
+    grouped radii land in the *same* kernel bin. M1.P3.T12's "0 pixel difference everywhere" and
+    M1.P3.T16's first explanation ("at 0.25 px anything grouped rasterises the same disc") were both
+    wrong for the same reason — the probes happened to group nothing. **This deserves a
+    `merge_tolerance` default review at Phase 1.4**, since the default is currently trading correctness
+    for speed silently.
+  - **Scene (c) no longer discriminates the bucket composite.** `FrontToBackOver` now *passes* scene (c)
+    at K=8, so the design reference's "plain `over` is known to fail scene (c)" no longer reproduces on
+    constant-depth content. Scene **(g)'s ramp** is where `over` breaks, and it breaks decisively:
+    interior flat-field alpha on an opaque receding plane reads 0.997176 / 0.978461 / **0.922105** at
+    K=8/16/64 under `over` against 0.989520 / 0.995558 / **1.000000** under `CoveragePartition`. The two
+    candidates move in **opposite directions in K** — partition converges to exact (2.8e-07 at K=64),
+    `over` diverges monotonically to −7.8%, which is precisely the 2026-07-26 prediction that "it
+    worsens as K rises, so the K knob is not a mitigation". M1.P3.T17 inherits this table.
+  - **Unbounded XFAILs are a false-pass class.** An `expectedFailure` with no outer bound silently
+    swallows a regression that lands on top of a documented residual. Every XFAIL in the harness now
+    carries a hard bound that flips it to FAIL if the reading drifts past it. Apply this to any future
+    XFAIL as a matter of course.
+  The review also fixed four checks that had no discriminating power (`i4` measured the deep interior
+  rather than the dip band and survived its own mutation; `j0` read the root format rather than the
+  source, so it passed the very bug it guards; scene (h) was **vacuous** — two opaque cards at exactly
+  the same depth are collapsed by the tidy pre-pass into a bit-identical single-card render, so the
+  saturation rule was never exercised; scene (g) never gated its own stated seam criterion). **Every
+  check in the harness must now be mutation-tested** — a check nobody has made fail proves nothing.
 
 - 2026-08-16 — **M1.P3.T12 landed the harness; scenes (a)–(f) are green with three documented
   XFAILs.** `tests/nuke/` (one command, numeric gates, non-zero exit on failure, `combine` /
@@ -1212,9 +1310,14 @@ verified.
   same-pixel deposit into a bucket arrives as co-located area. Scene (a) at size 0 over 60 rows
   (K ∈ {4…128} × 1–20 spp × `pre_merge` both, 2000 pixels each): worst |dα| **2.65e-01 → 2.38e-07**,
   worst |dcolour| 5.89e-01 → 3.44e-07, **100% → 0.00%** of pixels over 1e-3. In real headless Nuke
-  against `DeepToImage`: worst |dα| **1.394e-01 → 2.980e-07**, 96.3% → 0.00%. **Scene (l) is closed**
+  against `DeepToImage`: worst |dα| **1.394e-01 → 2.980e-07**, 96.3% → 0.00%. ~~**Scene (l) is closed**
   (wander 0.780–0.880 / max step 9.97e-02 → 0.6947–0.7010 / 3.90e-03 against a truth of 0.700), and the
-  0–2px ramp criterion is met (max step across a threshold crossing 2.906e-03 ≤ 3.899e-03 elsewhere).
+  0–2px ramp criterion is met (max step across a threshold crossing 2.906e-03 ≤ 3.899e-03 elsewhere).~~
+  **RETRACTED 2026-08-16 at M1.P3.T16's review: scene (l) is NOT closed.** On a real headless-Nuke
+  0–2.5 px ramp the max step is **2.009e-01**, 70× the figure above. T13's measurement was taken on a
+  synthetic corpus that never crossed the 0.75 px kernel-bin edge, which is where the trough lives.
+  What T13 *did* close on scene (l) is real and stands — the bucket-collision wander — but the scene's
+  own criterion fails on a different mechanism (`DiscKernelLUT` radius quantisation, **M1.P3.T19**).
   **K-convergence survives** — the property the previously-disproved whole-weight fix died on — because
   the pass never touches `bucketOf()`'s assignment: the sharp row is flat at ~3e-08 at every K (six
   orders better than baseline) and the defocused row beats baseline at every K. Note the defocused row
