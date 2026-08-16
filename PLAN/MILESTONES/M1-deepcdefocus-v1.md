@@ -1202,6 +1202,68 @@ verified.
     green.
   - size: L
 
+- [ ] M1.P3.T22 — Gate the unequal-density over-read (run FIRST — T23 cannot iterate without it)
+  - files: `tests/nuke/scenes.py`, `tests/test_defocus_scatter.cpp`
+  - approach: found at M1.P3.T21's review. **The node's largest rendered error is currently ungated.**
+    Two cards side by side at α 0.99 and α 0.10 with overlapping depth spans, `size` 14, K=16 — a dense
+    fog card beside a thin one, ordinary comp content — read **+71.2%** at the worst pixel, with 41 of
+    186 probed pixels over +0.5% high. It is in the direction the honest-alpha contract forbids.
+    **Nothing sees it**: `f3c`/`f3d` are the only overlapping-depth rendered checks and **both pin equal
+    density**, which is the one case that is nearly exact. That is the fifth instance in this milestone
+    of a check structurally unable to reach the phenomenon it guards, and it is why this task must
+    precede any further composite work — M1.P3.T23 would otherwise be iterating blind.
+    Add an **unequal-density** variant of the `f3c`/`f3d` family with a **hard bound**, plus the
+    matching POD-level pin. The oracle needs no ordering assumption: below saturation the area model is
+    additive, so the merged render must equal the sum of the two solo renders, and each solo is a single
+    open chain, which the composite does exactly. Worst pixel on record: solo 0.21431 + 0.03817 =
+    0.25248 against a merged **0.43220**.
+    Sweep density ratio, depth overlap, `size` and K rather than pinning one configuration — the point
+    is a gate that *tracks* the defect as T23 moves it, not a single number.
+  - verify: the new check FAILs on current `HEAD` at the recorded magnitude and is **mutation-tested**
+    in both directions — it must also fail if the composite is perturbed toward *under*-reporting, so it
+    cannot be satisfied by trading the error's sign. Equal-density `f3c`/`f3d` readings stay
+    bit-identical. No existing bound raised. Harness stays green apart from the new expected failure,
+    which is recorded as a **FAIL, not an XFAIL** — it is the target T23 must close. Local build and
+    both unit suites green.
+  - size: M
+
+- [ ] M1.P3.T23 — Composite iteration against the unequal-density over-read (needs T22)
+  - files: `src/DeepCDefocusScatter.h`/`.cpp`, `tests/test_defocus_scatter.cpp`, `tests/nuke/scenes.py`,
+    this file's `## Decisions`
+  - approach: **the user directed continued composite iteration on 2026-08-16, having been shown the
+    evidence that it has reached a Pareto point** (see Decisions). This task carries that direction, and
+    is scoped by the user's second instruction — **fix correctness, defer polish**:
+    - **In scope: the +71.2% unequal-density over-read.** Invented alpha, forbidden direction,
+      ordinary content. This is the correctness target.
+    - **Out of scope: `f3c`/`f3d` and `g4`.** Both are precision-only residuals that cost accuracy, not
+      correctness. They stay pinned and documented. **Do not add the fifth (co-located alpha) plane** —
+      it closes exactly those two, does nothing for the over-read, and costs +14% bucket memory at C=4
+      against a standing High memory risk. If you find it is unavoidable for the correctness target,
+      that is a finding to report, not a licence to add it.
+    **What is already established and must not be re-derived**: there are two independent losses. The
+    `C_k : D_k` split is recoverable (a fifth plane closes it exactly — measured). **Parent identity is
+    not recoverable by any bounded plane count**, because parents-per-bucket is unbounded, and that is
+    the term reading +71%. Newest-first and oldest-first ordering **trade**: newest gives +64.6% on the
+    unequal-alpha case and −4.107% on the dense ramp; oldest gives +22.4% and −27.4%. Both were measured
+    at T21's review. So a rule that merely reorders the stack is not progress — **a candidate must beat
+    that trade, not sit somewhere on it**, and the report must show where it lands on both axes.
+    Ideas worth considering, none endorsed: bounding the *sign* rather than the magnitude (accept a
+    deficit, forbid invented alpha — the contract only forbids one direction, and cap overflow already
+    degrades downward); an opacity-aware tile-selection rule rather than a positional one; splitting the
+    tile stack by opacity band; or detecting the unequal-density case and falling back to a conservative
+    rule there. **If measurement says none of them beats the trade, that is a legitimate reportable
+    outcome** — say so with the numbers, and the ruling then becomes documentation.
+  - verify: M1.P3.T22's gate passes, or its magnitude is materially reduced with the remainder bounded
+    and no cell in the forbidden direction beyond the stated bound. **The T21 gains hold**: the
+    staggered sweep stays at zero cells >+0.5%, `g4` ≤ 0.0325+band, g1/g2/g3 stay at their post-T21
+    readings. Scene (a) parity ≤2e-07 with `a3`'s remaining margin (1.192e-07 of 2.4e-07) not spent.
+    K sweep α ∈ {0.1, 0.3, 0.5, 0.9, 0.99} × K ∈ {2..128} — note α=0.10 and 0.30 currently read +6.53%
+    and +5.17% and stay above +3.4% at the default K=16, so **low α is part of the target, not a
+    footnote**. Every pin that moves is re-pinned against an independent oracle with the mechanism
+    stated. Cost stated per pixel, per bucket, per thread and at K=128. Harness green with no XFAIL
+    bound raised; local build and both unit suites green.
+  - size: L
+
 - [ ] M1.P3.T18 — Decide the holdout interpolant, delete the losers (needs T12 + T16)
   - files: `src/DeepCDefocusMath.h`, `src/DeepCDefocusScatter.h`/`.cpp`, `src/DeepCDefocus.cpp`,
     `tests/`, this file's `## Decisions`
@@ -1336,6 +1398,42 @@ verified.
   - size: M
 
 ## Decisions
+
+- 2026-08-16 — **The user directed continued composite iteration, and scoped what "done" means.** The
+  PM put the state to the user after M1.P3.T21: that iteration had reached a **Pareto point** rather
+  than converging (newest-first vs oldest-first tile ordering trade by comparable margins — +64.6% /
+  −4.107% against +22.4% / −27.4%), that there are **two independent losses** and not the one the
+  record named, and that the reviewer's recommendation was to stop, gate the residual and document it.
+  Options offered: (1) gate + document only, (2) that plus a fifth accumulation plane, (3) keep
+  iterating. **The user chose (3), keep iterating** — and separately chose **"fix correctness, defer
+  polish"** for how new findings are handled.
+  Read together those two answers scope the work precisely, and that reading is what M1.P3.T23
+  implements: the **+71.2% unequal-density over-read is the target**, because invented alpha on ordinary
+  content is a correctness defect in the direction the honest-alpha contract forbids; while **`f3c`/`f3d`
+  and `g4` are precision-only and are deferred**, pinned and documented rather than fixed. That also
+  settles the fifth plane against adding it — it closes exactly the two deferred residuals, does nothing
+  for the over-read, and costs +14% bucket memory at C=4 against a standing High memory risk.
+  **M1.P3.T22 must land first**: the over-read is currently ungated, so iterating on it would be
+  iterating blind. A candidate rule must **beat** the newest/oldest trade rather than sit somewhere on
+  it, and reporting that none does is a legitimate outcome.
+
+- 2026-08-16 — **M1.P3.T21's review established the root cause, and it is not what the record said.**
+  There are **two** losses in the bucket planes, not one:
+  - **(a) The `C_k : D_k` split** — how a bucket's pooled alpha divides between its new-area and
+    co-located deposits. This is `f3c`/`f3d`'s term and `g4`'s remainder. **It is recoverable**: a fifth
+    plane carrying the co-located alpha closes it **exactly** (−4.107% → ±0.0001% at every N and both
+    split fractions), verified by building it. Cost `(C+3) → (C+4)`: +14% bucket memory at C=4, +25% at
+    C=1, plus one accumulator write per deposit.
+  - **(b) Parent identity** — which open chain a bucket's co-located area belongs to. **This is not
+    recoverable by any bounded plane count**, because parents-per-bucket is unbounded and the planes
+    hold only sums. It is an information problem, not a rule problem. This is the term reading **+71.2%**
+    rendered, and adding the fifth plane leaves it **bit-unchanged**.
+  So **M1.P3.T20 and M1.P3.T21 were patching different things, and neither was patching the term the
+  record named** (both had attributed the residual to `f3c`/`f3d`'s accumulation-time pooling). Proof
+  that iteration on ordering alone is zero-sum: newest-first reads +64.6% on the unequal-alpha case and
+  −4.107% on the dense ramp; oldest-first reads +22.4% and −27.4%.
+  **The user was shown this and directed continued iteration anyway** (see the entry above); M1.P3.T23
+  carries it, with the requirement that a candidate beat the trade rather than move along it.
 
 - 2026-08-16 — **M1.P3.T21: the upward error M1.P3.T20 traded for the α<1 ramp is FIXED, and the ramp
   got BETTER rather than worse. The composite's one head tile became a STACK of sixteen; nothing else
