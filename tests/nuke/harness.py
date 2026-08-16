@@ -548,12 +548,21 @@ class Stats(object):
                                                 self.mean)
 
 
-def channelStats(image, channel, box):
+def channelStats(image, channel, box, exclude=None):
+    """Min/max/mean of ``channel`` over ``box``.
+
+    ``exclude(x, y) -> bool`` drops pixels from the statistic.  Scene (l) uses
+    it to measure the CoC field's own extremum SEPARATELY from the rest of the
+    frame, because the two are different mechanisms with different magnitudes;
+    the excluded region is never simply discarded, it gets its own check.
+    """
     x0, y0, x1, y1 = box
     out = Stats()
     for y in range(y0, y1):
         row = image.row(channel, y)
         for x in range(x0, x1):
+            if exclude is not None and exclude(x, y):
+                continue
             i = x - image.x0
             v = row[i] if 0 <= i < image.width else 0.0
             if v < out.minimum:

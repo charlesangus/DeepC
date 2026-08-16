@@ -291,12 +291,36 @@ std::vector<RefPart> refSplitSpan(const DepthBuckets& b, double zFront, double z
 // "Which kernel would the scatter fetch for this radius?", from the documented
 // rule rather than from the shipped predicate: below the sharp threshold every
 // fragment is one weight of 1.0 at its own pixel (bin -1), and above it
-// DiscKernelLUT rounds onto its 0.5px grid.
+// DiscKernelLUT rounds onto the NEAREST NODE, IN RADIUS, of the global
+// kernel-radius grid (M1.P3.T19).
+//
+// Deliberately derived by SEARCHING the grid's node radii (kernelGridRadius(),
+// which is the grid's definition) instead of by inverting them: the closed
+// form kernelGridIndex() uses -- a reciprocal and a harmonic-mean midpoint --
+// is exactly the thing this reference exists to disagree with if it is wrong.
 int refKernelBin(double radiusPx)
 {
     if (!(radiusPx >= static_cast<double>(kSharpRadiusPx)))
         return -1;
-    return static_cast<int>(std::floor(radiusPx / DiscKernelLUT::kStepPx + 0.5));
+
+    // Bracket, then bisect, on the monotone node radii.
+    int lo = 0, hi = 1;
+    while (static_cast<double>(kernelGridRadius(hi)) < radiusPx) {
+        lo = hi;
+        hi *= 2;
+        if (hi > (1 << 26))
+            return hi;                  // absurd radius; the LUT clamps anyway
+    }
+    while (hi - lo > 1) {
+        const int mid = lo + (hi - lo) / 2;
+        if (static_cast<double>(kernelGridRadius(mid)) < radiusPx)
+            lo = mid;
+        else
+            hi = mid;
+    }
+    const double dLo = radiusPx - static_cast<double>(kernelGridRadius(lo));
+    const double dHi = static_cast<double>(kernelGridRadius(hi)) - radiusPx;
+    return (dHi < dLo) ? hi : lo;
 }
 
 // Which HoldoutBoundaries bracket a depth falls in.  The boundary SET is shared
@@ -1713,10 +1737,15 @@ TEST_CASE("scatterKernelBin mirrors the scatter's own two radius decisions, at t
     CHECK(scatterKernelBin(std::nextafter(kSharpRadiusPx, 0.0f)) == -1);
     CHECK(scatterKernelBin(0.0f) == -1);
     CHECK(sameScatterKernel(0.0f, std::nextafter(kSharpRadiusPx, 0.0f)));
-    // ...and the exactly-0.5 fragment must merge with the 0.6 one beside it,
-    // because DiscKernelLUT rounds both onto entry 1 of its 0.5px grid.
-    CHECK(sameScatterKernel(kSharpRadiusPx, 0.6f));
-    CHECK_FALSE(sameScatterKernel(std::nextafter(kSharpRadiusPx, 0.0f), 0.6f));
+    // ...and the exactly-0.5 fragment must merge with the one a hair above it,
+    // because DiscKernelLUT rounds both onto grid node 1.  M1.P3.T19 NOTE:
+    // this used to read 0.6f, which the old uniform 0.5px grid put on node 1
+    // too; on the refined grid node 1 is 0.5 and node 2 is 0.5004888, so 0.6
+    // is ~200 nodes away and must NOT merge.  That is the fix working, not a
+    // weakened assertion -- 0.5 and 0.6 rasterise measurably different discs.
+    CHECK(sameScatterKernel(kSharpRadiusPx, 0.50024f));
+    CHECK_FALSE(sameScatterKernel(kSharpRadiusPx, 0.6f));
+    CHECK_FALSE(sameScatterKernel(std::nextafter(kSharpRadiusPx, 0.0f), 0.50024f));
 
     // 2. NaN and +-inf.  NaN is sharp in the scatter (the test is negated), and
     //    an infinite radius must not reach std::lround, whose result there is
@@ -1730,9 +1759,156 @@ TEST_CASE("scatterKernelBin mirrors the scatter's own two radius decisions, at t
     CHECK_FALSE(sameScatterKernel(inf, 1.0f));
     CHECK(scatterKernelBin(-1.0f) == -1);
 
-    // 3. The 0.5px grid itself: same step merges, adjacent steps do not.
-    CHECK(sameScatterKernel(4.76f, 5.20f));
-    CHECK_FALSE(sameScatterKernel(4.74f, 5.20f));
+    // 3. The grid itself: same node merges, adjacent nodes do not -- in BOTH
+    //    of its regions, since M1.P3.T19 made it piecewise.
+    //    Fine region (hyperbolic, node spacing ~r^2/512): nodes 926/927 are
+    //    5.171717/5.224490 px, so 5.16 and 5.19 share node 926 while 5.20
+    //    rounds to 927.
+    CHECK(sameScatterKernel(5.16f, 5.19f));
+    CHECK_FALSE(sameScatterKernel(5.16f, 5.20f));
+    //    Coarse region (uniform 0.5px, unchanged, at and above 16px).
+    CHECK(sameScatterKernel(20.10f, 20.20f));
+    CHECK_FALSE(sameScatterKernel(20.10f, 20.60f));
+    //    ...and the two regions join without a gap or an overlap.
+    CHECK(scatterKernelBin(kKernelCoarseFromPx) == kKernelFineLastIndex);
+    CHECK(kernelGridRadius(kKernelFineLastIndex) == kKernelCoarseFromPx);
+    CHECK(kernelGridRadius(kKernelFineLastIndex + 1)
+          == doctest::Approx(kKernelCoarseFromPx + 0.5f));
+}
+
+// Centre-ROW weight sum of one LUT entry, S_r(0).  This is the quantity the
+// adjacent-bin trough is made of: two vertically adjacent source scanlines
+// that fall in different kernel bins leave their shared destination row short
+// by exactly (S_r(0) - S_r'(0))/2, which M1.P3.T16's review derived from the
+// LUT alone and then matched in Nuke to six decimals at four crossings.
+double centreRowSum(const DiscKernelLUT& lut, float radiusPx)
+{
+    const KernelView v = lut.kernel(radiusPx, 0, 0, 0.0f, 0);
+    REQUIRE(v.valid());
+    const RowSpan& span = v.row(v.radiusY);         // row y == 0
+    REQUIRE_FALSE(span.empty());
+    const float* w = v.rowWeights(v.radiusY);
+    double sum = 0.0;
+    for (int i = 0; i < span.count(); ++i)
+        sum += static_cast<double>(w[i]);
+    return sum;
+}
+
+TEST_CASE("adjacent kernel bins never lose a visible amount of alpha "
+          "(M1.P3.T19's trough, pinned at the POD level)")
+{
+    // THE DEFECT, and the guard against its silent return.  Quantising kernel
+    // radius costs a flat opaque surface (S_r(0) - S_r'(0))/2 of its alpha on
+    // every scanline where the CoC ramp crosses from bin r to bin r'.  On the
+    // uniform 0.5px grid this node shipped with until M1.P3.T19 that was a
+    // ONE-SCANLINE 20% DARK LINE, and colour tracked alpha exactly, so it read
+    // as a visible dark line across an opaque surface (validation scene (l),
+    // checks l1/l2/l5).
+    //
+    // Nothing in this test knows about Nuke, ramps or scenes: it is the same
+    // arithmetic, straight off the LUT, so it fails the instant the grid is
+    // coarsened again -- including by someone "simplifying" kernelGridIndex()
+    // back to lround(radius / 0.5).
+    DiscKernelLUT lut(0.0f, 20.0f, 1.0f, 1.0f);
+
+    // --- 1. THE INSTRUMENT REPRODUCES THE DEFECT -------------------------
+    // 0.5 and 1.0 are both nodes of the shipped grid, so this is the OLD
+    // grid's step measured through the NEW LUT: 0.200881, i.e. the 0.799119
+    // that M1.P3.T16 measured in Nuke at the 0.5->1.0 crossing.  A test that
+    // has never been made to fail proves nothing; this clause is the one that
+    // makes the measurement demonstrably able to see the trough.
+    CHECK(centreRowSum(lut, 0.5f) - centreRowSum(lut, 1.0f)
+          == doctest::Approx(2.0 * 0.200881).epsilon(1e-4));
+    // The next three crossings, at the nearest grid nodes to 1.5/2.0/2.5
+    // (1.501466 / 2.000000 / 2.497561): Nuke read 0.905153 / 0.948266 /
+    // 0.973739 for these.
+    CHECK((centreRowSum(lut, 1.0f) - centreRowSum(lut, 1.501466f)) * 0.5
+          == doctest::Approx(0.094974).epsilon(1e-3));
+    CHECK((centreRowSum(lut, 1.501466f) - centreRowSum(lut, 2.0f)) * 0.5
+          == doctest::Approx(0.051607).epsilon(1e-3));
+    CHECK((centreRowSum(lut, 2.0f) - centreRowSum(lut, 2.497561f)) * 0.5
+          == doctest::Approx(0.026135).epsilon(1e-3));
+
+    // --- 2. THE SHIPPED GRID -------------------------------------------
+    // Every ADJACENT pair of entries, over the whole fine region and into the
+    // coarse one.  Measured worst 1.256580e-03 at r=1.7415; gated at 1.4e-03,
+    // which is still 2.8x inside the 1/255 = 3.92e-03 visibility gate the
+    // harness uses.
+    double worst = 0.0;
+    float  worstAt = 0.0f;
+    for (int i = 0; i + 1 < lut.entryCount(); ++i) {
+        const double d = (centreRowSum(lut, lut.entryRadius(i))
+                          - centreRowSum(lut, lut.entryRadius(i + 1))) * 0.5;
+        if (d > worst) { worst = d; worstAt = lut.entryRadius(i); }
+    }
+    CAPTURE(worst);
+    CAPTURE(worstAt);
+    CHECK(worst < 1.4e-03);
+    CHECK(worst < (1.0 / 255.0) / 2.5);
+    // ...and it really is the measured value, not merely small: a grid that
+    // over-refined would also pass the bound above while costing memory.
+    CHECK(worst == doctest::Approx(1.256580e-03).epsilon(1e-3));
+
+    // --- 3. THE GRID ITSELF ----------------------------------------------
+    // Strictly increasing, exactly invertible, and never stepping wider than
+    // the coarse 0.5px -- the three properties radiusToIndex() and
+    // scatterKernelBin() both rest on.
+    for (int i = 1; i <= 1400; ++i) {
+        CHECK(kernelGridRadius(i) > kernelGridRadius(i - 1));
+        CHECK(kernelGridRadius(i) - kernelGridRadius(i - 1)
+              <= DiscKernelLUT::kStepPx + 1e-5f);
+        CHECK(kernelGridIndex(kernelGridRadius(i)) == i);
+    }
+    // ...and NEAREST at radii that are NOT nodes, which is the only place the
+    // rounding rule is observable and the only place a wrong one hides.  On
+    // node radii floor(), ceil() and round() all agree, so the loop above
+    // passes unchanged if kernelGridIndex() is mutated to any of them -- this
+    // clause is what fails.  Checked against the grid's own definition
+    // (kernelGridRadius) by comparing the returned node with its neighbours,
+    // in BOTH regions and across the join.
+    for (int i = 1; i <= 1400; ++i) {
+        const double lo = kernelGridRadius(i);
+        const double hi = kernelGridRadius(i + 1);
+        for (double t : {0.01, 0.3, 0.499, 0.501, 0.7, 0.99}) {
+            const float r = static_cast<float>(lo + t * (hi - lo));
+            const int got = kernelGridIndex(r);
+            CAPTURE(i);
+            CAPTURE(t);
+            CAPTURE(r);
+            CAPTURE(got);
+            REQUIRE(got >= i);
+            REQUIRE(got <= i + 1);
+            const double dGot  = std::fabs(r - kernelGridRadius(got));
+            const double dOther = std::fabs(r - kernelGridRadius(got == i ? i + 1 : i));
+            CHECK(dGot <= dOther + 1e-6);
+        }
+    }
+    // The LUT still brackets its requested range from OUTSIDE -- at rMin = 0
+    // (what the node passes) and at a measured non-zero rMin, which the grid
+    // change made non-trivial: the bracketing nodes are no longer floor/ceil
+    // of radius/0.5.
+    CHECK(lut.entryRadius(0) <= 0.0f);
+    CHECK(lut.entryRadius(lut.entryCount() - 1) >= 20.0f);
+    for (auto range : {std::make_pair(2.0f, 40.0f), std::make_pair(0.7f, 0.75f),
+                       std::make_pair(15.9f, 16.1f), std::make_pair(0.0f, 0.3f)}) {
+        const DiscKernelLUT ranged(range.first, range.second, 1.0f, 1.0f);
+        CAPTURE(range.first);
+        CAPTURE(range.second);
+        REQUIRE(ranged.entryCount() >= 1);
+        CHECK(ranged.entryRadius(0) <= range.first);
+        CHECK(ranged.entryRadius(ranged.entryCount() - 1) >= range.second);
+    }
+
+    // --- 4. THE COST -----------------------------------------------------
+    // The refinement lives entirely below kKernelCoarseFromPx, so it adds a
+    // FIXED amount no matter how large max_radius is -- measured 197KB at both
+    // [0,40] and [0,100], where the old grid cost 0.584MB and 8.414MB.  Pinned
+    // so a future widening of the fine region cannot go unnoticed.
+    const DiscKernelLUT big(0.0f, 100.0f, 1.0f, 1.0f);
+    const DiscKernelLUT mid(0.0f, 40.0f, 1.0f, 1.0f);
+    CHECK(mid.sizeBytes() - 612208u < 210u * 1024u);
+    CHECK(big.sizeBytes() - 8822736u < 210u * 1024u);
+    CHECK(big.entryCount() < 1200);
 }
 
 TEST_CASE("the area claim is per PIXEL and survives a degenerate bucket set "
@@ -2780,13 +2956,20 @@ TEST_CASE("the collision merge is bounded: different kernels are not collapsed, 
         // share A1's kernel.  They collide, so they merge — and taking the
         // group's first flag instead of the OR would drop B's coverage
         // entirely, leaving one claimed bucket where there are two.
+        //
+        // "Close enough" is a MEASURED distance, not a guess: at these depths
+        // the radii are ~7.14px and ~7.08px and M1.P3.T19's kernel-radius grid
+        // is 0.103px wide there, so both land on grid node 953. B's span was
+        // [b10+0.02, b10+0.05] until that task refined the grid, which put the
+        // two on adjacent nodes and silently turned this subcase into a
+        // three-fragment no-merge case.
         const CocParams    q  = makeStandardRig(10.0f);
         const DepthBuckets qb = makeStandardBuckets(q);
         const float b10 = qb.boundary(10);
         const FlattenParams fq = makeFlattenParams(q, 1, /*preMerge*/ false);
         const SampleSoA soa = flattenOnePixel(fq, qb, 20, 20,
             {makeSample(b10 - 0.02f, b10 + 0.02f, 0.6f, {0.6f * 0.5f}),
-             makeSample(b10 + 0.02f, b10 + 0.05f, 0.4f, {0.4f * 0.5f})});
+             makeSample(b10 + 0.02f, b10 + 0.03f, 0.4f, {0.4f * 0.5f})});
 
         // A0 (head, bucket 9) and the merged [A1 + B] (bucket 10).
         REQUIRE(soa.fragmentCount() == 2u);
@@ -2857,14 +3040,18 @@ TEST_CASE("the collision merge is bounded: different kernels are not collapsed, 
         const FlattenParams fq = makeFlattenParams(q, 1, /*preMerge*/ false);
         const SampleSoA soa = flattenOnePixel(fq, qb, 0, 0,
             {makeSample(b10 + 0.05f, b10 + 0.05f, 0.6f, {0.6f * 0.5f}),
-             makeSample(b10 + 0.06f, b10 + 0.10f, 0.4f, {0.4f * 0.5f})});
+             makeSample(b10 + 0.051f, b10 + 0.055f, 0.4f, {0.4f * 0.5f})});
 
         REQUIRE(soa.fragmentCount() == 2u);
         CHECK(fragmentKindOf(soa.flags[0]) == FragmentKind::Point);
         CHECK(fragmentKindOf(soa.flags[1]) == FragmentKind::Volumetric);
         // They really do collide (the point's rear bucket is the span's), and
         // they really are one kernel — kind is the only thing keeping them
-        // apart, so this case cannot pass for the wrong reason.
+        // apart, so this case cannot pass for the wrong reason.  M1.P3.T19
+        // NOTE: the span was [b10+0.06, b10+0.10] until the kernel-radius grid
+        // was refined; at ~6.99px the node spacing is 0.096px and those two
+        // midpoints are 0.109px apart in radius, so they stopped sharing a
+        // kernel and the subcase would have passed for the wrong reason.
         CHECK(soa.bucketIndex1[0] == soa.bucketIndex0[1]);
         CHECK(sameScatterKernel(soa.radius[0], soa.radius[1]));
     }
@@ -3533,14 +3720,29 @@ TEST_CASE("flat opaque field ACROSS buckets: CoveragePartition holds alpha 1, "
     }
 
     // PINNED: the deficit is 25.0% across two buckets (Decisions, 2026-07-26).
-    // Measured here 0.7496..0.7504 over the band interior.
-    CHECK(minAlpha[0] > 0.749);
-    CHECK(maxAlpha[0] < 0.751);
-    // The partition candidate holds the identity to 1e-3 (measured 0.99927 at
+    // Measured here 0.7479..0.7521 over the band interior.
+    //
+    // M1.P3.T19 MOVED THE SPREAD, AND TOWARD THE TRUTH.  A checkerboard is the
+    // Nyquist pattern, so what these bounds really measure is the kernels'
+    // response at (pi, pi): alpha == 1 + (C_A - C_B)/2 with
+    // C_r = sum (-1)^(dx+dy) w_r.  On the old uniform grid the two depths'
+    // radii, 7.85px and 6.40px, were SNAPPED to 8.00 and 6.50, and
+    // (C_8.00 - C_6.50)/2 = -7.30e-04 -- a number that belonged to the
+    // snapping, not to the content.  On the refined grid they snap to 7.876923
+    // and 6.400000, giving -4.28e-03 against the UNQUANTISED -4.00e-03: the
+    // reading is now within 2.8e-04 of the exact answer instead of 3.3e-03
+    // away from it.  The pin got looser and more honest at the same time.
+    CHECK(minAlpha[0] > 0.7478);
+    CHECK(maxAlpha[0] < 0.7522);
+    // The partition candidate holds the identity to 5e-3 (measured 0.995718 at
     // the worst interior pixel: the two checkerboard depths rasterise
     // DIFFERENT radii, 7.85px and 6.40px, so the two half-coverages do not
-    // tile the pixel perfectly).
-    CHECK(minAlpha[1] > 0.999);
+    // tile the pixel perfectly).  BANDED, not floored: a floor at 0.9956 also
+    // accepts the OLD grid's 0.99927, so it would not notice the grid being
+    // coarsened back -- which is the one thing the comment above claims this
+    // reading is evidence about.
+    CHECK(minAlpha[1] > 0.9954);
+    CHECK(minAlpha[1] < 0.9960);
     CHECK(maxAlpha[1] <= 1.0);
     // Both candidates keep the ratio: this is an alpha deficit, not a colour
     // desync.
@@ -3887,7 +4089,24 @@ TEST_CASE("parent reconstruction catches a MISLABEL that checkCompositionContrac
     const float alpha = 0.9f, unpremult = 0.5f;
 
     struct Case { int buckets; double misAlphaPct; };
-    const Case cases[] = {{2, 40.09}, {4, 70.70}};
+    // M1.P3.T19 re-measured: 40.09 -> 45.30 and 70.70 -> 76.70, and the new
+    // numbers ARE the truth: driven through a grid-free kernel sampler (one
+    // exact disc per radius, no quantisation at all) this reads 45.30 / 76.70
+    // to two decimals, against the old grid's 40.09 / 70.70.
+    //
+    // WHY IT MOVED -- the mechanism, measured, not assumed.  It is NOT the
+    // same-kernel collision rule: this case builds its SoA by hand and never
+    // goes through flattenPixelToSoA(), and in any case the four parts sit at
+    // radius 4.95565 / 3.50323 / 2.04028 / 0.55221 px, which the OLD 0.5px
+    // grid already put in four different bins (10 / 7 / 4 / 1).  What changed
+    // is the DISC EACH PART RASTERISES.  The old grid snapped those radii to
+    // 5.0 / 3.5 / 2.0 / 0.5, and 0.5 with edgeSoftness 1.0 IS the single-pixel
+    // delta -- so the smallest part deposited its whole alpha on one pixel
+    // instead of spreading it over a 0.55px disc, and the over-count was
+    // measured against a footprint the content does not have.  The refined
+    // grid puts them on 4.97087 / 3.50685 / 2.03984 / 0.55232 and the mislabel
+    // costs what it actually costs.
+    const Case cases[] = {{2, 45.30}, {4, 76.70}};
 
     for (const Case& cs : cases) {
         CAPTURE(cs.buckets);
@@ -3947,8 +4166,8 @@ TEST_CASE("parent reconstruction catches a MISLABEL that checkCompositionContrac
         CHECK(std::fabs(alphaSum[0] - alpha) <= 1e-06);
         CHECK(std::fabs(colorSum[0] - alpha * unpremult) <= 1e-06);
 
-        // Mislabelled: PINNED at the measured over-count (+40.09% at 2 parts,
-        // +70.70% at 4, alpha 0.9), asserted as a band rather than a floor so
+        // Mislabelled: PINNED at the measured over-count (+45.30% at 2 parts,
+        // +76.70% at 4, alpha 0.9), asserted as a band rather than a floor so
         // that neither a fix nor a worsening slips through.
         const double got = (alphaSum[1] - alpha) / alpha * 100.0;
         CAPTURE(got);
@@ -3997,7 +4216,8 @@ TEST_CASE("volumetric parent reconstruction is EXACT in front of focus, at any p
     }
 }
 
-TEST_CASE("behind focus the residue is structural: PINNED at +28.2 / +45.2 / +51.2 / +59.1%")
+TEST_CASE("behind focus the residue is structural: "
+          "PINNED at +36.9 / +50.2 / +56.3 / +61.0%")
 {
     // Decisions, 2026-07-27: "Behind focus the residue is structurally
     // irreducible by any per-bucket plane.  This is settled, not open."  Pinned
@@ -4012,9 +4232,35 @@ TEST_CASE("behind focus the residue is structural: PINNED at +28.2 / +45.2 / +51
     DiscKernelLUT lut(0.0f, 60.0f, 1.0f, 1.0f);
     const float alpha = 0.9f, unpremult = 0.5f;
 
+    // M1.P3.T19 MOVED THE PARTITION COLUMN AND MUST BE READ WITH IT:
+    // 28.22 -> 36.86, 45.21 -> 50.25, 51.23 -> 56.31, 59.05 -> 61.00, while
+    // `over` barely moved (49.13 -> 48.77, 75.30 -> 75.03, 91.13 -> 90.96,
+    // 117.12 unchanged inside this pin's own 0.1 band).
+    //
+    // THE NEW COLUMN IS THE TRUTH, and that is measured, not argued: driven
+    // through a grid-free kernel sampler (one exact disc per radius, no
+    // quantisation at all) the same cases read 36.91 / 50.25 / 56.40 / 61.02
+    // under partition and 48.78 / 75.04 / 90.97 / 117.10 under `over`.  The
+    // shipped grid is within 0.1 of that everywhere; the OLD grid was 8.6 /
+    // 5.0 / 5.2 / 2.0 points BELOW it in the partition column.
+    //
+    // WHY IT MOVED -- the mechanism, measured, not assumed.  It is NOT the
+    // same-kernel collision rule: the parts here sit at radius 0.80013 /
+    // 2.35257 / 3.90526 / 5.45825 / ... px, which the OLD 0.5px grid already
+    // put in different bins (2 / 5 / 8 / 11 / ...), so nothing was ever
+    // absorbed.  What changed is the DISC EACH PART RASTERISES.  The old grid
+    // snapped those radii to 1.0 / 2.5 / 4.0 / 5.5, i.e. it inflated the front
+    // part -- the one carrying the most alpha -- by 25% in radius and 56% in
+    // area, spreading its coverage over pixels the content never covered and
+    // flattering the residue downward.  The refined grid puts them on
+    // 0.80000 / 2.34862 / 3.90840 / 5.44681 and the structural residue shows
+    // its true size.  The composite did not get worse; the measurement stopped
+    // being flattered by kernel quantisation.  M1.P3.T17 inherits THESE
+    // numbers, not the old ones -- the gap between the two candidates at 2
+    // buckets narrows from 20.9 to 11.9 points (11.87 grid-free).
     struct Case { int buckets; double partitionPct; double overPct; };
-    const Case cases[] = {{2, 28.22, 49.13}, {3, 45.21, 75.30},
-                          {4, 51.23, 91.13}, {8, 59.05, 117.12}};
+    const Case cases[] = {{2, 36.86, 48.77}, {3, 50.25, 75.03},
+                          {4, 56.31, 90.96}, {8, 61.00, 117.12}};
 
     for (const Case& cs : cases) {
         CAPTURE(cs.buckets);

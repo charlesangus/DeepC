@@ -748,21 +748,58 @@ def groundRadius(size, y):
     return groundSlope(size) * abs(y - GROUND_Y_FOCUS)
 
 
+# The global kernel-radius grid, mirrored from src/DeepCDefocusKernel.h
+# (M1.P3.T19).  Used only to WRITE THE NOTES on scene (l)'s checks — nothing is
+# gated on it — so a mirror is honest here in a way it would not be in a gate.
+KERNEL_COARSE_FROM_PX = 16.0
+KERNEL_FINE_LAST_INDEX = 993
+KERNEL_FINE_SCALE = 512.0
+KERNEL_FINE_ORIGIN = 1025
+
+
+def kernelGridRadius(index):
+    if index <= 0:
+        return 0.0
+    if index <= KERNEL_FINE_LAST_INDEX:
+        return KERNEL_FINE_SCALE / (KERNEL_FINE_ORIGIN - index)
+    return KERNEL_COARSE_FROM_PX + (index - KERNEL_FINE_LAST_INDEX) * 0.5
+
+
+def kernelGridIndex(radius):
+    if not radius > 0.25:
+        return 0
+    if not radius > 0.5:
+        return 1
+    if radius >= KERNEL_COARSE_FROM_PX:
+        return KERNEL_FINE_LAST_INDEX + int(
+            round((radius - KERNEL_COARSE_FROM_PX) * 2.0))
+    u = KERNEL_FINE_SCALE / radius
+    k = max(32, min(1023, int(math.floor(u))))
+    thresh = 2.0 * k * (k + 1) / (2.0 * k + 1.0)
+    return KERNEL_FINE_ORIGIN - (k if u <= thresh else k + 1)
+
+
 def _rowsFromBinEdge(size, y):
     """Signed distance, in scanlines, from row ``y`` to the nearest
     ``DiscKernelLUT`` bin edge.
 
-    ``DiscKernelLUT::radiusToIndex()`` is ``lround(radius / 0.5)``, so the
-    kernel changes where ``radius = n*0.5 + 0.25``.  Scene (l) claims its
-    affected rows sit on those edges; this measures the claim instead of
-    asserting it, so the note cannot go stale if the artefact ever moves.
-    Positive means the row's radius is past the edge (already in the wider
-    bin).
+    The grid is no longer uniform (M1.P3.T19): below 16px the nodes are
+    ``512/n``, so the edges sit at the harmonic midpoints between neighbouring
+    nodes rather than at ``n*0.5 + 0.25``.  Scene (l) claims its affected rows
+    sit on those edges; this measures the claim instead of asserting it, so the
+    note cannot go stale if the artefact ever moves.  Positive means the row's
+    radius is past the edge (already in the wider bin).
     """
     slope = groundSlope(size)
+    if not slope:
+        return 0.0
     radius = groundRadius(size, y)
-    edge = 0.5 * round((radius - 0.25) / 0.5) + 0.25
-    return (radius - edge) / slope if slope else 0.0
+    index = kernelGridIndex(radius)
+    node = kernelGridRadius(index)
+    below = 0.5 * (node + kernelGridRadius(index - 1)) if index > 0 else node
+    above = 0.5 * (node + kernelGridRadius(index + 1))
+    edge = below if abs(radius - below) <= abs(radius - above) else above
+    return (radius - edge) / slope
 
 
 def groundPlane(color=GROUND_COLOR):
@@ -826,11 +863,30 @@ def sceneG(settings):
       * BUCKETING — fragments whose disc weights sum to 1 at a destination pixel
         but land in different buckets.  It is K-dependent by construction, so
         `max |profile(K) - profile(K=64)|` isolates it (g2).
-      * KERNEL-BIN QUANTISATION — the DiscKernelLUT rounds radius onto a 0.5px
-        grid, and where the ramp crosses a bin boundary the neighbouring
-        scanlines rasterise different discs.  It is K-INVARIANT (measured), it
-        is worst at the smallest radii, and it is scene (l)'s subject, so the
-        rows within 2.5 px of focus are excluded from every reading here.
+      * THE NEAR-FOCUS ROWS — at this scene's 0.5 CoC-px-per-scanline slope the
+        first six rows either side of focus step through radius 0, 0.5, 1.0,
+        1.5 ... one scanline at a time, i.e. the CoC field itself changes by a
+        whole 0.5 px per row.  A flat opaque surface loses
+        (S_r(0) - S_r'(0))/2 there no matter how fine the kernel grid is —
+        refining the grid cannot make adjacent rows share a kernel when the
+        content puts them 0.5 px apart in radius.  It is K-invariant and
+        content-driven (measured: without the exclusion g2 partition reads an
+        identical 7.407e-02 at BOTH K=8 and K=16, and g3 partition reads the
+        same 7.407e-02 at K=64), and scene (l) measures the same transition
+        properly, on a 40x shallower slope.  Those rows are therefore excluded
+        from every reading here.
+
+    ON THAT EXCLUSION (re-measured at M1.P3.T19, which removed the reason the
+    exclusion was originally given — kernel-bin quantisation).  Without it:
+    g1 partition 9.916e-03 / 5.084e-03 / 1.899e-03 at K=8/16/64 (with:
+    1.048e-02 / 4.446e-03 / 2.799e-07); g1 over 2.563e-03 / 1.946e-02 /
+    7.050e-02 (with: 2.823e-03 / 2.153e-02 / 7.789e-02); g2 partition
+    7.407e-02 at BOTH K=8 and K=16 (with: 4.909e-02 / 4.657e-02); g3 partition
+    3.191e-02 / 2.883e-02 / 7.407e-02 (with: 3.191e-02 / 2.883e-02 /
+    3.576e-07).  Nothing crosses an XFAIL hard bound either way, but the focus
+    rows contribute one identical 7.407e-02 figure to g2 at every K and to g3
+    at K=64 — i.e. they swamp exactly the two metrics built to ISOLATE the
+    bucketing.  The exclusion stays; only its justification changed.
     """
     checks = []
     size = 86.0
@@ -1407,13 +1463,37 @@ def sceneI(settings):
         note="pre_merge on vs off with nothing eligible to group; a non-zero "
              "reading here would mean i7's delta is not the merge"))
     # And the lossless half of the predicate, stated where it is actually true:
-    # a pair inside the SAME bin. 5.0 and 5.2 px both round to bin 5.0.
-    sameBin = reachability(5.0, 5.2, settings.mergeTolerance)
+    # a pair inside the SAME bin.
+    #
+    # M1.P3.T19 MOVED THIS PAIR.  It used to be 5.0 and 5.2 px, which shared
+    # bin 5.0 on the old uniform 0.5px grid; on the refined grid the nodes are
+    # ~0.05px apart there (5.019608 and 5.224490), so that pair straddles four
+    # of them and reads 9.0e-02 — a real reading of a real loss, but no longer a
+    # reading of the LOSSLESS case this check exists for. Moved to 17.0/17.2,
+    # which sit above kKernelCoarseFromPx where the grid is still the uniform
+    # 0.5px one, both inside the [16.75, 17.25] bin.
+    sameBin = reachability(17.0, 17.2, settings.mergeTolerance)
     checks.append(tolCheck(
         "i", "i7c ...and is lossless when the grouped radii share a kernel bin",
         sameBin.maxAbs, 1.0e-07, population=sameBin.population(),
-        note="CoC radius 5.0 and 5.2 px: 0.20 apart like i7, but both round to "
-             "the 5.0 px bin, so the grouped disc IS the pair's disc"))
+        note="CoC radius 17.0 and 17.2 px: 0.20 apart like i7, but both inside "
+             "the [16.75, 17.25] bin, so the grouped disc IS the pair's disc. "
+             "i7d is the non-vacuity guard"))
+    # ...and the guard that keeps i7c from passing because nothing GROUPED.
+    # A lossless merge is unobservable by construction, so eligibility has to
+    # be shown on a pair that is identical in every respect the pre-merge
+    # tests -- same radius scale, same 0.20px separation, same tolerance,
+    # same content -- and differs only in straddling a bin edge.
+    straddle = reachability(17.2, 17.4, settings.mergeTolerance)
+    checks.append(boolCheck(
+        "i", "i7d guard: the same pair 0.2px higher, straddling a bin edge, DOES move",
+        straddle.maxAbs > 1.0e-02,
+        "%.4e" % straddle.maxAbs, "> 1e-02",
+        population=straddle.population(),
+        note="17.2 and 17.4 px straddle the 17.25 px edge (bins 17.0 and "
+             "17.5), so this content at this tolerance really is eligible to "
+             "group -- which is what makes i7c's zero a statement about "
+             "losslessness rather than about nothing having merged"))
     return checks
 
 
@@ -1649,18 +1729,36 @@ def sceneL(settings):
     is an opaque constant-colour plane, so the correct output is a flat field
     and any structure at all is chatter.
 
-    l1/l2 FAIL, and the failure is the node's.  ``DiscKernelLUT::radiusToIndex``
-    is ``lround(radius/0.5)``, so where the ramp crosses a bin edge the two
-    sides of the crossing rasterise different discs and the destination row on
-    the crossing is short by exactly half the difference in the two kernels'
-    CENTRE-ROW weight.  Predicted from the LUT alone (M1.P3.T16's review):
-    0.799119 / 0.905153 / 0.948266 / 0.973739 at the 0.5->1.0 / 1.0->1.5 /
-    1.5->2.0 / 2.0->2.5 crossings, which is what l1 measures to six decimals.
-    The matching surplus one row the other side is destroyed by the saturation
-    rule (``max`` over the profile is exactly 1.0), so the artefact is a net
-    energy LOSS, not a zero-mean ripple, and colour tracks alpha exactly
-    (R/A = 0.400000 everywhere) — a one-scanline 20% dark line across an opaque
-    surface.  l5 shows a 2D ramp makes it worse still.
+    HISTORY.  Until M1.P3.T19 l1/l2/l5 FAILED, and the failure was the node's:
+    ``DiscKernelLUT::radiusToIndex`` was ``lround(radius/0.5)``, so where the
+    ramp crossed a bin edge the two sides rasterised different discs and the
+    destination row on the crossing was short by exactly half the difference in
+    the two kernels' CENTRE-ROW weight — 0.799119 / 0.905153 / 0.948266 /
+    0.973739 at the 0.5->1.0 / 1.0->1.5 / 1.5->2.0 / 2.0->2.5 crossings,
+    predicted from the LUT alone and matched here to six decimals.  A
+    one-scanline 20% dark line across an opaque surface.  T19 replaced the
+    uniform grid with one whose step is ``c*r^2``, which makes that deficit
+    uniform at ~1.26e-03 across the whole radius range; l1 went 2.009e-01 ->
+    2.176e-03 and l2 2.009e-01 -> 1.950e-03.
+
+    WHAT IS LEFT, and it is three OTHER mechanisms, not the LUT.  Each figure
+    below is separated by a kernel-only model (the same scatter with NO buckets
+    at all, run outside Nuke straight off the LUT) and by the K sweep:
+      * the disc family's own C1 kink at r = 0.5, where the first neighbour
+        shell enters (with edgeSoftness 1.0 every disc of radius <= 0.5 IS the
+        delta, and at 0.5+ all four neighbours arrive at once).  Worth
+        2.08e-03 on the y ramp (row y=100, radius 0.547 px — which is what l1
+        reads at K=8, matching the kernel-only model to six decimals) and
+        3.67e-03 on the radial one at (97,32), radius 0.530 px, which is what
+        l5 gates on.  Both inside the 1/255 gate but not by much.  The Design
+        reference's "add a sharp<->defocused blend zone" is the remedy if it
+        ever needs tightening; T19 measured it and left it.
+      * the bucket composite.  l1's REPORTED worst at the shipping K=16 is
+        2.176e-03 at y=217, radius 1.739 px — a row the kernel-only model puts
+        at exactly 1.000000, and which K=8 also reads as 1.000000.  It is
+        K-dependent, so it is the composite, not the kernel; l3 is where it is
+        tracked, and M1.P3.T17 owns it.
+      * the CoC field's own extremum — l6.
     """
     checks = []
     size = 3.36
@@ -1709,8 +1807,8 @@ def sceneL(settings):
         max(abs(v - 1.0) for v in profile), 1.0 / 255.0,
         population="%d/%d interior rows over 1/255" % (len(bad), len(profile)),
         note="worst row y=%d (radius %.3f px) reads %.6f; per affected row, "
-             "y(radius, alpha, rows-from-the-nearest DiscKernelLUT bin edge at "
-             "radius = n*0.5 + 0.25) — MEASURED, not asserted: %s"
+             "y(radius, alpha, rows-from-the-nearest kernel-grid bin edge) — "
+             "MEASURED, not asserted: %s"
              % (worstRow, groundRadius(size, worstRow), min(profile),
                 " ".join("y%d(r%.2f,a%.4f,%+.1f)"
                          % (y, groundRadius(size, y),
@@ -1723,14 +1821,45 @@ def sceneL(settings):
         population="median step %.3e over %d rows" % (medianStep, len(profile)),
         note="worst step at y=%d" % (interior[1] + stepAt)))
 
+    # --- l3: the K sweep.  While the LUT trough dominated, every K read the
+    # same worst row to 1e-06 and that INVARIANCE was the evidence that the
+    # trough was not the bucketing.  With the trough gone the sweep measures
+    # something else and must be re-read.
+    #
+    # WHAT IT NOW MEASURES, per row, against a kernel-only model (the same
+    # scatter with no buckets at all):
+    #   * K=8's worst row IS the kernel-only floor — 0.997916 at y=100
+    #     (radius 0.547 px), which the model reproduces to six decimals;
+    #   * K=16's worst is 0.997824 at y=217 (radius 1.739 px), where the model
+    #     and K=8 both read exactly 1.000000 — so it is already the composite,
+    #     not the kernel;
+    #   * K=64's worst is 0.992598 at y=103 (radius 0.488 px, the sharp<->disc
+    #     threshold), where K=8 and K=16 both read 1.000000.
+    # Two independent facts put all of that on the BUCKET COMPOSITE — i.e. on
+    # M1.P3.T17, not on DiscKernelLUT: it appears only as K rises, and it is
+    # candidate-dependent (the same K=64 row reads 0.999666 under
+    # FrontToBackOver against 0.992598 under CoveragePartition, and the whole
+    # check reads 2.186e-04 instead of 5.226e-03).  The old 0.5px grid hid it
+    # by rasterising every radius in [0.25, 0.75] as the same delta, so no
+    # neighbour spilled across a bucket boundary at all.
+    #
+    # T19 did NOT make any pixel here worse: the worst row reads 0.799119 at
+    # every K before this task and 0.9926 or better at every K after it.  What
+    # changed is that the metric — spread of the minimum across K — is no
+    # longer pinned by a K-invariant trough, so it now shows the composite.
+    # M1.P3.T17 will move this number; re-read it there.
+    # Bounded so a real regression on top of it still FAILs.
     spread = max(abs(min(profiles[k]) - min(profiles[settings.k]))
                  for k in profiles)
     checks.append(tolCheck(
-        "l", "l3 the artefact is K-INVARIANT (so it is not the bucketing)",
-        spread, 1.0e-06,
+        "l", "l3 K-dependence of the residual (was the trough's K-invariance)",
+        spread, 1.0e-06, expectedFailure=True, hardTol=8.0e-03,
         population="K=%s" % "/".join(str(k) for k in sorted(profiles)),
         note="worst-row alpha " + " ".join("K%d:%.6f" % (k, min(profiles[k]))
-                                           for k in sorted(profiles))))
+                                           for k in sorted(profiles))
+             + " — the K=64 outlier is one row at the 0.5px sharp<->disc "
+               "threshold and belongs to the bucket composite (M1.P3.T17), "
+               "not to DiscKernelLUT"))
 
     # --- l4: the control. The SAME radius held constant over the frame must be
     # flat to float precision, which is what makes l1/l2 a measurement of the
@@ -1758,14 +1887,31 @@ def sceneL(settings):
     # l1's y-ramp crosses each bin edge along one axis only; a real defocus
     # field varies in both, and there the deficits compound. This is the number
     # a fix task should be written against, not l1's.
+    #
+    # The radial field is the only one of the three with an INTERIOR EXTREMUM
+    # (its cone tip, where the CoC field peaks at edgeRadius and its gradient
+    # reverses).  A scatter with a spatially varying normalised kernel
+    # under-delivers at such a point by construction, over a neighbourhood
+    # about one CoC radius wide, and that is a different mechanism from the bin
+    # quantisation this scene was built for — so it is measured by l6 instead
+    # of being averaged in here.  It is EXCLUDED, never discarded.
+    apexX, apexY = FORMAT_W // 2, FORMAT_H // 2
+    apexPad = int(math.ceil(edgeRadius)) + 1        # ~one CoC radius, + a pixel
+
+    def _inApex(x, y):
+        dx, dy = x - apexX, y - apexY
+        return dx * dx + dy * dy <= apexPad * apexPad
+
     worstShape = None
-    for label, expr in (
-            ("y ramp (l1)", "%.6f/(%.1f-y)" % (GROUND_C, GROUND_Y_HORIZON)),
+    apexStats = None
+    for label, expr, isRadial in (
+            ("y ramp (l1)", "%.6f/(%.1f-y)" % (GROUND_C, GROUND_Y_HORIZON),
+             False),
             ("diagonal ramp", "%.6f/(%.1f-(x+y)/2)"
-                              % (GROUND_C, GROUND_Y_HORIZON)),
+                              % (GROUND_C, GROUND_Y_HORIZON), False),
             ("radial ramp", "%.6f/(%.1f-sqrt((x-%d)*(x-%d)+(y-%d)*(y-%d)))"
-                            % (GROUND_C, GROUND_Y_HORIZON, FORMAT_W // 2,
-                               FORMAT_W // 2, FORMAT_H // 2, FORMAT_H // 2))):
+                            % (GROUND_C, GROUND_Y_HORIZON, apexX, apexX,
+                               apexY, apexY), True)):
         resetScript()
         image = render(settings,
                        makeDefocus(settings,
@@ -1774,19 +1920,89 @@ def sceneL(settings):
                                    size=size, focusDistance=GROUND_FOCUS,
                                    cocMode="manual"),
                        "l_shape_%s" % label.split()[0])
-        stats = channelStats(image, "A", interior)
+        stats = channelStats(image, "A", interior,
+                             exclude=_inApex if isRadial else None)
+        if isRadial:
+            apexStats = channelStats(
+                image, "A", interior,
+                exclude=lambda x, y: not _inApex(x, y))
         if worstShape is None or stats.minimum < worstShape[1]:
-            worstShape = (label, stats.minimum, stats.maximum, stats.minAt)
+            worstShape = (label, stats.minimum, stats.maximum, stats.minAt,
+                          stats.count)
     checks.append(tolCheck(
         "l", "l5 worst small-CoC trough over 1D and 2D ramps |a-1|",
         abs(worstShape[1] - 1.0), 1.0 / 255.0,
-        population="%d px interior, worst shape: %s at %s"
-                   % (channelStats(image, "A", interior).count, worstShape[0],
-                      worstShape[3]),
-        note="alpha min %.6f max %.6f; the y-ramp l1 gates on is the MILDEST "
-             "of the three — a CoC field varying along both axes crosses the "
-             "bin edge on a diagonal and the deficits compound"
-             % (worstShape[1], worstShape[2])))
+        population="%d px measured, worst shape: %s at %s"
+                   % (worstShape[4], worstShape[0], worstShape[3]),
+        note="alpha min %.6f max %.6f; the radial ramp is measured OUTSIDE a "
+             "%d px disc at its own field extremum (%d,%d), which l6 measures "
+             "instead — see l6 for why that is a different mechanism, and note "
+             "that WITHOUT that exclusion this check reads 9.937e-03 and FAILs "
+             "on l6's residual. The worst reading here is the disc family's C1 "
+             "kink at r=0.5 (radius 0.530 px at the reported pixel), not bin "
+             "quantisation."
+             % (worstShape[1], worstShape[2], apexPad, apexX, apexY)))
+
+    # --- l6: the CoC field's own extremum, on the radial ramp.
+    #
+    # Two measurements make this a DIFFERENT mechanism from the bin trough
+    # rather than an assertion that it is:
+    #   * it is not the bucket composite either: a kernel-only model with NO
+    #     buckets at all reproduces this reading exactly (0.990063), and the
+    #     rendered value does not move between the two `combine` candidates
+    #     (9.937e-03 under both, against l3's 5.226e-03 / 2.186e-04 split);
+    #   * it is pinned to a POSITION, not to a RADIUS.  A bin-quantisation
+    #     artefact lives at whatever pixels carry the offending radius; this one
+    #     stays at the field extremum when `size` is doubled, i.e. when the
+    #     radius sitting there moves from 2.5px to 5.0px — an entirely
+    #     different part of the kernel grid.  The control render below measures
+    #     exactly that.
+    #
+    # WHERE IT COMES FROM, stated exactly, because the old grid DID read 1.0
+    # here and this reading is therefore worse in absolute terms at these 49
+    # pixels.  An EXACT per-radius kernel — no grid at all — gives 0.989234
+    # here, and the shipped grid gives 0.990063: the dip is what a scatter with
+    # a normalised, spatially varying kernel does at a maximum of the radius
+    # field, not something quantisation adds.  (Continuum check: a cone of
+    # slope `a` under-delivers `1 - 2a/3` at its tip; a = 0.01953 here gives
+    # 0.9870, and doubling `size` to a = 0.03907 predicts 0.9740 against the
+    # 0.970847 the control render below measures.)  The old grid read exactly
+    # 1.0 only because it rasterised the whole extremum neighbourhood (radius
+    # 2.40..2.50 px) with ONE disc — it flattened the field instead of tracking
+    # it, and paid 2.009e-01 for that ninety scanlines away.  So this is a
+    # residual T19 EXPOSED, not one it introduced, and it is accepted rather
+    # than fixed: it will show up wherever a CoC field has an interior
+    # extremum, at roughly 2/3 of the field's slope there.
+    resetScript()
+    doubleImage = render(settings,
+                         makeDefocus(settings,
+                                     depthRampLayer(
+                                         constant2d(GROUND_COLOR),
+                                         "%.6f/(%.1f-sqrt((x-%d)*(x-%d)+(y-%d)*(y-%d)))"
+                                         % (GROUND_C, GROUND_Y_HORIZON, apexX,
+                                            apexX, apexY, apexY)),
+                                     size=2.0 * size,
+                                     focusDistance=GROUND_FOCUS,
+                                     cocMode="manual"),
+                         "l_apex_double")
+    doublePad = int(math.ceil(2.0 * edgeRadius)) + 1
+    doubleInterior = insetBox(formatBox(), doublePad + 6)
+    doubleApex = channelStats(
+        doubleImage, "A", doubleInterior,
+        exclude=lambda x, y: ((x - apexX) ** 2 + (y - apexY) ** 2
+                              > doublePad * doublePad))
+    checks.append(tolCheck(
+        "l", "l6 the CoC field's own extremum (scatter, not quantisation)",
+        abs(apexStats.minimum - 1.0), 1.0 / 255.0,
+        expectedFailure=True, hardTol=1.5e-02,
+        population="%d px inside the %d px extremum disc at (%d,%d)"
+                   % (apexStats.count, apexPad, apexX, apexY),
+        note="alpha min %.6f at %s; at size %.2f (extremum radius %.2f px "
+             "instead of %.2f) the dip is still AT THE EXTREMUM and reads "
+             "%.6f at %s — it tracks the field, not the kernel grid"
+             % (apexStats.minimum, apexStats.minAt, 2.0 * size,
+                2.0 * edgeRadius, edgeRadius, doubleApex.minimum,
+                doubleApex.minAt)))
     return checks
 
 

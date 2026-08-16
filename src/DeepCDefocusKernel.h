@@ -16,7 +16,9 @@
 //                      are deliberately unused in v1 -- a future milestone
 //                      fills them in for spatially-varying / chromatic
 //                      kernels. That unused-ness IS the seam.
-//    - DiscKernelLUT : the v1 implementation. Radius-indexed at 0.5px steps
+//    - DiscKernelLUT : the v1 implementation. Radius-indexed on the global
+//                      kernel-radius grid (M1.P3.T19: hyperbolic below 16px,
+//                      uniform 0.5px above -- see the grid comment for why)
 //                      over a measured radius RANGE [minRadius, maxRadius]
 //                      (see the constructor comment for why it is a range and
 //                      not [0, max_radius]), anti-aliased edge (edgeSoftness
@@ -183,14 +185,150 @@ DEEPC_HD inline float discEdgeWeight(float r, float radius, float edgeSoftness)
 }
 
 // ---------------------------------------------------------------------------
+// THE GLOBAL KERNEL-RADIUS GRID (M1.P3.T19)
+//
+// Every kernel entry sits on one global, frame-independent grid of radii, and
+// both the LUT (radiusToIndex()) and the scatter's "would these two radii
+// rasterise the same disc?" predicate (scatterKernelBin(), in
+// DeepCDefocusScatter.h) read it from HERE so they cannot drift apart.
+//
+// WHY IT IS NOT A UNIFORM 0.5px GRID.  It was, until M1.P3.T19. Quantising
+// radius onto a uniform step h makes two adjacent scanlines that straddle a
+// bin edge rasterise DIFFERENT discs, and a flat opaque surface then loses
+// exactly `(S_r(0) - S_{r+h}(0))/2` of its alpha on the crossing row, where
+// S_r(0) is the entry's centre-ROW weight sum. On the uniform 0.5px grid that
+// is 2.0088e-01 at r=0.5 -- a one-scanline 20% dark line across an opaque
+// surface, 51x the 1/255 visibility gate, measured in Nuke (validation scene
+// (l)) and predicted from the LUT alone to six decimals.
+//
+// The deficit is `h * |S_r'(0)| / 2` and `S_r(0) ~ 2/(pi*r)`, so it is
+// `~ h / (pi*r^2)`: a uniform step is wrong at BOTH ends -- ruinous at small
+// radii, wasteful at large ones. Making the step `h(r) = c*r^2` instead makes
+// the deficit UNIFORM at `c/pi` across the whole radius range, which is the
+// only spacing law that buys a bound rather than a bound-at-one-radius.
+//
+// Integrating dr/di = c*r^2 gives r(i) = 1/(A - c*i) -- a hyperbolic grid,
+// closed-form in both directions, so the lookup stays O(1) with no search and
+// no per-fragment cost. With c chosen so the step reaches the old 0.5px at
+// r = 16, every constant below falls out EXACTLY in binary (c = 1/512):
+//
+//   index 0          -> radius 0                     (the delta entry)
+//   index 1..993     -> radius 512 / (1025 - index)  (0.5 .. 16, hyperbolic)
+//   index >993       -> radius 16 + (index-993)*0.5  (the old uniform grid)
+//
+// Properties, all measured (see tests/test_defocus_scatter.cpp's
+// "adjacent kernel bins never lose a visible amount of alpha"):
+//   - worst adjacent-bin deficit over r in [0.5, 20]: 1.2566e-03 (at
+//     r = 1.7415), against 2.0088e-01 on the old grid -- a 160x reduction,
+//     and 3.1x inside the 1/255 gate;
+//   - r < 0.5 costs nothing to leave coarse: with edgeSoftness 1.0 every disc
+//     of radius <= 0.5 IS the single-pixel delta (the nearest neighbours sit
+//     at r = 1.0 >= radius + softness/2), so entry 0 and entry 1 are the same
+//     kernel and no query below 0.5 can be wrong. The scatter never asks --
+//     it takes the sharp path there -- but nothing depends on that here;
+//   - the refinement is BOUNDED: it only exists below 16px, so it adds a
+//     FIXED 197KB (993 small entries) no matter how large max_radius is.
+//     Measured: at the [0, 40] LUT a frame typically measures, 0.776MB
+//     against 0.584MB before (1042 entries against 81); at [0, 100],
+//     8.606MB against 8.414MB, i.e. +2.3%. Build time 0.891ms against
+//     0.850ms at [0, 40] and 10.37ms against 10.24ms at [0, 100], once per
+//     cook.
+//
+// THE ALTERNATIVE M1.P3.T19 WEIGHED was interpolating between two adjacent
+// 0.5px entries. It was prototyped and measured, not argued away, and it lost
+// on both axes at once. Flat-field |a-1| on validation scene (l)'s three
+// ramps (y / diagonal / radial), against a model validated to six decimals
+// against the rendered frames: interpolation 3.354e-03 / 3.041e-03 /
+// 1.087e-02, this grid 2.084e-03 / 1.819e-03 / 9.937e-03 -- and BOTH converge
+// on the same floor, which is not the grid at all but the disc family's own C1
+// kink at r=0.5 plus the CoC field's extremum. Cost: interpolation needs an
+// O(kernel area) blend into per-thread scratch on EVERY fragment, measured at
+// +18.5% / +34.9% / +68.2% on the scatter's own inner loop at r = 2 / 8 / 24px
+// (7 planes), and it would have to hand back a view of that scratch, breaking
+// KernelView's "safe to hold and share across render threads" contract. This
+// grid costs 197KB and 0.04ms of extra LUT build, once per cook, plus the
+// lookup itself: kernelGridIndex() is a division and a floor where
+// `lround(r/0.5)` was a multiply, measured at 8.1ns against 3.3ns per call in
+// a tight loop, i.e. +4.8ns per fragment against the O(pi*r^2 * (C+3)) FMAs
+// that fragment then costs. It is under 1% of a fragment at r >= 4px and is
+// not visible end to end: the full validation harness renders in the same
+// time to within noise (92.5s over 84 renders, against 91.8s over 81 before).
+// ---------------------------------------------------------------------------
+
+// Radius, in X pixels, at and above which the grid reverts to uniform 0.5px
+// steps -- i.e. where `c*r^2` first reaches 0.5 with c = 1/512.
+constexpr float kKernelCoarseFromPx = 16.0f;
+
+// Last index of the hyperbolic (fine) region; index 0 is the radius-0 entry.
+constexpr int kKernelFineLastIndex = 993;
+
+// r = kKernelFineScale / (kKernelFineOrigin - index) over the fine region.
+constexpr float kKernelFineScale  = 512.0f;
+constexpr int   kKernelFineOrigin = 1025;
+
+// Radius of grid node `index`. Exact for every index (the fine region's
+// constants are powers of two), monotonically increasing, and the inverse of
+// kernelGridIndex() on every node. Negative indices clamp to node 0.
+DEEPC_HD inline float kernelGridRadius(int index)
+{
+    if (index <= 0)
+        return 0.0f;
+    if (index <= kKernelFineLastIndex)
+        return kKernelFineScale / static_cast<float>(kKernelFineOrigin - index);
+    return kKernelCoarseFromPx
+         + static_cast<float>(index - kKernelFineLastIndex) * 0.5f;
+}
+
+// Nearest grid node to `radiusPx`, nearest IN RADIUS (the same rule the old
+// uniform grid's `lround(radius / 0.5)` implemented, so nothing downstream has
+// to learn a new convention). Written so NaN takes the first branch (-> node
+// 0) and +inf the +inf branch; the arithmetic below is therefore only ever
+// reached with a finite, bounded value.
+//
+// The fine region's nodes are `kKernelFineScale / n` for integer
+// n = kKernelFineOrigin - index, so "nearest in radius" is decided on n rather
+// than on the index: r lies between nodes n = k and n = k+1 (radii 512/k and
+// 512/(k+1)), whose midpoint in RADIUS is 512*(2k+1)/(2k(k+1)), i.e. the
+// crossing is at u = 512/r == 2k(k+1)/(2k+1) -- the harmonic mean of k and
+// k+1. One division, no search, no table.
+DEEPC_HD inline int kernelGridIndex(float radiusPx)
+{
+    if (!(radiusPx > 0.25f))                    // NaN, negative, sub-quarter-px
+        return 0;                               // (nearest of node 0 and node 1)
+    if (!(radiusPx > 0.5f))
+        return 1;
+    if (!(radiusPx < kKernelCoarseFromPx)) {    // +inf lands here, then clamps
+        if (!(radiusPx < 1.0e6f))
+            return kKernelFineLastIndex + 2000000;
+        return kKernelFineLastIndex
+             + static_cast<int>(std::lround((radiusPx - kKernelCoarseFromPx) * 2.0f));
+    }
+
+    const double u = static_cast<double>(kKernelFineScale)
+                   / static_cast<double>(radiusPx);
+    long k = static_cast<long>(std::floor(u));
+    // u is in (32, 1024) for radiusPx in (0.5, 16); clamp anyway so a rounding
+    // wobble at either end cannot index off the grid.
+    const long kMin = static_cast<long>(kKernelFineScale) / 16;      // 32
+    const long kMax = static_cast<long>(kKernelFineOrigin) - 2;      // 1023
+    if (k < kMin) k = kMin;
+    if (k > kMax) k = kMax;
+
+    const double thresh = 2.0 * static_cast<double>(k) * static_cast<double>(k + 1)
+                        / (2.0 * static_cast<double>(k) + 1.0);
+    const long n = (u <= thresh) ? k : (k + 1);
+    return kKernelFineOrigin - static_cast<int>(n);
+}
+
+// ---------------------------------------------------------------------------
 // DiscKernelLUT -- v1 KernelSampler implementation.
 //
-// Radius-indexed at 0.5px steps across [minRadius, maxRadius] (nearest-entry
-// lookup, clamped at both ends -- see the constructor for why the LUT covers
-// a measured range rather than [0, max_radius]). Entries sit on the global
-// 0.5px grid: the first is the largest 0.5px multiple <= minRadius and the
-// last the smallest 0.5px multiple >= maxRadius, so the requested range is
-// always fully covered, never clipped short.
+// Radius-indexed on the global kernel-radius grid above across
+// [minRadius, maxRadius] (nearest-entry lookup, clamped at both ends -- see
+// the constructor for why the LUT covers a measured range rather than
+// [0, max_radius]). Entries sit on that global grid: the first is the largest
+// grid node <= minRadius and the last the smallest grid node >= maxRadius, so
+// the requested range is always fully covered, never clipped short.
 //
 // CALLER CONTRACT for the clamp: a query below minRadius silently returns the
 // minRadius kernel, so a LUT built over a measured [2, 40] answers a 0.25px
@@ -236,6 +374,11 @@ DEEPC_HD inline float discEdgeWeight(float r, float radius, float edgeSoftness)
 // ---------------------------------------------------------------------------
 class DiscKernelLUT : public KernelSampler {
 public:
+    // The grid's COARSE step -- the spacing at and above kKernelCoarseFromPx,
+    // and the widest step the grid ever takes. Below that radius the spacing
+    // is the hyperbolic `c*r^2` law documented above, so this is an upper
+    // bound on the step, not the step. Kept public (and kept at 0.5) because
+    // callers budgeting worst-case entry counts read it.
     static constexpr float kStepPx = 0.5f;
 
     // Absolute safety caps on the constructor's float inputs. They are NOT
@@ -252,16 +395,19 @@ public:
     // Primary form -- build the LUT over a *measured* radius range.
     //
     // WHY a range instead of [0, max_radius]: a radius-indexed LUT at 0.5px
-    // steps holds ~2*pi*R^3/3 floats in total, so it costs ~8.4MB at R=100
-    // but ~1.0GB at R=500 -- and 500 is exactly what the `max_radius` knob
-    // permits. That knob is a *bound on the worst case*, not an allocation
-    // request: a user who raises it defensively must not pay a gigabyte. The
+    // steps holds ~2*pi*R^3/3 floats in its coarse region, so it costs ~8.4MB
+    // at R=100 but ~1.0GB at R=500 -- and 500 is exactly what the
+    // `max_radius` knob permits. That knob is a *bound on the worst case*,
+    // not an allocation request: a user who raises it defensively must not
+    // pay a gigabyte. The
     // caller instead sizes the LUT from the frame's measured CoC range, which
     // the alpha-weighted depth-range pass already discovers once per cook
     // before any scatter runs (milestone Decisions, 2026-07-26), so only the
     // radii the frame actually contains get built. A realistic measured range
-    // such as [2, 40] costs well under a megabyte. Building stays eager and
-    // lock-free, and the 0.5px quantisation is unchanged.
+    // such as [2, 40] costs 0.68MB (measured). Building stays eager and
+    // lock-free. The grid's own refinement below 16px (M1.P3.T19) is bounded
+    // and independent of this range: it adds a fixed ~200KB, so the cubic term
+    // this decision is about is still entirely the measured range's.
     DiscKernelLUT(float minRadius, float maxRadius, float edgeSoftness, float pixelAspect)
         : _minRadius(sanitizeMinRadius(minRadius, maxRadius))
         , _maxRadius(sanitizeRadius(maxRadius))
@@ -315,10 +461,10 @@ public:
     int entryCount() const { return static_cast<int>(_entries.size()); }
 
     // Radius, in X pixels, that entry `index` was built for. Entries are on
-    // the global 0.5px grid, so this is exact.
+    // the global kernel-radius grid, so this is exact.
     float entryRadius(int index) const
     {
-        return static_cast<float>(_baseIndex + index) * kStepPx;
+        return kernelGridRadius(_baseIndex + index);
     }
 
     // Total bytes owned by the LUT's flat storage (capacity, not just size --
@@ -442,14 +588,23 @@ private:
         return xMax;
     }
 
-    // Allocate and fill every entry on the 0.5px grid covering
+    // Allocate and fill every entry on the global kernel-radius grid covering
     // [_minRadius, _maxRadius]. Both bounds are sanitised finite values in
     // [0, kMaxSupportedRadius] with _minRadius <= _maxRadius, so the index
     // arithmetic below cannot overflow and always yields n >= 1.
     void build()
     {
-        _baseIndex = static_cast<int>(std::floor(_minRadius / kStepPx));
-        const int lastIndex = static_cast<int>(std::ceil(_maxRadius / kStepPx));
+        // The grid nodes bracketing the requested range from OUTSIDE, so the
+        // range is always fully covered: kernelGridIndex() rounds to nearest,
+        // so step one node back/forward when it rounded the wrong way.
+        _baseIndex = kernelGridIndex(_minRadius);
+        if (kernelGridRadius(_baseIndex) > _minRadius && _baseIndex > 0)
+            --_baseIndex;
+        int lastIndex = kernelGridIndex(_maxRadius);
+        if (kernelGridRadius(lastIndex) < _maxRadius)
+            ++lastIndex;
+        if (lastIndex < _baseIndex)
+            lastIndex = _baseIndex;
         const int n = lastIndex - _baseIndex + 1;
 
         // Sizing pass. Growing the flat buffers with bare push_back costs a
@@ -492,15 +647,16 @@ private:
             return 0;
 
         // Both bounds tests are negated so that NaN takes the first branch
-        // (-> first entry) and +inf the second (-> last entry); std::lround
-        // is therefore only ever reached with a finite, in-range value, and
-        // the result is clamped again regardless.
+        // (-> first entry) and +inf the second (-> last entry); the grid
+        // lookup is therefore only ever reached with a finite, in-range
+        // value, and the result is clamped again regardless.
         if (!(radiusPx > entryRadius(0)))
             return 0;
         if (!(radiusPx < entryRadius(last)))
             return last;
 
-        long idx = std::lround(radiusPx / kStepPx) - static_cast<long>(_baseIndex);
+        long idx = static_cast<long>(kernelGridIndex(radiusPx))
+                 - static_cast<long>(_baseIndex);
         if (idx < 0) idx = 0;
         if (idx > last) idx = last;
         return static_cast<int>(idx);
@@ -553,8 +709,8 @@ private:
     // "Exact" means the divisor is the entry's own summed weight (accumulated
     // in double), not an analytic disc area -- it is not a claim that the
     // float weights re-sum to a bit-exact 1.0. Rounding each scaled weight to
-    // float leaves a residual; measured over every entry of a [0, 100] LUT at
-    // 0.5px steps the worst |sum - 1| is ~5e-8, i.e. at float resolution.
+    // float leaves a residual; measured over every entry of a [0, 100] LUT the
+    // worst |sum - 1| is ~5e-8, i.e. at float resolution.
     // Tests should assert that tolerance, not equality.
     //
     // The center pixel (x=0, y=0) is always inside the disc (outerR >= 0),
@@ -590,7 +746,7 @@ private:
     float _edgeSoftness;
     float _pixelAspect;
 
-    // Grid index of entry 0: entry i covers radius (_baseIndex + i) * kStepPx.
+    // Grid index of entry 0: entry i covers kernelGridRadius(_baseIndex + i).
     int _baseIndex = 0;
 
     std::vector<Entry> _entries;

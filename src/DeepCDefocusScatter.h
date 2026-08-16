@@ -517,10 +517,27 @@ constexpr float kSharpRadiusPx = 0.5f;
 //   * scatterBandCPU() takes the SHARP path for `!(radius >= sharpRadiusPx)`,
 //     where the "kernel" is a single weight of 1.0 at the fragment's own pixel
 //     — so every sharp radius is the same kernel, and NaN is sharp there too;
-//   * otherwise DiscKernelLUT::radiusToIndex() rounds to the nearest entry on
-//     the 0.5px grid (`lround(radius / kStepPx)`), so two radii on the same
-//     grid step return the SAME KernelView — identical weights, identical row
-//     spans, identical support.
+//   * otherwise DiscKernelLUT::radiusToIndex() rounds to the nearest node of
+//     the global kernel-radius grid (`kernelGridIndex()`, owned by
+//     DeepCDefocusKernel.h and CALLED here rather than re-derived, so the two
+//     cannot drift), so two radii on the same grid node return the SAME
+//     KernelView — identical weights, identical row spans, identical support.
+//
+// M1.P3.T19 NOTE: that grid is no longer a uniform 0.5px one — below 16px it
+// refines as `c*r^2` — so this predicate is now much STRICTER at small radii
+// than it was (at r = 1px two radii must agree to ~0.002px to share a node,
+// against 0.5px before). That is the conservative direction: the absorb below
+// exists so a group never rasterises a disc none of its members has, and it
+// now fires only when the members genuinely rasterise the same one.
+//
+// IT DOES NOT TOUCH `pre_merge`. The two are different mechanisms: `pre_merge`
+// groups same-pixel fragments whose radii are within `merge_tolerance` and
+// this predicate is not consulted, so the milestone Decisions' finding —
+// `pre_merge` is reachable AND lossy at its 0.25px shipping default, because a
+// pair 0.20px apart is grouped and then rasterised at the front member's
+// radius — stands unchanged. Harness check `i7` (CoC radius 1.2 and 1.4 px)
+// still reads the same 9.0000e-02 on 100% of pixels after this task as before
+// it. M1.P4.T2's review of `merge_tolerance`'s default is NOT discharged here.
 //
 // The LUT additionally CLAMPS the index into its built [rMin, rMax] range, so
 // two different bins can still resolve to one entry.  This function does not
@@ -539,7 +556,7 @@ DEEPC_HD inline int scatterKernelBin(float radiusPx)
         return -1;                          // the sharp one-pixel kernel
     if (!(radiusPx <= 1.0e6f))              // +inf: the LUT clamps to its last entry
         return 0x40000000;
-    return static_cast<int>(std::lround(radiusPx / DiscKernelLUT::kStepPx));
+    return kernelGridIndex(radiusPx);
 }
 
 DEEPC_HD inline bool sameScatterKernel(float a, float b)
