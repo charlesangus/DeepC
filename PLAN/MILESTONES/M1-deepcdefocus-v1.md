@@ -1202,7 +1202,7 @@ verified.
     green.
   - size: L
 
-- [ ] M1.P3.T22 — Gate the unequal-density over-read (run FIRST — T23 cannot iterate without it)
+- [x] M1.P3.T22 — Gate the unequal-density over-read (run FIRST — T23 cannot iterate without it)
   - files: `tests/nuke/scenes.py`, `tests/test_defocus_scatter.cpp`
   - approach: found at M1.P3.T21's review. **The node's largest rendered error is currently ungated.**
     Two cards side by side at α 0.99 and α 0.10 with overlapping depth spans, `size` 14, K=16 — a dense
@@ -1253,6 +1253,26 @@ verified.
     tile stack by opacity band; or detecting the unequal-density case and falling back to a conservative
     rule there. **If measurement says none of them beats the trade, that is a legitimate reportable
     outcome** — say so with the numbers, and the ruling then becomes documentation.
+    **Three corrections from M1.P3.T22, which changed this task's scope — read them before starting:**
+    1. **"Unequal density" is the wrong name for the target.** The over-read needs a **multi-part
+       parent**, not a density ratio: two *identical* α=0.99 fog cards **staggered by one depth unit**
+       read **+8.373% high** on 641/1076 px (α=0.50 twins read +2.931%). That was first deferred as
+       `f3c`/`f3d`'s accumulation-time term and **that attribution was wrong** — mutation shows it goes
+       to +0.0001% under `tHeadIn=1` while `f3c`/`f3d` go to +33.333%, so it is the **same
+       composite-side tile allocation** as the +77% case and it **is in scope**. It is also maximally
+       ordinary content, which makes it the more important of the two.
+    2. **`f3e` has two arms and they are two different terms.** Closing the over-read alone leaves the
+       low arm red: depth-**disjoint** parents read +0.000% high but **−3.278% low**, because a
+       residual whose disc overhangs its own head tile spills onto a foreign parent's tile. Permitted
+       direction, but do not read `f3e`'s persistent FAIL as "the target is still open" without
+       checking which arm.
+    3. **The conservative "occlude by the densest tile" idea listed above is already measured and does
+       not work as stated**: it turns +77.4% into **−52.3% on 244/738 px** and `f3e` still FAILs.
+       Bounding the sign is still a legitimate direction, but that naive form is spent.
+    Also note the gate's own limits, stated in its header: the oracle is a ratio of two renders of the
+    same node, so it is **invariant to any uniform scaling** of the composite's output — `f3i` and
+    `f3c`/`f3d` are what catch that class, so do not let them regress. And read `f3f`'s `Cells:` detail
+    rather than its headline, which reports only the worst cell's own two arms.
   - verify: M1.P3.T22's gate passes, or its magnitude is materially reduced with the remainder bounded
     and no cell in the forbidden direction beyond the stated bound. **The T21 gains hold**: the
     staggered sweep stays at zero cells >+0.5%, `g4` ≤ 0.0325+band, g1/g2/g3 stay at their post-T21
