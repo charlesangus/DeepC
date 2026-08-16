@@ -1160,6 +1160,46 @@ verified.
     raised; local build and both unit suites green.
   - size: L
 
+- [ ] M1.P3.T21 — Staggered multi-part parents read HIGH (M1.P3.T20's regression) — run BEFORE T18
+  - files: `src/DeepCDefocusScatter.h`/`.cpp`, `tests/test_defocus_scatter.cpp`, `tests/nuke/scenes.py`,
+    this file's `## Decisions`
+  - approach: found at M1.P3.T20's review. **T20 flipped this content's error into the direction the
+    honest-alpha contract forbids.** Two multi-part parents at *overlapping* depth ranges — two fog
+    slabs, or a fog slab and a point fragment, whose kernel weights tile one destination pixel — now
+    read **up to +18.3% HIGH**, where before T20 they read 5–11% low: 3 parts/offset 1/w=0.75/α=0.90
+    goes −5.42% → **+11.11%**; 4/2/0.50/0.90 −9.73% → **+11.11%** (saturating to alpha 1.000000);
+    4/1/0.50/0.90 −11.24% → **+9.35%**; volumetric+point −10.59% → **+4.56%**. Swept, **377 of 525
+    cells now read >+0.5% high**. Truth needs no ordering assumption here: the coverages sum to 1 and
+    both fit, so the parts tile the pixel as disjoint sub-areas at the same α and the answer is exactly
+    α. Two fog slabs at overlapping depths is ordinary comp content, not a corner case.
+    **Cause**: the composite carries **one** `(tHead, headArea)` pair, so when a bucket both claims area
+    and continues a chain the merge rule must discard one tile. That is free only while the discarded
+    chain has no deposits left — and here it has. **T20's own volumetric check could not see this**: it
+    indexed parts as `k = j*(P+1)+i`, i.e. **non-overlapping** runs, which are exact and stay exact.
+    Another instance of the standing pattern — a check that never reached the phenomenon.
+    **Both cheap alternatives are already disproved and must not be re-tried**: always carrying the
+    chain reads −9.3% on the dense ramp, and merging by area reads −5.9% there, takes `g4` to 0.0913
+    and fails 40 unit assertions. The fix is **more state** — carry more than one `(tHead, headArea)`
+    tile — so the question is how many are needed and what that costs per pixel per bucket. Note the
+    composite currently costs one float per bucket per thread; state the new figure.
+    **Do not fix this by clamping**, which would hide it rather than correct it, and do not reopen
+    M1.P3.T17: `over` was worse on this content too and fails identities partition satisfies exactly.
+    Two **pre-existing** upward errors are pinned nearby and are NOT this task's (both are bit-identical
+    across T20): the excess-regime rear double-count (up to +94.8%) and the +8.3% free/claimed straddle.
+    Do not fold them in silently — if your change moves them, say so and adjudicate separately. An
+    excess-tile fix for the first is exact on hand-built planes but **renders decisively worse**
+    (`g4` 0.0825, g1/g2/g3 all worse); it was measured and withdrawn, so do not re-propose it untested.
+  - verify: the staggered-parent sweep reads within the honest-alpha contract — **no cell above +0.5%**
+    — across parts ∈ {2,3,4}, offsets, w and α, with the pinned band in `tests/test_defocus_scatter.cpp`
+    re-pinned to the new behaviour **against an independent oracle**, not re-fit. The α<1 ramp gains
+    T20 bought are kept: `g4` ≤ 0.0543+band, and g1/g2/g3 stay at their post-T20 ~1e-06..1e-08 readings
+    rather than regressing toward 1e-02. K sweep at α ∈ {0.5, 0.9, 0.99} across K ∈ {2..128} shows no
+    divergence reintroduced. Scene (a)'s size-0 parity still ≤2e-07 (note `a3`'s margin already halved
+    at T20 to 1.192e-07 against a 2.4e-07 gate — do not spend the rest of it silently). Per-pixel and
+    per-bucket cost stated. Harness green with no XFAIL bound raised; local build and both unit suites
+    green.
+  - size: L
+
 - [ ] M1.P3.T18 — Decide the holdout interpolant, delete the losers (needs T12 + T16)
   - files: `src/DeepCDefocusMath.h`, `src/DeepCDefocusScatter.h`/`.cpp`, `src/DeepCDefocus.cpp`,
     `tests/`, this file's `## Decisions`

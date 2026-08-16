@@ -1,8 +1,8 @@
 ---
 title: DeepCDefocus — deep-input, flat-output defocus node
 status: running
-current: M1.P3.T18
-pm_heartbeat: 2026-08-16T12:00:00-04:00
+current: M1.P3.T21
+pm_heartbeat: 2026-08-16T12:15:00-04:00
 ship: pr-per-milestone
 ---
 
@@ -206,9 +206,9 @@ every check (one nobody has made fail proves nothing), band pins rather than bou
 validate re-pins against an independent oracle rather than against the new output, and give every XFAIL
 a hard outer bound so it cannot swallow a later regression.
 
-Remaining in this milestone: P3 T18, then Phase 1.4 and Phase 1.5. Seventeen tasks
+Remaining in this milestone: P3 T21, T18, then Phase 1.4 and Phase 1.5. Eighteen tasks
 have now been added by execution findings (M1.P3.T0, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16,
-T17, T18, T19, T20, plus the enlarged M1.P3.T4 test list).
+T17, T18, T19, T20, T21, plus the enlarged M1.P3.T4 test list).
 No PR yet — `ship: pr-per-milestone` puts that at M1's verification gate. The branch
 `claude/deep-defocus-node-plan-o0ld83` is committed but NOT pushed.
 
