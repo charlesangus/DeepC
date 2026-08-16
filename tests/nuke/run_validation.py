@@ -26,6 +26,9 @@ it to ``sys.argv``.
     --max-radius N                                       (default: 100)
     --tmp-dir DIR           where renders go             (default: a temp dir)
     --keep-renders          do not delete the EXRs
+    --full-sweep            widen scene (f)'s f3f unequal-density sweep to
+                            the whole grid (~26s more; the default run keeps
+                            representative cells on every axis)
     --strict                treat documented XFAILs as failures
     --list                  list the scenes and exit
 
@@ -60,6 +63,7 @@ def parseArgs(argv):
         "maxRadius": 100,
         "tmpDir": None,
         "keepRenders": False,
+        "fullSweep": False,
         "strict": False,
         "list": False,
     }
@@ -120,6 +124,10 @@ def parseArgs(argv):
         elif arg == "--keep-renders":
             noValue()
             options["keepRenders"] = True
+            i += 1
+        elif arg == "--full-sweep":
+            noValue()
+            options["fullSweep"] = True
             i += 1
         elif arg == "--strict":
             noValue()
@@ -183,7 +191,8 @@ def main(argv):
                         preMerge=options["preMerge"],
                         mergeTolerance=options["mergeTolerance"],
                         maxRadius=options["maxRadius"],
-                        tmpDir=tmpDir, keepRenders=options["keepRenders"])
+                        tmpDir=tmpDir, keepRenders=options["keepRenders"],
+                        fullSweep=options["fullSweep"])
 
     print("DeepCDefocus headless validation — scenes (a)-(l)")
     print("settings: %s" % settings.describe())

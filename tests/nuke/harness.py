@@ -71,7 +71,8 @@ class Settings(object):
 
     def __init__(self, k=16, holdoutInterp="logchord",
                  preMerge=True, mergeTolerance=0.25, maxRadius=100,
-                 tmpDir=None, keepRenders=False, verbose=False):
+                 tmpDir=None, keepRenders=False, verbose=False,
+                 fullSweep=False):
         self.k = int(k)
         self.holdoutInterp = HOLDOUT_INTERP[holdoutInterp]
         self.preMerge = bool(preMerge)
@@ -80,6 +81,11 @@ class Settings(object):
         self.tmpDir = tmpDir
         self.keepRenders = keepRenders
         self.verbose = verbose
+        # NOT a knob: a run-scope option (--full-sweep) that widens scene
+        # (f)'s f3f sweep from its representative cells to the whole grid
+        # M1.P3.T22 measured.  It is carried on Settings rather than passed
+        # down because a scene body only ever receives a Settings.
+        self.fullSweep = bool(fullSweep)
         # Shared so a derive()d clone cannot reuse a filename the original
         # already wrote (and then read back the wrong image).
         self._renderIndex = [0]
@@ -98,7 +104,7 @@ class Settings(object):
                          mergeTolerance=self.mergeTolerance,
                          maxRadius=self.maxRadius,
                          tmpDir=self.tmpDir, keepRenders=self.keepRenders,
-                         verbose=self.verbose)
+                         verbose=self.verbose, fullSweep=self.fullSweep)
         for key, value in overrides.items():
             if key == "holdoutInterp":
                 clone.holdoutInterp = HOLDOUT_INTERP[value]

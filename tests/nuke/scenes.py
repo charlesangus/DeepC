@@ -714,6 +714,541 @@ def sceneF(settings):
             expectedFailure=documented,
             hardTol=hardPct,
             hardValue=(abs(loss) / 100.0) if hardPct is not None else None))
+
+    checks.extend(unequalDensityChecks(settings))
+    return checks
+
+
+# --- f3e-f3i: the UNEQUAL-DENSITY over-read (M1.P3.T22) -----------------------
+#
+# WHY THIS EXISTS.  f3c/f3d above are the only other rendered checks with
+# overlapping depth content, and BOTH pin EQUAL density — the one arrangement
+# the bucket composite is nearly exact on.  Two cards at DIFFERENT densities
+# whose depth spans overlap (a dense fog card beside a thin one) read tens of
+# percent HIGH, i.e. the node invents alpha, which is the direction the
+# Design reference's coverage-deficit spec explicitly forbids ("the saturation
+# rule never scales alpha up to hide this").  Nothing in this harness saw that
+# until this task; f3e/f3f are the gate M1.P3.T23 has to close, and f3g/f3h
+# are the controls that say what the gate is actually measuring.
+#
+# THE ORACLE, AND WHY IT NEEDS NO ORDERING ASSUMPTION.  Below saturation the
+# node's own area model is ADDITIVE: two parents whose kernel weights claim
+# w_A and w_B of a destination pixel with w_A + w_B <= 1 occupy DISJOINT
+# sub-areas of it, so the pixel's alpha is w_A*alpha_A + w_B*alpha_B whatever
+# their relative depth order.  Each card RENDERED ALONE is that same model
+# with one term, so
+#
+#     merged  ==  soloA + soloB          (per pixel, below saturation)
+#
+# and neither side of that identity is a re-run of the thing under test on
+# its own output: the two solo renders are measurements of the node, and the
+# identity between them is hand-derived.
+#
+# THE ONE CONFOUND, AND HOW IT IS REMOVED.  The node measures its depth range
+# per cook, and the range drives the bucket boundaries AND the kernel LUT's
+# extent — so a card rendered ALONE is bucketed and rasterised differently
+# from the same card rendered beside another one, and the identity above would
+# be comparing two different renders of card A.  Measured, that confound is
+# NOT small: with no anchor, adding a SPATIALLY DISTANT second card (its blur
+# never reaches the probed pixels, verified per pixel) moves card A's own
+# alpha by 3.04%.  RE-MEASURED AT THIS TASK'S REVIEW, which corrected what
+# drives it: the magnitude tracks the DISTANT CARD'S OWN DEPTH SPAN — i.e. how
+# far it moves the measured range — and NOT the probed card's alpha or
+# thickness, which is how the first version of this comment read it.  Card A
+# thick at alpha 0.99, size 14, second card 40x40 at alpha 0.10: its span
+# [9,13] moves A by 3.04%, [16,20] by 9.65%, [14,16] by 13.68% and [4,6] by
+# 44.45%.  The same sweep on a THIN card (span [10,10.05]) never exceeds
+# 0.0013%, and card A at alpha 0.10 never exceeds 1.97% — so the "13.68% at
+# alpha 0.99 / 30.3% on a thin card" reading was the right order of magnitude
+# attributed to the wrong variable.  It is removed by
+# putting the SAME range anchor — a small, faint card in the corner spanning
+# the whole working depth range — in EVERY render of the family, solo and
+# merged alike, so all of them measure the identical range, build the
+# identical bucket set and the identical LUT.  With it in place that same
+# distant card moves card A's own pixels by EXACTLY 0.00000%, over 1342-3921
+# probed pixels in all SIXTEEN combinations of K in {16, 64} x size in
+# {14, 20} x alpha in {0.99, 0.10} x span in {thick, thin} (re-measured
+# independently at this task's review) — a
+# bit-exact decomposition, not an approximate one — so every difference
+# the family reports is the bucket composite pooling two parents' deposits at
+# one destination pixel and nothing else.  On f3e's own cell the anchor is
+# worth 1.9 points (+79.278% unanchored against +77.411% with it), and on the
+# cells whose two spans COINCIDE it is worth nothing at all, since those
+# measure the same range either way — it is not there because the readings
+# would otherwise be wildly wrong, it is there so the identity is exact by
+# construction rather than approximately true, which is what lets a 0.5% gate
+# mean anything.
+#
+# Pixels the anchor's own blur reaches are DROPPED (it must contribute exactly
+# 0 to a probed pixel, which is checked per pixel rather than argued from
+# geometry), and so are pixels whose estimated coverage w_A + w_B exceeds
+# UNEQ_COVER_MAX, where the area model stops being additive because the two
+# deposits genuinely overlap.
+#
+# DOES THE ANCHOR PICK THE NUMBER?  Swept at this task's review, and no.  Its
+# ALPHA (0.02 / 0.05 / 0.30), its SIZE (8x8 / 16x16) and its POSITION (either
+# corner) leave f3e BIT-IDENTICAL at +77.4113% — the anchor enters only through
+# the measured range, and every one of those variants measures the same range.
+# Only its SPAN moves the reading, monotonically and in the CONSERVATIVE
+# direction: [8,13] (the cards' own natural range, i.e. what an unanchored
+# render measures) reads +79.269%, [8,14] +78.296%, the shipped [8,16]
+# +77.411% and [7,20] +73.886%.  So a WIDER pinned range UNDERSTATES the
+# defect, and the shipped span is the narrowest one that still brackets every
+# span the sweep uses — it is not tuned to flatter the number.
+#
+# AND IS UNEQ_COVER_MAX HONEST?  The worry is the mirror image of the confound:
+# a coverage guard set too loose would admit pixels where the composite
+# genuinely (and correctly) occludes, and report that as defect.  It does not,
+# and the two controls are what prove it: f3g and f3h probe up to the SAME
+# coverage 0.90 and read -0.003% and -0.000%.  If additivity broke at high
+# coverage as such, they would show it too.  Confirmed from the other side by
+# the tHeadIn=1 mutation in the table below, which takes f3e's LOW arm to
+# -0.001%: a saturation artefact would survive that perturbation, an occlusion
+# term cannot.  Every reading in this family, both arms, is the composite.
+#
+# WHAT MAKES THESE FIVE CHECKS FAIL — the question this milestone has been
+# burned five times for not asking.  Eight perturbations of
+# compositePixelCoveragePartition() were built at M1.P3.T22 and rendered
+# through this family (each into its own build tree; src/ was never modified);
+# the seven that move something:
+#
+#   perturbation                                     f3e        f3h      f3i
+#   the residual is never occluded (tHeadIn = 1)    +0.000 P   +0.000 P  0.6709 F
+#   the residual carries 30% of its alpha           +76.8  F   +0.014 P  0.1806 F
+#   tiles allocated OLDEST-first (T21's rejected)  +136.9  F   +19.7  F  0.5000 P
+#   M1.P3.T9's rejected claimedArea divisor         +77.7  F    +5.98 F  0.5000 P
+#   each tile over-occluded by 2x                   +53.5  F   -18.4  F  0.4130 F
+#   the residual occluded by (1 - claimedArea)      +55.2  F   -27.8  F  0.0437 F
+#   THE CONSERVATIVE RULE: a residual is occluded
+#     by the DENSEST tile at the pixel              -52.3  F   +0.001 P  0.5000 P
+#
+# FOUR MORE BUILT INDEPENDENTLY AT THIS TASK'S REVIEW, same discipline:
+#
+#   perturbation                                     f3e        f3h      f3i
+#   a UNIFORM +2% on the composite's output         +77.411 F  +0.078 P  0.5100 F
+#   the residual sees the pooled tClaimed (pre-T20) +77.691 F  +5.984 F  0.5000 P
+#   the residual allocated over the WHOLE mosaic    +80.251 F  +6.560 F  0.5000 P
+#   kCompositeHeadTiles 16 -> 2 (partial T21 revert)+76.174 F  +0.039 P  0.5000 P
+#
+# THE FIRST OF THOSE IS A SECOND BLIND SPOT, of a different kind from the
+# never-occlude one, and it is why f3i is load-bearing twice over.  The oracle
+# is a RATIO of two measurements of the same node, so it is invariant under any
+# uniform scaling of the composite's output: a +2% error on every pixel leaves
+# f3e/f3f/f3g/f3h BIT-IDENTICAL (+77.411% / +83.648% / +0.000% / +0.078%,
+# every digit).  Only f3i, which compares against a HAND-KNOWN alpha rather
+# than against another render, sees it (1.0e-02 against a 1.0e-05 gate); f3c/f3d
+# see it too (+1.885%).  Any future edit that weakens f3i re-opens both holes.
+# THE LAST is the limit of this family's resolution and is stated so it is not
+# discovered later: halving the tile stack moves f3e by only 1.2 points, so
+# f3e/f3f BOUND the over-read but do not finely resolve stack-depth changes —
+# the POD staggered-parent sweep is what catches that one (it does; the full
+# scatter suite fails on it).
+#
+# BACK TO THE FIRST TABLE: two of its rows matter more than the rest.  ITS
+# LAST ROW — the conservative rule — is the one M1.P3.T23 is
+# most likely to reach for — bound the SIGN rather than the magnitude, occlude
+# every residual by the densest thing in front of it — and it does exactly
+# what the brief warns about: it turns f3e's +77.4% over-read into a -52.3%
+# UNDER-read on 244 of 738 pixels.  f3e is gated on |deviation|, both ways, so
+# it FAILS on that too: the gate cannot be satisfied by trading the error's
+# sign.  ITS FIRST ROW is the family's own blind spot — additivity is trivially
+# true of a composite that never occludes anything, so f3e/f3f/f3g/f3h all go
+# green under it — and f3i is the row that exists to catch it (f3c/f3d catch
+# it independently, at +33.3%).
+#
+# THE TWO ARMS ARE TWO DIFFERENT TERMS, AND M1.P3.T23 MUST NOT READ THEM AS
+# ONE.  f3e's high arm (+77.411%) is this task's target: invented alpha.  Its
+# low arm (-2.011%) is NOT the same defect seen from the other side — the
+# `overlap: spans disjoint` cell in f3f separates them cleanly, reading
+# +0.000% high and -3.278% low, i.e. all deficit and no over-read at all.  That
+# term is a residual whose own disc OVERHANGS the head tile it belongs to
+# spilling onto a FOREIGN parent's tile and being occluded by it, which needs
+# only a shared tile stack and not a shared bucket; it is in the direction the
+# honest-alpha contract PERMITS, and it was unmeasured before this task.  So
+# closing the +77% alone leaves f3e RED on the low arm.  The |deviation| gate is
+# still the right one — it is what stops the over-read being traded for a
+# deficit — but "f3e is still FAIL" is not by itself evidence that the target
+# is still open: read the two arms, and the disjoint cell, separately.
+#
+# f3g is the one row here that is an ATTRIBUTION control rather than a
+# detector, and it is STRUCTURALLY so rather than by luck: the bucket planes
+# are per-destination-pixel SUMS, so two cards at the same depth pool into one
+# (coverage, alpha) entry and the composite cannot tell them from a single
+# parent.  Nothing on the composite side can move it, and nothing did — it
+# reads +0.000% under all eight perturbations tried, including one aimed at
+# the fit/claim path rather than the residual.  That IS its finding (the
+# over-read needs the residual chain that spreads a parent across buckets, and
+# is not about the density ratio as such), but it provides no detection, and
+# saying so is the point.
+
+UNEQ_CARD_A = (84, 108, 124, 148)       # 40x40, 8 px apart in x
+UNEQ_CARD_B = (132, 108, 172, 148)
+UNEQ_ANCHOR = (2, 2, 18, 18)
+UNEQ_ANCHOR_Z = (8.0, 16.0)             # brackets every span the family uses
+# The range is measured from an ALPHA-WEIGHTED histogram whose outermost bins
+# are clipped below 1e-4 of the frame's total alpha mass, so the anchor has to
+# carry more than that to pin it: 16*16 px at 0.05 is 12.8 units against a
+# worst-case clip of 0.63 for two alpha-0.99 cards, i.e. 20x margin.
+UNEQ_ANCHOR_ALPHA = 0.05
+UNEQ_FLOOR = 0.005                      # both cards must really be present
+UNEQ_COVER_MAX = 0.90                   # stay out of the saturation regime
+# The gate, in BOTH directions.  0.5% of the true alpha is well under the
+# 1/255 an 8-bit view resolves at these levels, and it is the same "over
+# +0.5%" threshold M1.P3.T20/T21 state their sweeps in.  Two-sided on purpose:
+# a one-sided ceiling could be satisfied by trading the over-read for a
+# deficit of the same size, which is not a fix.
+UNEQ_TOL = 5.0e-03
+
+_uneqAnchorCache = {}
+
+
+def _uneqCard(box, zFront, zBack, alpha, tint):
+    """A premultiplied volumetric card: a slab cropped to a rectangle."""
+    color = (alpha * tint[0], alpha * tint[1], alpha * tint[2], alpha)
+    return cropDeep(slab(zFront, zBack, color), box)
+
+
+def _uneqAnchor():
+    return _uneqCard(UNEQ_ANCHOR, UNEQ_ANCHOR_Z[0], UNEQ_ANCHOR_Z[1],
+                     UNEQ_ANCHOR_ALPHA, (0.5, 0.5, 0.5))
+
+
+def _uneqRender(settings, size, builders, tag):
+    """Render one arrangement.  ``builders`` are called AFTER resetScript(),
+    so every render of a cell builds its own graph from scratch."""
+    resetScript()
+    layers = [build() for build in builders]
+    source = deepMerge(layers) if len(layers) > 1 else layers[0]
+    node = makeDefocus(settings, source, size=size, focusDistance=30.0,
+                       cocMode="manual")
+    return render(settings, node, tag, box=formatBox())
+
+
+def unequalDensityCell(settings, size, alphaA, alphaB, zA, zB, step=2):
+    """merged vs soloA+soloB for one (density, overlap, size, K) cell."""
+    def A():
+        return _uneqCard(UNEQ_CARD_A, zA[0], zA[1], alphaA, (0.7, 0.5, 0.3))
+
+    def B():
+        return _uneqCard(UNEQ_CARD_B, zB[0], zB[1], alphaB, (0.3, 0.5, 0.7))
+
+    # The anchor render depends only on the settings and the size, so it is
+    # shared across the cells of a sweep rather than re-rendered per cell.
+    # describe() rather than settings.k: the cache must not survive a change
+    # to pre_merge/holdout_interp/max_radius either.
+    key = (settings.describe(), size)
+    if key not in _uneqAnchorCache:
+        _uneqAnchorCache[key] = _uneqRender(settings, size, [_uneqAnchor],
+                                            "f_uneq_anchor")
+    imgN = _uneqAnchorCache[key]
+    imgA = _uneqRender(settings, size, [A, _uneqAnchor], "f_uneq_soloA")
+    imgB = _uneqRender(settings, size, [B, _uneqAnchor], "f_uneq_soloB")
+    imgM = _uneqRender(settings, size, [A, B, _uneqAnchor], "f_uneq_merged")
+
+    x0, y0, x1, y1 = formatBox()
+    high, highAt, highTriple = 0.0, None, None
+    low, lowAt = 0.0, None
+    over = under = probed = 0
+    for y in range(y0, y1, step):
+        rowN = imgN.row("A", y)
+        rowA = imgA.row("A", y)
+        rowB = imgB.row("A", y)
+        rowM = imgM.row("A", y)
+        for x in range(x0, x1, step):
+            if rowN[x - imgN.x0] != 0.0:
+                continue                        # the anchor reaches here
+            a = rowA[x - imgA.x0]
+            b = rowB[x - imgB.x0]
+            if a < UNEQ_FLOOR or b < UNEQ_FLOOR:
+                continue                        # not a two-card pixel
+            # A solo card's alpha IS w*alpha (one parent, one density, which
+            # the composite does exactly — f3g/f3h), so w = alpha_out/alpha_in.
+            if a / alphaA + b / alphaB > UNEQ_COVER_MAX:
+                continue                        # saturation regime
+            probed += 1
+            m = rowM[x - imgM.x0]
+            rel = (m - (a + b)) / (a + b)
+            if rel > high:
+                high, highAt, highTriple = rel, (x, y), (a, b, m)
+            if rel < low:
+                low, lowAt = rel, (x, y)
+            if rel > UNEQ_TOL:
+                over += 1
+            elif rel < -UNEQ_TOL:
+                under += 1
+    return dict(high=high, highAt=highAt, highTriple=highTriple,
+                low=low, lowAt=lowAt, over=over, under=under, probed=probed)
+
+
+def soloCardInterior(settings, size=4.0, alphas=(0.50, 0.10), inset=12):
+    """The PREMISE f3e/f3f's oracle rests on, measured rather than assumed.
+
+    ``merged == soloA + soloB`` is only a statement about the composite if
+    each SOLO render is itself right — and a solo card is not a trivial case:
+    it is a volumetric parent cut into parts, i.e. one head deposit and a
+    residual chain, which is the very machinery f3e stresses.  So this reads a
+    single card's alpha where its own blur covers the destination pixel
+    completely, against the alpha it was built with.
+
+    It is also what stops the family being satisfied DEGENERATELY.  The
+    additive oracle is trivially true of a composite that never occludes a
+    co-located deposit at all — measured: such a mutation takes f3e/f3f to
+    +0.000% and PASSING — and this row is what catches that, reading 0.6709
+    against 0.50 under the same mutation.  (f3c/f3d catch it too, at +33.3%;
+    two independent detections of the same degenerate rule is the point.)
+
+    ``size`` is small on purpose: the card has to be wider than its own blur
+    for any pixel to reach full coverage, and a 40x40 card at size 4 has a
+    16x16 core that does.
+    """
+    out = []
+    for alpha in alphas:
+        def card(alpha=alpha):
+            return _uneqCard(UNEQ_CARD_A, 8.0, 12.0, alpha, (0.7, 0.5, 0.3))
+        img = _uneqRender(settings, size, [card, _uneqAnchor],
+                          "f_uneq_solo_interior")
+        stats = channelStats(img, "A", insetBox(UNEQ_CARD_A, inset))
+        out.append(dict(alpha=alpha, mean=stats.mean, min=stats.minimum,
+                        max=stats.maximum, count=stats.count,
+                        truth=alpha,
+                        worst=max(abs(stats.minimum - alpha),
+                                  abs(stats.maximum - alpha))))
+    return out
+
+
+def _uneqMeasured(cell):
+    return "%+.3f%% high / %+.3f%% low" % (100.0 * cell["high"],
+                                           100.0 * cell["low"])
+
+
+def _uneqPopulation(cell):
+    if cell["highTriple"] is None:
+        return "%d probed px, none over the bound" % cell["probed"]
+    a, b, m = cell["highTriple"]
+    return ("%d/%d probed px over +%.1f%%, %d under; worst at %s: "
+            "solo %.5f + %.5f = %.5f against merged %.5f"
+            % (cell["over"], cell["probed"], 100.0 * UNEQ_TOL, cell["under"],
+               cell["highAt"], a, b, a + b, m))
+
+
+def unequalDensityChecks(settings):
+    """f3e/f3f (the over-read) and f3g/f3h (the controls that attribute it)."""
+    checks = []
+    gate = "|merged - (soloA+soloB)| <= %.1f%% of it, per px" % (100.0 * UNEQ_TOL)
+
+    # --- f3e: the single cell the milestone records, at the shipping K.
+    base = unequalDensityCell(settings, 14.0, 0.99, 0.10,
+                              (8.0, 12.0), (9.0, 13.0))
+    checks.append(boolCheck(
+        "f", "f3e unequal density, overlapping spans (alpha 0.99 beside 0.10, "
+             "size 14)",
+        max(base["high"], -base["low"]) <= UNEQ_TOL,
+        _uneqMeasured(base), gate,
+        population=_uneqPopulation(base),
+        note="M1.P3.T22's gate, and M1.P3.T23's target — a PLAIN FAIL, not an "
+             "xfail: alpha is INVENTED here, which the coverage-deficit spec "
+             "forbids ('the saturation rule never scales alpha up to hide "
+             "this'). Two 40x40 cards 8 px apart, spans [8,12] and [9,13], "
+             "range-anchored so solo and merged share one bucket set and one "
+             "kernel LUT (see the header above). Gated on |deviation| in BOTH "
+             "directions: a conservative rule that occludes every residual by "
+             "the densest tile turns this into a -52.3% UNDER-read (measured) "
+             "and still fails here. READ THE TWO ARMS SEPARATELY: the HIGH arm "
+             "is M1.P3.T23's target (invented alpha); the LOW arm is a "
+             "different, permitted-direction term that f3f's 'spans disjoint' "
+             "cell isolates at +0.000% high / -3.278% low, so closing the "
+             "over-read alone leaves this row RED"))
+
+    # --- f3f: the sweep.  A gate that reads ONE number cannot show whether a
+    # later change moved the defect or moved the rig, so every axis the defect
+    # is known to depend on is swept: density ratio, depth overlap, size and K.
+    # The whole f3e-f3i family costs ~12s of scene (f)'s ~47s; --full-sweep
+    # widens each axis to the grid M1.P3.T22 measured, which costs ~26s more.
+    ratioCells = [
+        # ADDED AT THIS TASK'S REVIEW, and it is the cell that says the defect
+        # is not confined to unequal density: two IDENTICAL alpha-0.99 fog
+        # cards whose spans are staggered by one unit — as ordinary as comp
+        # content gets — read +8.373% high on 641 of 1076 px, in the forbidden
+        # direction.  It is measured here rather than only described in f3h's
+        # note because it is the SAME composite-side term as the rest of this
+        # sweep (mutation-measured: tHeadIn=1 takes it to +0.0001%), not
+        # f3c/f3d's accumulation-time term, which no composite rule can move.
+        ("ratio 1.00 (EQUAL density, STAGGERED spans)", 14.0, None,
+         0.99, 0.99, (8.0, 12.0), (9.0, 13.0)),
+        ("ratio 0.99/0.50", 14.0, None, 0.99, 0.50, (8.0, 12.0), (9.0, 13.0)),
+        ("ratio 0.50/0.10", 14.0, None, 0.50, 0.10, (8.0, 12.0), (9.0, 13.0)),
+        ("ratio 0.10/0.99 (thin card IN FRONT)", 14.0, None, 0.10, 0.99,
+         (8.0, 12.0), (9.0, 13.0)),
+    ]
+    overlapCells = [
+        ("overlap 100% (coincident spans)", 14.0, None, 0.99, 0.10,
+         (8.0, 12.0), (8.0, 12.0)),
+        ("overlap 25%", 14.0, None, 0.99, 0.10, (8.0, 12.0), (11.0, 15.0)),
+        ("overlap 0% (spans touch)", 14.0, None, 0.99, 0.10,
+         (8.0, 12.0), (12.0, 16.0)),
+        # PROMOTED OUT OF --full-sweep AT THIS TASK'S REVIEW.  It is the one
+        # cell that separates f3e's two arms: no bucket pools these two
+        # parents, so the over-read term is exactly absent (+0.000% high) and
+        # what is left is the deficit term alone (-3.278% low).  M1.P3.T23
+        # needs it on EVERY run, not behind an option, or it cannot tell
+        # "the target is closed" from "f3e is still red".
+        ("overlap: spans disjoint (isolates the DEFICIT term)", 14.0, None,
+         0.99, 0.10, (8.0, 10.0), (12.0, 14.0)),
+    ]
+    sizeCells = [
+        ("size 6", 6.0, None, 0.99, 0.10, (8.0, 12.0), (9.0, 13.0)),
+        ("size 20", 20.0, None, 0.99, 0.10, (8.0, 12.0), (9.0, 13.0)),
+    ]
+    kCells = [
+        ("K 4", 14.0, 4, 0.99, 0.10, (8.0, 12.0), (9.0, 13.0)),
+        ("K 64", 14.0, 64, 0.99, 0.10, (8.0, 12.0), (9.0, 13.0)),
+    ]
+    if getattr(settings, "fullSweep", False):
+        ratioCells += [
+            ("ratio 0.99/0.70", 14.0, None, 0.99, 0.70,
+             (8.0, 12.0), (9.0, 13.0)),
+            ("ratio 0.99/0.30", 14.0, None, 0.99, 0.30,
+             (8.0, 12.0), (9.0, 13.0)),
+            ("ratio 0.99/0.03", 14.0, None, 0.99, 0.03,
+             (8.0, 12.0), (9.0, 13.0)),
+            ("ratio 0.90/0.10", 14.0, None, 0.90, 0.10,
+             (8.0, 12.0), (9.0, 13.0)),
+            ("ratio 0.30/0.05", 14.0, None, 0.30, 0.05,
+             (8.0, 12.0), (9.0, 13.0)),
+            ("ratio 0.03/0.99", 14.0, None, 0.03, 0.99,
+             (8.0, 12.0), (9.0, 13.0)),
+        ]
+        overlapCells += [
+            ("overlap 50%", 14.0, None, 0.99, 0.10,
+             (8.0, 12.0), (10.0, 14.0)),
+            ("overlap: thin card inside the span", 14.0, None, 0.99, 0.10,
+             (8.0, 12.0), (10.0, 10.05)),
+            ("overlap: spans disjoint, further apart", 14.0, None, 0.99, 0.10,
+             (8.0, 9.0), (14.0, 15.0)),
+        ]
+        sizeCells += [
+            ("size 3", 3.0, None, 0.99, 0.10, (8.0, 12.0), (9.0, 13.0)),
+            ("size 10", 10.0, None, 0.99, 0.10, (8.0, 12.0), (9.0, 13.0)),
+        ]
+        kCells += [
+            # NOT "K 2": DepthBuckets clamps to kMinBuckets = 4, so a K=2 cell
+            # is a bit-identical duplicate of the K 4 row and reporting it as a
+            # K=2 datapoint would invent an axis point the node cannot reach.
+            # The K sweep this family measures is 4 -> 128, not 2 -> 128.
+            ("K 8", 14.0, 8, 0.99, 0.10, (8.0, 12.0), (9.0, 13.0)),
+            ("K 32", 14.0, 32, 0.99, 0.10, (8.0, 12.0), (9.0, 13.0)),
+            ("K 128", 14.0, 128, 0.99, 0.10, (8.0, 12.0), (9.0, 13.0)),
+        ]
+
+    worstCell = ("(base, f3e)", base)
+    badCells = 0 if max(base["high"], -base["low"]) <= UNEQ_TOL else 1
+    totalOver = base["over"]
+    totalProbed = base["probed"]
+    details = ["base %s" % _uneqMeasured(base)]
+    for label, size, k, aA, aB, zA, zB in (ratioCells + overlapCells
+                                           + sizeCells + kCells):
+        cellSettings = settings if k is None else settings.derive(k=k)
+        cell = unequalDensityCell(cellSettings, size, aA, aB, zA, zB)
+        worst = max(cell["high"], -cell["low"])
+        if worst > UNEQ_TOL:
+            badCells += 1
+        if worst > max(worstCell[1]["high"], -worstCell[1]["low"]):
+            worstCell = (label, cell)
+        totalOver += cell["over"]
+        totalProbed += cell["probed"]
+        details.append("%s %s (%d/%d px)"
+                       % (label, _uneqMeasured(cell), cell["over"],
+                          cell["probed"]))
+
+    cellCount = 1 + len(ratioCells) + len(overlapCells) + len(sizeCells) \
+        + len(kCells)
+    checks.append(boolCheck(
+        "f", "f3f unequal density, swept over ratio x overlap x size x K",
+        badCells == 0,
+        "worst cell %s [%s]" % (_uneqMeasured(worstCell[1]), worstCell[0]),
+        gate + ", every cell",
+        population="%d/%d cells over the bound; %d/%d probed px over +%.1f%%"
+                   % (badCells, cellCount, totalOver, totalProbed,
+                      100.0 * UNEQ_TOL),
+        note="the point of a sweep rather than one pinned number is that it "
+             "TRACKS the defect as M1.P3.T23 moves it — the four axes are the "
+             "ones it is known to depend on. Cells: " + "; ".join(details)))
+
+    # --- f3g/f3h: the two controls that attribute f3e/f3f.  Neither of them
+    # may be quietly relaxed: each states an arrangement the composite is
+    # EXACT on, and they are what proves the rig (the range anchor, the
+    # additive oracle) is sound rather than the measurement being of the
+    # harness itself.  WHAT THEY DO NOT SAY (corrected at this task's review):
+    # they do NOT establish that the over-read needs UNEQUAL density.  f3h
+    # pins COINCIDENT spans; stagger the same two equal-density cards by one
+    # depth unit and the over-read is back at +8.373% (f3f's `ratio 1.00`
+    # cell).  What the pair does establish is that it needs a MULTI-PART
+    # parent whose residual chain meets another parent's deposits — f3g,
+    # single-bucket, is exact at a 10x density ratio.
+    thin = unequalDensityCell(settings, 14.0, 0.99, 0.10,
+                              (10.0, 10.05), (10.0, 10.05))
+    checks.append(boolCheck(
+        "f", "f3g control: unequal density, single-bucket cards (no residual "
+             "chain)",
+        max(thin["high"], -thin["low"]) <= UNEQ_TOL,
+        _uneqMeasured(thin), gate,
+        population=_uneqPopulation(thin),
+        note="unequal density ALONE is not the trigger: two thin cards at one "
+             "depth are one head deposit each, and the composite is exact on "
+             "them. So f3e/f3f measure the pooling of a multi-part parent's "
+             "residual chain with another parent's deposits, not the alpha "
+             "ratio as such"))
+
+    equal = unequalDensityCell(settings, 14.0, 0.99, 0.99,
+                               (8.0, 12.0), (8.0, 12.0))
+    checks.append(boolCheck(
+        "f", "f3h control: EQUAL density, overlapping spans (f3c/f3d's own "
+             "case)",
+        max(equal["high"], -equal["low"]) <= UNEQ_TOL,
+        _uneqMeasured(equal), gate,
+        population=_uneqPopulation(equal),
+        note="the arrangement f3c/f3d pin, measured through THIS oracle: "
+             "overlapping multi-part spans alone are not the trigger either. "
+             "NOTE WHAT IT DOES NOT SAY: the spans here COINCIDE, and equal "
+             "density is exact only then — the same two cards at alpha 0.99 "
+             "with STAGGERED spans [8,12]/[9,13] read +8.373% high on 641 of "
+             "1076 px (alpha 0.50 twins read +2.931%), in the forbidden "
+             "direction. MECHANISM CORRECTED AT THIS TASK'S REVIEW: M1.P3.T22 "
+             "attributed that to f3c/f3d's accumulation-time pooling and "
+             "deferred it on that basis, but it is NOT that term — it is the "
+             "same composite-side tile allocation as f3e's over-read. "
+             "Mutation-measured: tHeadIn=1 takes the staggered cell to "
+             "+0.0001% (f3c/f3d do NOT go to zero under it, they go to "
+             "+33.333%), and the pooled-tClaimed and whole-mosaic rules move "
+             "it to +7.058% and +4.731%. So it is reachable by a composite "
+             "rule, it is ordinary content, and it belongs in M1.P3.T23's "
+             "scope; it is now measured every run as f3f's 'ratio 1.00' cell"))
+
+    # --- f3i: the oracle's own premise, and the family's non-degeneracy
+    # guard.  Without it, a composite that simply never occludes a co-located
+    # deposit satisfies f3e/f3f/f3g/f3h outright (mutation-measured: all four
+    # PASS, f3e at +0.000%) — additivity is trivially true when nothing
+    # occludes anything.  This row reads 0.6709 against 0.50 under that same
+    # mutation, so the family as a whole cannot be satisfied that way.
+    worstSolo = 0.0
+    soloRows = []
+    for solo in soloCardInterior(settings):
+        worstSolo = max(worstSolo, solo["worst"])
+        soloRows.append("alpha %.2f -> %.7f (min %.7f max %.7f, %d px)"
+                        % (solo["alpha"], solo["mean"], solo["min"],
+                           solo["max"], solo["count"]))
+    checks.append(boolCheck(
+        "f", "f3i a SOLO card's own interior alpha is the alpha it was built "
+             "with (f3e's premise)",
+        worstSolo <= 1.0e-05,
+        "worst |measured - alpha| %.3e" % worstSolo,
+        "<= 1.0e-05, at every probed alpha",
+        population="; ".join(soloRows),
+        note="one card, blur fully inside it, so the destination pixel is "
+             "covered exactly once: a volumetric parent's head deposit plus "
+             "its whole residual chain must read the parent's alpha. f3e/f3f "
+             "compare two renders against each other and are blind to a rule "
+             "that is wrong in BOTH; this one is absolute"))
     return checks
 
 

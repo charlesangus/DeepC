@@ -4725,6 +4725,198 @@ TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, a
         }
     }
 
+    SUBCASE("THE UNEQUAL-DENSITY OVER-READ, pinned in both directions "
+            "(M1.P3.T22)")
+    {
+        // THE BLIND SPOT THE SUBCASE ABOVE NAMES, TURNED INTO A GATE.  Every
+        // cell in that grid shares one `alphaIn`, which is the constraint
+        // under which the composite CAN be exact; harness f3c/f3d pin equal
+        // density too.  Give two parents DIFFERENT densities with overlapping
+        // bucket runs -- a dense fog card beside a thin one, ordinary comp
+        // content -- and the composite INVENTS alpha, by up to +127.5% here
+        // and +83.6% rendered (harness f3e/f3f).  That is the direction the
+        // Design reference's coverage-deficit spec forbids ("the saturation
+        // rule never scales alpha up to hide this"), and it is M1.P3.T23's
+        // target.  This subcase is the POD-level twin of f3e/f3f: same
+        // arrangement, same oracle, no Nuke.
+        //
+        // TRUTH IS HAND-DERIVED AND NEEDS NO ORDERING ASSUMPTION, exactly as
+        // in the staggered subcase above: the two parents' kernel weights sum
+        // to 1 and both fit in free area, so they tile the destination pixel
+        // as two DISJOINT sub-areas and the answer is
+        //
+        //     wA * alphaA + (1 - wA) * alphaB
+        //
+        // whatever their relative depth order.  It is a derivation, not a
+        // re-run of the composite on its own output.
+        //
+        // PINNED AS BANDS, NOT CEILINGS.  These are readings of current
+        // behaviour, so they are documentation-with-teeth: a mutation that
+        // pushed the error DOWNWARD -- trading the over-read for a deficit of
+        // the same size, which is not a fix -- has to fail them too.  Both
+        // mutation directions were run at M1.P3.T22 and both do.
+        auto addVol = [&](std::vector<float>& cov, std::vector<float>& alpha,
+                          std::vector<float>& colo, std::vector<float>& color,
+                          int m, int parts, float w, float a) {
+            const float pa = partitionAlpha(a, 1.0f / static_cast<float>(parts));
+            for (int i = 0; i < parts; ++i) {
+                const int k = m + i;
+                if (i == 0) cov[k] += w; else colo[k] += w;
+                alpha[k] += w * pa;
+                color[k] += w * pa * unpremult;
+            }
+        };
+
+        // One cell: parent A of `partsA` parts from bucket 0 at weight wA and
+        // alpha alphaA, parent B of `partsB` parts from bucket `off` at the
+        // complementary weight and alpha alphaB.  Returns the signed error in
+        // percent of the truth, and hands back the composite's own outputs.
+        auto cell = [&](int partsA, int partsB, int off, float wA,
+                        float alphaA, float alphaB,
+                        float* outColor, float* outAlpha) {
+            const int K = partsA + partsB + off + 4;
+            std::vector<float> cov(K, 0.0f), al(K, 0.0f), co(K, 0.0f),
+                               col(K, 0.0f);
+            addVol(cov, al, co, col, 0, partsA, wA, alphaA);
+            addVol(cov, al, co, col, off, partsB, 1.0f - wA, alphaB);
+            composite(cov, al, co, col, outColor, outAlpha);
+            const double truth = static_cast<double>(wA) * alphaA
+                               + (1.0 - static_cast<double>(wA)) * alphaB;
+            return (*outAlpha / truth - 1.0) * 100.0;
+        };
+
+        // THE NAMED CELLS.  The first is the one M1.P3.T21's review recorded
+        // (+64.6% -- reproduced here exactly), and the rest walk the axes the
+        // rendered sweep walks: density ratio, depth overlap (`off`), part
+        // counts and the weight split.
+        struct Named { int partsA, partsB, off; float wA, alphaA, alphaB;
+                       double pct; const char* what; };
+        const Named named[] = {
+            {5, 1, 2, 0.50f, 0.99f, 0.10f,  +64.611, "T21's review cell"},
+            {5, 1, 2, 0.25f, 0.99f, 0.10f,  +70.964, "same, weighted to the thin card"},
+            {5, 1, 2, 0.75f, 0.99f, 0.10f,  +24.030, "same, weighted to the dense card"},
+            {3, 1, 1, 0.50f, 0.99f, 0.10f,  +61.439, "3 parts, adjacent"},
+            {3, 3, 0, 0.50f, 0.99f, 0.10f,  +45.713, "both multi-part, coincident runs"},
+            {3, 3, 2, 0.50f, 0.99f, 0.10f,  +30.475, "the same pair, runs half apart"},
+            {8, 8, 0, 0.25f, 0.99f, 0.03f, +127.513, "the worst cell on the grid below"},
+            {5, 1, 2, 0.50f, 0.90f, 0.30f,  +22.511, "a 3x density ratio, not 10x"},
+            {5, 1, 2, 0.50f, 0.50f, 0.10f,   +9.696, "both thin, 5x ratio"},
+            {5, 1, 2, 0.50f, 0.10f, 0.99f,   -3.516, "the ratio reversed: a DEFICIT"},
+        };
+        for (const Named& n : named) {
+            CAPTURE(n.what);
+            CAPTURE(n.partsA); CAPTURE(n.partsB); CAPTURE(n.off);
+            CAPTURE(n.wA); CAPTURE(n.alphaA); CAPTURE(n.alphaB);
+            float cc = -1.0f, aa = -1.0f;
+            const double pct = cell(n.partsA, n.partsB, n.off, n.wA,
+                                    n.alphaA, n.alphaB, &cc, &aa);
+            CAPTURE(pct);
+            // 0.5 points either side: the arithmetic is deterministic, so the
+            // band is there to survive float reassociation, not to leave the
+            // reading room to drift.
+            CHECK(pct > n.pct - 0.5);
+            CHECK(pct < n.pct + 0.5);
+            // The standing invariant (Decisions, 2026-07-27): whatever the
+            // alpha does, colour must follow it.
+            CHECK(std::fabs(cc / aa - unpremult) <= 1e-05);
+        }
+
+        // THE GRID, and the TWO STRUCTURAL CONTROLS asserted inside it.  The
+        // controls are what say this measures the composite pooling two
+        // DENSITIES rather than the rig:
+        //   (1) `off >= partsA` -- the two parents' bucket runs do not touch,
+        //       so no bucket pools them, and every such cell is EXACT at any
+        //       density ratio (worst |error| over the grid: 1.5e-05%);
+        //   (2) both parents single-part -- each is one head deposit with no
+        //       residual chain to pool, also EXACT (worst 6e-06%).
+        // So on THIS model the over-read needs both unequal density and a
+        // residual chain landing in another parent's bucket.  Control (2) is
+        // exactly harness f3g.
+        //
+        // WHERE THIS MODEL STOPS SHORT OF A RENDER (this task's review).
+        // `addVol` gives every part of a parent the SAME weight `w`, i.e. it
+        // assumes a parent's parts rasterise the same disc.  They do not: a
+        // volumetric parent's parts sit at different depths and so at
+        // different CoC, and their per-pixel weights differ.  Two consequences
+        // the grid cannot see, both measured RENDERED:
+        //   * EQUAL density is not exempt.  Equal-alpha parents here read 0%
+        //     at every offset (and -2.26% for 5-vs-1 parts at offset 2), but
+        //     two equal-alpha rendered cards with spans staggered by one unit
+        //     read +8.373% HIGH -- harness f3f's `ratio 1.00` cell.
+        //   * `off >= partsA` is exact here but NOT rendered: depth-disjoint
+        //     cards read -3.278% (harness f3f), because a residual whose disc
+        //     OVERHANGS its own head tile spills onto a foreign parent's tile.
+        // Both are composite-side and both vanish under tHeadIn = 1, so they
+        // are the same machinery as the cells above -- treat the grid's two
+        // "EXACT" controls as statements about THIS model, not about the node.
+        //
+        // WHAT MAKES THIS SUBCASE FAIL, MEASURED RATHER THAN ASSERTED.  Seven
+        // perturbations of the composite were built at M1.P3.T22 (each in its
+        // own tree; src/ was never modified) and every one of them fails this
+        // subcase, in both directions:
+        //   tHeadIn = 1 (never occlude)      worstHigh 232.6, disjoint 195.5
+        //   residual carries 30% of alpha    worstHigh  52.8, worstLow -57.1
+        //   tiles allocated OLDEST-first     worstHigh 152.2, worstLow -19.1
+        //   the DENSEST tile occludes every
+        //     residual (the conservative rule
+        //     M1.P3.T23 is likeliest to try)  worstLow -37.6, over 844
+        // `worstDisjoint` is a DETECTOR as well as a control (1.5e-05% here,
+        // 195%/48%/113%/37.6% under those four).  `worstSinglePart` is NOT,
+        // and structurally cannot be: two single-part parents have no
+        // co-located deposit at all, so the composite sees one (coverage,
+        // alpha) pair and cannot tell them from a single parent -- it reads
+        // exact under all eight perturbations tried.  It earns its place by
+        // ATTRIBUTING the defect (the over-read needs the residual chain, not
+        // the density ratio as such), not by detecting one, and saying so
+        // here is the point -- an assertion nobody has made fail proves
+        // nothing.  Its rendered twin is harness f3g.
+        {
+            const int   partsList[] = {1, 2, 3, 5, 8};
+            const int   offList[]   = {0, 1, 2, 3};
+            const float wList[]     = {0.25f, 0.50f, 0.75f};
+            struct AB { float a, b; };
+            const AB abList[] = {{0.99f, 0.10f}, {0.10f, 0.99f},
+                                 {0.99f, 0.03f}, {0.90f, 0.30f},
+                                 {0.50f, 0.10f}};
+            double worstHigh = 0.0, worstLow = 0.0;
+            double worstDisjoint = 0.0, worstSinglePart = 0.0;
+            int over = 0, cells = 0;
+            for (int partsA : partsList)
+            for (int partsB : partsList)
+            for (int off : offList)
+            for (float wA : wList)
+            for (const AB& ab : abList) {
+                float cc = -1.0f, aa = -1.0f;
+                const double pct = cell(partsA, partsB, off, wA,
+                                        ab.a, ab.b, &cc, &aa);
+                ++cells;
+                if (pct > 0.5) ++over;
+                if (pct > worstHigh) worstHigh = pct;
+                if (pct < worstLow)  worstLow  = pct;
+                if (off >= partsA)
+                    worstDisjoint = std::max(worstDisjoint, std::fabs(pct));
+                if (partsA == 1 && partsB == 1)
+                    worstSinglePart = std::max(worstSinglePart, std::fabs(pct));
+            }
+            REQUIRE(cells == 1500);
+            CAPTURE(worstHigh); CAPTURE(worstLow); CAPTURE(over);
+            CAPTURE(worstDisjoint); CAPTURE(worstSinglePart);
+            // The controls: 1e-03 % is ~70x the measured worst and still five
+            // decades under the readings above.
+            CHECK(worstDisjoint    < 1e-03);
+            CHECK(worstSinglePart  < 1e-03);
+            // The defect itself, banded on BOTH ends of the grid and on how
+            // MUCH of the grid it reaches -- a rule that fixed one cell by
+            // spending another has to move one of these three.
+            CHECK(worstHigh > 127.513 - 0.5);
+            CHECK(worstHigh < 127.513 + 0.5);
+            CHECK(worstLow  >  -9.566 - 0.5);
+            CHECK(worstLow  <  -9.566 + 0.5);
+            CHECK(over >= 942 - 25);
+            CHECK(over <= 942 + 25);
+        }
+    }
+
     SUBCASE("the residual sees ITS OWN head, not the pooled mean -- two fragments, by hand")
     {
         // The smallest case that separates the two rules.  Two fragments of
