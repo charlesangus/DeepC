@@ -26,11 +26,15 @@ node; v3 (Milestone 3) adds a CUDA backend behind the seams v1/v2 leave in place
   performance mitigations, knob list, verification scene list, risk register) lives in
   `PLAN/MILESTONES/M1-deepcdefocus-v1.md` — read it before touching any M1/M2 task. M2 and M3
   build on that same design; their files reference back to it rather than repeating it.
-- **Background reading**: `.planning/research/ARCHITECTURE.md` "Pattern 3", `PITFALLS.md`,
+- **Background reading**: `PLAN/REFERENCE/ARCHITECTURE.md` "Pattern 3", `PITFALLS.md`,
   `FEATURES.md` sketched this node originally (tracked as `PLUG-01` in
-  `.planning/milestones/v1.2-REQUIREMENTS.md:35`) but the current design supersedes that
+  `PLAN/REFERENCE/v1.2-REQUIREMENTS.md:35`) but the current design supersedes that
   sketch. `PITFALLS.md` has partially aged (its #2 was fixed in `d89b516`) — re-verify its
-  claims against current code before relying on them in any task.
+  claims against current code before relying on them in any task. These four files are the
+  only survivors of the retired GSD `.planning/`/`.gsd/` trees (deleted 2026-08-16; recover any
+  of them with `git show d547559:<path>`, the last commit that still had them). Cross-references
+  *inside* these four to other `.planning/` paths
+  (e.g. `PITFALLS.md` → `codebase/CONCERNS.md`) are dangling by design.
 - **Linux-only for this node.** Gated `if (UNIX)` in `src/CMakeLists.txt` (verified: the
   top-level `CMakeLists.txt:11` already has a UNIX block ending at `-mavx`). The Windows
   docker build (`docker/windows.Dockerfile` — not `src/`, as this line said until M1.P3.T7 —
