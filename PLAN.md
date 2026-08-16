@@ -1,8 +1,8 @@
 ---
 title: DeepCDefocus — deep-input, flat-output defocus node
 status: running
-current: M1.P3.T19
-pm_heartbeat: 2026-08-16T05:30:00-04:00
+current: M1.P3.T17
+pm_heartbeat: 2026-08-16T07:45:00-04:00
 ship: pr-per-milestone
 ---
 
@@ -116,12 +116,16 @@ the loser, **T18** = the holdout-interpolant bake-off + delete the losers. They 
 on failure, with `combine`/`holdoutInterp`/`K`/`pre_merge` as parameters so T17/T18 drive the same
 scenes at different settings. Full run: **PASS=74 FAIL=3 XFAIL=16 SKIP=1**.
 
-**The three FAILs are one real node defect**, found at T16 and now **M1.P3.T19**: `DiscKernelLUT`
-quantises radius onto a 0.5 px grid, so adjacent scanlines straddling a bin edge rasterise different
-discs and leave a **one-scanline 20% dark trough** at CoC radius 0.762 px (35% on a radial ramp). It
-was derived from the LUT alone and matched in Nuke to six decimals, so the diagnosis is not in doubt.
-It is sequenced **before** the two bake-offs, because it changes every rendered pixel and T17/T18
-decide from rendered pixels. Execution order is now **T19 → T17 → T18**.
+**T19 is done: the harness is now green end to end** — PASS=77 FAIL=0 XFAIL=18 SKIP=1, exit 0, for the
+first time in this milestone. T16's three FAILs were one real node defect: `DiscKernelLUT` quantised
+radius onto a uniform 0.5 px grid, so adjacent scanlines straddling a bin edge rasterised different
+discs, leaving a one-scanline **20% dark trough** at CoC radius 0.762 px (35% radial). T19 replaced the
+grid with an adaptive `h(r) = r²/512` one, which bounds the deficit *uniformly across radius* rather
+than at one radius — 2.009e-01 → 2.176e-03 against a 3.9e-03 gate, at +4.8 ns/fragment and a flat
++197 KB, with vectorization unchanged. Interpolating between LUT entries was prototyped and lost on
+both accuracy and cost. Two residuals it *exposed* (the bucket composite showing through at the
+sharp↔disc threshold, and the CoC field's own interior extremum) are bounded XFAILs, each shown
+pre-existing rather than introduced.
 
 The two reviews also corrected four plan errors, all of the same shape — a figure recorded from a
 measurement that never reached the phenomenon it claimed to bound: the different-split-fraction
@@ -135,7 +139,15 @@ Note T5's size-0 parity clause now passes; its abort-recovery clause remains unv
 interactive pass, since headless Nuke cannot trigger a recoverable mid-cook cancel — validation scene
 (e)'s `Escape` clause (harness check `e4`, SKIPped) is blocked on the same thing and is owed by the
 same interactive pass.
-Remaining in this milestone: P3 T19, T17, T18, then Phase 1.4 and Phase 1.5. Sixteen tasks
+**Standing lesson, now recorded three times over:** every wrong figure in this plan has been a
+measurement that never reached the phenomenon it claimed to bound — T13's synthetic corpus never
+crossed the kernel-bin edge, two `pre_merge` probes each happened to group nothing, and at T19 two
+re-pinned constants were *correct* while their stated mechanisms were fabricated. So: mutation-test
+every check (one nobody has made fail proves nothing), band pins rather than bounding them on one side,
+validate re-pins against an independent oracle rather than against the new output, and give every XFAIL
+a hard outer bound so it cannot swallow a later regression.
+
+Remaining in this milestone: P3 T17, T18, then Phase 1.4 and Phase 1.5. Sixteen tasks
 have now been added by execution findings (M1.P3.T0, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16,
 T17, T18, T19, plus the enlarged M1.P3.T4 test list).
 No PR yet — `ship: pr-per-milestone` puts that at M1's verification gate. The branch

@@ -278,7 +278,9 @@ l. small-CoC transition: shallow depth ramp crossing 0–2px CoC ⇒ no chatter/
 | Same-pixel fragments colliding in one bucket | High | Additive within-bucket accumulation lets `newArea` exceed 1 per pixel; the composite then clamps `cov` and `a` together and loses both coverage and ordering — 1.000 against a true 0.781 on two samples. Breaks size-0 `DeepToImage` parity outright (up to 2.4e-01, 12% of pixels). Third instance of the double-count class. M1.P3.T13 |
 | Coverage plane double-counted, inflating alpha and colour | High | Fractional-split half found and fixed at M1.P3.T2's review (2.0 vs honest 1.0; deposit once, into the nearer bucket). Volumetric-split half still open — M1.P3.T8, which must land before M1.P3.T5's bake-off |
 | Build gate not actually building the node | Med | `src/CMakeLists.txt` never listed `DeepCDefocus`; every Phase 1.2/1.3 "local build clean" was compiled by hand instead. Registration pulled forward to M1.P3.T7 |
-| Kernel-bin quantisation trough on small CoC | High | `radiusToIndex()`'s 0.5px grid makes adjacent scanlines straddling a bin edge rasterise different discs: a one-scanline 20% dark trough at r=0.762px (35% on a radial ramp), colour tracking alpha so it reads as a visible dark line. Energy loss, not ripple — the compensating surplus is eaten by the saturation clamp. Found at M1.P3.T16; owned by M1.P3.T19, which must precede the T17/T18 bake-offs |
+| Kernel-bin quantisation trough on small CoC | ~~High~~ **closed** | `radiusToIndex()`'s 0.5px grid made adjacent scanlines straddling a bin edge rasterise different discs: a one-scanline 20% dark trough at r=0.762px (35% radial), colour tracking alpha so it read as a visible dark line. Energy loss, not ripple. Found at M1.P3.T16, **fixed at M1.P3.T19** by an adaptive `h(r) = r²/512` grid that bounds the deficit uniformly across radius: 2.009e-01 → 2.176e-03 against a 3.9e-03 gate |
+| CoC field's own interior extremum (`l6`) | Low | Where the radius field has an interior extremum, normalised-kernel scatter under-delivers ~2/3 of the field's local slope at the apex (0.990 at slope 0.0195, 0.971 at 0.0391). **Inherent, not quantisation** — it survives an exact per-pixel kernel with no grid at all, and is invariant to K and to the bucket-composite candidate. Exposed (not caused) by M1.P3.T19, which stopped the coarse grid flattening the extremum neighbourhood onto one disc. Accepted for v1 as a bounded XFAIL; a v2 note |
+| Correct number, wrong explanation | Med | Twice at M1.P3.T19 a re-pinned constant was right while its stated mechanism was fabricated; only an independent grid-free oracle caught it. Validate re-pins against an oracle, never against the new output, and **band** pins rather than bounding them on one side — a one-sided pin there would have passed a full revert of the fix |
 | `pre_merge` lossy at its shipping default | Med | Losslessness holds only when grouped radii share a kernel bin; at the 0.25px default two layers 0.20px apart straddling a bin edge move 9.0e-02 on 100% of pixels. Two separate probes concluded "unreachable"/"exactly lossless" because they happened to group nothing. `merge_tolerance`'s default needs a review at Phase 1.4 |
 | Documented residual masking a later regression | Med | An unbounded XFAIL swallows anything that lands on top of it. Every harness XFAIL now carries a hard outer bound that flips it to FAIL on drift; new XFAILs must too |
 | Request/engine channel divergence | Low | Single `neededDeepChannels()` helper |
@@ -964,7 +966,7 @@ verified.
     evidence. Local build and both unit suites stay green.
   - size: L
 
-- [ ] M1.P3.T19 — Kernel-bin quantisation trough on small CoC (closes validation scene (l))
+- [x] M1.P3.T19 — Kernel-bin quantisation trough on small CoC (closes validation scene (l))
   - files: `src/DeepCDefocusKernel.h`, `tests/test_defocus_scatter.cpp`, `tests/nuke/`
   - approach: found at M1.P3.T16, whose review reproduced it **from first principles, independent of
     the harness**. `DiscKernelLUT::radiusToIndex()` is `lround(radius / 0.5)`
@@ -1005,9 +1007,10 @@ verified.
     (`src/DeepCDefocusScatter.h:1079`) **from rendered pixels**, per the 2026-07-26 answer to the
     bucket-composite alpha deficit. Judge on scenes **(c), (f), (g), (i)** rendered through both
     candidates on T12/T16's harness — `ScatterParams::combine` set explicitly for each render, never
-    the provisional default. **Re-render the table rather than quoting it**: M1.P3.T19 lands first and
-    changes `DiscKernelLUT`, so every number below moves. What you inherit from T16 is *where to look*,
-    not the figures. **Scene (c) no longer discriminates** — `over` passes it at K=8, so the design
+    the provisional default. **Re-render the table rather than quoting it**: M1.P3.T19 has landed and
+    changed `DiscKernelLUT`, so every scene-(g) figure below was measured on the *old* kernel and has
+    moved. What you inherit from T16 is *where to look*, not the figures. **Scene (c) no longer
+    discriminates** — `over` passes it at K=8, so the design
     reference's "plain `over` is known to fail scene (c)" is stale on constant-depth content. **Scene
     (g)'s ramp is the decisive one**: pre-T19 it read 0.997176 / 0.978461 / 0.922105 at K=8/16/64 under
     `over` against 0.989520 / 0.995558 / 1.000000 under `CoveragePartition` — opposite directions in K,
@@ -1018,7 +1021,18 @@ verified.
     In front of focus candidate 2 is now exact, so the comparison is fair; **behind focus, expect the
     structural +45.2/+51.2/+59.1% at 3/4/8 buckets under *both* candidates** (plain `over` tracks the
     same numbers because it ignores the area planes entirely) — that residue is settled and is not a
-    reason to prefer either. **The different-split-fraction residual, by contrast, IS
+    reason to prefer either — **but M1.P3.T19 moved this column and the old figures are wrong.** The
+    behind-focus partition residue is now **36.86/50.25/56.31/61.00%** at 2/3/4/8 buckets (validated
+    against a grid-free oracle at 36.91/50.25/56.40/61.02) while `over` barely moved
+    (48.77/75.03/90.96/117.10), so **the gap between the candidates at 2 buckets narrows from 20.9 to
+    11.9 points**. Read those numbers, and know the mechanism is **disc mis-sizing at small radii**, not
+    collision suppression — the fabricated version of that story is recorded in Decisions precisely so
+    it is not reasoned from again.
+    **Two new discriminators M1.P3.T19 handed you**, both small but real and both candidate-dependent:
+    harness check `l3` (5.226e-03 under partition against 2.186e-04 under `over`) and scene (l)
+    generally (`l1` 2.176e-03 vs 4.296e-04, `l5` 3.667e-03 vs 2.935e-03). Small-CoC content now
+    discriminates where it previously could not — the old kernel grid masked it.
+    **The different-split-fraction residual, by contrast, IS
     candidate-discriminating** — the 2026-07-26 Decisions entry claiming it is identical under both
     was corrected at M1.P3.T12's review: it is signed and the sign flips (harness f3c/f3d at K=4/8/16,
     partition −0.763/−0.610/−0.113% and −1.539/−1.395/−1.675%, `over` +2.194/+0.212/+0.074% and
@@ -1171,6 +1185,58 @@ verified.
   - size: M
 
 ## Decisions
+
+- 2026-08-16 — **M1.P3.T19 replaced the kernel's uniform radius grid with an adaptive one; the harness
+  is green end to end for the first time** (PASS=77 FAIL=0 XFAIL=18 SKIP=1, exit 0). The deficit at a
+  bin edge is `h·|S′_r(0)|/2 ≈ h/(πr²)`, so a step `h(r) = c·r²` makes it **uniform at `c/π` across the
+  whole radius range** — a bound, rather than a bound at one radius. `c = 1/512` puts the step at 0.5 px
+  at r=16 and makes every constant exact in binary. Below 16 px the grid is hyperbolic
+  (`radius = 512/(1025−index)`), above it the old uniform 0.5 px grid is kept. Closed-form inverse, so
+  lookup stays O(1). Costs, all measured, none assumed: **+4.8 ns per fragment** (8.1 ns vs 3.3 ns for
+  the lookup — under 1% of a fragment at r≥4 px, invisible end to end), **+201,544 B flat** (the same at
+  `max_radius` 500 as at 40, because the refinement only exists below 16 px), vectorization unchanged at
+  441 loops, weights still summing to 1 within 8.94e-08.
+  **Interpolating between adjacent LUT entries was prototyped and lost on both axes** — accuracy
+  (3.354e-03 / 3.041e-03 / 1.087e-02 on the y/diagonal/radial ramps against the shipped 2.084e-03 /
+  1.819e-03 / 9.937e-03) and cost (+18.5% / +34.9% / +68.2% per fragment) — and would have had to blend
+  into per-thread scratch and hand back a `KernelView` of it, breaking the documented "safe to hold and
+  share across render threads" lifetime contract. Do not re-try it.
+  **Two residuals were exposed, not introduced**, and each now carries a bounded XFAIL:
+  - **`l3`** — the bucket composite showing through at the sharp↔disc threshold. It is
+    **candidate-dependent** (K=64 reads 0.992598 under `CoveragePartition` against 0.999666 under
+    `FrontToBackOver`), which the kernel cannot cause and the composite can. **No pixel got worse**: the
+    worst row was 0.799119 at *every* K before and is ≥0.9926 at every K after. The old grid hid it by
+    rasterising every radius in [0.25, 0.75] as the same delta.
+  - **`l6`** — the CoC *field's* own interior extremum, not quantisation at all. It survives an **exact
+    per-pixel kernel with no grid whatsoever** (0.989234 against the shipped grid's 0.990063), matches
+    the analytic cone prediction `1 − 2a/3`, and is invariant to both K and the composite candidate. It
+    is inherent to normalised-kernel scatter and will recur wherever the radius field has an interior
+    extremum; a v2 note, not a v1 defect.
+  **Note `l5` passes with only 6.5% margin and only because of `l6`'s apex exclusion** (it reads
+  9.937e-03 and FAILs without it), and **`h3c` now sits at 67% of its gate**, up from 25%. T17 and T18
+  should expect to touch both.
+
+- 2026-08-16 — **Re-pinned constants must be validated against an independent oracle, not against the
+  new output.** M1.P3.T19 moved four pinned test constants. Its review built a **grid-free
+  `KernelSampler`** and drove the real scatter through it to get a truth column: checkerboard
+  flat-field 0.99927 → **0.995718** (truth 0.996160), mislabel over-count 40.09/70.70% →
+  **45.30/76.70%** (truth identical), behind-focus partition 28.22/45.21/51.23/59.05% →
+  **36.86/50.25/56.31/61.00%** (truth 36.91/50.25/56.40/61.02), behind-focus `over` barely moving. Every
+  new pin lands within 0.1 of truth where the old ones sat **up to 8.6 points below it** — so the fix
+  moved them toward correctness rather than re-fitting them.
+  **But two of the mechanism stories attached to those numbers were false**, and only the oracle caught
+  it: both claimed the same-kernel collision rule had been suppressing area claims, when the fragments'
+  bins were **always distinct under both grids** (behind-focus parts at 0.800/2.353/3.905/5.458 px →
+  old bins 2/5/8/11; mislabel at 4.956/3.503/2.040/0.552 → old bins 10/7/4/1), and the mislabel test
+  builds its SoA by hand and never reaches the flatten path at all. The real mechanism is **disc
+  mis-sizing at small radii** — the old grid snapped 0.800 → 1.000 (+25% radius, +56% area) and
+  0.552 → 0.500, which *is* the single-pixel delta. **A correct number with a wrong explanation is a
+  trap**: the next task to reason from it will reason from the explanation.
+  Two related process findings, both now fixed: the new POD test only checked
+  `kernelGridIndex(kernelGridRadius(i)) == i` — **on node radii, where `floor`/`ceil`/`round` all
+  agree** — so a `lround → floor` mutation survived the entire suite; and the checkerboard pin was
+  one-sided (`> 0.9956`) and would have **passed a full revert of the fix**. Pins must be **banded**,
+  and mutation-tested **off** the nodes, not just on them.
 
 - 2026-08-16 — **M1.P3.T16 completed the scene sweep; the harness is now the milestone's gate, and it
   is red on one real defect.** Full run: **PASS=74 FAIL=3 XFAIL=16 SKIP=1**, exit 1. The three FAILs
