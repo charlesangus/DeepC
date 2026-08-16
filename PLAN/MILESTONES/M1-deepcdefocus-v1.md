@@ -122,6 +122,15 @@ and the leftover is only partly irreducible: it floors `log T` at `kMinTransmitt
 collapses to ~0 across almost the whole bracket, always toward camera. **A holdout card still
 fully erases genuinely-unoccluded source geometry for one bracket in front of it** — 5.07 of the
 6.19-unit bracket at K=16 on the default rig, 2.28 at K=32, 0.89 at K=64, i.e. ≈`(depthRange)/K`.
+**Understated — corrected 2026-08-16 at M1.P3.T12's review.** Measured end to end on the harness,
+the erasure begins at the bracket's *lower boundary itself*, not partway in: vis is 1.0000 at −2% of
+the bracket and already 0.2512 at +2%, 0.0010 at +10%, 0 beyond, decaying as `10^(−30·frac)` — i.e.
+exactly `kMinTransmittance = 1e-30` (`src/DeepCDefocusMath.h:61`) flooring `log T`. So it is ≈100%
+of the bracket, not the 82% the figures above imply, and it scales as `depthRange/K` exactly
+(bracket 2.500/1.250/0.625/0.3125 at K=8/16/32/64, same fraction erased at every K). M1.P3.T18 must
+judge from these numbers, not the older ones. Harness comparison across the three interpolants:
+LogChord erases 78% of the bracket, MidpointStep 30%, LinearInT none outright but ramps 0.95→0.25
+across it.
 That is the standard holdout setup (an element sitting just in front of the held-out object), it
 is a visible artefact, and the interpolant half of it is cheaply reducible — an open follow-up,
 see Decisions. Fragment contribution at scatter time: `V·w·vis`, `alpha·w·vis` — no separate
@@ -880,7 +889,7 @@ verified.
 > (scenes g–l), **M1.P3.T17** (bucket-composite bake-off) and **M1.P3.T18** (holdout-interpolant
 > bake-off), which must run in that order. See this file's Decisions.
 
-- [ ] M1.P3.T12 — Headless validation harness + scenes (a)–(f)
+- [x] M1.P3.T12 — Headless validation harness + scenes (a)–(f)
   - files: `tests/nuke/` (new — harness + scene builders, Python)
   - approach: with M1.P3.T5's serial wiring in place and T13/T15 landed, build the **scripted
     headless harness** every remaining validation task reuses, then run **scenes (a)–(f)** of the
@@ -932,10 +941,19 @@ verified.
     explicitly both ways. Scene (l) was closed by T13/T15 — re-confirm it here rather than assuming.
     Same discipline as T12: `combine`/`holdoutInterp`/`pre_merge` explicit in every render, and
     **no `src/` changes** — a failure is reported with numbers, not patched here.
+    **Carried from M1.P3.T12's review — `pre_merge`'s plumbing is unproven.** Toggling it produced
+    **0 pixel difference** on every configuration tried (overlapping slabs, three adjacent thin slabs,
+    a 40-sample fog, textured point layers). That is consistent with the design ("lossless when radii
+    are equal") and `fp.preMerge` is genuinely read at `src/DeepCDefocusScatter.cpp:961`, but unlike
+    `combine`/`holdoutInterp`/`K` there is no positive proof it reaches the render. Scene (i), which
+    this task already runs both ways, is the natural place to settle it — **if there is still no
+    delta there, chase reachability and report it**, since scene (i)'s diagnosis depends on the knob
+    actually moving the coverage plane.
   - verify: scenes (g)–(l) each pass their stated check with reported numbers, or are reported as
     failing with a measured magnitude and affected pixel population. Scene (g) is reported at K=8/16/64
     under **both** `combine` candidates, so T17 inherits the comparison rather than re-rendering it.
-    Local build and both unit suites stay green.
+    `pre_merge` either demonstrably moves pixels somewhere, or is reported as unreachable with the
+    evidence. Local build and both unit suites stay green.
   - size: L
 
 - [ ] M1.P3.T17 — Decide the bucket composite, delete the loser (needs T12 + T16)
@@ -950,8 +968,16 @@ verified.
     In front of focus candidate 2 is now exact, so the comparison is fair; **behind focus, expect the
     structural +45.2/+51.2/+59.1% at 3/4/8 buckets under *both* candidates** (plain `over` tracks the
     same numbers because it ignores the area planes entirely) — that residue is settled and is not a
-    reason to prefer either. The ~4%/layer different-split-fraction loss is likewise identical under
-    both and does not bias the comparison. Then **delete the losing path, its enum value, its flag,
+    reason to prefer either. **The different-split-fraction residual, by contrast, IS
+    candidate-discriminating** — the 2026-07-26 Decisions entry claiming it is identical under both
+    was corrected at M1.P3.T12's review: it is signed and the sign flips (harness f3c/f3d at K=4/8/16,
+    partition −0.763/−0.610/−0.113% and −1.539/−1.395/−1.675%, `over` +2.194/+0.212/+0.074% and
+    +4.799/+1.956/+0.967%). Weigh it as evidence.
+    **Start from M1.P3.T12's largest discriminator**: under `FrontToBackOver` the holdout fog reading
+    (harness check `f1`, single opaque point fragments against the analytic `(1−α)^t` — the simplest
+    possible content) is off by **2.500e-01** worst case, against **4.367e-08** under
+    `CoveragePartition`. That is the strongest signal the harness produces and it must be explained,
+    not skipped. Then **delete the losing path, its enum value, its flag,
     and the accumulation plane the winner does not read**, and prune the tests that only existed to
     pin the loser. The behind-focus residue is pinned by tests, so a change that moves it fails the
     suite and needs adjudication here rather than a silent tolerance bump.
@@ -1082,6 +1108,34 @@ verified.
   - size: M
 
 ## Decisions
+
+- 2026-08-16 — **M1.P3.T12 landed the harness; scenes (a)–(f) are green with three documented
+  XFAILs.** `tests/nuke/` (one command, numeric gates, non-zero exit on failure, `combine` /
+  `holdoutInterp` / `K` / `pre_merge` all parameters) reads **PASS=28 FAIL=0 XFAIL=3 SKIP=1** at
+  K=16 / CoveragePartition / LogChord / `pre_merge` on. Four things worth carrying:
+  - **Nuke 17's Python has neither numpy nor OpenImageIO**, and `nuke.sample()` proved unreliable, so
+    every render round-trips through a 32-bit-float uncompressed EXR read by `tests/nuke/exrio.py`
+    (validated against an analytic `Expression` pattern to 1.11e-08, including a negative-origin data
+    window). Any future in-Nuke measurement should reuse it rather than re-derive this.
+  - **`DeepHoldout2` outputs a flat 2D image — it must NOT be followed by `DeepToImage`.** The design
+    reference's "`DeepHoldout` → `DeepToImage`" phrasing (scene (b)) is wrong for it; with a
+    `DeepToImage` attached the reference renders a uniform (0,0,0,1) frame, which reads as a 0.95 /
+    100%-of-pixels failure. Corrected, scene (b) is bit-exact — and non-vacuously so: `DeepHoldout2`
+    moves the plain flatten by 9.023e-01 on 39.06% of pixels.
+  - **`DeepCConstant` emits NaN when `front == back`** (`weight = depth / (back − front)` = 0/0). Any
+    scene built with it needs a nonzero span thickness.
+  - **Parity gates are only meaningful on premultiplied source data.** With unpremultiplied layers
+    scene (a)'s composite reaches 1.56 and the same 3-ULP residual reads 3.576e-07 — over the 2e-07
+    absolute gate — for no fault of the node.
+  The three XFAILs were each adjudicated as pre-existing, not new: **f2** is the M1.P3.T10 log-chord
+  erasure (decay shape matches `kMinTransmittance` exactly, scales as `depthRange/K`); **f3c** is the
+  different-split-fraction residual and is K-convergent (exact at K≥64); **f3d** is the same
+  mechanism, non-monotone in K (exact at K=128), at ~0.9%/layer rather than the recorded ~4%.
+  **A documented behaviour no longer reproduces**: "connecting even a non-occluding holdout moves
+  defocused pixels by up to 1.78e-01 through merge regrouping" now measures **exactly 0.0** at both
+  size 0 and size 6 — presumably closed by T13/T15. Note also that `computeDepthRange()` is
+  source-only (`src/DeepCDefocus.cpp:954`), so that row's z=40 holdout sits beyond the LUT's last
+  boundary: it validly tests merge regrouping but not the LUT.
 
 - 2026-08-16 — **M1.P3.T12 split four ways** (T12 harness + scenes a–f, T16 scenes g–l, T17
   bucket-composite bake-off, T18 holdout-interpolant bake-off): as written it bundled a harness
@@ -1466,9 +1520,18 @@ verified.
   not a restoration of the true 0.875, as designed).
 - 2026-07-26 — Where fragments carrying **different split fractions** share a bucket, the planes lose
   the pairing and alpha comes in slightly low: two fully-covering 50% fog layers with random fractions
-  give **0.7297 against the exact 0.75**, ~4% per layer. Identical under both bucket-combine
-  candidates, so it does not bias M1.P3.T5's comparison, but T5 should expect it in scenes (f)/(g)
-  rather than reading it as a candidate's failure.
+  give **0.7297 against the exact 0.75**, ~4% per layer. ~~Identical under both bucket-combine
+  candidates, so it does not bias M1.P3.T5's comparison~~ — **CORRECTED 2026-08-16 at M1.P3.T12's
+  review: it is NOT candidate-independent. It is signed, and the sign flips with the candidate.**
+  Measured end to end on the harness (fog-density scenes f3c/f3d at K=4/8/16). CoveragePartition:
+  **−0.763% / −0.610% / −0.113%** (f3c) and **−1.539% / −1.395% / −1.675%** (f3d).
+  FrontToBackOver: **+2.194% / +0.212% / +0.074%** (f3c) and **+4.799% / +1.956% / +0.967%** (f3d).
+  So `over` errs *high* exactly where `partition` errs low, and M1.P3.T17 must not
+  treat this residual as a common-mode term that cancels out of the comparison. Magnitude on the
+  harness's arrangements is ~0.9%/layer rather than ~4%; f3c is K-convergent (exact at K≥64) and
+  f3d is non-monotone in K (exact at K=128), which is what the random-split-fraction mechanism
+  predicts. Expect it in scenes (f)/(g) — but read it as candidate-discriminating evidence, not as
+  noise to be subtracted.
 - 2026-07-26 — `scatterBandCPU`'s signature deviates from the design reference's four-argument sketch
   and the deviation is **accepted**: `KernelSampler`, a per-thread `ScatterScratch` and an optional
   `ScatterStats*` are added, and the bucket composite is a separate `resolveBandCPU` so a band can be
