@@ -4370,6 +4370,430 @@ TEST_CASE("the four hand-built composite identities, with the fourth plane both 
     }
 }
 
+// ---------------------------------------------------------------------------
+// M1.P3.T20 — the DEPTH-RAMP MOSAIC.  The residual T17's bake-off found and
+// this task ruled on.
+//
+// A destination pixel fed by a receding surface receives many fragments at
+// DIFFERENT depths, each fractionally split across its own bucket pair.  Their
+// kernel weights sum to 1, so the composite must return the surface's own
+// alpha -- and until T20 it did not: the single scalar `tClaimed` attenuated
+// every fragment's co-located rear deposit by a pooled mean over the whole
+// claimed area, so each fragment's rear was occluded by every OTHER fragment's
+// head and rear.  Measured on this very rig before the fix: -17.44% at
+// alpha 0.90 / N=16 / frac 0.50, -22.39% at alpha 0.50, -38.9% at frac 0.25,
+// diverging in N.  Truth is the surface's alpha and is hand-derived, not
+// re-run: the fragments' weights sum to 1 and each claims its own tile, so the
+// area model's answer is sum_j w_j * alpha == alpha exactly.
+// ---------------------------------------------------------------------------
+TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, alpha and "
+          "split fraction (M1.P3.T20)")
+{
+    auto composite = [](std::vector<float> cov, std::vector<float> alpha,
+                        std::vector<float> colocated, std::vector<float> color,
+                        float* outColor, float* outAlpha) {
+        compositePixelCoveragePartition(color.data(), alpha.data(), cov.data(),
+                                        colocated.data(),
+                                        static_cast<int>(cov.size()), 1, 1,
+                                        outColor, outAlpha);
+    };
+
+    const float unpremult = 0.8f;
+
+    // One point fragment of kernel weight w and alpha a, transmittance-split by
+    // `frac` across buckets (m, m+1): the near half claims NEW area, the far
+    // half is CO-LOCATED on it.  This is scatterSpanBothBuckets()'s deposit
+    // shape, re-derived here rather than called.
+    auto deposit = [&](std::vector<float>& cov, std::vector<float>& alpha,
+                       std::vector<float>& colo, std::vector<float>& color,
+                       int m, float frac, float w, float a) {
+        const float a0 = partitionAlpha(a, 1.0f - frac);
+        const float a1 = partitionAlpha(a, frac);
+        cov[m]        += w;
+        alpha[m]      += w * a0;
+        color[m]      += w * a0 * unpremult;
+        colo[m + 1]   += w;
+        alpha[m + 1]  += w * a1;
+        color[m + 1]  += w * a1 * unpremult;
+    };
+
+    float c = -1.0f, a = -1.0f;
+
+    // 3e-06 everywhere below is float accumulation over up to 64 fragments,
+    // measured at 1.19e-06 worst across the whole (N, alpha, frac) grid.
+    const float kAcc = 3e-06f;
+
+    SUBCASE("spaced bucket pairs -- no bucket carries two fragments")
+    {
+        // The pure form of the mechanism: every bucket holds either one head or
+        // one rear, so nothing is pooled and the ONLY thing that can go wrong is
+        // which transmittance the rear is attenuated by.  Before T20 this read
+        // -4.11 / -17.44 / -21.63% at N=2/16/64 for alpha 0.90 (T17's review
+        // table); it is now exact at every N, alpha and split fraction.
+        for (int N : {2, 16, 64}) {
+            for (float alphaIn : {0.99f, 0.90f, 0.50f, 0.10f}) {
+                for (float frac : {0.50f, 0.25f, 0.75f}) {
+                    CAPTURE(N); CAPTURE(alphaIn); CAPTURE(frac);
+                    std::vector<float> cov(3 * N + 2, 0.0f), al(3 * N + 2, 0.0f),
+                                       co(3 * N + 2, 0.0f), col(3 * N + 2, 0.0f);
+                    for (int j = 0; j < N; ++j)
+                        deposit(cov, al, co, col, 3 * j, frac,
+                                1.0f / static_cast<float>(N), alphaIn);
+                    composite(cov, al, co, col, &c, &a);
+                    CHECK(std::fabs(a - alphaIn) <= kAcc);
+                    CHECK(std::fabs(c - alphaIn * unpremult) <= kAcc);
+                }
+            }
+        }
+    }
+
+    SUBCASE("adjacent bucket pairs -- every bucket carries one head AND the previous "
+            "fragment's rear")
+    {
+        // The dense case a smooth depth ramp actually produces, and the one
+        // that decides how the head transmittance is carried across a bucket
+        // that both claims new area and continues a chain.  Exact at split
+        // fraction 0.5, where the composite's C_k : D_k area split of the
+        // bucket's pooled alpha coincides with the true head:rear split
+        // (a0 == a1).  Before T20: -11.75 / -18.24 / -21.84% at N=4/16/64 for
+        // alpha 0.90.
+        for (int N : {2, 4, 16, 64}) {
+            for (float alphaIn : {0.99f, 0.90f, 0.50f, 0.10f}) {
+                CAPTURE(N); CAPTURE(alphaIn);
+                std::vector<float> cov(N + 2, 0.0f), al(N + 2, 0.0f),
+                                   co(N + 2, 0.0f), col(N + 2, 0.0f);
+                for (int j = 0; j < N; ++j)
+                    deposit(cov, al, co, col, j, 0.50f,
+                            1.0f / static_cast<float>(N), alphaIn);
+                composite(cov, al, co, col, &c, &a);
+                CHECK(std::fabs(a - alphaIn) <= kAcc);
+                CHECK(std::fabs(c - alphaIn * unpremult) <= kAcc);
+            }
+        }
+    }
+
+    SUBCASE("a mosaic of VOLUMETRIC parents, each cut into P parts, reconstructs too")
+    {
+        // Same mechanism one level up: a split parent's non-head parts are the
+        // same co-located deposits, so the same pooling destroyed them.  Before
+        // T20 this read -24.5% at N=8 / alpha 0.90.
+        for (int N : {2, 8}) {
+            for (int P : {2, 3, 4}) {
+                for (float alphaIn : {0.90f, 0.50f}) {
+                    CAPTURE(N); CAPTURE(P); CAPTURE(alphaIn);
+                    const int K = N * (P + 1) + 2;
+                    std::vector<float> cov(K, 0.0f), al(K, 0.0f),
+                                       co(K, 0.0f), col(K, 0.0f);
+                    const float w  = 1.0f / static_cast<float>(N);
+                    const float t  = 1.0f / static_cast<float>(P);
+                    const float pa = partitionAlpha(alphaIn, t);
+                    for (int j = 0; j < N; ++j)
+                        for (int i = 0; i < P; ++i) {
+                            const int k = j * (P + 1) + i;
+                            if (i == 0) cov[k] += w; else co[k] += w;
+                            al[k]  += w * pa;
+                            col[k] += w * pa * unpremult;
+                        }
+                    composite(cov, al, co, col, &c, &a);
+                    CHECK(std::fabs(a - alphaIn) <= kAcc);
+                    CHECK(std::fabs(c - alphaIn * unpremult) <= kAcc);
+                }
+            }
+        }
+    }
+
+    SUBCASE("the two PRE-EXISTING upward errors, bounded here for the first time "
+            "(M1.P3.T20 review)")
+    {
+        // NEITHER IS T20's REGRESSION -- both read bit-identically under the
+        // pre-T20 composite -- but nothing bounded them, and both err in the
+        // honest-alpha contract's FORBIDDEN direction, so they are pinned here
+        // rather than left as prose.  Truth is the area model, hand-derived.
+
+        // (1) THE EXCESS REGIME REGISTERS NO TILE.  A fragment whose head lands
+        // entirely on already-claimed area registers no head sub-area, so its
+        // own co-located rear is attenuated by whatever tile the pixel happened
+        // to be carrying instead of by (1 - local) of its own head.
+        //   b0/b1: a full-coverage foreground, alpha ~0, claims the whole pixel
+        //   b2:    an opaque fragment of coverage 0.05 -- all excess
+        //   b3:    its rear, co-located on the 0.05 it just covered
+        // TRUTH: the foreground contributes ~0, the opaque fragment covers 0.05
+        // of the pixel once => 0.0501.  The composite counts it TWICE, once in
+        // b2 and again in b3, for 0.0976.
+        {
+            std::vector<float> cov(5, 0.0f), al(5, 0.0f), co(5, 0.0f), col(5, 0.0f);
+            deposit(cov, al, co, col, 0, 0.50f, 1.00f, 0.0001f);
+            deposit(cov, al, co, col, 2, 0.50f, 0.05f, 1.0000f);
+            composite(cov, al, co, col, &c, &a);
+            const double truth = 0.0001 + (1.0 - 0.0001) * 0.05;   // 0.050095
+            const double pct   = (a / truth - 1.0) * 100.0;
+            CAPTURE(a); CAPTURE(pct);                       // +94.8%
+            CHECK(pct > 94.81 - 1.0);
+            CHECK(pct < 94.81 + 1.0);
+        }
+
+        // (2) A FRAGMENT STRADDLING THE FREE/CLAIMED BOUNDARY.  Its `excess`
+        // share is attenuated by the mean over the WHOLE claimed area -- which
+        // by then includes the tile this same fragment just claimed with its
+        // `fit` share, and which the excess does not overlap.
+        //   b0: opaque, coverage 0.5, sharp  -> claims 0.5, tClaimed 0
+        //   b2: alpha 0.5, coverage 1.0, sharp -> fit 0.5 (new area, +0.25),
+        //       excess 0.5 landing on b0's opaque half, which must contribute 0
+        // TRUTH 0.75.  The composite reads 0.8125: its `tClaimed` after the fit
+        // is (0.5*0 + 0.5*0.5)/1 = 0.25 rather than b0's own 0.
+        {
+            std::vector<float> cov{0.5f, 0.0f, 1.0f};
+            std::vector<float> al{0.5f, 0.0f, 0.5f};
+            std::vector<float> co(3, 0.0f);
+            std::vector<float> col{0.5f * unpremult, 0.0f, 0.5f * unpremult};
+            composite(cov, al, co, col, &c, &a);
+            CAPTURE(a);                                     // +8.33% over 0.75
+            CHECK(a > 0.8125f - 1e-05f);
+            CHECK(a < 0.8125f + 1e-05f);
+        }
+    }
+
+    SUBCASE("staggered multi-part parents OVER-report -- the cost of carrying ONE head "
+            "tile (M1.P3.T20 review, NOT fixed)")
+    {
+        // THE REGRESSION M1.P3.T20's REVIEW FOUND, pinned as a band so it
+        // cannot drift unnoticed.  The subcase above is a mosaic of volumetric
+        // parents whose bucket runs DO NOT OVERLAP, and it is exact.  Give two
+        // multi-part parents OVERLAPPING depth ranges -- two fog slabs at
+        // different depths, or a fog slab and a point fragment, whose kernel
+        // weights tile one destination pixel -- and both have co-located
+        // deposits still to come when a single bucket carries one parent's
+        // fit share AND the other's residual chain.  Only ONE (tHead, headArea)
+        // pair exists, so the merge rule at the bottom of the composite loop
+        // must DISCARD one of the two tiles; the discarded parent's later parts
+        // are then attenuated by the survivor's tile, which is not in front of
+        // them.
+        //
+        // TRUTH IS ALPHA AND NEEDS NO ORDERING ASSUMPTION: the two parents'
+        // coverages sum to 1 and both fit in free area, so they tile the pixel
+        // as two disjoint sub-areas at the same alpha whatever their relative
+        // depth order.  sum_j w_j * alpha == alpha, exactly.
+        //
+        // THE SIGN IS THE FORBIDDEN ONE.  Pre-T20 the same cells read 4-16%
+        // LOW (quoted below); they now read HIGH, and at alpha 0.90 several
+        // saturate the output alpha to exactly 1.  Neither candidate rule is a
+        // trade worth making -- `always carry the chain` costs -9.3% on the
+        // dense ramp above and `merge the two by area` -5.9% plus harness g4
+        // 0.0913 against its 0.0543 pin -- so the fix is more state and is
+        // deferred.  BANDED, not one-sided: an improvement must re-pin here.
+        auto addVol = [&](std::vector<float>& cov, std::vector<float>& alpha,
+                          std::vector<float>& colo, std::vector<float>& color,
+                          int m, int parts, float w, float a) {
+            const float pa = partitionAlpha(a, 1.0f / static_cast<float>(parts));
+            for (int i = 0; i < parts; ++i) {
+                const int k = m + i;
+                if (i == 0) cov[k] += w; else colo[k] += w;
+                alpha[k] += w * pa;
+                color[k] += w * pa * unpremult;
+            }
+        };
+
+        struct Cell { int parts; int off; float wA; float alphaIn; double pct; double pre; };
+        const Cell cells[] = {
+            // parts, offset, wA,   alpha, MEASURED now,  pre-T20 (for the record)
+            {  2, 1, 0.50f, 0.90f,   0.000, -8.214 },   // exact: 2 parts leave no chain
+            {  2, 2, 0.50f, 0.90f,   0.000, -4.107 },
+            {  3, 1, 0.50f, 0.90f,  +7.404, -10.841 },
+            {  3, 1, 0.75f, 0.90f, +11.106,  -5.420 },
+            {  3, 1, 0.50f, 0.50f,  +3.378,  -6.059 },
+            {  4, 1, 0.50f, 0.90f,  +9.349, -11.242 },
+            {  4, 2, 0.50f, 0.90f, +11.111,  -9.728 },
+            {  4, 2, 0.50f, 0.50f,  +4.983,  -5.745 },
+        };
+        for (const Cell& cell : cells) {
+            CAPTURE(cell.parts); CAPTURE(cell.off);
+            CAPTURE(cell.wA); CAPTURE(cell.alphaIn);
+            const int K = cell.parts + cell.off + 3;
+            std::vector<float> cov(K, 0.0f), al(K, 0.0f), co(K, 0.0f), col(K, 0.0f);
+            addVol(cov, al, co, col, 0, cell.parts, cell.wA, cell.alphaIn);
+            addVol(cov, al, co, col, cell.off, cell.parts,
+                   1.0f - cell.wA, cell.alphaIn);
+            composite(cov, al, co, col, &c, &a);
+            const double pct = (a / cell.alphaIn - 1.0) * 100.0;
+            CAPTURE(pct);
+            CHECK(pct > cell.pct - 0.75);
+            CHECK(pct < cell.pct + 0.75);
+        }
+
+        // ... and the same shape with a POINT fragment instead of the second
+        // slab, which is the commoner form: a defocused fog slab and a
+        // defocused surface reaching one pixel with complementary weights.
+        {
+            std::vector<float> cov(9, 0.0f), al(9, 0.0f), co(9, 0.0f), col(9, 0.0f);
+            addVol(cov, al, co, col, 0, 3, 0.5f, 0.90f);
+            const float a0 = partitionAlpha(0.90f, 0.5f);
+            cov[1] += 0.5f;  al[1] += 0.5f * a0;  col[1] += 0.5f * a0 * unpremult;
+            co[2]  += 0.5f;  al[2] += 0.5f * a0;  col[2] += 0.5f * a0 * unpremult;
+            composite(cov, al, co, col, &c, &a);
+            const double pct = (a / 0.90 - 1.0) * 100.0;
+            CAPTURE(pct);                       // +4.557% now, -10.587% pre-T20
+            CHECK(pct > 4.557 - 0.75);
+            CHECK(pct < 4.557 + 0.75);
+        }
+    }
+
+    SUBCASE("the residual sees ITS OWN head, not the pooled mean -- two fragments, by hand")
+    {
+        // The smallest case that separates the two rules.  Two fragments of
+        // weight 0.5 and alpha 0.5, split 50/50, at bucket pairs (0,1) and
+        // (2,3).  a0 = a1 = 1 - sqrt(0.5) = 0.2928932.
+        //
+        //   b0: cov 0.5, a 0.5*a0 -> local a0, fit 0.5
+        //       accAlpha  = 0.5*a0                       = 0.1464466
+        //       tClaimed  = 1 - a0 = 0.7071068, claimed 0.5, tHead = 1 - a0
+        //   b1: colo 0.5, aRes = 0.5*a1
+        //       T20:  accAlpha += 0.5*a1*(1 - a0)         = 0.1035534
+        //             -> 0.25 exactly, i.e. w * alpha for fragment 0
+        //       pre-T20 used the same value here (nothing else has claimed).
+        //       tClaimed = 0.7071068 - 0.1035534/0.5 = 0.5, tHead = 0.5
+        //   b2: cov 0.5, fit 0.5 -> accAlpha += 0.1464466 -> 0.3964466
+        //       tClaimed = (0.5*0.5 + 0.5*0.7071068)/1 = 0.6035534
+        //       tHead = 1 - a0 = 0.7071068   <-- the fragment's OWN head
+        //   b3: colo 0.5, aRes = 0.5*a1
+        //       T20:     accAlpha += 0.5*a1*0.7071068 = 0.1035534 -> 0.50 EXACT
+        //       pre-T20: accAlpha += 0.5*a1*0.6035534 = 0.0883883 -> 0.4848349
+        //                i.e. -3.03%, which is the N=2 row of T17's table.
+        const float a0 = partitionAlpha(0.5f, 0.5f);
+        std::vector<float> cov{0.5f, 0.0f, 0.5f, 0.0f};
+        std::vector<float> al{0.5f * a0, 0.5f * a0, 0.5f * a0, 0.5f * a0};
+        std::vector<float> co{0.0f, 0.5f, 0.0f, 0.5f};
+        std::vector<float> col(4, 0.5f * a0 * unpremult);
+        composite(cov, al, co, col, &c, &a);
+        CHECK(a == doctest::Approx(0.5f).epsilon(1e-6));
+        CHECK(c == doctest::Approx(0.5f * unpremult).epsilon(1e-6));
+    }
+
+    SUBCASE("a co-located layer removes only ITS OWN share of the claimed transmittance")
+    {
+        // THE INDEPENDENT IDENTITY BEHIND THE SUBTRACTIVE UPDATE: an opaque
+        // surface covering the whole pixel must read alpha exactly 1, whatever
+        // sits in front of it.  That truth needs no arithmetic -- it is the
+        // definition of opaque -- and it is what fixes the residual's effect on
+        // the claimed mean.
+        //
+        //   b0: cov 1.0, a 0.5      -> fit 1.0, accAlpha 0.5, tClaimed 0.5,
+        //                              claimedArea 1, tHead 0.5
+        //   b1: colo 0.5, a 0.25    -> aRes 0.25 over resArea 0.5, resLocal 0.5
+        //         accAlpha += 0.25 * 0.5 = 0.125
+        //         HALF the pixel loses half of its 0.5, so the claimed mean must
+        //         fall by 0.5*0.5*0.5 = 0.125, to 0.375 -- exactly the alpha
+        //         just added.  `tClaimed -= aRes*tHead/claimedArea` does that.
+        //         The multiplicative `*= (1 - resLocal)` this replaces takes it
+        //         to 0.25 instead, i.e. it occludes the OTHER half of the pixel
+        //         with a layer that never covered it.
+        //   b2: cov 1.0, a 1.0      -> all excess, accAlpha += tClaimed
+        //         TOTAL 0.5 + 0.125 + 0.375 = 1.0 EXACTLY.
+        //         With the multiplicative update: 0.875, i.e. a 12.5% hole
+        //         punched through an opaque backing.
+        std::vector<float> cov{1.0f, 0.0f, 1.0f};
+        std::vector<float> al{0.5f, 0.25f, 1.0f};
+        std::vector<float> co{0.0f, 0.5f, 0.0f};
+        std::vector<float> col{0.5f * unpremult, 0.25f * unpremult, unpremult};
+        composite(cov, al, co, col, &c, &a);
+        CHECK(a == doctest::Approx(1.0f).epsilon(1e-6));
+        CHECK(c == doctest::Approx(unpremult).epsilon(1e-6));
+    }
+
+    SUBCASE("a residual co-located on the SAME bucket's head is still occluded by it "
+            "(the M1.P3.T13/T15 collision shape)")
+    {
+        // The counter-case that decides how the head transmittance is carried:
+        // here the co-located deposit's head is in the bucket it landed in, not
+        // in an earlier one, so it must see (1 - local) of THAT bucket -- 0 for
+        // an opaque head.  Two opaque same-pixel discs, the second not a
+        // coverage head: cov 0.6 + colo 0.4 in b0, both rears in b1.
+        //   aRes = 1.0 * 0.4/1.0 = 0.4, aCov = 0.6, local = 1
+        //   fit 0.6 -> accAlpha 0.6, tClaimed 0, tHead 0 -> residual adds 0
+        //   b1: colo 1.0 (0.4 + 0.6, clamped), attenuated by tHead 0 -> 0
+        // TOTAL 0.6, i.e. the two surfaces cover 0.6 of the pixel ONCE.
+        std::vector<float> cov{0.6f, 0.0f};
+        std::vector<float> al{1.0f, 1.0f};
+        std::vector<float> co{0.4f, 1.0f};
+        std::vector<float> col{unpremult, unpremult};
+        composite(cov, al, co, col, &c, &a);
+        CHECK(a == doctest::Approx(0.6f).epsilon(1e-6));
+        CHECK(c == doctest::Approx(0.6f * unpremult).epsilon(1e-6));
+    }
+
+    SUBCASE("WHAT T20 DOES NOT FIX: a bucket pooling two DIFFERENT per-unit opacities")
+    {
+        // THE RESIDUAL THAT SURVIVES M1.P3.T20, ISOLATED.  Both fragments
+        // occupy the SAME bucket pair but at different split fractions, so the
+        // bucket's pooled alpha carries two different per-unit opacities and the
+        // composite's C_k : D_k area split cannot recover them -- it hands both
+        // sub-layers the same a/(C_k + D_k), which is the only split that does
+        // not invent a difference (M1.P3.T9) and is right only when the two
+        // really are equal.  This is harness f3c/f3d's mechanism, NOT the mosaic
+        // one above, and no per-bucket rule can undo it: the information is gone
+        // at accumulation, not at composition.
+        //
+        // THE CONTROL immediately below is what attributes it: the same two
+        // fragments at the SAME split fraction are EXACT, so the number belongs
+        // to the fraction mixture and not to pooling two fragments as such.
+        const float w = 0.5f, alphaIn = 0.9f;
+        {
+            std::vector<float> cov(3, 0.0f), al(3, 0.0f), co(3, 0.0f), col(3, 0.0f);
+            deposit(cov, al, co, col, 0, 0.10f, w, alphaIn);
+            deposit(cov, al, co, col, 0, 0.90f, w, alphaIn);
+            composite(cov, al, co, col, &c, &a);
+            // BANDED, not a ceiling: measured -12.41% at this task, and a
+            // one-sided bound would be met by a mutation that removed the
+            // residual term altogether.
+            CHECK(a > 0.9f * (1.0f - 0.140f));
+            CHECK(a < 0.9f * (1.0f - 0.108f));
+            CHECK(std::fabs(c / a - unpremult) <= 1e-05);
+        }
+        {
+            std::vector<float> cov(3, 0.0f), al(3, 0.0f), co(3, 0.0f), col(3, 0.0f);
+            deposit(cov, al, co, col, 0, 0.50f, w, alphaIn);
+            deposit(cov, al, co, col, 0, 0.50f, w, alphaIn);
+            composite(cov, al, co, col, &c, &a);
+            CHECK(std::fabs(a - alphaIn) <= kAcc);        // the control: EXACT
+        }
+    }
+
+    SUBCASE("...and the same term on a DENSE ramp at any split fraction but 0.5")
+    {
+        // The rendered form of the above: fragment j at bucket pair (j, j+1) at
+        // split fraction 0.25 or 0.75 rather than 0.5.  These are the numbers
+        // harness g4's remaining 5.4% is made of, pinned as bands so a later
+        // change to the C_k : D_k split is caught here rather than only in Nuke.
+        //
+        // NOTE THE TRIGGER, corrected at T20's review: EVERY fragment below
+        // carries the SAME split fraction, so this is NOT "fragments at
+        // different split fractions" (which is how T20 first described it).
+        // On a dense ramp bucket k carries fragment k's head at per-unit
+        // opacity partitionAlpha(alpha, 1-frac) and fragment k-1's rear at
+        // partitionAlpha(alpha, frac); those differ for every frac != 0.5, so
+        // ONE bucket already pools two per-unit opacities.  frac == 0.5 is the
+        // only exact case, and the SUBCASE above pins exactly that.
+        struct Cell { int n; float frac; double pct; };
+        const Cell cells[] = {
+            {  4, 0.25f, -2.4249 }, {  4, 0.75f, -5.7890 },
+            { 16, 0.25f, -3.6865 }, { 16, 0.75f, -4.5275 },
+            { 64, 0.25f, -4.0017 }, { 64, 0.75f, -4.2119 },
+        };
+        for (const Cell& cell : cells) {
+            CAPTURE(cell.n); CAPTURE(cell.frac);
+            std::vector<float> cov(cell.n + 2, 0.0f), al(cell.n + 2, 0.0f),
+                               co(cell.n + 2, 0.0f), col(cell.n + 2, 0.0f);
+            for (int j = 0; j < cell.n; ++j)
+                deposit(cov, al, co, col, j, cell.frac,
+                        1.0f / static_cast<float>(cell.n), 0.90f);
+            composite(cov, al, co, col, &c, &a);
+            const double pct = (a / 0.90 - 1.0) * 100.0;
+            CAPTURE(pct);
+            CHECK(pct > cell.pct - 0.75);
+            CHECK(pct < cell.pct + 0.75);
+        }
+    }
+}
+
 TEST_CASE("colour:alpha ratio is a standing invariant of the composite over randomised planes")
 {
     // One invariant instead of three cases (Decisions, 2026-07-27): clamping

@@ -2020,12 +2020,14 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 //
 //   aCov = the share the bucket's own NEW area accounts for
 //   aRes = A_k - aCov      the co-located residual
-//   accAlpha += aRes * tClaimed;   tClaimed *= 1 - min(1, aRes/D_k)
+//   accAlpha += aRes * tHead;      tClaimed -= aRes * tHead / claimedArea
 //
 // where D_k IS THE FOURTH PLANE — the co-located AREA those same deposits
 // wrote (M1.P3.T9).  It replaces `claimedArea`, which is what the divisor used
 // to be; see "THE FOURTH PLANE" below for the derivation and for the measured
-// error the substitution cost.
+// error the substitution cost.  `tHead` IS THE FIFTH SCALAR (M1.P3.T20) — the
+// transmittance of the SUB-AREA the residual actually sits on, rather than the
+// pooled mean over everything claimed; see "THE HEAD TRANSMITTANCE" below.
 //
 // THE RESIDUAL'S ALPHA IS NOT CLAMPED TO THE CLAIMED AREA (M1.P3.T8 review).
 // It was `min(aRes, claimedArea)` — "a layer cannot block more area than it
@@ -2077,6 +2079,14 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 //   * over-covered bucket (C_k > 1, i.e. the case the saturate-down pass
 //     exists for) — C_k is clamped to 1 at use, which is what keeps
 //     a_k = A_k/C_k <= 1 after saturation has pulled A_k down to 1.
+//   * A DEPTH RAMP — many fragments at DIFFERENT depths reaching one
+//     destination pixel, each split across its own bucket pair, kernel weights
+//     summing to 1.  The answer is the surface's own alpha, exactly, at every
+//     fragment count, alpha and split fraction, because each fragment claims
+//     its own tile of the pixel and its rear deposit is attenuated by that
+//     tile alone.  This is what M1.P3.T20 fixed and what THE HEAD
+//     TRANSMITTANCE below derives; before it the same rig lost 17.4% of an
+//     alpha-0.90 surface at 16 fragments and diverged from there.
 //
 //   * A VOLUMETRIC parent split at the bucket boundaries (M1.P3.T8) — its
 //     parts are one surface seen as P layers, so exactly the front-most part
@@ -2185,6 +2195,107 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 // alpha, part count, start bucket, kernel radius) the worst relative error is
 // 1.8e-07 on alpha AND on premultiplied colour — i.e. exact.
 //
+// THE HEAD TRANSMITTANCE — WHY THE POOLED `tClaimed` WAS THE WRONG
+// ATTENUATION, AND WHY THE UPDATE HAD TO BECOME SUBTRACTIVE (M1.P3.T20).
+//
+// `tClaimed` is ONE number for the whole claimed share.  A depth ramp makes
+// that share a MOSAIC: each fragment reaching the destination pixel claims its
+// own tile at its own depth, and each tile has its own transmittance.  Two
+// consequences, both deficits, both fixed here:
+//
+//   1. A co-located deposit was attenuated by the pooled mean instead of by the
+//      tile its own head claimed.  Its head is the only thing in front of it at
+//      this pixel — by construction, since a fractional split's rear lands one
+//      bucket behind its head and a split parent's parts land in consecutive
+//      buckets — so every other fragment's head AND rear were occluding it for
+//      free.  `tHead` carries the right tile forward; see the merge rule at the
+//      bottom of the loop for how it is chosen when a bucket leaves two.
+//   2. `tClaimed *= (1 - resLocal)` occluded the WHOLE claimed share with a
+//      layer that covered only `resArea` of it.  The area-weighted form is
+//      subtractive: the tile loses `resLocal` of its own `tHead`, so the mean
+//      falls by `resArea * tHead * resLocal / claimedArea == aRes * tHead /
+//      claimedArea` — exactly the alpha the line above it added, which is what
+//      makes the two telescope to 1 behind an opaque backing.
+//
+// MEASURED, on hand-built planes with no kernel, no holdout, no flatten and no
+// depth quantisation (N equal-weight alpha-fragments, each split across its own
+// bucket pair; truth is alpha because the weights sum to 1), before -> after:
+//
+//   alpha 0.99   -2.05 / -7.02 / -8.36%  at N=2/16/64   ->  EXACT
+//   alpha 0.90   -4.11 / -17.44 / -21.63%               ->  EXACT
+//   alpha 0.50   -3.03 / -22.39 / -33.65%               ->  EXACT
+//
+// and at split fractions 0.25 and 0.75 rather than 0.50, where the old form
+// read -5.49% and -38.93% at N=16, likewise exact.  (M1.P3.T17 and the first
+// draft of this block both quoted the -38.9% figure against "split fraction
+// 0.25"; re-measured at T20's review it is the frac 0.75 cell under this
+// file's own convention, a1 = partitionAlpha(alpha, frac).)
+// End to end on validation scene (g)'s ramp
+// (harness g4, alpha 0.90, K=16): -16.07% -> -5.43%, and the K DIVERGENCE is
+// gone — at alpha 0.50 the sweep went +0.33 / +0.33 / -5.00 / -9.19 / -13.71 /
+// -19.65 / -26.62% at K=2/4/8/16/32/64/128 and now reads +1.37 / +1.37 / -0.09
+// / -0.13 / +0.10 / -0.02 / -1.01%.  The OPAQUE twin improved by five to six
+// decades on the same scene (g1 K=8 1.048e-02 -> 1.703e-08, g2 K=8 4.909e-02 ->
+// 1.848e-06, g3 K=8 3.191e-02 -> 1.907e-06): at alpha 1 the split itself is a
+// no-op, but saturation still pushes part of a bucket's alpha into the residual
+// term, so the same pooling was costing the banding scene its own criterion.
+//
+// WHAT IT DOES NOT FIX, said plainly.  A bucket that pools deposits at
+// DIFFERENT per-unit opacities still loses them into one `A_k / C_k`.  That is
+// information gone at ACCUMULATION, not at composition, it is harness f3c/f3d's
+// mechanism, and no per-bucket rule can recover it.  It is the whole of g4's
+// remaining 5.4%.
+//
+// THE TRIGGER, CORRECTED AT T20's REVIEW.  The first draft of this block said
+// the trigger was fragments carrying DIFFERENT split fractions from each other.
+// It is not, and the unit suite's own cells prove it: a dense ramp in which
+// EVERY fragment carries the SAME split fraction reads -2.42 / -3.69 / -4.00%
+// at N=4/16/64 for frac 0.25 and -5.79 / -4.53 / -4.21% for frac 0.75, and is
+// exact ONLY at frac 0.50.  The reason is one bucket down: on a dense ramp
+// bucket k carries fragment k's HEAD at per-unit opacity a0 = partitionAlpha
+// (alpha, 1-frac) and fragment k-1's REAR at a1 = partitionAlpha(alpha, frac),
+// and a0 != a1 for every frac != 0.50 — so the bucket pools two per-unit
+// opacities whether or not the fragments differ from one another.  A real ramp
+// (frac = (j+0.5)/N) reads -4.91% at N=16 and randomised fractions -4.35%, i.e.
+// the same scale, which is why g4 cannot reach zero.
+//
+// AND ONE DETAIL NO UNIT TEST PINS: `claimA = fit` rather than `cov`.  It is
+// right by the same argument as `claimT` — the excess share is not a new tile.
+// It survives the whole unit suite; T20 recorded it as caught by harness g4
+// alone, and T20's review re-ran the mutation and found it is ALSO caught by
+// g1 (9.980e-03 against a 1.0e-03 gate), g2 (4.906e-02 against 3.9e-03) and
+// g3 (3.191e-02 against 3.9e-03), i.e. by four rendered checks, not one.
+//
+// AND ONE THING THIS RULE COSTS, found at T20's review and NOT fixed here.
+// Only ONE head tile is carried, so a bucket that both claims new area and
+// continues a residual chain must DISCARD one of the two (see the merge rule at
+// the bottom of the loop).  Where the two are disjoint the chain is the one
+// dropped, and a later part of the chain's own parent is then attenuated by an
+// unrelated fresher tile.  That is invisible on a mosaic of parents whose
+// bucket runs do not overlap (the case the unit suite pins), but two multi-part
+// parents at OVERLAPPING depth ranges — two fog slabs, or a fog slab and a
+// point fragment, whose kernel weights tile one destination pixel — now read
+// UP TO +18.3% HIGH where the pre-T20 composite read 4-16% LOW.  The sign is
+// the honest-alpha contract's forbidden one.  Pinned as a band in the unit
+// suite ("staggered multi-part parents ...") so it cannot drift unnoticed;
+// neither `always carry the chain` (-9.3% on the dense ramp) nor `merge the two
+// by area` (-5.9% on the ramp, g4 0.0913, 40 unit assertions) is an acceptable
+// trade, so the fix is more state, and that is a Phase 1.4/M2 question.
+//
+// AND ONE RESIDUAL THIS DID NOT TOUCH, PRE-DATING T20 AND STILL OPEN.  In the
+// `excess` regime a fragment's head registers NO tile (see the fit branch), so
+// its own co-located rear is attenuated by whatever tile the pixel happened to
+// be carrying.  Behind a full-coverage foreground of alpha aF, a defocused
+// fragment of coverage wB and alpha aB reads up to +94.8% HIGH (aF -> 0,
+// wB 0.05, aB 1: truth 0.0501, composite 0.0976) — bit-identical before and
+// after T20, so it is not this task's regression, but it means "+1.37% is the
+// worst positive excursion" describes the g4 K-sweep and NOT the composite.
+// A fragment that STRADDLES the free/claimed boundary is the other one: its
+// excess is attenuated by the mean over the whole claimed area including the
+// tile the same fragment just claimed, which the excess does not overlap, for
+// up to +8.3% (wA 0.5 / aA 1 sharp, then wB 1.0 / aB 0.5 sharp: truth 0.75,
+// composite 0.8125).  Both are upward and both are unbounded by any check.
+//
 // THE ALPHA SPLIT IS BY AREA, NOT BY min().  When one bucket carries a head from
 // one parent AND a co-located part of another, `aCov = min(A_k, C_k)` attributed
 // alpha to the new-area share until it was full — pushing `local` to 1 and
@@ -2246,6 +2357,20 @@ DEEPC_HD inline void compositePixelCoveragePartition(
     float claimedArea = 0.0f;
     float tClaimed   = 1.0f;
     float accAlpha   = 0.0f;
+
+    // THE HEAD TRANSMITTANCE (M1.P3.T20).  The transmittance of the SUB-AREA a
+    // co-located deposit lands on, as opposed to `tClaimed`, which is the mean
+    // over EVERYTHING claimed so far.  A co-located deposit sits on area its own
+    // parent's head claimed — one bucket in front of it for a fractional split,
+    // the run of buckets in front of it for a volumetric parent's parts, and
+    // THIS SAME BUCKET for a same-pixel collision group (M1.P3.T13/T15, where a
+    // non-head fragment's co-located area lands in the very bucket its group's
+    // head claimed).  So the value a residual is attenuated by is the
+    // area-weighted merge of what this bucket just claimed with what the last
+    // one left behind — `headArea` is the area `tHead` describes, and it is the
+    // weight in that merge.  See the header block for what this fixes.
+    float tHead      = 1.0f;
+    float headArea   = 0.0f;
 
     for (int k = 0; k < bucketCount; ++k) {
         const std::ptrdiff_t ko = static_cast<std::ptrdiff_t>(k) * pixelCount;
@@ -2316,6 +2441,14 @@ DEEPC_HD inline void compositePixelCoveragePartition(
         const float resShare = (a > 0.0f) ? (aRes / a) : 0.0f;
         const float covShare = 1.0f - resShare;
 
+        // What this bucket leaves behind for the co-located deposits that
+        // follow it: `claimT` over `claimA` for the area it covers itself,
+        // `chainT` over `chainA` for a residual chain it continues.  Negative
+        // means "this bucket contributes no such area", which is what keeps a
+        // bucket that only carries colour from resetting the chain.
+        float claimT = -1.0f, claimA = 0.0f;
+        float chainT = -1.0f, chainA = 0.0f;
+
         if (cov > 0.0f) {
             // <= 1 by construction (both branches above bound aCov by cov);
             // the clamp is retained because `local` is a transmittance and a
@@ -2339,6 +2472,28 @@ DEEPC_HD inline void compositePixelCoveragePartition(
                 tClaimed    = (claimedOld * tClaimed + fit * (1.0f - local)) / claimedNew;
                 freeArea   -= fit;
                 claimedArea = claimedNew;
+
+                // THE FIT SHARE — AND ONLY IT — REGISTERS A NEW HEAD SUB-AREA
+                // (M1.P3.T20).  `fit` is by definition area nothing in front of
+                // it covers, so its transmittance afterwards is exactly
+                // (1 - local): a genuinely new tile of the mosaic, and the one a
+                // co-located deposit of this same parent will land on.  The
+                // `excess` share below is NOT a new tile — it lands on area the
+                // mosaic already has — so it attenuates the existing head
+                // instead of registering one: registering it too double-counts
+                // one physical area as two tiles at two stages of the same
+                // composite.  RE-TESTED END TO END at T20's review, because the
+                // isolated arithmetic argues the other way — on hand-built
+                // planes, registering the excess as a tile of area `excess` at
+                // tClaimed*(1-local) makes a defocused fragment behind a
+                // full-coverage foreground EXACT where the shipped rule reads up
+                // to +95% (see THE HEAD TRANSMITTANCE above).  Rendered, it is
+                // decisively worse: scene (g) reads g1 K=8 1.082e-02 (against
+                // 1.703e-08), g2 4.954e-02, g3 3.200e-02 and g4 0.0825 against
+                // the 0.0543 pin.  Pixels decide; the fit-only rule stands, and
+                // the excess-regime over-read stays a documented residual.
+                claimT      = 1.0f - local;
+                claimA      = fit;
             }
 
             // ---- the excess: `over`-attenuated by the claimed share -------
@@ -2353,7 +2508,15 @@ DEEPC_HD inline void compositePixelCoveragePartition(
                     outColor[o] += g * covShare * tClaimed * src[o];
                 }
 
-                tClaimed *= clampf(1.0f - excess * local, 0.0f, 1.0f);
+                const float att = clampf(1.0f - excess * local, 0.0f, 1.0f);
+                tClaimed *= att;
+
+                // A layer spread over the whole claimed share also covers
+                // whatever a chain in progress — and whatever this bucket's own
+                // fit share — is sitting on.
+                tHead    *= att;
+                if (claimT >= 0.0f)
+                    claimT *= att;
             }
         }
 
@@ -2368,15 +2531,26 @@ DEEPC_HD inline void compositePixelCoveragePartition(
             // fourth (hand-built test planes, and any pre-T9 caller).
             const float resArea = (colo > 0.0f) ? colo : claimedArea;
 
-            // Attenuated by the claimed share, always: a co-located layer is
-            // BEHIND everything that claimed area at this pixel by
-            // construction.  When nothing has claimed any (claimedArea == 0)
-            // tClaimed is still exactly 1, so this is the same unoccluded
-            // deposit the pre-T9 `claimed == 0` branch made — bit for bit.
-            accAlpha += aRes * tClaimed;
+            // Attenuated by ITS OWN HEAD'S sub-area transmittance, not by the
+            // pooled mean over everything claimed (M1.P3.T20).  A co-located
+            // layer is BEHIND the head that claimed the area it sits on, and
+            // behind nothing else at this pixel by construction — the pooled
+            // mean folds in area belonging to OTHER parents, which is what made
+            // a depth ramp lose up to 38.9% of an alpha<1 surface.  When
+            // nothing has claimed any area at all, `mergeArea` is 0 and tHead is
+            // still exactly 1, so this is the same unoccluded deposit the pre-T9
+            // `claimed == 0` branch made — bit for bit.
+            const float mergeArea = claimA + headArea;
+            const float tHeadIn   =
+                (mergeArea > 0.0f)
+                    ? ((claimA > 0.0f ? claimA * claimT : 0.0f)
+                       + headArea * tHead) / mergeArea
+                    : tHead;
+
+            accAlpha += aRes * tHeadIn;
             for (int c = 0; c < channelCount; ++c) {
                 const std::ptrdiff_t o = static_cast<std::ptrdiff_t>(c) * pixelCount;
-                outColor[o] += resShare * tClaimed * src[o];
+                outColor[o] += resShare * tHeadIn * src[o];
             }
 
             if (resArea > 0.0f) {
@@ -2386,7 +2560,18 @@ DEEPC_HD inline void compositePixelCoveragePartition(
                 // that clamp destroyed a split parent's rear parts.  resLocal
                 // stays clamped because it is a transmittance, not an alpha.
                 if (claimedArea > 0.0f) {
-                    tClaimed *= (1.0f - resLocal);
+                    // SUBTRACTIVE AND AREA-WEIGHTED (M1.P3.T20).  Only the
+                    // sub-area `resArea` loses transmittance, and it loses
+                    // `resLocal` of its OWN `tHeadIn`, so the claimed mean drops
+                    // by exactly (resArea * tHeadIn * resLocal) / claimedArea ==
+                    // (aRes * tHeadIn) / claimedArea — the same quantity the
+                    // alpha above gained, which is what makes the two telescope.
+                    // The multiplicative `*= (1 - resLocal)` this replaces
+                    // occluded the WHOLE claimed area with one parent's part.
+                    tClaimed = clampf(tClaimed - (aRes * tHeadIn) / claimedArea,
+                                      0.0f, 1.0f);
+                    chainT   = tHeadIn * (1.0f - resLocal);
+                    chainA   = resArea;
                 } else {
                     // Nothing had claimed any area, so this layer is the first
                     // thing at this pixel: it claims its OWN area and becomes
@@ -2401,11 +2586,73 @@ DEEPC_HD inline void compositePixelCoveragePartition(
                     claimedArea = claim;
                     freeArea   -= claim;
                     tClaimed    = 1.0f - resLocal;
+                    chainT      = tHeadIn * (1.0f - resLocal);
+                    chainA      = resArea;
                 }
             }
         }
 
-        if (!(freeArea > 0.0f) && !(tClaimed > 0.0f))
+        // Carry the head transmittance forward.  A bucket that both claimed
+        // area of its own AND continued a chain leaves two candidate tiles
+        // behind, and the pixel's own area is what decides between them:
+        //
+        //   * `claimA + chainA > claimedArea` — the two tiles CANNOT be
+        //     disjoint, so the residual sat on the very tile this bucket
+        //     claimed and `chainT` already carries that tile's whole occlusion
+        //     (head first, then residual).  Carry the chain.  This is the
+        //     same-pixel collision shape (M1.P3.T13/T15) and the two-layer
+        //     flat field whose layers share one bucket pair, and it is what
+        //     keeps both bit-identical to the pre-T20 composite.
+        //   * otherwise the tiles fit side by side, and the next co-located
+        //     deposit is the rear half of the head this bucket just claimed —
+        //     one bucket in front of it, by the fractional split's own
+        //     construction.  Carry the claim.  This is a depth ramp, where
+        //     every bucket carries one fragment's head and the previous
+        //     fragment's rear, and it is what takes scene (g)'s alpha<1 ramp
+        //     from -18.2% to exact.
+        //
+        // Merging the two by area instead reads -5.9% on that ramp (N=16,
+        // alpha 0.90), fails 40 unit assertions and moves harness g4 to 0.0913
+        // against its 0.0543 pin, because the question is not "what is the
+        // mean" but "which tile does the NEXT deposit land on".  (T20 also
+        // reported merging as +5.2% on the collision shape; T20's review could
+        // not reproduce that — on the hand-built shape the unit suite pins,
+        // merging reads exactly 0.600000, the same as this rule.  The rendered
+        // and unit evidence above stands on its own.)
+        //
+        // WHAT THE `else` COSTS, found at T20's review.  Discarding the chain
+        // is only free when the chain has no deposits left.  Two multi-part
+        // parents at OVERLAPPING depth ranges both have deposits left, and the
+        // dropped one is then attenuated by the other's tile: up to +18.3%
+        // HIGH, where the pre-T20 composite read 4-16% LOW.  See the header
+        // block and the unit suite's "staggered multi-part parents" pin.
+        //
+        // The 1e-6 slack is not a fudge: on a depth ramp the two tiles sum to
+        // EXACTLY the claimed area at the second bucket (one fragment's head
+        // plus the previous fragment's rear, both of width 1/N, against a
+        // claimed 2/N), and `claimedArea` is an accumulated sum rather than a
+        // recomputed one, so a bare `>` would flip on float dust in the case
+        // that has to take the `else`.
+        if (chainT >= 0.0f && claimT >= 0.0f) {
+            if (chainA + claimA > claimedArea * (1.0f + 1e-6f)) {
+                tHead    = chainT;
+                headArea = chainA;
+            } else {
+                tHead    = claimT;
+                headArea = claimA;
+            }
+        } else if (chainT >= 0.0f) {
+            tHead    = chainT;
+            headArea = chainA;
+        } else if (claimT >= 0.0f) {
+            tHead    = claimT;
+            headArea = claimA;
+        }
+
+        // `tHead` joins the early-out: the claimed mean can round to zero while
+        // a chain's own sub-area still transmits, and a residual behind it
+        // would then be dropped rather than attenuated.
+        if (!(freeArea > 0.0f) && !(tClaimed > 0.0f) && !(tHead > 0.0f))
             break;                      // fully opaque: nothing behind shows
     }
 

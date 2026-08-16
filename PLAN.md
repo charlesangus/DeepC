@@ -1,8 +1,8 @@
 ---
 title: DeepCDefocus — deep-input, flat-output defocus node
 status: running
-current: M1.P3.T20
-pm_heartbeat: 2026-08-16T09:30:00-04:00
+current: M1.P3.T18
+pm_heartbeat: 2026-08-16T12:00:00-04:00
 ship: pr-per-milestone
 ---
 
@@ -95,7 +95,7 @@ node; v3 (Milestone 3) adds a CUDA backend behind the seams v1/v2 leave in place
 2026-07-26 by building both candidates behind an internal flag and deciding from rendered pixels;
 **M1.P3.T17 did that on 2026-08-16 and kept `CoveragePartition`**. See that milestone file's Decisions.)
 
-**Where things stand (2026-08-16T09:30-04:00).** Phases 1.0, 1.1 and 1.2 are complete and committed;
+**Where things stand (2026-08-16T12:00-04:00).** Phases 1.0, 1.1 and 1.2 are complete and committed;
 Phase 1.3 has T0, T1, T6, T2, T7, T8, T9, T3, T10, T11 and T4 done. **M1.P3.T5's wiring is landed and
 the node now genuinely defocuses**, but T5 is deliberately left OPEN: its review found that scene (a)'s
 size-0 parity gate fails (up to 2.4e-01, ~12% of pixels) because same-pixel fragments collide in one
@@ -137,6 +137,44 @@ It is pinned as a banded, mutation-tested XFAIL (`g4`) and owed a ruling at Phas
 the largest known error in the shipped node. Harness **PASS=76 FAIL=0 XFAIL=12 SKIP=1, exit 0**, with
 every surviving reading bit-identical to the pre-deletion run.
 
+**T20 is done: the largest known error in the shipped node is FIXED, and it was the composite, not the
+split.** The α<1 receding-content residual T17 found is gone at its root. Lead (b) — the linear alpha
+split — was built and **disproved**: exact on a mosaic, but in the `excess` regime it makes one surface
+occlude itself, reading 0.875 against a true 1.0 on two same-pixel layers, which fails validation scene
+(a)'s 2e-07 parity gate by five decades. `partitionAlpha()` is untouched. What was wrong is that
+`compositePixelCoveragePartition()` carried ONE pooled transmittance for a claimed area that a depth
+ramp makes a mosaic of tiles: a co-located deposit is now attenuated by the tile *its own head* claimed,
+and a residual's occlusion is *subtracted* from the claimed mean in proportion to the area it covers
+rather than multiplying the whole of it. One extra scalar, no new plane, no seam touched. On T17's own
+isolated rig the deficit goes to **exact** at every N, α and split fraction (was −17.4% at α=0.90/N=16,
+−38.9% at split fraction 0.25); harness `g4` **0.1607 → 0.0543**, re-pinned in the same change against
+the rig as an independent oracle; and the **K-divergence is gone** (α=0.50 swept +0.33 → −26.62% at
+K=2…128, now +1.37 → −1.01%). The surprise, derived rather than guessed: the *opaque* twin improved five
+to six decades too — saturation pushes part of a bucket's alpha into the residual term even at α=1 —
+which **retired the `g1`/`g2`/`g3` XFAILs** and closed scene (g)'s own stated seam criterion at
+every K. Harness **PASS=83 FAIL=0 XFAIL=5 SKIP=1, exit 0**; both unit suites green. The remaining 5.4%
+at `g4` is a *different* mechanism — one bucket pooling a head and a rear at unequal per-unit opacity,
+i.e. `f3c`/`f3d`'s term, information lost at accumulation and not recoverable by any per-bucket
+composite rule — and is not claimed fixed.
+
+**T20 has been independently reviewed (2026-08-16): the ruling is upheld and the fix is genuine, with
+one regression found and pinned.** Reproduced against an independently written area-model oracle: the
+isolated rig is exact, lead (b) is disproved (and is worse than T20 reported — 0.859375, not 0.875),
+all seven `g4` mutation readings reproduce exactly, and re-rendering the current checks against the
+pre-T20 plugin FAILs `g1`/`g2`/`g3`, so the retired checks have teeth. **What the fix cost:** the
+composite carries only ONE head tile, so a bucket that both claims area and continues a residual chain
+must discard one — and **two multi-part parents at overlapping depth ranges now read up to +18.3%
+HIGH** (377/525 swept cells over +0.5%, saturating to alpha 1 at α=0.90) where pre-T20 they read 4–16%
+low. That is the honest-alpha contract's forbidden direction; T20's volumetric check covered only the
+*non-overlapping* mosaic, which is exact. Not fixed — both alternatives are worse trades — but pinned
+as a band in the unit suite and carried in the milestone's risk register. Four claims were also
+corrected in place: only **three** XFAILs were retired (`l3` was still an `expectedFailure`, now a
+plain check); the remaining `g4` term is triggered by any split fraction ≠ 0.5, not by *differing*
+fractions; `claimA = cov` is caught by `g1`/`g2`/`g3` as well as `g4`; and `a3` (5.960e-08 →
+1.192e-07) and `l1` moved besides `g4`. Two large **pre-existing** upward errors are also now on the
+record (+94.8% in the `excess` regime, +8.3% on a free/claimed straddle), so "+1.37% is the worst
+positive excursion" describes the K sweep, not the composite.
+
 **T19 is done: the harness is now green end to end** — PASS=77 FAIL=0 XFAIL=18 SKIP=1, exit 0, for the
 first time in this milestone. T16's three FAILs were one real node defect: `DiscKernelLUT` quantised
 radius onto a uniform 0.5 px grid, so adjacent scanlines straddling a bin edge rasterised different
@@ -168,7 +206,7 @@ every check (one nobody has made fail proves nothing), band pins rather than bou
 validate re-pins against an independent oracle rather than against the new output, and give every XFAIL
 a hard outer bound so it cannot swallow a later regression.
 
-Remaining in this milestone: P3 T20, T18, then Phase 1.4 and Phase 1.5. Seventeen tasks
+Remaining in this milestone: P3 T18, then Phase 1.4 and Phase 1.5. Seventeen tasks
 have now been added by execution findings (M1.P3.T0, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16,
 T17, T18, T19, T20, plus the enlarged M1.P3.T4 test list).
 No PR yet — `ship: pr-per-milestone` puts that at M1's verification gate. The branch
@@ -188,9 +226,9 @@ separately, build the holdout boundary set once per frame rather than per band, 
 M1.P3.T11's interpolant variant from rendered scenes (the bucket-composite half of that clause was
 discharged by M1.P3.T17); M1.P4.T1 must budget on
 `(C+3)` plus the holdout term, at the revised 61 B/fragment logical / ≈100 B resident. **M1.P3.T17's
-α<1 receding-content residual is no longer a floating obligation — it is now M1.P3.T20**, sequenced
-before T18 for the same reason T19 preceded T17: a fix moves every rendered pixel and T18 decides from
-rendered pixels.
+α<1 receding-content residual is closed by M1.P3.T20** (fixed in the composite; `g4` re-pinned at
+0.0543 ± 0.004). It ran before T18 because the fix moved every rendered pixel and T18 decides from
+rendered pixels — **T18 must re-render rather than quoting any figure from before `d06c4da`**.
 And the milestone PR body must carry the shipped-node release note from
 `PLAN/DECISIONS/2026-07-26-tidyoverlapping-single-pass.md` and
 `PLAN/DECISIONS/2026-07-26-volumetric-tidying-semantics.md`.

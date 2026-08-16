@@ -898,8 +898,10 @@ def sceneG(settings):
 
     g4 (added at M1.P3.T17) runs the same ramp at alpha < 1, where the fragment
     split is not a no-op and the saturation clamp does not hide the positive
-    half of the error.  See its comment: it is the largest residual the
-    bucket-composite bake-off found on the composite it kept.
+    half of the error.  It WAS the largest residual the bucket-composite
+    bake-off found on the composite it kept; M1.P3.T20 fixed the mechanism
+    behind it (0.1607 -> 0.0543, K-divergence gone) and re-pinned it.  The same
+    fix is why g1/g2/g3 are no longer XFAILs: see the note above g1.
     """
     checks = []
     size = 86.0
@@ -961,23 +963,33 @@ def sceneG(settings):
     # both K=8 and K=16 against 51 and 23).  What is left is the surviving
     # rule's own residual, which is still a documented one.
     #
-    # HARD BOUNDS on the XFAILs below.  The bucket-composite deficit this scene
-    # measures is documented, so it is XFAIL rather than FAIL — but an unbounded
-    # XFAIL would swallow a *new* defect landing on top of the old one.  The
-    # bounds are ~3x the worst reading ON THE SHIPPED COMPOSITE, past which the
-    # reading is a regression rather than the residual and the check goes back
-    # to a hard FAIL.
+    # THE XFAILs ON g1/g2/g3 ARE RETIRED (M1.P3.T20).  They existed for the
+    # bucket composite's deficit on this ramp, and that deficit is GONE: the
+    # opaque plane's readings drop by five to six decades once a co-located rear
+    # deposit is attenuated by its own head's transmittance instead of by the
+    # pooled mean over the whole claimed area.  Before -> after, same scene, same
+    # plugin otherwise:
     #
-    # RE-SIZED ONTO THE SURVIVOR at M1.P3.T17's review.  They were originally
-    # 2-3x the worst reading at M1.P3.T16 ACROSS BOTH candidates (g1 7.8e-02,
-    # g2 9.6e-02, g3 3.1e-02), and T17 left them there after deleting the
-    # candidate that produced the g1 and g2 maxima.  g2 and g3 were unaffected
-    # (their worst survivor readings, 4.909e-02 and 3.191e-02, are ~3x inside
-    # 1.5e-01 and 1.0e-01 already), but g1's worst survivor reading is 1.048e-02
-    # against a 1.5e-01 bound — 14x, i.e. wide enough to swallow an order of
-    # magnitude of new defect, which is exactly what a hard bound exists to stop.
-    # Tightened to 3.5e-02 (3.3x the K=8 reading, the largest of the three).
-    G1_HARD, G2_HARD, G3_HARD = 3.5e-02, 1.5e-01, 1.0e-01
+    #   g1  K=8  1.048e-02 -> 1.703e-08     g2  K=8  4.909e-02 -> 1.848e-06
+    #       K=16 4.446e-03 -> 5.801e-08         K=16 4.657e-02 -> 7.153e-07
+    #       K=64 2.799e-07 -> 2.182e-08     g3  K=8  3.191e-02 -> 1.907e-06
+    #                                           K=16 2.883e-02 -> 2.980e-07
+    #                                           K=64 3.576e-07 -> 1.192e-07
+    #
+    # WHY AN OPAQUE PLANE SHOWED THE ALPHA<1 DEFECT AT ALL, since the fragment
+    # split is a no-op at alpha 1: it is the SATURATION that makes the residual
+    # path live here.  Where a destination pixel's new area and co-located area
+    # sum past 1 the bucket's alpha clamps to 1, so `local = aCov/cov` comes out
+    # at 1/(C_k + D_k) < 1 and the rest of the alpha becomes a residual — which
+    # the pooled `tClaimed` then over-occluded exactly as it did at alpha < 1.
+    # (The K=64 columns barely move because at K=64 few fragments share a bucket,
+    # which is the same convergence g4 now shows.)
+    #
+    # They are plain checks again on purpose: an `expectedFailure` that no longer
+    # describes a residual is an unbounded licence to fail, and would let a later
+    # regression land anywhere below the old hard bound as an XFAIL.  Scene (g)'s
+    # own stated criterion — "no visible seams at bucket boundaries at K=16" —
+    # is now met outright, at every K, by four decades.
     profiles = {}
     seams = {}
     for k in (8, 16, 64):
@@ -1012,8 +1024,7 @@ def sceneG(settings):
                  "residual %.2e"
                  % (mean, (mean - 1.0) * 100.0, min(profile),
                     profileRow(profile.index(min(profile))), max(profile),
-                    worstStep, profileRow(stepAt), medianStep, worstRatio),
-            expectedFailure=True, hardTol=G1_HARD))
+                    worstStep, profileRow(stepAt), medianStep, worstRatio)))
 
     # --- g2: the part of the banding that is ATTRIBUTABLE TO BUCKETING.
     # A seam the eye can see is a step of about 1/255 in the 8-bit result, so
@@ -1032,8 +1043,7 @@ def sceneG(settings):
             note="max |rowMean(K=%d) - rowMean(K=64)|; worst row y=%d "
                  "(radius %.2f px)"
                  % (k, profileRow(deltas.index(worst)),
-                    groundRadius(size, profileRow(deltas.index(worst)))),
-            expectedFailure=True, hardTol=G2_HARD))
+                    groundRadius(size, profileRow(deltas.index(worst))))))
 
     # --- g3: the scene's OWN stated criterion — "no visible seams at bucket
     # boundaries at K=16; compare K=8 vs K=64".  g1 (a mean) and g2 (a
@@ -1053,69 +1063,88 @@ def sceneG(settings):
             note="worst step at y=%d (radius %.2f px), %.0fx the median; "
                  "1/255 is the step an 8-bit view resolves"
                  % (row, groundRadius(size, row),
-                    (worstStep / medianStep) if medianStep > 0.0 else 0.0),
-            expectedFailure=True, hardTol=G3_HARD))
+                    (worstStep / medianStep) if medianStep > 0.0 else 0.0)))
 
-    # --- g4: THE SAME RAMP AT alpha < 1.  Found at M1.P3.T17, and the largest
-    # residual the bucket-composite bake-off turned up on the composite it KEPT.
+    # --- g4: THE SAME RAMP AT alpha < 1.  Found at M1.P3.T17, RULED ON at
+    # M1.P3.T20, and RE-PINNED here in the same change as the fix.
     #
-    # g1-g3 all run on an OPAQUE plane, where the fragment split
-    # `alpha_i = 1 - (1-alpha)^{w_i}` is an identity no-op (a0 == a1 == 1) and
-    # the saturation pass clamps every positive excursion to exactly 1 — so an
-    # opaque field cannot show either half of the split's recombination error.
-    # An ordinary semi-transparent receding surface does, and it is big: at
-    # K=16 the interior mean reads -12.5% at alpha 0.99, -16.1% at 0.90 and
-    # -9.2% at 0.50, and it DIVERGES in K (-5.0 / -9.2 / -13.7 / -19.6 / -26.6%
-    # at K=8/16/32/64/128 at alpha 0.5), which is the opposite of g1's
-    # opaque-field convergence.
+    # WHAT IT MEASURED, AND WHAT IS LEFT.  An ordinary semi-transparent surface
+    # receding through focus used to lose 12.5 / 16.1 / 9.2% of its alpha at
+    # alpha 0.99 / 0.90 / 0.50 at K=16, and to DIVERGE in K (-5.0 / -9.2 /
+    # -13.7 / -19.6 / -26.6% at K=8/16/32/64/128 at alpha 0.5).  M1.P3.T20
+    # rebuilt the composite's transmittance bookkeeping — a co-located deposit
+    # is now attenuated by ITS OWN head's sub-area transmittance rather than by
+    # the pooled mean over everything claimed, and a residual's occlusion is
+    # subtracted from that mean in proportion to the area it covers instead of
+    # multiplying the whole of it.  The same rig now reads:
     #
-    # THREE CONTROLS ran at M1.P3.T17 before this was believed, and they are
-    # what attribute it: the source flattens through stock DeepToImage to
-    # exactly 0.5000000 min/max/mean; the same alpha at the same 16 px CoC with
-    # the DEPTH RAMP REMOVED is exact (0.5000017) at K=8 and K=64, so neither
-    # the kernel nor the sharp path is involved; and it vanishes at alpha 1,
-    # which is exactly where the split degenerates.  T17 recorded the pooling
-    # term itself as consistent with the different-split-fraction residual
-    # (f3c/f3d) but NOT isolated, and said so rather than asserting it.
+    #   alpha  K=2      K=4      K=8      K=16     K=32     K=64     K=128
+    #   1.00   -0.000   -0.000   -0.000   -0.000   -0.000   -0.000   -0.000
+    #   0.99   -4.363   -4.363   -5.552   -4.886   -3.923   -3.539   -5.036
+    #   0.90   -3.290   -3.290   -5.583   -5.426   -4.784   -4.665   -6.055
+    #   0.50   +1.373   +1.373   -0.090   -0.128   +0.104   -0.022   -1.007
     #
-    # T17'S REVIEW ISOLATED IT.  Hand-built bucket planes, one pixel, N
-    # equal-weight alpha-fragments each split 50/50 across their OWN bucket
-    # pair, fed straight to compositePixelCoveragePartition() with no kernel,
-    # no holdout, no flatten and no quantisation anywhere: -4.11 / -17.44 /
-    # -21.63% at N=2/16/64 for alpha 0.90, EXACT at alpha 1, and EXACT at
-    # every N when all the fragments share one bucket pair (the rendered
-    # no-ramp control, reproduced in arithmetic).  The term is `tClaimed`: the
-    # composite carries ONE scalar transmittance for the whole claimed area,
-    # while a depth ramp makes that area a mosaic of disjoint sub-areas at
-    # different depths each with its own.  A fragment's co-located rear deposit
-    # is then attenuated by the pooled value instead of by its own head's
-    # (1-a0), and `tClaimed *= (1 - resLocal)` applies a residual's occlusion
-    # to the whole claimed area rather than to the resArea/claimedArea share it
-    # covers.  At frac 0.25 the same rig reads -38.9% at N=16, so 16.1% is not
-    # the worst case the mechanism admits.  See the milestone Decisions entry
-    # for the two Phase 1.4/1.5 leads and why neither is free.
+    # i.e. the K-DIVERGENCE IS GONE (alpha 0.50 went from -26.6% at K=128 to
+    # -1.0%, and its worst reading anywhere is now +1.4%), and what is left is
+    # bounded and roughly K-flat.
+    #
+    # THE REMAINING TERM IS A DIFFERENT MECHANISM, and the control that says so
+    # is in the unit suite ("the depth-ramp mosaic ...", M1.P3.T20).  On
+    # hand-built planes with no kernel, no holdout, no flatten and no
+    # quantisation, a ramp whose fragments each occupy their OWN bucket pair is
+    # now EXACT at every bucket count, N, alpha AND split fraction — where the
+    # pre-T20 composite read -4.11 / -17.44 / -21.63% at N=2/16/64 for alpha
+    # 0.90.  Pack the pairs ADJACENTLY, as a real ramp does, and the deficit
+    # comes back at exactly this scale (-2.4 to -5.8% over N=4..64), because
+    # bucket k then pools fragment k's head and fragment k-1's rear, whose
+    # per-unit opacities are partitionAlpha(alpha, 1-frac) and
+    # partitionAlpha(alpha, frac) — different for every split fraction but 0.5 —
+    # and the composite's C_k : D_k area split cannot separate them.  That is
+    # harness f3c/f3d's mechanism: information lost at ACCUMULATION, not at
+    # composition, and no per-bucket composite rule can undo it.
+    #
+    # CORRECTED AT M1.P3.T20's REVIEW.  T20 first attributed this to fragments
+    # carrying DIFFERENT split fractions from one another.  It is not that: the
+    # unit suite's own cells hold the fraction CONSTANT across every fragment
+    # and still read -2.42 / -3.69 / -4.00% (frac 0.25) and -5.79 / -4.53 /
+    # -4.21% (frac 0.75) at N=4/16/64.  Only frac == 0.5 is exact.  A real ramp
+    # gives every scanline its own fraction, which reads -4.91% at N=16 — the
+    # same scale, for the same one-bucket reason — which is why this scene
+    # cannot reach zero.
     #
     # PINNED AS A BAND, not as a ceiling, and K IS FIXED AT 16 here rather than
-    # taken from --k: the reading is monotone in K, so a one-sided bound would
-    # be satisfied by every improvement AND by a --k that moved it, and neither
-    # is what this check is for.  MUTATION-TESTED at M1.P3.T17 against three
-    # separate mutations of compositePixelCoveragePartition() — scaling the
-    # co-located residual's alpha by 0.75 (reads 0.1020), reverting the
-    # residual divisor to the pre-T9 claimedArea (0.0777), and attenuating the
-    # residual twice (0.1925).  All three land outside the band; the widest
-    # half-width that still catches all three is 0.0318, so 0.025 is used.
-    # A FOURTH, INDEPENDENT MUTATION at T17's review — area-weighting the
-    # residual's occlusion by resArea/claimedArea, which is algebraically the
-    # pre-T9 divisor — reads 0.0777 and FAILs the band too, so the band
-    # discriminates against a mutation nobody who wrote it had in hand.
+    # taken from --k: a one-sided bound would be satisfied by every improvement
+    # AND by a --k that moved it, and neither is what this check is for.
+    # MUTATION-TESTED at M1.P3.T20 by rendering this very scene through seven
+    # separate mutations of compositePixelCoveragePartition():
     #
-    # THIS CHECK CANNOT PASS, BY CONSTRUCTION: it is a band around a defect, so
-    # FIXING the defect turns it FAIL, not PASS.  That is deliberate (a ceiling
-    # would be satisfied by any improvement and by any K change), but it means
-    # whoever rules on this at Phase 1.4/1.5 must RE-PIN this check in the same
-    # commit as the fix — a red suite there is the check working, not a
-    # regression.
-    G4_PIN, G4_BAND = 0.1607, 0.025
+    #   full pre-T20 revert                                   0.1607
+    #   always carry the chain's tile forward                 0.1315
+    #   scale the co-located residual's alpha by 0.75         0.1196
+    #   merge the two candidate tiles by area                 0.0913
+    #   claim area = cov instead of fit                       0.0703
+    #   multiplicative `tClaimed *= (1 - resLocal)` again     0.0598
+    #   the excess share does not attenuate tHead             0.0491
+    #
+    # The two nearest sit 0.0052 and 0.0055 from the pin, so the band is 0.004:
+    # every one of the seven lands outside it.  All seven readings were
+    # independently re-rendered at M1.P3.T20's review and reproduce exactly.
+    #
+    # An eighth, added at that review — registering the `excess` share as its
+    # own head tile, which the isolated arithmetic argues FOR — reads 0.0825
+    # here and takes g1/g2/g3 back to 1.082e-02 / 4.954e-02 / 3.200e-02, i.e.
+    # the fit-only rule is confirmed by pixels and not only by argument.
+    #
+    # ("claim area = cov" was recorded by T20 as caught HERE and nowhere else.
+    # Re-run at the review it is also caught by g1 (9.980e-03 against a
+    # 1.0e-03 gate), g2 (4.906e-02) and g3 (3.191e-02) — four rendered checks,
+    # not one.  It does still survive the whole unit suite.)
+    #
+    # THIS CHECK CANNOT PASS, BY CONSTRUCTION: it is a band around a residual,
+    # so any change to the reading — an improvement included — turns it FAIL.
+    # Whoever moves it next must RE-PIN it in the same commit, exactly as this
+    # task did.
+    G4_PIN, G4_BAND = 0.0543, 0.004
     g4K = 16
     g4Alpha = 0.90
     g4Colour = tuple(c * g4Alpha for c in GROUND_COLOR[:3]) + (g4Alpha,)
@@ -1140,8 +1169,9 @@ def sceneG(settings):
         "0.0000 (xfail %.4f +/- %.4f)" % (G4_PIN, G4_BAND),
         population="%d/%d interior rows over A/255" % (fogBad, rowCount),
         note="min %.6f (y=%d) max %.6f; the opaque twin (g1, same rig, K=%d) "
-             "reads %+.3f%% — the whole gap is the transmittance split, which "
-             "is a no-op at alpha 1 (M1.P3.T17)"
+             "reads %+.3f%% — what is left is ONE BUCKET POOLING A HEAD AND A "
+             "REAR AT UNEQUAL PER-UNIT OPACITY (f3c/f3d's mechanism; any split "
+             "fraction but 0.5), not the tClaimed mosaic term M1.P3.T20 removed"
              % (min(fogProfile),
                 profileRow(fogProfile.index(min(fogProfile))),
                 max(fogProfile), g4K,
@@ -1973,12 +2003,20 @@ def sceneL(settings):
     # longer pinned by a K-invariant trough, so it now shows the composite.
     # M1.P3.T17 read it and did not move it: the composite it kept is the one
     # this check already measured.
-    # Bounded so a real regression on top of it still FAILs.
+    # RETIRED TO A PLAIN CHECK at M1.P3.T20's review.  M1.P3.T20 fixed the
+    # bucket-composite term this measured and the reading went 5.226e-03 ->
+    # 0.000e+00 (every K's worst row now reads the same 0.997916), but the check
+    # was left carrying `expectedFailure=True, hardTol=8.0e-03` — so a full
+    # revert of that fix reports XFAIL here rather than FAIL, which is exactly
+    # the unbounded-licence-to-fail this suite's own policy forbids once the
+    # residual an XFAIL describes is gone.  Verified by re-rendering this scene
+    # against the pre-T20 plugin (5.226e-03) and against the `claimA = cov`
+    # mutation (5.228e-03): both are FAILs now, XFAILs before.
     spread = max(abs(min(profiles[k]) - min(profiles[settings.k]))
                  for k in profiles)
     checks.append(tolCheck(
         "l", "l3 K-dependence of the residual (was the trough's K-invariance)",
-        spread, 1.0e-06, expectedFailure=True, hardTol=8.0e-03,
+        spread, 1.0e-06,
         population="K=%s" % "/".join(str(k) for k in sorted(profiles)),
         note="worst-row alpha " + " ".join("K%d:%.6f" % (k, min(profiles[k]))
                                            for k in sorted(profiles))

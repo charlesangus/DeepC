@@ -39,9 +39,12 @@ front-to-back at the end:
   bucket composite" was written when the composite *was* plain `over`; T17 deleted `over` and the
   shipped composite is `compositePixelCoveragePartition()`, which reconstructs a split fragment from
   the area planes rather than from the split's `over` identity. The transmittance form is therefore
-  no longer *required* by the composite, and on a depth ramp it is what costs harness `g4` up to
-  16.1% of an α<1 surface's alpha (Decisions, 2026-08-16). Do not re-derive "the split must be
-  transmittance-preserving" from this bullet without re-reading that entry.
+  no longer *required* by the composite. **M1.P3.T20 (2026-08-16) settled what to do about that: the
+  split is UNCHANGED and the composite was fixed instead.** The α<1 ramp deficit was never the
+  split's — it was the composite carrying one pooled transmittance for a claimed area a depth ramp
+  had made a mosaic. The linear split lead was built and **disproved**: it is exact on a mosaic but
+  breaks the dense/sharp `over` identities (two same-pixel layers read 0.875 against a true 1.0, i.e.
+  it would fail validation scene (a)'s parity gate outright). See Decisions, 2026-08-16, M1.P3.T20.
 - **Normalization**: each bucket accumulates `(Σ color·w·vis, Σ alpha·w·vis, Σ w·vis)` — a
   coverage/weight plane alongside color. Since M1.P3.T9 that `Σ w·vis` is **two** planes, not one:
   *new area* (deposits that claim area a pixel didn't have) and *co-located area* (deposits carrying
@@ -289,8 +292,10 @@ l. small-CoC transition: shallow depth ramp crossing 0–2px CoC ⇒ no chatter/
 | CoC field's own interior extremum (`l6`) | Low | Where the radius field has an interior extremum, normalised-kernel scatter under-delivers ~2/3 of the field's local slope at the apex (0.990 at slope 0.0195, 0.971 at 0.0391). **Inherent, not quantisation** — it survives an exact per-pixel kernel with no grid at all, and is invariant to K and to the bucket-composite candidate. Exposed (not caused) by M1.P3.T19, which stopped the coarse grid flattening the extremum neighbourhood onto one disc. Accepted for v1 as a bounded XFAIL; a v2 note |
 | Correct number, wrong explanation | Med | Twice at M1.P3.T19 a re-pinned constant was right while its stated mechanism was fabricated; only an independent grid-free oracle caught it. Validate re-pins against an oracle, never against the new output, and **band** pins rather than bounding them on one side — a one-sided pin there would have passed a full revert of the fix |
 | `pre_merge` lossy at its shipping default | Med | Losslessness holds only when grouped radii share a kernel bin; at the 0.25px default two layers 0.20px apart straddling a bin edge move 9.0e-02 on 100% of pixels. Two separate probes concluded "unreachable"/"exactly lossless" because they happened to group nothing. `merge_tolerance`'s default needs a review at Phase 1.4 |
-| Alpha<1 receding content loses up to 16% of its alpha | High | Found at M1.P3.T17's bake-off. An ordinary semi-transparent surface receding through focus reads −12.5/−16.1/−9.2% at α=0.99/0.90/0.50 (K=16) and **diverges** in K (−5.0 → −26.6% at K=8 → 128 at α=0.5), where the same content at α=1 reads −0.4% and converges. Controls exclude the kernel, the sharp path and depth quantisation (constant depth is exact under both candidates at every K and radius). **Mechanism isolated at T17's review**: the composite's single scalar `tClaimed` cannot represent a claimed area that a depth ramp has made a mosaic of differently-transmissive sub-areas — reproduced on hand-built planes with no kernel at all (−17.4% at α=0.9/N=16, exact at α=1, exact when the fragments share a bucket pair, −38.9% at split fraction 0.25). The deleted candidate was also wrong here but **better at every K and every α<1 tested** (−1.0/−6.6/−15.3/−18.3% at K=8/16/64/128 against −11.4/−16.1/−23.0/−27.5%), by 1.5–3×; it is not a reason to reopen T17 because it diverges in K too and fails identities partition satisfies exactly, but it is not merely "less bad by a hair" either. Bounded XFAIL `g4`; owed a fix or an accepted-residual ruling at Phase 1.4/1.5, and the check must be RE-PINNED by whatever commit fixes it |
-| Documented residual masking a later regression | Med | An unbounded XFAIL swallows anything that lands on top of it. Every harness XFAIL now carries a hard outer bound that flips it to FAIL on drift; new XFAILs must too |
+| Alpha<1 receding content loses up to 16% of its alpha | ~~High~~ **closed** | **FIXED at M1.P3.T20** by giving the composite a second transmittance scalar — a co-located deposit is attenuated by the tile its own head claimed, not by the pooled mean over everything claimed, and a residual's occlusion is *subtracted* from that mean in proportion to the area it covers instead of multiplying the whole of it. On the isolated rig the deficit goes to **exact** at every N, α and split fraction (was −17.4% at α=0.90/N=16, −38.9% at split fraction **0.75** — T17 and T20 both mislabelled that cell as 0.25, which reads −5.49%); harness `g4` goes **0.1607 → 0.0543**; the K-divergence is **gone** (α=0.50 swept +0.33…−26.62% at K=2…128, now +1.37…−1.01%). The *opaque* twin improved five to six decades on the same scene — saturation pushes part of a bucket's alpha into the residual term even at α=1 — which retired the `g1`/`g2`/`g3` XFAILs and closed scene (g)'s own stated seam criterion. What remains at `g4` (−5.4%) is a **different mechanism**: one bucket pooling a head and a rear at unequal per-unit opacity — `f3c`/`f3d`'s term, information lost at accumulation and not recoverable by any per-bucket composite rule. (T20 first attributed this to fragments carrying *differing* split fractions; its review showed a constant fraction ≠ 0.5 reproduces it, so the trigger is `partitionAlpha(α,1−frac) ≠ partitionAlpha(α,frac)`, not fraction mixing.) **T20 also introduced a NEW error in the opposite, forbidden direction on staggered multi-part parents — see the row below.** Original entry, kept for the record: Found at M1.P3.T17's bake-off. An ordinary semi-transparent surface receding through focus reads −12.5/−16.1/−9.2% at α=0.99/0.90/0.50 (K=16) and **diverges** in K (−5.0 → −26.6% at K=8 → 128 at α=0.5), where the same content at α=1 reads −0.4% and converges. Controls exclude the kernel, the sharp path and depth quantisation (constant depth is exact under both candidates at every K and radius). **Mechanism isolated at T17's review**: the composite's single scalar `tClaimed` cannot represent a claimed area that a depth ramp has made a mosaic of differently-transmissive sub-areas — reproduced on hand-built planes with no kernel at all (−17.4% at α=0.9/N=16, exact at α=1, exact when the fragments share a bucket pair, −38.9% at split fraction 0.25). The deleted candidate was also wrong here but **better at every K and every α<1 tested** (−1.0/−6.6/−15.3/−18.3% at K=8/16/64/128 against −11.4/−16.1/−23.0/−27.5%), by 1.5–3×; it is not a reason to reopen T17 because it diverges in K too and fails identities partition satisfies exactly, but it is not merely "less bad by a hair" either. Bounded XFAIL `g4`; owed a fix or an accepted-residual ruling at Phase 1.4/1.5, and the check must be RE-PINNED by whatever commit fixes it |
+| Staggered multi-part parents over-report alpha (up to +18.3%) | High | Found at M1.P3.T20's **review**, and **introduced** by T20. The composite carries ONE head tile, so a bucket that both claims new area and continues a residual chain must discard one of the two; where the two are disjoint the chain is dropped and its parent's later parts are attenuated by an unrelated tile. Two multi-part parents at **overlapping** depth ranges (two fog slabs; a fog slab and a point fragment) whose kernel weights tile one pixel — truth is α with no ordering assumption — read **377/525 swept cells >+0.5% high, worst +18.3%**, saturating to alpha 1 at α=0.90, where pre-T20 they read 4–16% **low**. T20's volumetric check covered only the non-overlapping mosaic, which is exact. `always carry the chain` (−9.3% dense ramp) and `merge by area` (−5.9%, g4 0.0913, 40 unit assertions) are both worse trades, so the fix is more per-pixel state. Pinned as a band in `tests/test_defocus_scatter.cpp`; owed a ruling at Phase 1.4/1.5 |
+| Upward alpha error in the `excess` regime (pre-T20, unbounded) | Med | A fragment whose head lands entirely in already-claimed area registers no tile, so its own co-located rear is attenuated by whatever tile the pixel was carrying: behind a full-coverage α→0 foreground a defocused opaque fragment of coverage 0.05 reads 0.0976 against a true 0.0501 (**+94.8%**). A fragment straddling the free/claimed boundary has its excess attenuated by a mean including the tile it just claimed (**+8.3%**). Both bit-identical before and after T20 — not T20's regression — but no check bounds either, and both err in the honest-alpha contract's forbidden direction. Registering the excess as its own tile fixes the first exactly on hand-built planes and is **refuted by pixels** (g1 1.082e-02, g4 0.0825), so the fix is not known |
+| Documented residual masking a later regression | Med | An unbounded XFAIL swallows anything that lands on top of it. Every harness XFAIL now carries a hard outer bound that flips it to FAIL on drift; new XFAILs must too. **M1.P3.T20's review found the converse too**: `l3` was described as retired while still carrying `expectedFailure=True, hardTol=8.0e-03`, so a full revert of T20 reported XFAIL, not FAIL. A check whose residual is gone must lose its `expectedFailure`, not just its reading |
 | Request/engine channel divergence | Low | Single `neededDeepChannels()` helper |
 | Edge darkening at bbox borders | Low | Output bbox padded by `max_radius` so scattered energy is retained |
 
@@ -1099,7 +1104,24 @@ verified.
     mutation-tested with a fourth, independent mutation (area-weighting the residual's occlusion,
     which is algebraically the pre-T9 divisor): 0.0777, FAIL.
 
-- [ ] M1.P3.T20 — Rule on the α<1 receding-content residual (`g4`) — run BEFORE T18
+- [x] M1.P3.T20 — Rule on the α<1 receding-content residual (`g4`) — run BEFORE T18
+  - **RULED 2026-08-16: FIXED, in the composite.** Lead (b) (the linear split) was built and
+    **disproved** — exact on a mosaic, but it makes a surface self-occlude in the `excess` regime and
+    reads 0.875 against a true 1.0 on two same-pixel layers, i.e. it fails scene (a)'s parity gate by
+    five decades. `partitionAlpha()` is untouched. The mechanism T17's review isolated was fixed
+    directly instead: a co-located deposit is attenuated by the tile *its own head* claimed
+    (`tHead`), not by the pooled `tClaimed`, and a residual's occlusion is subtracted from that mean
+    in proportion to the area it covers. Isolated rig: **exact** at every N, α and split fraction
+    (was −17.4% / −38.9%). Harness `g4` **0.1607 → 0.0543**, re-pinned in the same change; the
+    K-divergence is **gone**; the `g1`/`g2`/`g3` XFAILs **retired** (five to six decades better) and
+    `l3` went to 0.000e+00; harness **PASS=83 FAIL=0 XFAIL=5 SKIP=1, exit 0**; both unit suites green.
+    The remaining 5.4% is `f3c`/`f3d`'s pooling term, a different mechanism, and is *not* claimed
+    fixed. **REVIEWED 2026-08-16: ruling upheld, one regression found and pinned, four claims
+    corrected in place** — staggered multi-part parents now read up to **+18.3% HIGH** (was 4–16%
+    low), `l3` was still an `expectedFailure` rather than a plain check, the remaining g4 term is
+    triggered by any split fraction ≠ 0.5 rather than by *differing* fractions, `claimA = cov` is
+    caught by g1/g2/g3 as well as g4, and `a3`/`l1` moved besides `g4`. Full record in
+    `## Decisions` (the review entry precedes the task's own).
   - files: `src/DeepCDefocusScatter.h`/`.cpp`, `src/DeepCDefocusMath.h`, `tests/test_defocus_scatter.cpp`,
     `tests/nuke/scenes.py`, this file's `## Decisions`
   - approach: **this is the largest known error in the shipped node** and it is not acceptable to
@@ -1272,6 +1294,213 @@ verified.
   - size: M
 
 ## Decisions
+
+- 2026-08-16 — **M1.P3.T20's REVIEW: the ruling stands — the fix is real and root-caused — but it
+  bought the α<1 ramp with a NEW upward error on staggered multi-part parents, and five of its claims
+  were overstated.** Verified independently, with an area-model oracle written from the design
+  reference rather than from the composite, and with every mutation re-rendered.
+  **CONFIRMED.** The isolated rig goes to exact at every N, α and split fraction (reproduced:
+  −2.05/−7.02/−8.36, −4.11/−17.44/−21.63, −3.03/−22.39/−33.65% before → ≤1e-06 after). Lead (b) is
+  genuinely disproved: the closed form `wα(1 − w₀w₁wα)` is exact to the bit (0.4375 at w=1/α=0.5/
+  frac 0.5), and on the natural arrangement it is *worse* than T20 reported — fog-over-opaque reads
+  **0.859375**, not 0.875, and two 50% fogs **0.68359375**, not 0.71875 (T20's figures correspond to
+  an arrangement in which only one of the two layers self-occludes). Lead (b) on the ramp reads
+  −25.6…−27.8%. Harness reproduced at **PASS=83 FAIL=0 XFAIL=5 SKIP=1**, both unit suites green
+  (54/175 329 and 27/141 034), and all seven g4 mutation readings reproduce **exactly**
+  (0.1607/0.1315/0.1196/0.0913/0.0703/0.0598/0.0491), so the 0.004 band is sound.
+  **THE ONE REGRESSION — NOT FIXED, NOW PINNED.** Only ONE `(tHead, headArea)` pair is carried, so
+  the merge rule must DISCARD one tile when a bucket both claims new area and continues a chain. That
+  is free only while the discarded chain has no deposits left. **Two multi-part parents at
+  OVERLAPPING depth ranges** — two fog slabs, or a fog slab and a point fragment, whose kernel
+  weights tile one destination pixel, so truth is α with no ordering assumption — both have deposits
+  left: **377/525 swept cells now read >+0.5% HIGH, worst +18.3%**, and at α=0.90 several saturate the
+  output alpha to exactly 1. The pre-T20 composite read those same cells 4–16% **LOW**. The sign is
+  the honest-alpha contract's forbidden one. T20's required "volumetric parents" check tested only the
+  **non-overlapping** mosaic (`k = j*(P+1)+i`), which is exact and stays exact. Neither alternative is
+  a trade worth making (`always carry the chain` −9.3% on the dense ramp; `merge by area` −5.9%,
+  g4 0.0913, 40 unit assertions), so the fix is more state — a Phase 1.4/M2 question. Pinned as a
+  band in `tests/test_defocus_scatter.cpp` ("staggered multi-part parents …").
+  **"+1.37% IS THE WORST POSITIVE EXCURSION" IS TRUE OF THE K SWEEP, NOT OF THE COMPOSITE.** Two
+  larger upward errors are **pre-existing and bit-identical before and after T20**, so they are not
+  this task's regression, but nothing bounds them: (i) in the `excess` regime a fragment's head
+  registers no tile, so its own co-located rear is attenuated by an unrelated tile — behind a
+  full-coverage α→0 foreground, a defocused opaque fragment of coverage 0.05 reads **0.0976 against a
+  true 0.0501 (+94.8%)**; (ii) a fragment straddling the free/claimed boundary has its excess
+  attenuated by a mean that includes the tile it just claimed and does not overlap — **+8.3%**
+  (0.8125 against 0.75). Both are recorded in the source. An eighth mutation tried at this review —
+  registering the excess as its own tile, which fixes (i) exactly on hand-built planes — is
+  **refuted by pixels**: g1 1.082e-02, g2 4.954e-02, g3 3.200e-02, g4 0.0825. The fit-only rule is
+  right; the residual is real.
+  **FOUR CLAIMS CORRECTED IN PLACE.** (1) **Three XFAILs were retired, not four** — `l3` still
+  carried `expectedFailure=True, hardTol=8.0e-03`, so a full pre-T20 revert reported it XFAIL rather
+  than FAIL; it is now a plain check. (2) **The remaining g4 term is not "fragments at different
+  split fractions"** — T20's own unit cells hold the fraction CONSTANT and still read −2.42…−5.79%;
+  the trigger is that a dense ramp's bucket k pools fragment k's head at `partitionAlpha(α, 1−frac)`
+  and fragment k−1's rear at `partitionAlpha(α, frac)`, which differ for every frac but 0.5. (3)
+  **`claimA = cov` is caught by four rendered checks, not one** — g1 9.980e-03, g2 4.906e-02, g3
+  3.191e-02 as well as g4 0.0703 (it does still survive the unit suite). (4) **`−38.9% at split
+  fraction 0.25` is the frac 0.75 cell** under this repo's own convention; frac 0.25 reads −5.49%,
+  which the entry's own table already says.
+  **AND TWO CONSTANTS DID MOVE BESIDES `g4`.** Re-rendering the current checks against the pre-T20
+  plugin moves exactly 15 of 89 rows: `g1`×3, `g2`×2, `g3`×3, `g4`, `l3`, `f3b`/`f3c`/`f3d` (7th
+  decimal, as reported) — **plus `a3` 5.960e-08 → 1.192e-07** and **`l1` 2.176e-03 → 2.084e-03**,
+  neither disclosed. `a3` still passes scene (a)'s 2.4e-07 parity gate but its margin has halved;
+  `l1` improved. Everything else — T9's behind-focus 36.86/50.25/56.31/61.00%, `h3c`, `l5`, scene
+  (i)'s coverage-deficit identity, scene (b) — is bit-identical, so "no other pinned constant moved"
+  is very nearly, but not exactly, true.
+
+- 2026-08-16 — **M1.P3.T20: the α<1 receding-content residual is FIXED, in the COMPOSITE, not in the
+  split. Lead (b) was built and disproved; the mechanism T17's review isolated was fixed directly.**
+  **The ruling is a fix, not an accepted residual.** Harness `g4` 0.1607 → **0.0543**; on the isolated
+  rig the deficit goes to **exact**; the K-divergence is **gone**. Full harness
+  **PASS=83 FAIL=0 XFAIL=5 SKIP=1, exit 0** (from 76/0/12/1), both unit suites green, **no pinned
+  constant moved** except `g4`'s own, which is re-pinned here. **[CORRECTED at review: `a3`
+  5.960e-08 → 1.192e-07 and `l1` 2.176e-03 → 2.084e-03 moved too; both still pass.]**
+  **LEAD (b) — the linear split — IS DISPROVED, and the reason is worth carrying.** On the isolated
+  mosaic rig `α_i = α·w_i` with each half claiming its own new area *is* exact, as T17's review said.
+  But it is exact only in the `fit` regime. In the `excess` regime — where a fragment's coverage lands
+  on area already claimed, which is every dense pixel and every sharp-path pixel — splitting one
+  surface into two independently-distributed sub-areas makes it occlude itself: the pair delivers
+  `wα(1 − w₀w₁wα)` instead of `wα`, a relative deficit of `w₀w₁·w·α` that is **negligible for a large
+  disc and maximal at w = 1**. Built and measured: an α=0.5 fog layer over an opaque card at one pixel
+  reads **0.875 against a true 1.0** at split fraction 0.5, and the two-50%-fog-layers identity reads
+  0.71875 against 0.75. Validation scene (a)'s size-0 parity gate is 2e-07; the linear split misses it
+  by five decades on any pixel with two samples. **The transmittance split is therefore KEPT
+  unchanged**, and the Design reference's flagged justification is superseded not by "the linear form
+  is fine now" but by "the composite, not the split, was wrong". `partitionAlpha()` is untouched.
+  **THE FIX.** `compositePixelCoveragePartition()` gains ONE scalar (plus the area it describes) and
+  loses nothing: no new plane, no new memory, no signature change, no `KernelSampler`/`DEEPC_HD`/
+  `PodBuffer` seam touched. Both halves of the mechanism T17's review named are addressed:
+  - a co-located deposit is attenuated by **`tHead`**, the transmittance of the tile *its own head*
+    claimed, instead of by the pooled `tClaimed`. Its head is the only thing in front of it at that
+    pixel by construction (a fractional split's rear is one bucket behind its head; a split parent's
+    parts are consecutive), so the pooled mean was letting every *other* fragment's head and rear
+    occlude it;
+  - `tClaimed *= (1 − resLocal)` becomes **subtractive and area-weighted**:
+    `tClaimed -= aRes·tHead/claimedArea`, i.e. only `resArea` of the claimed share loses
+    transmittance, and it loses `resLocal` of its own. The two terms then telescope exactly — the
+    alpha added equals the transmittance removed.
+  - **A bucket registers a new tile only for its `fit` share.** The `excess` share lands on area the
+    mosaic already has, so it *attenuates* the existing tile rather than adding one. Registering it
+    too reads **+5.169%** on two full-coverage layers sharing a bucket pair (against the pre-T20
+    composite's +0.141%) — it double-counts one physical area as two tiles at two stages of the same
+    composite.
+  - **When a bucket leaves two candidate tiles, the pixel's own area decides.** If
+    `claimA + chainA > claimedArea` they cannot be disjoint, so the residual sat on the very tile this
+    bucket claimed and the chain already carries its whole occlusion — carry the chain. Otherwise they
+    fit side by side and the next co-located deposit is the rear of the head just claimed — carry the
+    claim. **Merging them by area instead is wrong in both directions at once** (measured: −5.9% on a
+    dense ramp AND +5.2% on the collision shape), because the question is not "what is the mean" but
+    "which tile does the next deposit land on". The `> claimedArea` branch is what keeps the
+    M1.P3.T13/T15 same-pixel collision shape and the two-layer flat field bit-identical to pre-T20.
+  **THE EVIDENCE, on the same rig T17's review used** (hand-built planes, one pixel, no kernel, no
+  holdout, no flatten, no depth quantisation; truth is α because the weights sum to 1):
+  | α | N=2 | N=16 | N=64 | frac 0.25, N=16 |
+  |---|-----|------|------|-----------------|
+  | 0.99 | −2.05% → **exact** | −7.02% → **exact** | −8.36% → **exact** | −1.59% → **exact** |
+  | 0.90 | −4.11% → **exact** | −17.44% → **exact** | −21.63% → **exact** | −5.49% → **exact** |
+  | 0.50 | −3.03% → **exact** | −22.39% → **exact** | −33.65% → **exact** | −7.34% → **exact** |
+  ("exact" = ≤1.19e-06 absolute, float accumulation over up to 64 fragments.) Over 2000 randomised
+  multi-fragment pixels judged against an independently-written area-model oracle, mean |error| goes
+  **6.91% → 0.38%** (point fragments, no pooling) and **5.13% → 0.61%** (volumetric parents); with
+  pooling allowed, 9.13% → 3.33%, the rest being the pooling term below.
+  **THE FOUR THINGS THE BRIEF REQUIRED BEFORE ADOPTING ANYTHING, each measured.**
+  - **Volumetric parents.** Unchanged where they were already exact (single parent, any part count,
+    any alpha, in front of focus) and **fixed** where they were not: a *mosaic* of volumetric parents
+    read −24.5% at 8 parents × 3 parts / α=0.90 and is now exact. `splitSpanAtBoundaries()` is
+    untouched — the volumetric transmittance split is physically exact and was never the issue.
+  - **Holdouts.** `vis` multiplies into both the alpha and the area planes, so `local = A_k/C_k` is
+    invariant to it and the fix commutes with holdout visibility by construction. **[CORRECTED at
+    review: only `local` and `resLocal` are invariant. `fit = min(cov, freeArea)`, `claimedArea` and
+    the `claimA + chainA > claimedArea` test all move with `vis`, which is the intended semantic (a
+    held-out fragment claims less area) but is not "by construction". The no-regression conclusion
+    is carried by the rendered scenes below, not by the invariance argument.]** Rendered: scenes (b)
+    and (f) are unmoved to the digit — `f1` 4.367e-08, `f2`'s erasure profile, `f3c` −0.113%, `f3d`
+    −1.676%, `b1` 0.000e+00 against `DeepHoldout2` — and `f3c`/`f3d` move only in the 7th decimal.
+  - **Within-bucket ordering, and the K knob.** Nothing is assigned whole-weight and nothing changes
+    at scatter time, so the K knob's mitigation is intact; the **K sweep is the proof it did not trade
+    one divergence for another** (below). Where within-bucket ordering *is* genuinely lost — two
+    unrelated layers pooled in one bucket — the readings are bit-identical to pre-T20 by the
+    disjointness branch above.
+  - **Depth-interpolation continuity.** The split is unchanged, so the interpolant is unchanged;
+    `partitionAlpha()`'s documented α→1 quantisation-at-bucket-centres cost is neither improved nor
+    worsened. Scene (l)'s small-CoC readings are unmoved (`l1` 2.084e-03, `l2` 1.950e-03,
+    `l5` 3.667e-03) and **`l3` went from XFAIL 5.226e-03 to 0.000e+00** — the K-dependence at the
+    sharp↔disc threshold that T19 attributed to the bucket composite was exactly this defect.
+  **THE K SWEEP** (scene (g)'s ramp, interior flat-field mean, rendered):
+  | α | K=2 | K=4 | K=8 | K=16 | K=32 | K=64 | K=128 |
+  |---|-----|-----|-----|------|------|------|-------|
+  | 1.00 | −0.000 | −0.000 | −0.000 | −0.000 | −0.000 | −0.000 | −0.000% |
+  | 0.99 | −4.363 | −4.363 | −5.552 | −4.886 | −3.923 | −3.539 | −5.036% |
+  | 0.90 | −3.290 | −3.290 | −5.583 | −5.426 | −4.784 | −4.665 | −6.055% |
+  | 0.50 | +1.373 | +1.373 | −0.090 | −0.128 | +0.104 | −0.022 | −1.007% |
+  against T17's α=0.90 column of −11.39 / −16.07 / −22.99 / −27.49% at K=8/16/64/128 and α=0.50's
+  +0.33 → −26.62% over the whole sweep. **Bounded and roughly K-flat, where it used to diverge.** The
+  positive excursions are small and are reported rather than smoothed: the worst is **+1.37%** at
+  α=0.50/K=2 (was +0.33%), so the fix does move the honest-alpha contract's forbidden direction by
+  about one point in one corner of the sweep, which is a cost, not a wash.
+  **WHY IT IS NOT THE DISPROVED "COVERAGE INTO BOTH BUCKETS".** That defect (M1.P3.T2's review,
+  +8.29%) deposits `w` into the area planes **twice**, so a pixel with an honest 60% coverage deficit
+  reports 120% and an isolated bokeh renders at double energy. Nothing here changes what is deposited:
+  the total area written per fragment is still exactly `w`, once, and `scatterSpanBothBuckets()` is
+  untouched. The change is entirely in how the composite *reads* the two area planes it already had.
+  The scene-(i) coverage-deficit identity is bit-unchanged (dip min 0.513260, width 24 px, fabricated
+  blue 0.000e+00) and the unit suite's "honest 60% hole stays 0.6" still holds exactly.
+  **LEAD (a) WAS NOT RE-TRIED ALONE, and is now moot.** Area-weighting the residual's occlusion
+  *multiplicatively* — algebraically the pre-T9 `claimedArea` divisor — reads 0.0777 on `g4` and fails
+  the unit suite, exactly as T9 and T17 recorded. The subtractive form shipped here is **not** that
+  expression: it is `tClaimed − aRes·tHead/claimedArea`, which reduces to the multiplicative one only
+  when `tHead == tClaimed`, and the unit suite pins the difference on an identity that needs no
+  arithmetic (an opaque surface covering the whole pixel reads alpha exactly 1 whatever is in front of
+  it; the multiplicative form punches a 12.5% hole through it). T9's pinned behind-focus residue
+  (36.86 / 50.25 / 56.31 / **61.00%**) is **unmoved**, and so is every other pinned constant in both
+  suites — 54 cases / 175,329 assertions and 27 / 141,034, green.
+  **WHAT IS LEFT AT `g4`, AND WHY IT IS A DIFFERENT MECHANISM.** −5.43%, and it is **not** the
+  `tClaimed` mosaic term. The control is in the unit suite: a ramp whose fragments all carry the SAME
+  split fraction is now exact at every bucket count, every N and every α; give the same fragments
+  DIFFERENT split fractions and −2.4 to −5.8% comes straight back, because a bucket's pooled alpha
+  then carries two per-unit opacities and the `C_k : D_k` area split cannot separate them.
+  **[CORRECTED at review: the control is wrong as stated. The exact case is fragments in their OWN
+  bucket pairs, at ANY split fraction; the −2.4…−5.8% cells hold the fraction CONSTANT across every
+  fragment and pack the pairs adjacently, so the trigger is one bucket pooling a head at
+  `partitionAlpha(α,1−frac)` with a rear at `partitionAlpha(α,frac)` — unequal for every frac but
+  0.5 — not fraction mixing between fragments.]** That is
+  **`f3c`/`f3d`'s mechanism** — information lost at *accumulation*, not at composition — and no
+  per-bucket composite rule can undo it. A real ramp gives every scanline its own split fraction,
+  which is why this scene cannot reach zero. Reducing it would mean changing what the scatter
+  accumulates (a per-bucket opacity moment, or narrower buckets), which is a Phase 1.4/M2 question and
+  is **not** claimed here.
+  **HARNESS EFFECTS.** PASS 76 → **83**, XFAIL 12 → **5**, FAIL 0 → 0, exit 0.
+  `g1` K=8/16 1.048e-02 / 4.446e-03 → **1.703e-08 / 5.801e-08**; `g2` K=8/16 4.909e-02 / 4.657e-02 →
+  **1.848e-06 / 7.153e-07**; `g3` K=8/16 3.191e-02 / 2.883e-02 → **1.907e-06 / 2.980e-07**;
+  `l3` 5.226e-03 → **0.000e+00**. **[CORRECTED at review: only THREE were retired — `l3` kept
+  `expectedFailure=True, hardTol=8.0e-03`, so a full pre-T20 revert reported it XFAIL rather than
+  FAIL. It is a plain check as of the review.]** Those XFAILs are **retired to plain checks**, deliberately: an
+  `expectedFailure` that no longer describes a residual is an unbounded licence to fail. **Scene (g)'s
+  own stated criterion — "no visible seams at bucket boundaries at K=16" — is now met outright, at
+  every K, by four decades.** `l5` (3.667e-03 against 3.9e-03) and `h3c` (1.335e-06 against 2.0e-06)
+  are **bit-unchanged**, so neither margin was spent.
+  **WHY AN OPAQUE PLANE SHOWED AN α<1 DEFECT AT ALL** — the one thing here that was surprising, and it
+  is derived, not guessed: at α=1 the transmittance split is a no-op, but **saturation** is not. Where
+  a destination pixel's new area and co-located area sum past 1 the bucket's alpha clamps to 1, so
+  `local = aCov/cov` comes out at `1/(C_k + D_k) < 1` and the remainder becomes a residual — which the
+  pooled `tClaimed` then over-occluded exactly as it did at α<1. That is why `g1`/`g2`/`g3` moved by
+  five to six decades on a fully opaque input, and why they barely move at K=64 (few fragments share a
+  bucket there), which is the same convergence `g4` now shows.
+  **`g4` IS RE-PINNED IN THIS SAME CHANGE**, 0.1607 ± 0.025 → **0.0543 ± 0.004**, still a band and
+  still unable to PASS by construction. **Mutation-tested by re-rendering the scene through seven
+  separate mutations**: full pre-T20 revert 0.1607, always-carry-the-chain 0.1315, residual alpha ×0.75
+  0.1196, merge-tiles-by-area 0.0913, `claimA = cov` 0.0703, multiplicative update 0.0598, no-excess-
+  attenuation-of-`tHead` 0.0491. The two nearest sit 0.0052 and 0.0055 outside the pin, hence the
+  0.004 band. **The independent oracle for the new value** is the isolated rig above, which is
+  arithmetic on hand-built planes with no Nuke in it: it predicts −5.47% where the render reads
+  −5.43%, and its fixed-split-fraction control is exact — so the number is validated *and* attributed,
+  not re-fitted to the new output.
+  **ONE THING NO TEST PINS, said rather than hidden**: `claimA = fit` rather than `cov`. It is right by
+  the same argument as `claimT` (the excess share is not a new tile), but the mutation **survives the
+  entire unit suite** and is caught only by `g4`'s band (0.0703). Recorded in the source next to the
+  line. **[CORRECTED at review: it is also caught by `g1` 9.980e-03, `g2` 4.906e-02 and `g3`
+  3.191e-02 — four rendered checks, not one. It does still survive the unit suite.]**
 
 - 2026-08-16 — **M1.P3.T17: the bucket composite is `CoveragePartition`. `FrontToBackOver` is deleted.**
   Decided from rendered pixels, every render setting `ScatterParams::combine` explicitly, on the
