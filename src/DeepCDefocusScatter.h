@@ -2248,8 +2248,27 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 // WHAT IT DOES NOT FIX, said plainly.  A bucket that pools deposits at
 // DIFFERENT per-unit opacities still loses them into one `A_k / C_k`.  That is
 // information gone at ACCUMULATION, not at composition, it is harness f3c/f3d's
-// mechanism, and no per-bucket rule can recover it.  It is the whole of g4's
-// remaining 5.4%.
+// mechanism, and no per-bucket rule can recover it.  ~~It is the whole of g4's
+// remaining 5.4%.~~
+//
+// THAT LAST SENTENCE IS WRONG, MEASURED AT M1.P3.T23.  A fifth plane carrying
+// the co-located ALPHA -- so the C_k : D_k split is READ rather than guessed --
+// was built and rendered: it takes f3c from -0.113% to +0.000% and f3d from
+// -1.676% to -0.000%, i.e. it closes that mechanism EXACTLY, and it moves g4
+// only 0.0325 -> 0.0287.  So roughly 88% of g4's remainder is something ELSE,
+// and WHAT is unexplained -- stated as unexplained rather than re-attributed,
+// which is the sixth time in this milestone a correct number has carried a
+// fabricated mechanism.  REPRODUCED INDEPENDENTLY at T23's review, on its own
+// fifth-plane build: f3c 0.7500004, f3d 0.7499995, g4 0.874128 (0.0287), f3e
+// +77.411% -> +74.702%.  Two mechanisms were then EXCLUDED from that remaining
+// 88%, so "unexplained" is bounded rather than merely unexamined: it is NOT the
+// tile-stack cap (kCompositeHeadTiles 16 -> 64 leaves g4 bit-identical at
+// 0.874128) and it IS inside the residual-occlusion path (tHeadIn = 1 drives
+// g4 to 1.000000, i.e. +11.1%, so it is this function's term and not the
+// flatten's or the scatter's).  (The plane is NOT shipped: the user's ruling is that
+// f3c/f3d/g4 are precision, not correctness, and it costs (C+3) -> (C+4), +14%
+// of the bucket planes at C=4 and +25% at C=1.  See the milestone Decisions,
+// 2026-08-16, M1.P3.T23.)
 //
 // THE TRIGGER, CORRECTED AT T20's REVIEW.  The first draft of this block said
 // the trigger was fragments carrying DIFFERENT split fractions from each other.
@@ -2360,6 +2379,52 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 //   and the choice is a Pareto point, not an approximation converging on
 //   anything.  Unlike the C_k : D_k split, NO fixed number of planes recovers
 //   this — parent count per bucket is unbounded — so it is permanent.
+//
+// AND MOST OF THE RENDERED OVER-READ IS NOT EVEN THIS TERM (M1.P3.T23).  Five
+// candidate rules were built and the three that survived POD screening were
+// rendered through harness f3e/f3f; none beats the trade, and the reason is
+// that the biggest cell in that family is not a tile-allocation term at all.
+// f3f's `overlap 100% (coincident spans)` reads +80.428% and is BIT-IDENTICAL
+// under a fifth plane, because when two parents' spans coincide both heads
+// land in the SAME bucket and every later part likewise: the planes for {A, B}
+// are NUMERICALLY IDENTICAL to those of ONE parent at the pooled density --
+// one (C_k, D_k, A_k) triple, one tile.  Nothing that reads only THESE FOUR
+// planes can tell them apart.  That is f3g's argument one level up (f3g is
+// exact only because a single-bucket pair leaves no residual to mis-attribute),
+// and it is why f3e's high arm cannot be closed from the four planes.
+//
+// SAY "THESE FOUR PLANES", NOT "ANY PLANE COUNT" (M1.P3.T23's REVIEW).  The
+// first draft of this block said no rule could reach that cell at ANY plane
+// count, and that is too strong -- a plane of a DIFFERENT KIND reaches it.  The
+// term the composite drops there is a COVARIANCE: it attenuates the pooled
+// residual E[a_res] by the pooled head transmittance E[1-a_head], where the
+// truth wants E[a_res*(1-a_head)].  A plane carrying the second moment
+// sum_i w_i*a_i^2 gives the composite the within-bucket opacity SPREAD, and
+// replacing the residual's `r*T_t` by `r*T_t - s_res*s_head` (the plan's own
+// untried "split the tile stack by opacity band") is a STRICT no-op wherever
+// either spread is zero -- so T21's staggered exactness and the dense ramp stay
+// BIT-IDENTICAL -- while taking the coincident two-parent shape from +17.6 to
+// +86.3% down to -5.8 to +15.6%, and to EXACTLY 0.000% at two parts.  Measured
+// on hand-built planes at the review; NOT shipped, and not a fix either: it
+// leaves the staggered/offset cells untouched (+51.7% unmoved), it doubles
+// f3c/f3d's deficit (-0.753% -> -1.505%), and it costs one or two more planes
+// on top of the fifth.  What IS permanent is the weaker statement already made
+// above: parent count per bucket is unbounded, so no FIXED plane count recovers
+// parent identity in general.  It is the four-plane layout that cannot reach
+// this cell, not arithmetic as such.
+// What IS reachable is the cells whose two heads land in DIFFERENT buckets:
+// the fifth plane plus allocating the residual's alpha by each tile's own
+// per-unit opacity takes f3f's `overlap 25%` from +52.251% to +5.464% and
+// `overlap 0%` from +20.906% to +0.206% -- but it also takes the disjoint-span
+// DEFICIT arm from -3.278% to -38.636% and turns f3h, an arrangement this
+// composite is EXACT on, into a +6.510% FAIL, at +38-41% of the composite's
+// time and one more float per tile.  A trade, not a fix; measured and
+// rejected.  Every candidate, both axes, the K/alpha sweeps and the costs are
+// in the milestone Decisions, 2026-08-16, M1.P3.T23.  Do not re-run the naive
+// conservative rule, either tile ordering, opacity-matched tile SELECTION
+// (breaks M1.P3.T21's staggered exactness at -25%) or weighting the allocation
+// by each tile's own 1-T (takes the 32x32 overflow row from -5.13% to
+// -25.09%): all four are measured and spent.
 // AND ONE RESIDUAL THIS DID NOT TOUCH, PRE-DATING T20 AND STILL OPEN.  In the
 // `excess` regime a fragment's head registers NO tile (see the fit branch), so
 // its own co-located rear is attenuated by whatever tile the pixel happened to

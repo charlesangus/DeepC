@@ -870,6 +870,76 @@ def sceneF(settings):
 # deficit — but "f3e is still FAIL" is not by itself evidence that the target
 # is still open: read the two arms, and the disjoint cell, separately.
 #
+# WHAT M1.P3.T23 MEASURED, AND WHY THIS FAMILY STAYS RED.  Five candidate
+# composite rules were built; the three that survived POD screening were
+# rendered through this family (each in its own build tree, behind a runtime
+# switch whose OFF setting reproduced every reading in the harness row for
+# row).  None beats the trade, and the reason is that the HIGH arm is not one
+# term either.  Sorted by whether a composite rule can reach the cell at all:
+#
+#   * UNREACHABLE FROM THE FOUR PLANES.  `overlap 100% (coincident spans)`
+#     reads +80.428% -- the largest cell here at the default K -- and is
+#     BIT-IDENTICAL under a fifth plane carrying the co-located alpha.  When
+#     two parents' spans coincide, both heads land in the SAME bucket and every
+#     later part likewise, so the planes for {A, B} are NUMERICALLY IDENTICAL
+#     to those of one parent at the pooled density: one (coverage, co-located
+#     area, alpha) triple per bucket and one head tile.  That is f3g's argument
+#     one level up.  Anything measured on this cell FROM THESE FOUR PLANES is
+#     measuring accumulation, not composition.  MECHANISM CONFIRMED AT THE
+#     REVIEW, and it is sharper than "the planes look the same": in this cell
+#     every bucket carries EITHER new area OR co-located area and never both
+#     (both cards occupy the same z span, so both heads claim in the first
+#     bucket and every later part is co-located), so the C_k : D_k split is
+#     DEGENERATE and a fifth plane that only refines that split is a strict
+#     no-op.  Bit-identity here therefore does NOT generalise to a coincident
+#     pair whose heads land in different buckets.
+#     BUT NOT "AT ANY PLANE COUNT" -- that clause was withdrawn at the review.
+#     The dropped term is a COVARIANCE (the composite forms E[a_res]*E[1-a_head]
+#     where truth wants E[a_res*(1-a_head)]), and a plane carrying the second
+#     moment sum w_i*a_i^2 supplies the within-bucket opacity spread that closes
+#     it: subtracting s_res*s_head from the residual's per-tile transmittance --
+#     the plan's own untried "split the tile stack by opacity band" -- is a
+#     strict no-op wherever either spread is zero (T21's staggered exactness and
+#     the dense ramp stay BIT-IDENTICAL) and takes the coincident two-parent
+#     shape from +17.6..+86.3% to -5.8..+15.6%, exactly 0.000% at two parts.
+#     Measured on hand-built planes, NOT shipped: it leaves the staggered/offset
+#     cells unmoved (+51.7%), doubles f3c/f3d's deficit, and costs more planes
+#     than the fifth.  What is permanent is the weaker claim: parent count per
+#     bucket is unbounded, so no FIXED plane count recovers parent identity.
+#   * REACHABLE, but only with the fifth plane AND at a price.  The cells whose
+#     two heads land in DIFFERENT buckets do move: `overlap 25%` +52.251% ->
+#     +5.464%, `overlap 0%` +20.906% -> +0.206%, base +77.411% -> +34.664%,
+#     under the fifth plane plus allocating the residual's alpha by each tile's
+#     own per-unit opacity.  The same rule takes the disjoint-span DEFICIT cell
+#     from -3.278% to -38.636% and turns f3h -- an arrangement the composite is
+#     EXACT on -- into a +6.510% FAIL.  A trade, and one that costs +14% of the
+#     bucket planes at C=4 and +38-41% of the composite's time.
+#   * THE FIFTH PLANE ALONE (allocation unchanged) moves this family by 2.7
+#     points (+77.411% -> +74.702%) while taking f3c and f3d to EXACT.  So the
+#     ruling that f3c/f3d are precision and f3e/f3f are correctness is not just
+#     a scoping decision, it is two different mechanisms: one plane closes the
+#     first pair outright and barely touches the second.
+#
+# SO DO NOT READ A CANDIDATE'S f3e MOVEMENT WITHOUT THE `Cells:` DETAIL, and do
+# not expect the headline to reach zero: roughly half of it cannot be reached
+# from here.  Also note the ALPHA scaling, measured at M1.P3.T23 through this
+# same oracle: THIS FAMILY'S over-read scales WITH alpha, and its equal-density
+# arm is mild at low alpha.  READ THAT AS A STATEMENT ABOUT THIS RIG ONLY.  It
+# is NOT true of the node's other alpha<1 rig: scene (g)'s ramp (the g4 rig)
+# reads +6.53% at alpha 0.10 and +5.17% at alpha 0.30 (K=2/4), +5.93% and
+# +3.40% at the default K=16, i.e. it scales INVERSELY with alpha, and at
+# alpha 0.90 it is a -3.25% DEFICIT.  Both were re-measured at T23's review and
+# both reproduce; M1.P3.T23 read the g4-rig figures against THIS oracle, found
+# different numbers and reported the record as unreproducible, which it is not.
+# Low alpha IS part of the milestone's target -- on the g4 rig, not here.  The
+# unequal-density arm here is not mild at low alpha either: at the 10:1 ratio
+# alpha 0.30 reads +6.49%, thirteen times this gate.  Equal-
+# density staggered twins (f3f's `ratio 1.00` cell) read +0.370% at alpha 0.10,
+# +1.619% at 0.30, +2.931% at 0.50, +6.658% at 0.90 and +8.373% at 0.99, all at
+# K=16, and the K sweep CONVERGES (plateau by K=32, e.g. alpha 0.50 reads
+# +2.030/+2.437/+2.931/+3.070/+3.083/+3.070 at K=4/8/16/32/64/128).  At the
+# 10:1 density ratio, K=16: +1.831% / +6.461% / +12.808% / +43.182% / +77.411%.
+#
 # f3g is the one row here that is an ATTRIBUTION control rather than a
 # detector, and it is STRUCTURALLY so rather than by luck: the bucket planes
 # are per-destination-pixel SUMS, so two cards at the same depth pool into one
@@ -1057,7 +1127,15 @@ def unequalDensityChecks(settings):
              "is M1.P3.T23's target (invented alpha); the LOW arm is a "
              "different, permitted-direction term that f3f's 'spans disjoint' "
              "cell isolates at +0.000% high / -3.278% low, so closing the "
-             "over-read alone leaves this row RED"))
+             "over-read alone leaves this row RED. M1.P3.T23 MEASURED FIVE "
+             "CANDIDATE RULES AND NONE BEATS THE TRADE: about half of the high "
+             "arm is f3f's `overlap 100%` cell, where both parents' parts pool "
+             "into ONE bucket entry and ONE tile and no rule reading THESE "
+             "FOUR PLANES can reach them (bit-identical under a fifth plane, "
+             "because every bucket there carries either new or co-located area "
+             "and never both, so that plane's split is degenerate). A second-"
+             "moment plane DOES reach it (review, POD only) -- see the header "
+             "above and the milestone Decisions"))
 
     # --- f3f: the sweep.  A gate that reads ONE number cannot show whether a
     # later change moved the defect or moved the rig, so every axis the defect
