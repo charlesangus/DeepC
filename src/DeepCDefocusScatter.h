@@ -2439,6 +2439,44 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 // up to +8.3% (wA 0.5 / aA 1 sharp, then wB 1.0 / aB 0.5 sharp: truth 0.75,
 // composite 0.8125).  Both are upward and both are unbounded by any check.
 //
+// AND THE g4 RIG'S LOW-ALPHA OVER-READ IS NOT THIS FUNCTION'S AT ALL
+// (M1.P3.T24), which corrects two recorded attributions: scene (g)'s ramp at
+// alpha <= 0.30 reads HIGH -- +6.5% at alpha 0.10 / K=4, +5.9% at the default
+// K=16, g4-RIG figures, rendered -- and both M1.P3.T21 ("f3c/f3d's pooling
+// seen from its positive side") and the covariance / second-moment direction
+// M1.P3.T23's review handed on attributed it to the composite.  It is the
+// SCATTER's: each disc is normalised over its OWN kernel, and on a steep CoC
+// gradient the adjoint sum at a destination pixel is not 1 -- on that scene's
+// deliberately steep 0.5 CoC-px/scanline slope the deposited weight sums to
+// ~1.07, measured directly by the rendered alpha->0 limit (+7.124 / +7.063 /
+// +7.037% at K=4/16/64: K-FLAT, because the scatter is K-independent).  This
+// function's only role is the alpha DEPENDENCE: the spurious excess is
+// `over`-attenuated by tClaimed ~ (1 - alpha), so the over-delivery shows
+// fully as alpha -> 0 and is absorbed entirely by the area clamp at alpha = 1
+// (same weights, g1 reads 1e-08).  Renormalise the deposited weights per
+// pixel on the faithful 1-column model of that rig (the M1.P3.T24 unit test)
+// and every low-alpha cell flips to a small DEFICIT (-0.25/-0.70/-0.87% at
+// K=4/16/64, alpha 0.10): what THIS function contributes at low alpha is in
+// the permitted direction.  No composite rule at any plane count can remove
+// the rest -- the same planes arise from ~190 independent small cards at the
+// same depths, whose over-composited truth is HIGHER than alpha, so one plane
+// set carries two truths ("one receding surface" vs "many overlapping
+// surfaces" is parent identity, which no accumulation plane carries) -- and
+// the scatter-side fix, per-destination-pixel weight renormalisation, breaks
+// content this composite is exact on (two full-coverage 0.5 fog layers read
+// 0.75 today, 0.50 renormalised; a direction-gated version is the design's
+// own deferred v2 `alpha-renormalize` toggle).  ACCEPTED AND BOUNDED at
+// M1.P3.T24: harness g5 pins alpha 0.10/0.30 at K=16, the worst corner
+// (alpha 0.10 / K=4, +6.5%), and the alpha-0.01 scatter control, each as a
+// two-sided band, mutation-tested in both directions.  It is content-driven,
+// scaling with the CoC gradient -- RENDERED at alpha 0.01 / K=16 on the same
+// ramp: +7.06% at this rig's slope 0.5, +1.54% at slope 0.25 (size 43),
+// +0.34% at slope 0.125 (size 21.5), tracking the real-LUT adjoint sums
+// +7.19 / +1.63 / +0.39% computed from DiscKernelLUT directly (T24 review;
+// the chord model's -0.6% at slope 0.125 had the WRONG SIGN -- the real
+// kernel's shallow-slope residue stays slightly high, it does not cross
+// zero) -- so ordinary content sits far inside those pins.
+//
 // THE ALPHA SPLIT IS BY AREA, NOT BY min().  When one bucket carries a head from
 // one parent AND a co-located part of another, `aCov = min(A_k, C_k)` attributed
 // alpha to the new-area share until it was full — pushing `local` to 1 and

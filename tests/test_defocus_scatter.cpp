@@ -5093,6 +5093,167 @@ TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, a
 }
 
 
+TEST_CASE("the g4 rig's low-alpha over-read is the SCATTER's weight over-delivery, "
+          "not the composite's (M1.P3.T24)")
+{
+    // THE MECHANISM BEHIND HARNESS g5, pinned at POD level on a faithful
+    // 1-column model of scene (g)'s ground ramp (THE ISOLATED UNIT RIG -- the
+    // target numbers live in the harness, rendered from the g4 rig itself;
+    // this model reproduces every rendered cell of the alpha x K sweep to
+    // within 0.35 points).  Ground ramp z(y) = 1720/(300-y), manual CoC
+    // size 86 / focus 10, so radius(y) = 0.5*|y-128| -- the scene's own
+    // deliberately steep slope.  A destination pixel y0 receives from each
+    // source row y' the row-sum weight of a normalised disc of radius r(y')
+    // at offset y'-y0, all at depth z(y'), through the REAL DepthBuckets,
+    // fragmentDeposit() and compositePixelCoveragePartition().
+    //
+    // THE FINDING, which corrects two recorded attributions (M1.P3.T21's
+    // "f3c/f3d's pooling seen from its positive side" and the covariance /
+    // second-moment direction M1.P3.T23's review handed this task): each
+    // disc is normalised over its OWN kernel, and on a steep CoC gradient
+    // the adjoint sum at a destination pixel is NOT 1 -- nearer-focus rows
+    // arrive with denser discs than farther rows lose, and the deposited
+    // weight sums to ~1.07 here.  The composite then honestly attenuates
+    // the spurious excess by tClaimed ~ (1 - alpha): fully visible as
+    // alpha -> 0, absorbed by the area clamp at alpha = 1.  No composite
+    // rule at ANY plane count can remove it: these same planes arise from
+    // ~190 independent small cards at the same depths (every deposit here
+    // is a legitimate lone fragment), for which the over-composited truth
+    // is HIGHER than alpha -- one plane set, two truths.  And the scatter-
+    // side fix, per-destination-pixel renormalisation, breaks genuine
+    // overlap (two full-coverage 0.5 fog layers: 0.75 exact today, 0.50
+    // renormalised) -- it is the design's deferred v2 alpha-renormalize.
+    const float slope = 86.0f * 10.0f / 1720.0f;            // 0.5 px per row
+    const float zMin  = 1720.0f / 300.0f;                   // row 0
+    const float zMax  = 1720.0f / 45.0f;                    // row 255
+
+    auto rowWeight = [](float r, float dy) -> float {
+        if (std::fabs(dy) > r)
+            return 0.0f;                                    // outside the disc
+        const float chord = 2.0f * std::sqrt(r * r - dy * dy);
+        return chord / (3.14159265f * r * r);               // row / disc area
+    };
+
+    // One interior destination pixel: deposit, optionally renormalised so the
+    // weights sum to exactly 1, composite, return the excursion a/alpha - 1.
+    // outSumW reports the raw deposited-weight sum (the over-delivery).
+    auto pixelExcursion = [&](const deepc::DepthBuckets& buckets, int bucketCount,
+                              float alpha, int y0, bool renormalise,
+                              double* outSumW) -> double {
+        std::vector<float> ws(256, 0.0f);
+        double sumW = 0.0;
+        for (int y = 0; y < 256; ++y) {
+            const float r = slope * std::fabs(static_cast<float>(y) - 128.0f);
+            const float w = (r < 0.5f)
+                          ? ((y == y0) ? 1.0f : 0.0f)       // sharp fast path
+                          : rowWeight(r, static_cast<float>(y - y0));
+            ws[y] = w;
+            sumW += w;
+        }
+        if (outSumW != nullptr)
+            *outSumW = sumW;
+        std::vector<float> cov(bucketCount, 0.0f), al(bucketCount, 0.0f),
+                           co(bucketCount, 0.0f), col(bucketCount, 0.0f);
+        for (int y = 0; y < 256; ++y) {
+            float w = ws[y];
+            if (!(w > 0.0f))
+                continue;
+            if (renormalise)
+                w = static_cast<float>(w / sumW);
+            const float z = 1720.0f / (300.0f - static_cast<float>(y));
+            const deepc::BucketWeight  bw = buckets.bucketOf(z);
+            const deepc::BucketDeposit d  = deepc::fragmentDeposit(bw, alpha);
+            cov[d.index0] += w;
+            al[d.index0]  += w * d.alpha0;
+            col[d.index0] += w * d.alpha0 * 0.8f;
+            if (d.index1 != d.index0) {
+                co[d.index1]  += w;
+                al[d.index1]  += w * d.alpha1;
+                col[d.index1] += w * d.alpha1 * 0.8f;
+            }
+        }
+        float c = -1.0f, a = -1.0f;
+        deepc::compositePixelCoveragePartition(col.data(), al.data(), cov.data(),
+                                               co.data(), bucketCount, 1, 1,
+                                               &c, &a);
+        return a / alpha - 1.0;
+    };
+
+    // Interior mean over the same rows harness sceneG averages (both sides of
+    // focus, minus the small-CoC band), decimated x3 for speed.  MEASURED, not
+    // assumed: the decimated subset reads 0.08-0.47 points ABOVE the full set
+    // (step 3 lands on rows whose sum(w) runs slightly high -- a sampling bias
+    // of the row subset, identical at every K, not a different mechanism), and
+    // every band below allows for it.  Anyone tightening a band must re-check
+    // against step 1.
+    auto interiorMean = [&](const deepc::DepthBuckets& buckets, int bucketCount,
+                            float alpha, bool renormalise,
+                            double* outMeanW) -> double {
+        double acc = 0.0, wAcc = 0.0;
+        int n = 0;
+        for (int y0 = 66; y0 < 190; y0 += 3) {
+            if (y0 >= 122 && y0 < 134)
+                continue;
+            double sw = 0.0;
+            acc  += pixelExcursion(buckets, bucketCount, alpha, y0,
+                                   renormalise, &sw);
+            wAcc += sw;
+            ++n;
+        }
+        if (outMeanW != nullptr)
+            *outMeanW = wAcc / n;
+        return acc / n;
+    };
+
+    const deepc::CocParams params = deepc::makeCocParams(
+        deepc::CocMode::Manual, 50.0f, 2.8f, 36.0f, 10.0f, 1000.0f,
+        256.0f, 1.0f, 1.0f, 1.0f, 100.0f, 86.0f);
+
+    for (int k : {4, 16, 64}) {
+        CAPTURE(k);
+        deepc::DepthBuckets buckets;
+        buckets.buildBoundedDeltaCoc(params, zMin, zMax, k);
+
+        // (1) THE RIG OVER-DELIVERS, and at vanishing alpha the composite
+        // hands that number straight through: excursion(alpha->0) == sumW - 1
+        // to 0.1 points, AT EVERY K -- the K-invariance is the composite-
+        // independence (the harness rendered +7.124/+7.063/+7.037% at
+        // K=4/16/64 for alpha 0.01 on the real kernel).
+        double meanW = 0.0;
+        const double limit = interiorMean(buckets, k, 0.001f, false, &meanW);
+        CAPTURE(meanW); CAPTURE(limit);
+        CHECK(meanW - 1.0 > 0.05);                  // ~ +0.068 on this rig
+        CHECK(meanW - 1.0 < 0.09);
+        CHECK(std::fabs(limit - (meanW - 1.0)) < 1.0e-03);
+
+        // (2) THE ATTRIBUTION CONTROL: renormalise the weights per pixel --
+        // deliver exactly 1 -- and every low-alpha cell flips to a small
+        // DEFICIT.  What the COMPOSITE contributes at low alpha is in the
+        // permitted direction; the whole forbidden-direction excursion
+        // enters at scatter time.  (Banded: a composite regression that
+        // inflated low alpha would push this back over zero.)
+        const double renorm10 = interiorMean(buckets, k, 0.10f, false, nullptr);
+        const double renormed = interiorMean(buckets, k, 0.10f, true, nullptr);
+        CAPTURE(renorm10); CAPTURE(renormed);
+        CHECK(renormed <= 0.0);
+        CHECK(renormed > -0.015);                   // -0.0025..-0.0088 measured (step 3)
+
+        // (3) THE RAW READINGS THEMSELVES, banded, so this model stays
+        // anchored to the rendered sweep it reproduces: alpha 0.10 reads
+        // HIGH (the forbidden direction) and alpha 0.90 at K >= 16 reads
+        // LOW (g4's own deficit) on the very same weights.
+        CHECK(renorm10 > 0.04);                     // +0.058..+0.066 measured (step 3)
+        CHECK(renorm10 < 0.07);
+        if (k >= 16) {
+            const double raw90 = interiorMean(buckets, k, 0.90f, false, nullptr);
+            CAPTURE(raw90);
+            CHECK(raw90 < -0.02);                   // -0.032/-0.049 measured (step 3)
+            CHECK(raw90 > -0.08);
+        }
+    }
+}
+
+
 TEST_CASE("colour:alpha ratio is a standing invariant of the composite over randomised planes")
 {
     // One invariant instead of three cases (Decisions, 2026-07-27): clamping

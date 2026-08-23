@@ -1832,6 +1832,140 @@ def sceneG(settings):
                 (sum(profiles[g4K]) / len(profiles[g4K]) - 1.0) * 100.0),
         expectedFailure=True, hardTol=G4_BAND,
         hardValue=abs(fogDeficit - G4_PIN)))
+
+    # --- g5: THE LOW-ALPHA ARM OF THE SAME RAMP (M1.P3.T24).  g4 pins one
+    # alpha (0.90, a DEFICIT); below alpha ~0.5 the SAME rig reads HIGH --
+    # invented alpha, the forbidden direction, at the shipping default K --
+    # and until this check existed nothing bounded it.  ALL FIGURES HERE ARE
+    # g4-RIG FIGURES (this scene's ground ramp), NOT the f3e/f3f two-card
+    # family: M1.P3.T23 read this arm against that other rig, got +0.370%,
+    # and reported the record transposed -- the seventh wrong-rig instance in
+    # this milestone.  The full sweep on this rig (interior-mean excursion
+    # mean/alpha - 1, this plugin, M1.P3.T24):
+    #
+    #   alpha    K=4      K=8     K=16     K=32     K=64    K=128
+    #   0.10   +6.526   +6.156   +5.926   +5.803   +5.664   +5.388
+    #   0.30   +5.166   +4.073   +3.399   +3.039   +2.648   +1.901
+    #   0.50   +3.757   +1.987   +0.897   +0.319   -0.287   -1.409
+    #   0.90   +0.819   -1.698   -3.253   -4.084   -4.935   -6.576
+    #   0.99   -0.943   -1.855   -2.536   -2.970   -3.714   -5.497
+    #
+    # THE MECHANISM IS THE SCATTER'S, NOT THE COMPOSITE'S (M1.P3.T24), which
+    # corrects two recorded attributions at once: it is NOT f3c/f3d's
+    # accumulation-time pooling "seen from its positive side" (M1.P3.T21) and
+    # NOT the covariance term the second-moment plane reaches (M1.P3.T23's
+    # review direction).  Each fragment's disc is normalised to sum 1 over its
+    # OWN kernel, and on a steep CoC gradient the adjoint sum at a DESTINATION
+    # pixel is not 1: nearer-focus rows arrive with denser discs than
+    # farther rows lose, so the deposited weight itself sums to ~1.07 here
+    # (this scene's deliberately steep 0.5 CoC-px/scanline slope).  The
+    # alpha-0.01 control below reads that number directly -- rendered
+    # +7.124 / +7.063 / +7.037% at K=4/16/64, K-FLAT because the scatter is K-
+    # independent -- and the alpha dependence is the composite honestly
+    # `over`-attenuating the spurious excess by tClaimed ~ (1 - alpha): fully
+    # visible as alpha -> 0, absorbed entirely by the area clamp at alpha = 1
+    # (which is why g1 reads 1e-08 on the SAME weights).  The unit suite pins
+    # the decomposition on a faithful 1-column model of this rig ("the g4
+    # rig's low-alpha over-read...", M1.P3.T24): at alpha 0.001 the composite
+    # reproduces sum(w) - 1 to 0.1 points at every K, and RENORMALISING the
+    # weights per pixel flips every low-alpha cell to a small DEFICIT
+    # (alpha 0.10: -0.25/-0.70/-0.87% at K=4/16/64), i.e. the composite's own
+    # low-alpha term is in the PERMITTED direction and the whole forbidden-
+    # direction excursion enters at scatter time.
+    #
+    # WHY IT IS ACCEPTED RATHER THAN FIXED, said with numbers:
+    #   * no composite rule, at ANY plane count, can reach it: the same
+    #     bucket planes arise from ~190 INDEPENDENT small cards at the same
+    #     depths (each deposit shape is a legitimate lone fragment), and for
+    #     those the over-composited truth is HIGHER than alpha, not equal to
+    #     it -- one plane set, two truths, so no function of the planes (the
+    #     second-moment plane included, computed from the same deposits) can
+    #     be right on both.  "One receding surface" vs "many overlapping
+    #     surfaces" is parent identity, which the planes do not carry.
+    #   * the scatter-side fix is per-destination-pixel weight
+    #     renormalisation, and that breaks content the node is exact on: two
+    #     full-coverage fog layers at alpha 0.5 read exactly 0.75 today
+    #     (f3h, and the `two 50% fog layers` identity) and 0.50 renormalised,
+    #     because sum(w) = 2 there is GENUINE overlap.  Distinguishing the
+    #     two needs the same parent identity.  A direction-gated version is
+    #     the design's own deferred v2 `alpha-renormalize` toggle.
+    #   * it is content-driven, scaling with the CoC gradient: RENDERED at
+    #     alpha 0.01 / K=16 this ramp reads +7.06% at slope 0.5, +1.54% at
+    #     slope 0.25 (size 43) and +0.34% at slope 0.125 (size 21.5),
+    #     tracking the real-LUT adjoint sums +7.19/+1.63/+0.39% computed
+    #     from DiscKernelLUT directly (T24 review; the chord model's -0.6%
+    #     at slope 0.125 had the WRONG SIGN -- the real kernel's shallow-
+    #     slope residue stays slightly high), so ordinary content (scene
+    #     (l)'s 40x shallower ramp) sits orders of magnitude inside these
+    #     pins.
+    #
+    # PINNED AS BANDS, K FIXED per cell, like g4.  Two-sided ON PURPOSE, so
+    # the gate cannot be satisfied by trading the over-read for a deficit of
+    # the same size.  MUTATION-TESTED IN BOTH DIRECTIONS at M1.P3.T24 by
+    # rendering THIS SCENE through four perturbed builds (values are this
+    # check's `excursion` at the mutated build; * = inside the band, i.e.
+    # that cell alone does not catch that mutation):
+    #
+    #                                     a=.10/K16  a=.30/K16  a=.10/K4  a=.01/K16
+    #   pin                                +0.0593    +0.0340    +0.0653   +0.0706
+    #   UP:   excess term loses its
+    #         tClaimed attenuation         +0.0620*   +0.0425    +0.0669*  +0.0709*
+    #   UP:   tHeadIn = 1 (residual
+    #         unattenuated)                +0.0877    +0.1256    +0.0871   +0.0734*
+    #   DOWN: residual alpha scaled 0.75   -0.0705    -0.0854    -0.0511   -0.0634
+    #   SCATTER: alpha deposits x 1.02     +0.0798    +0.0527    +0.0861   +0.0920
+    #
+    #   Every mutation flips at least one g5 cell (and g4) to FAIL; the DOWN
+    #   row is the sign-trade case and all four cells catch it.  The
+    #   alpha-0.01 control barely moves under COMPOSITE mutations BY DESIGN
+    #   (tClaimed ~ 0.99 there, so the composite has almost nothing left to
+    #   get wrong) -- its job is the SCATTER row, where it moves 5.4x its
+    #   band, i.e. it bounds exactly the uniform-scaling class the
+    #   f3e/f3f ratio oracle is structurally invariant to.
+    #
+    # THIS CHECK CANNOT PASS, BY CONSTRUCTION (a band around a residual);
+    # whoever moves any of these readings must RE-PIN in the same commit,
+    # exactly as g4's history demands.
+    G5_BAND = 0.004
+    g5Cells = [
+        # (alpha, K, pin, role)
+        (0.10, 16, +0.0593, "the shipping default K"),
+        (0.30, 16, +0.0340, "the alpha the record left ungated"),
+        (0.10, 4,  +0.0653, "the sweep's worst corner"),
+        (0.01, 16, +0.0706, "mechanism control: reads sum(w)-1, the "
+                            "scatter's own over-delivery, K-flat"),
+    ]
+    for g5Alpha, g5K, g5Pin, g5Role in g5Cells:
+        g5Cell = settings.derive(k=g5K)
+        g5Colour = tuple(c * g5Alpha for c in GROUND_COLOR[:3]) + (g5Alpha,)
+        resetScript()
+        g5Image = render(g5Cell,
+                         makeDefocus(g5Cell, groundPlane(color=g5Colour),
+                                     size=size, focusDistance=GROUND_FOCUS,
+                                     cocMode="manual"),
+                         "g_ramp_alpha%g_k%d" % (g5Alpha, g5K))
+        g5Profile = (rowMeans(g5Image, "A", lowBox)
+                     + rowMeans(g5Image, "A", highBox))
+        g5Mean = sum(g5Profile) / len(g5Profile)
+        g5Excursion = g5Mean / g5Alpha - 1.0
+        g5High = sum(1 for v in g5Profile
+                     if v - g5Alpha > g5Alpha / 255.0)
+        checks.append(boolCheck(
+            "g", "g5 K=%-2d alpha %.2f low-alpha over-read (the alpha arm; "
+                 "g4 rig)" % (g5K, g5Alpha),
+            False,
+            "%+.4f (%.6f vs %.2f)" % (g5Excursion, g5Mean, g5Alpha),
+            "0.0000 (xfail %+.4f +/- %.4f)" % (g5Pin, G5_BAND),
+            population="%d/%d interior rows over A/255 HIGH" % (g5High,
+                                                                rowCount),
+            note="%s; min %.6f max %.6f (y=%d); POSITIVE is the forbidden "
+                 "direction -- invented alpha, the scatter's weight "
+                 "over-delivery on this rig's steep CoC slope, accepted and "
+                 "bounded at M1.P3.T24 (see the block above)"
+                 % (g5Role, min(g5Profile), max(g5Profile),
+                    profileRow(g5Profile.index(max(g5Profile)))),
+            expectedFailure=True, hardTol=G5_BAND,
+            hardValue=abs(g5Excursion - g5Pin)))
     return checks
 
 

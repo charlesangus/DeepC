@@ -1304,7 +1304,7 @@ verified.
     bound raised; local build and both unit suites green.
   - size: L
 
-- [ ] M1.P3.T24 — Gate and rule on the low-α ramp over-read (the target M1.P3.T23 never measured)
+- [x] M1.P3.T24 — Gate and rule on the low-α ramp over-read (the target M1.P3.T23 never measured)
   - files: `tests/nuke/scenes.py`, `src/DeepCDefocusScatter.h`, `tests/test_defocus_scatter.cpp`,
     this file's `## Decisions`
   - approach: **M1.P3.T23 discharged the user's "keep iterating" mandate on the `f3e`/`f3f` over-read
@@ -1480,6 +1480,53 @@ verified.
   - size: M
 
 ## Decisions
+
+- 2026-08-23 — **M1.P3.T24: the low-α ramp over-read is gated (`g5`) and ruled ACCEPTED, and the
+  recorded mechanism is CORRECTED: it is the SCATTER's weight over-delivery, not a composite term.
+  Nothing functional in `src/` changed** (the one `src/` diff is a comment block). The g4-rig sweep
+  reproduces the record to the last digit (α=0.10: +6.526/+5.926% at K=4/16; α=0.30: +5.166/+3.399%;
+  α=0.90/K=16: −3.253% = `g4`'s pin; all figures = scene (g) ground ramp, size 86, manual CoC,
+  focus 10, interior mean). **Mechanism, confirmed by three independent routes in review:**
+  `DiscKernelLUT` normalises each disc over its own support and nothing renormalises per destination,
+  so on scene (g)'s deliberately steep 0.5 CoC-px/scanline slope the adjoint sum of deposited weight
+  at a destination pixel is **Σw ≈ 1.07, not 1** — measured (i) by the α→0 limit rendered through the
+  real plugin (**+7.124/+7.063/+7.037% at K=4/16/64 — K-flat**, i.e. the scatter is K-independent),
+  (ii) directly from the real LUT by an adjoint-sum probe (interior mean Σw = 1.0719, worst row
+  +9.23%), and (iii) by a slope sweep where the rendered α=0.01 excursion tracks the LUT prediction
+  across a 20× range (slope 0.5/0.25/0.125 → rendered +7.06/+1.54/+0.34% vs LUT +7.19/+1.63/+0.39%)
+  and the α=0.10 excursion collapses +5.93% → −0.06% at slope 0.125 with the composite held fixed.
+  The α-dependence is the composite honestly attenuating the spurious excess by tClaimed ≈ (1−α):
+  fully visible at α→0, absorbed by the area clamp at α=1 (same weights, `g1` reads 1e-08). A
+  renormalised-weights control flips every low-α cell to a small permitted-direction deficit — the
+  composite's own low-α contribution is NOT the forbidden-direction term. **This corrects
+  M1.P3.T21's risk-row attribution** ("`f3c`/`f3d`'s pooling seen from its positive side" — wrong)
+  **and disposes of the T23-review's second-moment direction for this arm**: the impossibility here
+  is scene-level, not plane-level — ~190 independent small cards at the same depths produce
+  per-fragment deposits identical to the ramp's (every plane at any plane count, Σw·a² included, is
+  identical) while their over-composited truth is *higher* than α; only parent identity separates the
+  two scenes and no plane carries it. The scatter-side fix (per-destination renormalisation) breaks
+  genuine overlap the composite is exact on (two 0.5 fog layers: 0.75 exact today, 0.50 renormalised)
+  and is the design's own deferred v2 `alpha-renormalize` toggle. The residual is content-driven,
+  scaling with the CoC gradient and staying slightly HIGH at shallow slopes (it does not cross zero —
+  the chord model's −0.6% at slope 0.125 had the wrong sign, caught in review as the eighth instance
+  of the standing lesson; the rendered figure is +0.34%), so ordinary content — scene (l)'s 40×
+  shallower ramp — sits orders of magnitude inside the pins. **Gated:** harness `g5`, four two-sided
+  band pins (hard bound 0.004 each): +0.0593 at α=0.10/K=16, +0.0340 at α=0.30/K=16, +0.0653 at
+  α=0.10/K=4 (the sweep's worst corner), +0.0706 at α=0.01/K=16 (the scatter control — it reads
+  Σw−1 directly and covers the uniform-scaling class the `f3` ratio oracle is structurally invariant
+  to, moving 5.4× its band under a scatter mutation). Mutation-tested in both directions plus a
+  scatter-side mutation (4-mutation table in `sceneG()`); the DOWN sign-trade case is caught by all
+  four cells. POD twin pinned in the unit suite against internal identities (Σw−1), not a re-run;
+  its rig reaches the phenomenon (0.5 px/row radius change, real `DepthBuckets`/composite,
+  renormalise control banded). Review confirmed all claims by independent probes, fixed the one
+  chord-figure defect in place, and verified the `src/` diff is comment-only (harness
+  check-for-check identical). Baseline correction for the record: the harness at T23's HEAD reads
+  PASS=86 **FAIL=2** XFAIL=5 SKIP=1, exit 1 — the two FAILs are T22's deliberate plain-FAIL
+  `f3e`/`f3f` gate, which cannot exit 0 by design; post-T24: PASS=86 FAIL=2 **XFAIL=9** SKIP=1,
+  every pre-existing reading line-identical, `a3` unmoved at 1.192e-07 of 2.4e-07. **Owed forward:**
+  the node-help documentation of this bound belongs in M1.P5.T2's help rewrite alongside the
+  coverage-deficit spec (the current HELP is still the Phase-1.2 skeleton); T21's risk-register row
+  for the low-α excursion should be read with this entry's corrected mechanism.
 
 - 2026-08-16 — **M1.P3.T23: a MEASURED NEGATIVE RESULT. No composite-side rule beats the trade, and
   most of the over-read is not a composite term at all. NOTHING IN `src/` CHANGED.** The task carried

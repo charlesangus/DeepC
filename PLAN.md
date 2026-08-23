@@ -1,8 +1,8 @@
 ---
 title: DeepCDefocus — deep-input, flat-output defocus node
 status: running
-current: M1.P3.T24
-pm_heartbeat: 2026-08-16T19:40:00-04:00
+current: M1.P3.T18
+pm_heartbeat: 2026-08-23T01:15:00-04:00
 ship: pr-per-milestone
 ---
 
@@ -244,6 +244,29 @@ of T23's verify clause is **not met and was never measured on the right rig** �
 still ungated at α ≤ 0.30. That is the **seventh** instance of the standing lesson below, and the first
 committed by a correction rather than by a claim. Nothing was acted on it, so no code or pin moved.
 
+**T24 is done (2026-08-23): the low-α ramp over-read is gated and ruled ACCEPTED, and its recorded
+mechanism is CORRECTED — it is the SCATTER's weight over-delivery (Σw ≈ 1.07 at scene (g)'s steep
+slope; per-disc LUT normalisation with no per-destination renormalisation), not a composite term.**
+The α→0 limit renders +7.12/+7.06/+7.04% at K=4/16/64 — K-flat — through the real plugin; a
+renormalised-weights control flips every low-α cell to a small permitted-direction deficit; and the
+excursion tracks the real-LUT adjoint sum across a 20× slope range (+7.06/+1.54/+0.34% rendered at
+slopes 0.5/0.25/0.125), collapsing +5.93% → −0.06% at α=0.10/slope 0.125 with the composite held
+fixed. This corrects T21's risk-row attribution and disposes of the second-moment direction *for this
+arm* (scene-level impossibility: ~190 independent co-depth cards produce deposits identical to the
+ramp's at any plane count while their truth is higher — no plane carries parent identity). The fix
+that would close it (per-destination renormalisation) breaks genuine overlap the composite is exact
+on and is the design's own deferred v2 `alpha-renormalize` toggle — so: four two-sided `g5` band pins
+(α=0.10/0.30 at K=16, the worst corner α=0.10/K=4 at +0.0653, and an α=0.01 scatter control reading
+Σw−1 directly), each hard-bounded at ±0.004, mutation-tested in both directions plus a scatter-side
+mutation, the sign-trade caught by all four. Independent review confirmed every claim via its own
+probes and caught the **eighth** standing-lesson instance before it shipped: the chord model's
+−0.6% at slope 0.125 has the wrong sign (rendered: +0.34% — shallow slopes stay slightly HIGH, never
+crossing zero); both comment blocks now carry rendered figures. Baseline record corrected: the
+harness has read FAIL=2, exit 1 since T22 *by design* (`f3e`/`f3f` are deliberate plain FAILs);
+post-T24 totals **PASS=86 FAIL=2 XFAIL=9 SKIP=1**, every pre-existing reading line-identical, `a3`
+unmoved at 1.192e-07, both unit suites green (175 493 scatter assertions, +25). Node-help
+documentation of the bound is owed to M1.P5.T2's help rewrite.
+
 **T19 is done: the harness is now green end to end** — PASS=77 FAIL=0 XFAIL=18 SKIP=1, exit 0, for the
 first time in this milestone. T16's three FAILs were one real node defect: `DiscKernelLUT` quantised
 radius onto a uniform 0.5 px grid, so adjacent scanlines straddling a bin edge rasterised different
@@ -267,7 +290,10 @@ Note T5's size-0 parity clause now passes; its abort-recovery clause remains unv
 interactive pass, since headless Nuke cannot trigger a recoverable mid-cook cancel — validation scene
 (e)'s `Escape` clause (harness check `e4`, SKIPped) is blocked on the same thing and is owed by the
 same interactive pass.
-**Standing lesson, now recorded SEVEN times over** (M1.P3.T23 added the sixth — `DeepCDefocusScatter.h`
+**Standing lesson, now recorded EIGHT times over** (M1.P3.T24's review added the eighth — the
+implementer's slope-scaling figures came from a chord model whose slope-0.125 value had the wrong
+*sign*; the rendered figure is +0.34% HIGH, and the caught-before-commit fix is the first instance
+stopped by review before it entered the record) (M1.P3.T23 added the sixth — `DeepCDefocusScatter.h`
 said the remaining `g4` was "the whole of" `f3c`/`f3d`'s accumulation-time term, and building the plane
 that closes `f3c`/`f3d` exactly moved `g4` by 12%; T23's own review added the **seventh**, and it is the
 sharpest yet because the wrong measurement was a **correction**: T23 declared its brief's low-α figures
@@ -290,7 +316,7 @@ every check (one nobody has made fail proves nothing), band pins rather than bou
 validate re-pins against an independent oracle rather than against the new output, and give every XFAIL
 a hard outer bound so it cannot swallow a later regression.
 
-Remaining in this milestone: P3 T24, T18, then Phase 1.4 and Phase 1.5. Twenty-one tasks
+Remaining in this milestone: P3 T18, then Phase 1.4 and Phase 1.5. Twenty-one tasks
 have now been added by execution findings (M1.P3.T0, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16,
 T17, T18, T19, T20, T21, T22, T23, T24, plus the enlarged M1.P3.T4 test list).
 No PR yet — `ship: pr-per-milestone` puts that at M1's verification gate. The branch
