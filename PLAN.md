@@ -1,8 +1,8 @@
 ---
 title: DeepCDefocus — deep-input, flat-output defocus node
 status: running
-current: M1.P3.T18
-pm_heartbeat: 2026-08-23T01:15:00-04:00
+current: M1.P4.T1
+pm_heartbeat: 2026-08-23T01:50:00-04:00
 ship: pr-per-milestone
 ---
 
@@ -267,6 +267,22 @@ post-T24 totals **PASS=86 FAIL=2 XFAIL=9 SKIP=1**, every pre-existing reading li
 unmoved at 1.192e-07, both unit suites green (175 493 scatter assertions, +25). Node-help
 documentation of the bound is owed to M1.P5.T2's help rewrite.
 
+**T18 is done (2026-08-23): the holdout interpolant is the LOG CHORD; `MidpointStep`, `LinearInT`,
+the `HoldoutInterp` enum, the knob, and the harness flag are deleted — Phase 1.3 is COMPLETE.**
+Scene (e) cannot discriminate (no holdout input); scene (f)'s `f2` favours the alternates (78% vs
+30% bracket erasure); but the mandatory dense-volumetric rig (46 α=0.9 samples underflowing
+transmittance to bitwise 0, analytic oracle) reverses it decisively: mean |err| 0.179/0.435/0.493
+and worst *leak* +1.0e-09 (LogChord) vs **+0.840** (LinearInT) and **+1.000** (MidpointStep — a
+strip at true visibility 5.3e-22 reading 1.0). The alternates invent visibility through dense fog —
+the forbidden direction; LogChord's sole failure is one-sided toward camera and bounded to one
+bracket. A 12-sample no-underflow control is bit-identical under all three, isolating the mechanism.
+Deletion changed no pixel (bit-identical check table and V46 EXRs, independently stash-diffed in
+review — the deleted `t1==0` branch was a LogChord no-op by construction and by pixels). The
+divergence pin became a two-sided band (1.0e-18, 1.7e-18) anchored to the closed form and T11's
+recorded 1.32e-18, mutation-tested both directions. Harness PASS=86 FAIL=2 XFAIL=9 SKIP=1; units
+140 887 + 175 471 green. This discharges the last carried T11 bake-off clause and T18's
+re-render obligation.
+
 **T19 is done: the harness is now green end to end** — PASS=77 FAIL=0 XFAIL=18 SKIP=1, exit 0, for the
 first time in this milestone. T16's three FAILs were one real node defect: `DiscKernelLUT` quantised
 radius onto a uniform 0.5 px grid, so adjacent scanlines straddling a bin edge rasterised different
@@ -316,7 +332,10 @@ every check (one nobody has made fail proves nothing), band pins rather than bou
 validate re-pins against an independent oracle rather than against the new output, and give every XFAIL
 a hard outer bound so it cannot swallow a later regression.
 
-Remaining in this milestone: P3 T18, then Phase 1.4 and Phase 1.5. Twenty-one tasks
+Remaining in this milestone: Phase 1.4 (T1 concurrency, T2 vectorization/perf gate — plus the
+`merge_tolerance` default review owed from T16), then Phase 1.5 (T1 CMake, T2 help/README — owed
+the coverage-deficit spec and T24's low-α bound documentation, T3 scene scripts), then the
+verification gate and PR. Twenty-one tasks
 have now been added by execution findings (M1.P3.T0, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16,
 T17, T18, T19, T20, T21, T22, T23, T24, plus the enlarged M1.P3.T4 test list).
 No PR yet — `ship: pr-per-milestone` puts that at M1's verification gate. The branch

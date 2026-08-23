@@ -1346,7 +1346,7 @@ verified.
     unit suites green.
   - size: L
 
-- [ ] M1.P3.T18 — Decide the holdout interpolant, delete the losers (needs T12 + T16)
+- [x] M1.P3.T18 — Decide the holdout interpolant, delete the losers (needs T12 + T16)
   - files: `src/DeepCDefocusMath.h`, `src/DeepCDefocusScatter.h`/`.cpp`, `src/DeepCDefocus.cpp`,
     `tests/`, this file's `## Decisions`
   - approach: decide among `HoldoutInterp::{LogChord, MidpointStep, LinearInT}`
@@ -1480,6 +1480,48 @@ verified.
   - size: M
 
 ## Decisions
+
+- 2026-08-23 — **M1.P3.T18: the holdout interpolant is the LOG CHORD. `MidpointStep` and `LinearInT`
+  are deleted**, with the `HoldoutInterp` enum, the `holdout_interp` knob,
+  `ScatterParams::holdoutInterp` / `ScatterFragment::holdoutInterp`, and the harness
+  `--holdout-interp` flag — same discipline as M1.P3.T17. Decided from rendered pixels, all figures
+  re-rendered at HEAD post-T24 (256×256 harness rigs, K=16, `pre_merge` on, `holdout_interp` set
+  explicitly per column). Scene (e) does not discriminate — it connects no holdout input, so the
+  interpolant is structurally unreachable there (variant logs byte-identical). Scene (f)'s `f2`
+  (opaque card at 0.8 of a K=16 bracket) favours the alternates — LogChord erases 78% of the bracket
+  in front (strips 0.2512/0.0010/0/0/0, exactly `10^(−30·frac)` — the `kMinTransmittance` floor,
+  rendered), MidpointStep 30%, LinearInT a partial ramp 0.98→0.30 — but the **mandatory
+  dense-volumetric rig reverses it decisively**: rig "V46", 46 DeepCConstant samples at α=0.9 over
+  [15.10, 16.10] inside bracket [15.000, 16.250] (far transmittance underflows to bitwise 0 from a
+  true 1e-46), size-0 opaque probe strips, judged against the analytic per-strip oracle
+  `0.1^(46·clamp((z−15.1)/1.0, 0, 1))` — independent of the LUT. In-bracket mean |err|: **LogChord
+  0.179 / LinearInT 0.435 / MidpointStep 0.493**; worst LEAK (visibility invented through fog — the
+  forbidden direction): **+1.0e-09 / +0.840 / +1.000** — a strip 45% into the bracket behind ~21 fog
+  samples (true visibility 5.3e-22) reads **1.000000** under MidpointStep and 0.550 under LinearInT
+  against 3.16e-14 under LogChord. A 12-sample control (product 1e-12, no underflow) renders
+  bit-identical under all three (spread 0.000e+00), isolating the divergence to the underflowed-t1
+  branch — the non-vacuity guard in both directions. LogChord's sole failure is one-sided toward
+  camera, bounded to one bracket (∝ depthRange/K), capped by `f2`'s hard XFAIL bound; on the dense
+  rig its in-bracket error does go positive past frac 0.30 but the leak is bounded at +1.0e-09.
+  Both alternates invent visibility through the node's differentiating content class — and T11's
+  sweep already showed MidpointStep's card-rig advantage is position-dependent (up to 3.06 u leak
+  behind at other card positions). The `kMinTransmittance` floor cannot change the standing: it is
+  internal to the winner, its rendered signature is exact (`f2`'s 0.2512 = 10^(−30·0.02)), and
+  raising it converts bounded forward erasure into leak through dense fog — caught by the new
+  two-sided pins; any retune is a separate rendered-and-pinned change. **Deletion changed no pixel**
+  (LogChord was the rendering default): harness before and after **PASS=86 FAIL=2 XFAIL=9 SKIP=1**,
+  check table bit-identical (independently stash-diffed in review, plus a bitwise EXR compare on the
+  V46 rig — the exact rig where `t1==0` occurs — confirming the deleted `t1==0` branch was a
+  LogChord no-op by construction and by pixels). Unit suites 140 887 + 175 471 green (−147/−22:
+  loser-only pins pruned; every T3/T10 identity kept on the survivor). The replacement pin is a
+  **two-sided band (1.0e-18, 1.7e-18)** on the underflowed bracket's floored-chord value at math
+  level and at deposited-pixel level on both scatter paths, anchored to the closed form
+  `10^(−30·0.59596)` = 1.322e-18 and T11's independently recorded 1.32e-18 (Decisions 2026-07-27) —
+  not the new code's output; mutation A (floor 1e-30→1e-3) fails 2+3 assertions, mutation B
+  (`t1==0`→0) fails 1+2, both reverted. Review confirmed every claim by its own renders and fixed
+  one factual slip in place (the leak strip is behind ~21 fog samples, not ~17). Reporting nuance
+  carried: `f2`'s "erased strips" criterion (mean < 0.999) counts LinearInT's partial ramp the same
+  as total erasure — the per-strip values above are what distinguish them.
 
 - 2026-08-23 — **M1.P3.T24: the low-α ramp over-read is gated (`g5`) and ruled ACCEPTED, and the
   recorded mechanism is CORRECTED: it is the SCATTER's weight over-delivery, not a composite term.

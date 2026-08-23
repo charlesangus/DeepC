@@ -101,22 +101,20 @@ static const char* const worldUnitsNames[] = {
     "mm", "cm", "dm", "m", "in", "ft", nullptr
 };
 
-// --- BAKE-OFF KNOB (one left; M1.P3.T17 deleted the other) ------------------
+// --- BAKE-OFF KNOBS: ALL DECIDED, ALL DELETED -------------------------------
 //
 // The milestone carried two undecided candidates that had to be judged from
 // rendered pixels rather than derived: the bucket composite and the holdout
-// interpolant's opaque-step behaviour (M1.P3.T11).  Each is a runtime enum in
-// the scatter core precisely so ONE build can render every candidate — but the
-// scatter is only reachable through this node, so without a knob the harness
-// has no way to select them.  Every render therefore sets `holdoutInterp` and
-// `pre_merge` EXPLICITLY and never relies on a default.
-//
-// **M1.P3.T17 decided the bucket composite from pixels and deleted the loser**,
-// so `bucket_combine` and its enum are gone; there is now one composite and no
-// selector.  M1.P3.T18 does the same for the holdout interpolant below.
-static const char* const holdoutInterpNames[] = {
-    "Log chord", "Midpoint step", "Linear in T", nullptr
-};
+// interpolant's opaque-step behaviour (M1.P3.T11).  Each was a runtime enum
+// in the scatter core precisely so ONE build could render every candidate
+// through a temporary knob here.  **M1.P3.T17 decided the bucket composite
+// from pixels and deleted the loser** (`bucket_combine` and its enum are
+// gone); **M1.P3.T18 did the same for the holdout interpolant**
+// (`holdout_interp`, `HoldoutInterp` and the two losing variants are gone —
+// the log chord won; see "THE HOLDOUT INTERPOLANT — DECIDED" in
+// DeepCDefocusMath.h for the rendered numbers).  There is one composite and
+// one interpolant now, and nothing to select.  The harness still sets
+// `pre_merge` and `merge_tolerance` explicitly on every render.
 
 // ---------------------------------------------------------------------------
 class DeepCDefocus : public DD::Image::Iop
@@ -159,8 +157,9 @@ class DeepCDefocus : public DD::Image::Iop
     float _mergeTolerance;       // Float, default 0.25px, 0-2px
     float _memoryLimit;          // Float GB, default 4.0, 1-64
 
-    // --- Bake-off (the bucket composite's knob went at M1.P3.T17) ----------
-    int   _holdoutInterp;        // Enum {LogChord, MidpointStep, LinearInT}
+    // (The two temporary bake-off knobs are gone: `bucket_combine` at
+    // M1.P3.T17, `holdout_interp` at M1.P3.T18 — both decided from rendered
+    // pixels, losers deleted.)
 
     // ----------------------------------------------------------------------
     // Derived state — rebuilt by _validate(), read by _request()/engine().
@@ -261,7 +260,6 @@ public:
         _preMerge(true),
         _mergeTolerance(0.25f),
         _memoryLimit(4.0f),
-        _holdoutInterp(static_cast<int>(deepc::HoldoutInterp::LogChord)),
         _proxyScale(1.0f),
         _formatHeightPx(1080.0f),
         _outChannels(Mask_None),
@@ -433,16 +431,6 @@ public:
         Float_knob(f, &_memoryLimit, IRange(1.0, 64.0), "memory_limit", "memory limit (GB)");
         Tooltip(f, "Caps concurrent in-flight bands (floors at 1 band, then "
                     "shrinks the band height — never deadlocks at 0).");
-
-        // --- Bake-off (TEMPORARY — deleted at M1.P3.T18) -------------------
-        Divider(f, "Bake-off (temporary)");
-
-        Enumeration_knob(f, &_holdoutInterp, holdoutInterpNames,
-                         "holdout_interp", "holdout interp");
-        Tooltip(f, "TEMPORARY: which interpolant the holdout visibility LUT "
-                    "uses where a bracket's far transmittance is bitwise zero "
-                    "(an opaque holdout, or a dense enough alpha<1 stack). "
-                    "Judged from rendered pixels at M1.P3.T12.");
     }
 
     // ------------------------------------------------------------------
@@ -492,22 +480,6 @@ public:
     {
         const double gb = (_memoryLimit > 0.0625f) ? static_cast<double>(_memoryLimit) : 0.0625;
         return std::min(gb, 1024.0) * 1024.0 * 1024.0 * 1024.0;
-    }
-
-    // Bake-off selection, validated rather than cast (an out-of-range enum
-    // index from a corrupted script must not become an undefined enum value).
-    deepc::HoldoutInterp clampedHoldoutInterp() const
-    {
-        switch (_holdoutInterp) {
-            case static_cast<int>(deepc::HoldoutInterp::MidpointStep):
-                return deepc::HoldoutInterp::MidpointStep;
-            case static_cast<int>(deepc::HoldoutInterp::LinearInT):
-                return deepc::HoldoutInterp::LinearInT;
-            case static_cast<int>(deepc::HoldoutInterp::LogChord):
-            default:
-                return deepc::HoldoutInterp::LogChord;
-        }
-        return deepc::HoldoutInterp::LogChord;
     }
 
     // Output bbox pad, X. The anti-aliased disc edge is *centred* on the rim,
@@ -1034,10 +1006,6 @@ private:
         job.sp.bandX         = fc.box.x();
         job.sp.bandWidth     = W;
         job.sp.sharpRadiusPx = deepc::kSharpRadiusPx;
-        // The remaining bake-off selection comes from its knob, explicitly:
-        // the scatter core's default is documented as provisional and
-        // non-authoritative, and M1.P3.T18 has to render each candidate.
-        job.sp.holdoutInterp = clampedHoldoutInterp();
 
         for (int y0 = fc.box.y(); y0 < fc.box.t(); y0 += bandHeight) {
             if (aborted())

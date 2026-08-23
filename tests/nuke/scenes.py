@@ -469,7 +469,10 @@ def sceneF(settings):
     f1 measures the fog slab's in-span attenuation against the analytic
     (1-a)^t.  f2 pins the documented M1.P3.T10 log-chord erasure — a holdout
     still erases genuinely-unoccluded source geometry for ~depthRange/K in
-    front of it; that is the residual T18 judges, reported here, not fixed.
+    front of it; M1.P3.T18 judged that residual in its interpolant bake-off
+    and KEPT it (the log chord won — the deleted alternates leaked source
+    through dense volumetric holdouts instead, the forbidden direction), so
+    this stays a bounded XFAIL, reported here, not fixed.
     f3 is the fog-density reading against M1.P3.T8's coverage-head fix.
     """
     checks = []
@@ -534,7 +537,8 @@ def sceneF(settings):
     # magnitude of dead slack. log T is LINEAR in z across a single
     # exponential fog span, so the log chord is exact here and the reading is
     # 4.367e-08 — measured invariant across K=4/8/16/32/64/128, all three
-    # holdout interpolants, pre_merge on/off and merge_tolerance 0.25/2.0.
+    # of the pre-T18 holdout interpolants, pre_merge on/off and
+    # merge_tolerance 0.25/2.0.
     # THIS IS THE READING THAT DECIDED M1.P3.T17.  Under the deleted bucket
     # composite it was 2.500e-01: an opaque fragment's transmittance split is a
     # no-op, so both bucket deposits carried the full `1*vis` and plain `over`
@@ -1005,7 +1009,7 @@ def unequalDensityCell(settings, size, alphaA, alphaB, zA, zB, step=2):
     # The anchor render depends only on the settings and the size, so it is
     # shared across the cells of a sweep rather than re-rendered per cell.
     # describe() rather than settings.k: the cache must not survive a change
-    # to pre_merge/holdout_interp/max_radius either.
+    # to pre_merge/max_radius either.
     key = (settings.describe(), size)
     if key not in _uneqAnchorCache:
         _uneqAnchorCache[key] = _uneqRender(settings, size, [_uneqAnchor],

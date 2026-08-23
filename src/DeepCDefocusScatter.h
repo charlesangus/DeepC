@@ -1470,19 +1470,23 @@ struct HoldoutSampleSoA {
 // unchanged.  See HoldoutBoundaries for the full bake-off, including why a
 // holdout-depth-histogram-derived set lost and why uniform-in-1/z is not it.
 //
-// WHAT IS LEFT, AND IT IS NOT ALL IRREDUCIBLE (M1.P3.T10's review).  Half a
-// bracket of placement uncertainty is irreducible with K+1 values; the log
-// chord's behaviour inside that bracket is NOT.  For an opaque step the chord
-// floors log T at kMinTransmittance and so collapses to ~0 across the whole
-// bracket, one-sided TOWARD CAMERA -- measured 5.07 of the 6.19-unit bracket
-// fully erased at K=16 (2.28 at K=32, 0.89 at K=64), against the (T0-T1)/2
-// bound's 0.5.  interpAtBucket() has an open follow-up: switching only the
-// T1 == 0 case (reachable only from fully-opaque content, where "log T is
-// linear in z" is not the model anyway) to a midpoint step measures headline
-// mean 0.0565 -> 0.0262, erased-in-front 5.07 -> 2.59 units, the whole opaque
-// sweep 0.0134 -> 0.0074, and every alpha<1 case bit-unchanged -- at the cost
-// of up to half a bracket of BG leaking through the holdout instead.  That is
-// an erase-vs-leak trade to judge from pixels at M1.P3.T5, not a derivation.
+// WHAT IS LEFT (decided at M1.P3.T18).  Half a bracket of placement
+// uncertainty is irreducible with K+1 values; on top of it, for a bracket
+// whose far transmittance is bitwise zero (an opaque step, or a dense
+// alpha<1 stack whose product underflowed) the log chord floors log T at
+// kMinTransmittance and so collapses to ~0 across the whole bracket,
+// one-sided TOWARD CAMERA -- harness check f2 pins it at 78% of a
+// depthRange/K bracket erased in front, decaying as 10^(-30*frac).  Two
+// opaque-step alternates (midpoint step, linear-in-T) were shipped behind a
+// runtime flag at M1.P3.T11 and DELETED at M1.P3.T18 after a rendered
+// bake-off: they erased less in front of an opaque card (30% / ramp), but
+// on a dense volumetric holdout -- 46 samples at alpha=0.9 in one bracket,
+// scene (f)'s content class -- they LEAKED source through the fog at up to
+// full visibility (midpoint +1.000, linear-in-T +0.840, log chord +1e-09
+// worst leak, rendered end to end), and they leaked behind opaque cards at
+// other card positions.  Erase-toward-camera is bounded and K-reducible;
+// invented visibility through a holdout is neither.  See "THE HOLDOUT
+// INTERPOLANT -- DECIDED" in DeepCDefocusMath.h for the full numbers.
 // ***************************************************************************
 // ---------------------------------------------------------------------------
 struct HoldoutLut {
@@ -1540,19 +1544,11 @@ struct ScatterParams {
     // weight 1 into its OWN pixel's bucket instead of rasterising a disc.
     // This is also what keeps DiscKernelLUT's documented caller contract
     // ("never reaches the sampler for radius < 0.5px") true from this side.
+    // (`holdoutInterp` sat below this until M1.P3.T18 decided the holdout
+    // interpolant from rendered pixels and deleted the losing variants and
+    // the flag, as M1.P3.T17 did for `combine` before it -- there is one
+    // interpolant now and nothing to select.)
     float sharpRadiusPx = kSharpRadiusPx;
-
-    // Which of interpAtBucket()'s three opaque-step candidates the holdout
-    // LUT lookup uses (M1.P3.T11) -- a runtime knob, not a build-time flag:
-    // M1.P3.T18 must be able to render all three off the
-    // same binary.  Only observable when a holdout is connected AND a
-    // fragment's far LUT boundary transmittance is bitwise 0.0f (T1 == 0).
-    // That is USUALLY a fully-opaque sample but is not exclusively one -- a
-    // sufficiently long/dense run of alpha<1 samples can underflow the
-    // stored transmittance to bitwise 0.0f too, and when it does the three
-    // variants are NOT bit-identical for that bracket. See HoldoutInterp in
-    // DeepCDefocusMath.h for the measured trade and the underflow finding.
-    HoldoutInterp holdoutInterp = HoldoutInterp::LogChord;
 };
 
 // ---------------------------------------------------------------------------
@@ -1657,22 +1653,10 @@ struct ScatterFragment {
     // The invariant is "at most one area plane PER DEPOSIT", not "per
     // fragment", and it is pinned end to end by "the `no area at all` deposit
     // is REACHABLE ... and the scatter honours both bits" in the suite.
+    // (A per-fragment `holdoutInterp` copy of the M1.P3.T11 bake-off flag
+    // lived here until M1.P3.T18 decided the interpolant from rendered
+    // pixels and deleted the losing variants and the flag.)
     bool  depositArea1    = true;
-
-    // ScatterParams::holdoutInterp, copied through per fragment (M1.P3.T11) —
-    // the per-fragment bodies below take no ScatterParams, so this is how the
-    // knob reaches interpAtBucket() without widening their signatures. Inert
-    // whenever there is no holdout, exactly like the pair above. Placed here,
-    // next to the two `bool`s rather than before `color`, so its single byte
-    // lands in the struct's existing tail padding instead of forcing a new
-    // 8-byte-aligned slot ahead of the pointer -- a first version of this
-    // field between `boundaryFrac` and `color` grew sizeof(ScatterFragment)
-    // from 64 to 72 bytes for no reason (found at this task's independent
-    // review); this placement keeps it at 64. ScatterFragment is a local,
-    // per-iteration stack value, not part of the persistent per-band SoA
-    // (SampleSoA's 61 B/fragment budget is unaffected either way), but there
-    // is no reason to pay the padding for nothing.
-    HoldoutInterp holdoutInterp = HoldoutInterp::LogChord;
 };
 
 // ---------------------------------------------------------------------------
@@ -1928,7 +1912,7 @@ DEEPC_HD inline std::size_t scatterFragmentSpans(const BucketPlaneView& planes,
             for (int i = 0; i < count; ++i) {
                 const float vis = HoldoutVisibility::interpAtBucket(
                     holdout.pixelLut(dstOffset + i),
-                    holdout.boundaryCount(), bIndex, bFrac, frag.holdoutInterp);
+                    holdout.boundaryCount(), bIndex, bFrac);
                 rowScratch[i] = w[i] * vis;
             }
             w = rowScratch;
@@ -1971,8 +1955,7 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
         w = HoldoutVisibility::interpAtBucket(holdout.pixelLut(dstOffset),
                                               holdout.boundaryCount(),
                                               frag.boundaryIndex,
-                                              frag.boundaryFrac,
-                                              frag.holdoutInterp);
+                                              frag.boundaryFrac);
     }
 
     scatterSpanBothBuckets(planes, frag, dstOffset, &w, 1);

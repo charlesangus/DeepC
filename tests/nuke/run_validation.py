@@ -8,9 +8,10 @@ or, more simply, through the wrapper that locates both for you:
 
     tests/nuke/run_validation.sh
 
-Options (the remaining bake-off knob and the sweep parameters are harness
-options, because M1.P3.T16 and T18 drive these same scenes at different
-settings; ``--combine`` went with the bucket composite M1.P3.T17 deleted):
+Options (the sweep parameters are harness options because M1.P3.T16-T18
+drove these same scenes at different settings; ``--combine`` went with the
+bucket composite M1.P3.T17 deleted, and ``--holdout-interp`` with the
+holdout interpolants M1.P3.T18 deleted after its rendered bake-off):
 
 Both ``--option value`` and ``--option=value`` are accepted.  Through the
 wrapper either form works; calling Nuke directly you must use ``=`` for any
@@ -20,7 +21,6 @@ it to ``sys.argv``.
 
     --scenes a,b,...,l      which scenes to run          (default: all)
     --k N                   depth_layers                 (default: 16)
-    --holdout-interp logchord|midpoint|lineart           (default: logchord)
     --pre-merge on|off                                   (default: on)
     --merge-tolerance F                                  (default: 0.25)
     --max-radius N                                       (default: 100)
@@ -47,7 +47,7 @@ import traceback
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from harness import (                                           # noqa: E402
-    FAIL, HOLDOUT_INTERP, PASS, SKIP, XFAIL,
+    FAIL, PASS, SKIP, XFAIL,
     Check, Settings,
 )
 from scenes import SCENES                                       # noqa: E402
@@ -57,7 +57,6 @@ def parseArgs(argv):
     options = {
         "scenes": "abcdefghijkl",
         "k": 16,
-        "holdoutInterp": "logchord",
         "preMerge": True,
         "mergeTolerance": 0.25,
         "maxRadius": 100,
@@ -98,13 +97,6 @@ def parseArgs(argv):
             i += step
         elif arg == "--k":
             options["k"] = int(nextValue())
-            i += step
-        elif arg == "--holdout-interp":
-            value = nextValue()
-            if value not in HOLDOUT_INTERP:
-                raise SystemExit("--holdout-interp must be one of %s"
-                                 % "|".join(sorted(HOLDOUT_INTERP)))
-            options["holdoutInterp"] = value
             i += step
         elif arg == "--pre-merge":
             value = nextValue()
@@ -187,7 +179,6 @@ def main(argv):
         os.makedirs(tmpDir)
 
     settings = Settings(k=options["k"],
-                        holdoutInterp=options["holdoutInterp"],
                         preMerge=options["preMerge"],
                         mergeTolerance=options["mergeTolerance"],
                         maxRadius=options["maxRadius"],

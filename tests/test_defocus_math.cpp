@@ -658,41 +658,20 @@ TEST_CASE("HoldoutBoundaries::locate + interpAtBucket reproduces HoldoutVisibili
 }
 
 // ---------------------------------------------------------------------------
-// HoldoutInterp (M1.P3.T11) -- interpAtBucket()'s three selectable opaque-step
-// candidates. No new test file exists yet for this task's own suite (that is
-// M1.P3.T4's job); these cases were added at this task's independent review,
-// which found the feature had shipped with none at all.
+// interpAtBucket() -- the M1.P3.T3/T10 identities, plus the underflowed-
+// bracket behaviour M1.P3.T18's bake-off decided on.  Three opaque-step
+// interpolant variants existed behind a runtime flag from M1.P3.T11 until
+// M1.P3.T18 judged them from rendered pixels and deleted the losing two and
+// the flag (see "THE HOLDOUT INTERPOLANT -- DECIDED" in DeepCDefocusMath.h);
+// the identity cases below survive that deletion unchanged in substance, and
+// the last case re-pins the winner's floored-chord decay on an underflowed
+// bracket, which used to be pinned only via the deleted variants' divergence.
 // ---------------------------------------------------------------------------
 
-TEST_CASE("HoldoutInterp variants: defaulted argument is bit-identical to explicit "
-          "LogChord, and every M1.P3.T3/T10 identity holds under all three variants")
+TEST_CASE("interpAtBucket identities: LUT vs exact at boundaries, all-ones, "
+          "fully-behind/in-front, deep low-alpha precision, hard edge")
 {
-    const HoldoutInterp variants[3] = {
-        HoldoutInterp::LogChord, HoldoutInterp::MidpointStep, HoldoutInterp::LinearInT
-    };
-
-    SUBCASE("defaulted 4-argument call is bit-identical to an explicit LogChord call, "
-            "at every bracket and several fractions -- the T3/T10 call sites must not move")
-    {
-        HoldoutBoundaries h;
-        h.buildUniformZ(1.0f, 100.0f, 17);
-        const float zFront[1] = {50.0f};
-        const float zBack[1]  = {50.0f};
-        const float alpha[1]  = {1.0f};
-        float boundaryT[17];
-        HoldoutVisibility::build(zFront, zBack, alpha, 1, h.boundaries(), h.count(), boundaryT);
-
-        for (int i = 0; i < h.count() - 1; ++i) {
-            for (float frac : {0.0f, 0.25f, 0.5f, 0.75f, 1.0f}) {
-                const float viaDefault  = HoldoutVisibility::interpAtBucket(boundaryT, h.count(), i, frac);
-                const float viaExplicit = HoldoutVisibility::interpAtBucket(boundaryT, h.count(), i, frac,
-                                                                            HoldoutInterp::LogChord);
-                CHECK(viaDefault == viaExplicit);
-            }
-        }
-    }
-
-    SUBCASE("LUT vs exact is 0.000e+00 at every boundary, for all three variants")
+    SUBCASE("LUT vs exact is 0.000e+00 at every boundary")
     {
         HoldoutBoundaries h;
         h.buildUniformZ(1.0f, 100.0f, 17);
@@ -702,39 +681,33 @@ TEST_CASE("HoldoutInterp variants: defaulted argument is bit-identical to explic
         float boundaryT[17];
         HoldoutVisibility::build(zFront, zBack, alpha, 3, h.boundaries(), h.count(), boundaryT);
 
-        for (auto variant : variants) {
-            for (int i = 0; i < h.count(); ++i) {
-                const BoundarySpan s = h.locate(h.boundary(i));
-                const float lut = HoldoutVisibility::interpAtBucket(boundaryT, h.count(),
-                                                                    s.index, s.frac, variant);
-                const float exact = clampf(HoldoutVisibility::evalExact(zFront, zBack, alpha, 3,
-                                                                       h.boundary(i)), 0.0f, 1.0f);
-                CHECK(lut == exact);   // bit-exact: this bracket never has T1==0 (alpha<1
-                                       // throughout), so all three variants take the
-                                       // unmodified log-chord path here regardless of `variant`
-            }
+        for (int i = 0; i < h.count(); ++i) {
+            const BoundarySpan s = h.locate(h.boundary(i));
+            const float lut = HoldoutVisibility::interpAtBucket(boundaryT, h.count(),
+                                                                s.index, s.frac);
+            const float exact = clampf(HoldoutVisibility::evalExact(zFront, zBack, alpha, 3,
+                                                                   h.boundary(i)), 0.0f, 1.0f);
+            CHECK(lut == exact);   // bit-exact at the boundaries themselves
         }
     }
 
-    SUBCASE("all-ones LUT is bit-identical to the disabled path, for all three variants")
+    SUBCASE("all-ones LUT is bit-identical to the disabled path")
     {
         HoldoutBoundaries h;
         h.buildUniformZ(1.0f, 100.0f, 17);
         float boundaryT[17];
         for (int i = 0; i < 17; ++i) boundaryT[i] = 1.0f;
 
-        for (auto variant : variants) {
-            for (float z : {1.0f, 25.0f, 50.0f, 99.0f}) {
-                const BoundarySpan s = h.locate(z);
-                const float v = HoldoutVisibility::interpAtBucket(boundaryT, h.count(),
-                                                                  s.index, s.frac, variant);
-                CHECK(v == 1.0f);
-            }
+        for (float z : {1.0f, 25.0f, 50.0f, 99.0f}) {
+            const BoundarySpan s = h.locate(z);
+            const float v = HoldoutVisibility::interpAtBucket(boundaryT, h.count(),
+                                                              s.index, s.frac);
+            CHECK(v == 1.0f);
         }
     }
 
     SUBCASE("fully behind an opaque holdout is exactly 0, fully in front is bit-identical "
-            "to no-holdout (1.0), for all three variants")
+            "to no-holdout (1.0)")
     {
         HoldoutBoundaries h;
         h.buildUniformZ(1.0f, 100.0f, 17);
@@ -744,19 +717,17 @@ TEST_CASE("HoldoutInterp variants: defaulted argument is bit-identical to explic
         float boundaryT[17];
         HoldoutVisibility::build(zFront, zBack, alpha, 1, h.boundaries(), h.count(), boundaryT);
 
-        for (auto variant : variants) {
-            const BoundarySpan behind = h.locate(99.0f);
-            CHECK(HoldoutVisibility::interpAtBucket(boundaryT, h.count(), behind.index,
-                                                    behind.frac, variant) == 0.0f);
+        const BoundarySpan behind = h.locate(99.0f);
+        CHECK(HoldoutVisibility::interpAtBucket(boundaryT, h.count(), behind.index,
+                                                behind.frac) == 0.0f);
 
-            const BoundarySpan front = h.locate(1.0f);
-            CHECK(HoldoutVisibility::interpAtBucket(boundaryT, h.count(), front.index,
-                                                    front.frac, variant) == 1.0f);
-        }
+        const BoundarySpan front = h.locate(1.0f);
+        CHECK(HoldoutVisibility::interpAtBucket(boundaryT, h.count(), front.index,
+                                                front.frac) == 1.0f);
     }
 
-    SUBCASE("alpha=1e-7, 200-sample stack: precision unregressed for all three variants "
-            "(the bracket's T1 never underflows here, so all three agree with LogChord)")
+    SUBCASE("alpha=1e-7, 200-sample stack: precision unregressed (the bracket's T1 "
+            "never underflows here)")
     {
         HoldoutBoundaries h;
         h.buildUniformZ(1.0f, 100.0f, 17);
@@ -770,45 +741,12 @@ TEST_CASE("HoldoutInterp variants: defaulted argument is bit-identical to explic
         HoldoutVisibility::build(zFront, zBack, alpha, 200, h.boundaries(), h.count(), boundaryT);
 
         const BoundarySpan s = h.locate(50.0f);
-        float reference = 0.0f;
-        for (auto variant : variants) {
-            const float v = HoldoutVisibility::interpAtBucket(boundaryT, h.count(), s.index, s.frac, variant);
-            CHECK(v == doctest::Approx(1.0f).epsilon(1e-4));   // ~1 ulp-scale of 1.0, same as pre-T11
-            if (variant == HoldoutInterp::LogChord) reference = v;
-            else CHECK(v == reference);   // bit-identical to LogChord: this bracket's T1 > 0
-        }
+        const float v = HoldoutVisibility::interpAtBucket(boundaryT, h.count(), s.index, s.frac);
+        CHECK(v == doctest::Approx(1.0f).epsilon(1e-4));   // ~1 ulp-scale of 1.0, same as pre-T11
     }
 
-    SUBCASE("MidpointStep places its hard step exactly at the bracket midpoint")
-    {
-        // Hand-derived: t0=1, t1=0 (opaque far boundary). MidpointStep must
-        // read t0 for frac < 0.5 and 0 for frac >= 0.5, with nothing in between.
-        const float boundaryT[2] = {1.0f, 0.0f};
-        CHECK(HoldoutVisibility::interpAtBucket(boundaryT, 2, 0, 0.0f,  HoldoutInterp::MidpointStep) == 1.0f);
-        CHECK(HoldoutVisibility::interpAtBucket(boundaryT, 2, 0, 0.49f, HoldoutInterp::MidpointStep) == 1.0f);
-        CHECK(HoldoutVisibility::interpAtBucket(boundaryT, 2, 0, 0.5f,  HoldoutInterp::MidpointStep) == 0.0f);
-        CHECK(HoldoutVisibility::interpAtBucket(boundaryT, 2, 0, 0.51f, HoldoutInterp::MidpointStep) == 0.0f);
-        CHECK(HoldoutVisibility::interpAtBucket(boundaryT, 2, 0, 1.0f,  HoldoutInterp::MidpointStep) == 0.0f);
-    }
-
-    SUBCASE("LinearInT interpolates linearly in T (not log T) across an opaque-step bracket")
-    {
-        // Hand-derived: t0=0.8, t1=0 -> LinearInT(frac) == t0*(1-frac) exactly.
-        const float boundaryT[2] = {0.8f, 0.0f};
-        CHECK(HoldoutVisibility::interpAtBucket(boundaryT, 2, 0, 0.0f, HoldoutInterp::LinearInT)
-              == doctest::Approx(0.8f));
-        CHECK(HoldoutVisibility::interpAtBucket(boundaryT, 2, 0, 0.25f, HoldoutInterp::LinearInT)
-              == doctest::Approx(0.6f));
-        CHECK(HoldoutVisibility::interpAtBucket(boundaryT, 2, 0, 0.5f, HoldoutInterp::LinearInT)
-              == doctest::Approx(0.4f));
-        CHECK(HoldoutVisibility::interpAtBucket(boundaryT, 2, 0, 0.75f, HoldoutInterp::LinearInT)
-              == doctest::Approx(0.2f));
-        CHECK(HoldoutVisibility::interpAtBucket(boundaryT, 2, 0, 1.0f, HoldoutInterp::LinearInT)
-              == doctest::Approx(0.0f));
-    }
-
-    SUBCASE("the spatial hard silhouette edge stays exactly one pixel wide, for all three "
-            "variants: interpAtBucket() reads exactly ONE pixel's own boundaryT array, so "
+    SUBCASE("the spatial hard silhouette edge stays exactly one pixel wide: "
+            "interpAtBucket() reads exactly ONE pixel's own boundaryT array, so "
             "an occluded pixel and its clear neighbour can never blend into each other")
     {
         HoldoutBoundaries h;
@@ -826,24 +764,23 @@ TEST_CASE("HoldoutInterp variants: defaulted argument is bit-identical to explic
         for (int i = 0; i < 17; ++i) lutB[i] = 1.0f;
 
         const BoundarySpan s = h.locate(50.0f);
-        for (auto variant : variants) {
-            const float vA = HoldoutVisibility::interpAtBucket(lutA, h.count(), s.index, s.frac, variant);
-            const float vB = HoldoutVisibility::interpAtBucket(lutB, h.count(), s.index, s.frac, variant);
-            CHECK(vA == 0.0f);   // occluded pixel: exactly 0, not partially blended toward B
-            CHECK(vB == 1.0f);   // clear pixel: exactly 1, not partially blended toward A
-        }
+        const float vA = HoldoutVisibility::interpAtBucket(lutA, h.count(), s.index, s.frac);
+        const float vB = HoldoutVisibility::interpAtBucket(lutB, h.count(), s.index, s.frac);
+        CHECK(vA == 0.0f);   // occluded pixel: exactly 0, not partially blended toward B
+        CHECK(vB == 1.0f);   // clear pixel: exactly 1, not partially blended toward A
     }
 }
 
-TEST_CASE("HoldoutInterp safety property: T1==0 is NOT exclusive to alpha==1 content -- "
-          "a dense alpha<1 stack can underflow the stored transmittance to bitwise 0.0f, "
-          "and MidpointStep/LinearInT are then NOT bit-identical to LogChord")
+TEST_CASE("underflowed brackets: T1==0 is NOT exclusive to alpha==1 content, and the "
+          "floored log chord decays as 10^(-30*frac) across such a bracket")
 {
-    // This is the review finding that corrected the original claim ("fire only
-    // on fully-opaque content ... cannot move any alpha<1 case"). The claim
-    // holds for the small holdout-sample-count regime the milestone's own
-    // corpus exercised, and fails for a deep/dense one -- both are pinned here
-    // so neither regresses silently.
+    // M1.P3.T11's review finding, re-pinned on the surviving interpolant after
+    // M1.P3.T18 deleted the variants: a dense alpha<1 stack underflows the
+    // stored far-boundary transmittance to bitwise 0.0f, and the chord then
+    // reads kMinTransmittance = 1e-30 as its far endpoint -- the erase-toward-
+    // camera residual harness check f2 pins in rendered pixels.  Both the
+    // small-n safe regime and the dense divergent one are pinned so neither
+    // regresses silently.
 
     SUBCASE("small-n regime (<=4 samples), even at very high alpha, stays well clear of "
             "underflow -- consistent with the milestone's original verification")
@@ -861,20 +798,11 @@ TEST_CASE("HoldoutInterp safety property: T1==0 is NOT exclusive to alpha==1 con
 
         const BoundarySpan s = h.locate(50.0f);
         CHECK(boundaryT[s.index + 1] > 0.0f);   // did NOT underflow to bitwise 0
-
-        float reference = 0.0f;
-        const HoldoutInterp variants[3] = {
-            HoldoutInterp::LogChord, HoldoutInterp::MidpointStep, HoldoutInterp::LinearInT
-        };
-        for (auto variant : variants) {
-            const float v = HoldoutVisibility::interpAtBucket(boundaryT, h.count(), s.index, s.frac, variant);
-            if (variant == HoldoutInterp::LogChord) reference = v;
-            else CHECK(v == reference);   // bit-identical: the safety claim holds in this regime
-        }
     }
 
     SUBCASE("46 samples at alpha=0.9, packed inside one K=16 bracket, underflow the far "
-            "boundary to bitwise 0.0f -- with every sample individually alpha<1")
+            "boundary to bitwise 0.0f -- with every sample individually alpha<1 -- and "
+            "the chord's reading there is the floor's 10^(-30*frac), banded two-sided")
     {
         const int n = 46;
         float zFront[n], zBack[n], alpha[n];
@@ -897,21 +825,20 @@ TEST_CASE("HoldoutInterp safety property: T1==0 is NOT exclusive to alpha==1 con
         CHECK(boundaryT[s.index]     == 1.0f);   // near boundary: nothing settled yet
         CHECK(boundaryT[s.index + 1] == 0.0f);   // far boundary: underflowed, NOT alpha==1
 
-        // The three variants now genuinely disagree, for content that is
-        // entirely alpha<1 -- this is the property that was claimed impossible.
-        const float logChord     = HoldoutVisibility::interpAtBucket(boundaryT, h.count(), s.index, s.frac,
-                                                                      HoldoutInterp::LogChord);
-        const float midpointStep = HoldoutVisibility::interpAtBucket(boundaryT, h.count(), s.index, s.frac,
-                                                                      HoldoutInterp::MidpointStep);
-        const float linearInT    = HoldoutVisibility::interpAtBucket(boundaryT, h.count(), s.index, s.frac,
-                                                                      HoldoutInterp::LinearInT);
+        const float v = HoldoutVisibility::interpAtBucket(boundaryT, h.count(), s.index, s.frac);
 
-        // Pinned (this driver's own measurement, at z=48, frac ~0.5859):
-        CHECK(logChord     == doctest::Approx(0.0f).epsilon(1e-3));
-        CHECK(midpointStep == doctest::Approx(0.0f).epsilon(1e-3));
-        CHECK(linearInT    == doctest::Approx(0.4040f).epsilon(1e-3));
-        CHECK(linearInT - logChord > 0.3f);   // NOT bit-identical: the divergence is large,
-                                               // not a rounding footnote
+        // TWO-SIDED band around the floored chord's closed form
+        // 10^(-30*frac) at z=48, frac ~0.59596 -> 1.32e-18 (the value the
+        // deleted-variant divergence used to pin from the other side; the
+        // rendered T18 rig reads the same decay at 0.2512 = 10^(-30*0.02) two
+        // percent into a bracket).  A regression that erases outright (0.0)
+        // fails the lower bound; one that leaks (a raised floor, or losing
+        // the floor entirely) fails the upper bound.
+        CHECK(v > 1.0e-18f);
+        CHECK(v < 1.7e-18f);
+        const float frac = s.frac;
+        const float closedForm = std::pow(10.0f, -30.0f * frac);
+        CHECK(v == doctest::Approx(closedForm).epsilon(1e-2));
     }
 }
 

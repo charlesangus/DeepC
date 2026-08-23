@@ -797,8 +797,7 @@ FlattenParams makeFlattenParams(const CocParams& p, int channelCount,
     return fp;
 }
 
-ScatterParams makeScatterParams(int w, int h,
-                                HoldoutInterp interp = HoldoutInterp::LogChord)
+ScatterParams makeScatterParams(int w, int h)
 {
     ScatterParams sp;
     sp.bandX = 0;
@@ -806,12 +805,11 @@ ScatterParams makeScatterParams(int w, int h,
     sp.bandWidth = w;
     sp.bandHeight = h;
     sp.sharpRadiusPx = kSharpRadiusPx;
-    // `combine` used to be set here, EXPLICITLY in every case, because the
-    // bucket-composite default was non-authoritative while two candidates
-    // existed.  M1.P3.T17 decided that from rendered pixels and deleted the
-    // loser, so there is one composite and nothing to select.  `holdoutInterp`
-    // keeps the discipline until M1.P3.T18 does the same for it.
-    sp.holdoutInterp = interp;
+    // `combine` and `holdoutInterp` used to be set here, EXPLICITLY in every
+    // case, because a bake-off candidate's default was non-authoritative
+    // while two candidates existed.  M1.P3.T17 (bucket composite) and
+    // M1.P3.T18 (holdout interpolant) decided both from rendered pixels and
+    // deleted the losers, so there is nothing left to select.
     return sp;
 }
 
@@ -914,8 +912,7 @@ void refRasterize(ExpectedPlanes& out, const ScatterParams& sp, const SampleSoA&
                         holdout->boundaries.boundaries(),
                         holdout->pixelLut(dst),
                         holdout->boundaryCount(),
-                        depth,
-                        sp.holdoutInterp));
+                        depth));
             }
 
             out.alpha[static_cast<std::size_t>(b0 * px + dst)] += w * a0;
@@ -5704,7 +5701,7 @@ TEST_CASE("opaque POINT-sample holdout accuracy on the default rig (the shape th
     auto vis = [&](float z) {
         const BoundarySpan s = view.locate(z);
         return HoldoutVisibility::interpAtBucket(view.pixelLut(0), view.boundaryCount(),
-                                                 s.index, s.frac, HoldoutInterp::LogChord);
+                                                 s.index, s.frac);
     };
 
     // In front of the card: 1.000000 exactly (was 0.0215 at z=15 / 0.0 at 30/40).
@@ -6100,15 +6097,17 @@ TEST_CASE("the holdout multiplies into the scatter's deposits, per DESTINATION p
     }
 }
 
-TEST_CASE("ScatterParams::holdoutInterp threads through scatterBandCPU on BOTH paths, and the "
-          "dense alpha<1 holdout is where the three variants diverge")
+TEST_CASE("the dense alpha<1 holdout underflow reaches DEPOSITED PIXELS on both scatter "
+          "paths, and the floored chord's reading there is banded two-sided")
 {
-    // M1.P3.T11's review: the variants are NOT confined to fully-opaque
-    // content.  46 point samples at alpha=0.9 packed inside one K=16 bracket
-    // underflow the stored far-boundary transmittance to bitwise 0, and the
-    // three then disagree hard -- LogChord 1.32e-18, MidpointStep 0.0,
-    // LinearInT 0.404 at z=48.  Pinned here in DEPOSITED PIXELS, not just in
-    // the LUT math, and on both the sharp and the disc path.
+    // M1.P3.T11's review: an underflowed bracket is NOT confined to
+    // fully-opaque content.  46 point samples at alpha=0.9 packed inside one
+    // K=16 bracket underflow the stored far-boundary transmittance to bitwise
+    // 0.  This used to pin the divergence of three interpolant variants;
+    // M1.P3.T18 rendered that divergence end to end (dense-volumetric rig),
+    // decided for the log chord and deleted the other two, so what is pinned
+    // now is the WINNER's floored-chord deposit -- in deposited pixels, not
+    // just in the LUT math, and on both the sharp and the disc path.
     const CocParams    p  = makeStandardRig(10.0f);
     const DepthBuckets bk = makeStandardBuckets(p);
     const HoldoutBoundaries hb = makeUniformHoldoutBoundaries(bk);
@@ -6158,59 +6157,20 @@ TEST_CASE("ScatterParams::holdoutInterp threads through scatterBandCPU on BOTH p
         const float ch[1] = {0.5f};
         soa.appendFragment(f, ch);
 
-        double got[3] = {0, 0, 0};
-        const HoldoutInterp variants[3] = {HoldoutInterp::LogChord,
-                                            HoldoutInterp::MidpointStep,
-                                            HoldoutInterp::LinearInT};
-        for (int v = 0; v < 3; ++v) {
-            Band band;
-            band.K = bk.bucketCount(); band.C = 1; band.W = W; band.H = H;
-            runBand(band, makeScatterParams(W, H, variants[v]),
-                    soa, view, lut);
-            got[v] = bandAlphaSum(band);
-        }
+        Band band;
+        band.K = bk.bucketCount(); band.C = 1; band.W = W; band.H = H;
+        runBand(band, makeScatterParams(W, H), soa, view, lut);
+        const double got = bandAlphaSum(band);
 
-        // PINNED (measured at this task, matching the Decisions log's LUT-level
-        // figures): the knob reaches the deposit, and the three answers are
-        // materially different -- so a build that stopped threading it would
-        // collapse all three onto one number.
-        CHECK(got[0] < 1e-12);                  // LogChord ~1.3e-18 * kernel weight
-        CHECK(got[1] == 0.0);                   // MidpointStep: hard step, past the midpoint
-        CHECK(got[2] == doctest::Approx(0.40404).epsilon(1e-3));   // LinearInT
-    }
-
-    SUBCASE("every alpha<1 bracket whose far transmittance did NOT underflow is variant-agnostic")
-    {
-        // The safe regime: a handful of alpha<1 samples cannot underflow, so
-        // all three variants must be bit-identical there.
-        HoldoutSampleSoA smallSamples;
-        HoldoutLut smallLut;
-        buildHoldout(smallSamples, smallLut, hb, W, H, [](int, int, std::vector<SampleRecord>& out) {
-            out.push_back(makeSample(30.0f, 55.0f, 0.6f));
-            out.push_back(makeSample(20.0f, 20.0f, 0.4f));
-        });
-        const HoldoutSoA smallView = smallLut.view();
-        REQUIRE(smallView.enabled());
-        for (int b = 0; b < smallView.boundaryCount(); ++b)
-            REQUIRE(smallView.pixelLut(0)[b] > 0.0f);
-
-        const SampleSoA soa = flattenOnePixel(fp, bk, W / 2, H / 2,
-            {makeSample(40.0f, 40.0f, 0.8f, {0.4f})});
-
-        std::vector<float> reference;
-        for (HoldoutInterp variant : {HoldoutInterp::LogChord, HoldoutInterp::MidpointStep,
-                                      HoldoutInterp::LinearInT}) {
-            BucketPlanes planes;
-            planes.allocate(bk.bucketCount(), 1, W, H);
-            planes.zero();
-            scatterOnThread(makeScatterParams(W, H, variant),
-                            soa, smallView, lut, planes);
-            std::vector<float> got(planes.alpha.begin(), planes.alpha.end());
-            if (reference.empty())
-                reference = got;
-            else
-                CHECK(got == reference);        // bit-identical
-        }
+        // TWO-SIDED band (re-pinned at M1.P3.T18 after the losing variants
+        // went; the old one-sided `< 1e-12` could not tell the floored chord
+        // from an outright 0).  The fragment's whole kernel weight (sums to 1
+        // on both paths) is scaled by the floored chord's 10^(-30*frac) at
+        // z=48, frac ~0.59596 -> ~1.32e-18.  A regression to hard erasure
+        // (0.0) fails the lower bound; a raised/lost floor leaks and fails
+        // the upper bound.  Mutation-tested in both directions at T18.
+        CHECK(got > 1.0e-18);
+        CHECK(got < 1.7e-18);
     }
 }
 
