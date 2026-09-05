@@ -4,25 +4,40 @@
 //
 //  DeepCDefocus — Deep-input, flat-output defocus/DOF node
 //
-//  State: M1.P3.T5 — the node defocuses.  engine() serves rows out of a
-//  hash-keyed frame cache that one render thread fills, under a single
-//  frame-wide lock, by:
+//  State: M1.P4.T1 — the node defocuses CONCURRENTLY.  The frame is computed
+//  lazily, one horizontal band at a time, by whichever of Nuke's render
+//  threads asks for a row in that band first, coordinated by a per-band
+//  Dirty -> InProgress -> Done state machine (deepc::BandLedger, POD and
+//  unit-tested with std::thread; instantiated here over DD::Image::
+//  SignalLock).  Per band:
 //
-//    computeDepthRange()  alpha-weighted DeepFront/DeepBack/Alpha pass
-//      -> DepthBuckets (bounded ΔCoC) + HoldoutBoundaries (uniform in Z,
-//         frame-global) + DiscKernelLUT over the MEASURED radius range
-//    computeBand() per horizontal band:
+//    frameSetup()  ONCE per Op::hash(), claimed like a band ("band -1"):
+//         computeDepthRange()  alpha-weighted DeepFront/DeepBack/Alpha pass
+//           -> DepthBuckets (bounded ΔCoC) + HoldoutBoundaries (uniform in Z,
+//              frame-global) + DiscKernelLUT over the MEASURED radius range
+//           -> band decomposition + the memory-limit cap (deepc::planBands)
+//    computeBand() per claimed band, into the claiming thread's PRIVATE
+//         bucket planes (a pooled BandJob):
 //         fetch band +/- padY source rows -> flattenPixelToSoA
 //      -> holdout fetch (skipped entirely when it cannot matter) -> HoldoutLut
 //      -> scatterBandCPU -> resolveBandCPU (saturate down, then composite)
-//      -> write the band's disjoint region of the flat frame
+//      -> write the band's DISJOINT region of the shared flat frame
+//      -> BandLedger::completeBand() publishes it (release/acquire) to the
+//         lock-free row-copy path
 //
-//  Per-band concurrency is M1.P4.T1: this phase is deliberately serial so
-//  correctness lands before the execution model changes.  Two standing
-//  invariants that predate this task and outlive it: _validate()/_request()
-//  must NEVER fall through to Iop's (they reach inputs through a bare
-//  static_cast<Iop*> and this node's inputs are DeepOps — a verified Nuke
-//  core dump), and row.erase(channels) is engine()'s first statement.
+//  Threads needing a band another thread is computing block on the ledger
+//  until it is Done.  An aborted band goes back to Dirty (never Done), wakes
+//  its waiters, and leaves erased/black rows.  _validate marks all bands
+//  Dirty on an Op::hash() change.  The serial phase's shared_ptr<const
+//  FrameCache> publish-by-copy and its per-row frame-wide lock acquisition
+//  are GONE — both were correct for the serial phase and both are wrong for
+//  per-band claiming (M1.P4.T1's brief).
+//
+//  Two standing invariants that predate this task and outlive it:
+//  _validate()/_request() must NEVER fall through to Iop's (they reach
+//  inputs through a bare static_cast<Iop*> and this node's inputs are
+//  DeepOps — a verified Nuke core dump), and row.erase(channels) is
+//  engine()'s first statement.
 //
 //  Node shape (PLAN/MILESTONES/M1-deepcdefocus-v1.md, "Node shape"):
 //    - Iop subclass (not DeepFilterOp — this is the first in-repo node that
@@ -56,10 +71,15 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <memory>
 #include <vector>
+
+#include <pthread.h>   // pthread_self(), for the band-claim debug counter
 
 using namespace DD::Image;
 
@@ -169,7 +189,7 @@ class DeepCDefocus : public DD::Image::Iop
                                     // per _validate, on freshly built params);
                                     // _validate deliberately does NOT build the
                                     // kernel LUT — that waits until
-                                    // computeFrame() knows the frame's measured
+                                    // frameSetup() knows the frame's measured
                                     // CoC range, see the milestone Decisions
     float _proxyScale;              // current format width / full-size width
     float _formatHeightPx;          // current (proxy) format height, for the
@@ -178,30 +198,26 @@ class DeepCDefocus : public DD::Image::Iop
     ChannelSet _flattenChannels;    // what the cook writes: selection u alpha
 
     // ----------------------------------------------------------------------
-    // Frame cache.
+    // The shared flat frame.
     //
-    // The precompute is frame-wide, not row-wide: engine() copies rows out of
-    // a planar float buffer that one render thread filled. The buffer is
-    // handed out as a shared_ptr snapshot so a reader never touches storage
-    // that a concurrent recompute might be reallocating — the lock is only
-    // held while swapping the pointer in (and while the one thread that wins
-    // the race does the compute), never while rows are being copied out.
+    // Plane-major layout, planes.size() * box.h() * box.w() floats, through
+    // PodBuffer (the M3 allocation seam; base 64-byte aligned, individual
+    // plane starts are not).
     //
-    // Plane-major layout, planes.size() * box.h() * box.w() floats. This is a
-    // deliberately plain std::vector<float>: M1.P3.T1 introduces PodBuffer<T>
-    // in DeepCDefocusScatter.h as the project-wide owning POD buffer, and this
-    // cache is its natural first adopter — it should be ported to PodBuffer
-    // there rather than a competing wrapper being invented here.
+    // M1.P4.T1: this is a MUTABLE SHARED frame, not a published-by-copy
+    // snapshot.  Each claiming render thread writes exactly its own band's
+    // DISJOINT row range of every plane; nothing else writes it.  Readers
+    // (the engine() row copy) never touch a band that is not Done, and the
+    // ledger's release/acquire pair on the band state is what publishes the
+    // writes — see BandLedger's header.  Reallocation happens only inside
+    // frameSetup(), which the ledger admits only after every in-flight band
+    // has completed and every reader has drained (BandLedger::beginFrame).
     //
-    // Ported at M1.P3.T1: `data` is now a deepc::PodBuffer<float>, so every
-    // plane buffer in this node goes through the one allocation seam the CUDA
-    // milestone swaps. Two consequences worth knowing: the buffer's BASE is
-    // 64-byte aligned (individual plane starts are not — plane p begins at
-    // p*w*h floats, which is cache-line aligned only when w*h happens to be a
-    // multiple of 16, so don't rely on it for aligned loads), and FrameCache is
-    // now move-only. Nothing copies it — it is built once inside
-    // make_shared<FrameCache>() and published as a shared_ptr<const> — and the
-    // compiler will say so loudly if that ever changes.
+    // The serial phase's shared_ptr<const FrameCache> is deliberately gone:
+    // publish-by-copy is the wrong primitive for per-band claims (they need
+    // a mutable shared frame plus per-band atomics), and snapshotting the
+    // pointer cost a frame-wide lock acquisition on every row (~2160 per
+    // thread per 4K frame).  Both deletions are M1.P4.T1's brief.
     // ----------------------------------------------------------------------
     struct FrameCache {
         DD::Image::Box        box;
@@ -235,9 +251,57 @@ class DeepCDefocus : public DD::Image::Iop
         }
     };
 
-    mutable DD::Image::Lock            _cacheLock;
-    std::shared_ptr<const FrameCache>  _cache;      // guarded by _cacheLock
-    DD::Image::Hash                    _cachedHash; // guarded by _cacheLock
+    struct BandJob;   // per-thread band scratch, defined below
+
+    // ----------------------------------------------------------------------
+    // Frame-global cook state (M1.P4.T1), rebuilt by frameSetup() once per
+    // Op::hash() under the ledger's setup claim.  Everything here is written
+    // by exactly one thread (the setup owner, while nothing else runs) and
+    // read by many (band computes + row copies) — the ledger's key handshake
+    // is what makes that safe.
+    // ----------------------------------------------------------------------
+    struct FrameShared {
+        deepc::FlattenParams                  fp;
+        deepc::DepthBuckets                   buckets;
+        deepc::HoldoutBoundaries              holdoutBoundaries;
+        std::unique_ptr<deepc::DiscKernelLUT> kernel;
+
+        DD::Image::Box       srcBox;
+        DD::Image::Box       holdoutBox;
+        std::vector<Channel> colorChannels;
+        std::vector<int>     colorPlanes;
+        int  alphaPlane       = -1;
+        int  mattePlane       = -1;
+        int  padY             = 0;
+        int  bandHeight       = 1;    // never < 1
+        int  bandCount        = 0;
+        int  maxInFlight      = 1;    // memory-limit cap, floor 1
+        bool holdoutConnected = false;
+        bool allBandsDone     = false; // empty frame: publish zeros directly
+
+        deepc::ScatterParams spBase;   // bandX/bandWidth/sharp threshold;
+                                       // bandY/bandHeight are per band
+    };
+
+    FrameCache  _frame;    // the shared flat frame — disjoint band regions
+    FrameShared _shared;
+
+    // The per-band Dirty -> InProgress -> Done state machine, over the NDK's
+    // own monitor (SignalLock = Lock + condition; wait() blocks, signal()
+    // broadcasts).  The claim/wait/abort logic itself is POD and unit-tested
+    // with std::thread in tests/test_defocus_scatter.cpp.
+    deepc::BandLedger<DD::Image::SignalLock> _ledger;
+
+    // BandJob pool: one job per CONCURRENT band, not per thread — the
+    // memory-limit cap bounds in-flight bands, and pooling means an idle
+    // render thread holds no band-sized scratch.  Cleared at frameSetup() so
+    // a hash change releases the previous frame's capacity.
+    DD::Image::Lock                       _jobLock;   // guards _jobPool only
+    std::vector<std::unique_ptr<BandJob>> _jobPool;
+
+    DD::Image::Hash _validatedHash;   // _validate()'s half of invalidation
+    bool            _debugBands = false;   // DEEPC_DEFOCUS_DEBUG_BANDS=1:
+                                           // log band -> thread claims
 
 public:
     DeepCDefocus(Node* node) : Iop(node),
@@ -266,6 +330,13 @@ public:
         _flattenChannels(Mask_None)
     {
         inputs(2);  // input 0 = deep source (required), input 1 = deep holdout (optional)
+
+        // Concurrency instrumentation (M1.P4.T1): when set, every completed
+        // band claim logs its band index, row range and pthread id to stderr,
+        // so a headless render demonstrates (or refutes) that distinct render
+        // threads claim distinct bands.  Off by default; costs one getenv per
+        // Op construction and nothing per row.
+        _debugBands = (std::getenv("DEEPC_DEFOCUS_DEBUG_BANDS") != nullptr);
     }
 
     int minimum_inputs() const override { return 1; }
@@ -550,7 +621,7 @@ public:
     // after computeDepthRange() at M1.P3.T5 — building it eagerly over
     // [0, max_radius] costs ~1.0GB at max_radius=500 (milestone Decisions).
     // _validate() cannot know that range: it is measured per cook, so the LUT
-    // belongs to computeFrame() and nothing here may depend on it.
+    // belongs to frameSetup() and nothing here may depend on it.
     // ------------------------------------------------------------------
     void _validate(bool forReal) override
     {
@@ -643,6 +714,18 @@ public:
 
         // Mirror DeepToImage: propagate our caching state to the deep source.
         src->op()->cached(cached());
+
+        // M1.P4.T1: mark all bands Dirty on an Op::hash() change — cheap, no
+        // compute, and NOT a _computed flag cleared unconditionally (that
+        // would throw away a good frame on every viewer interaction; see the
+        // design reference's Node shape paragraph).  The ledger's key check
+        // in engine() is the authoritative gate — this is the design's
+        // stated _validate half, and it also catches a hash change that
+        // never reaches engine() (e.g. a knob wiggled back and forth).
+        if (hash() != _validatedHash) {
+            _validatedHash = hash();
+            _ledger.invalidate();
+        }
     }
 
     // ------------------------------------------------------------------
@@ -672,11 +755,25 @@ public:
     }
 
     // ------------------------------------------------------------------
-    // engine()
+    // engine() — the per-band lazy-claim loop (M1.P4.T1)
     //
     // row.erase(channels) is the literal first statement: sparse deep pixels
     // otherwise emit whatever was left in the row buffer. Everything after
     // it is allowed to bail out at any point and the row stays black.
+    //
+    // The loop has exactly three outcomes per pass:
+    //   * the row's band is Done for the current hash -> copy rows, return.
+    //     THE COMMON CASE TAKES NO LOCK AT ALL: BandLedger::beginRead()'s
+    //     fast path is two atomic ops, and bandDone() is an acquire load —
+    //     this is what replaced the serial phase's per-row frame-wide lock
+    //     acquisition (~2160 per thread per 4K frame).
+    //   * the band is Dirty -> claim it (blocking while the memory-limit cap
+    //     is full), compute it into a pooled BandJob's private planes, write
+    //     its disjoint region of the shared frame, publish, loop to copy.
+    //     Threads wanting a band another thread is computing block on the
+    //     ledger until it is Done.
+    //   * abort / upstream failure -> the band goes back to Dirty (never
+    //     Done), waiters are woken, and the row stays erased/black.
     // ------------------------------------------------------------------
     void engine(int y, int x, int r, ChannelMask channels, Row& row) override
     {
@@ -685,28 +782,74 @@ public:
         if (!input0() || aborted())
             return;
 
-        const std::shared_ptr<const FrameCache> cache = ensureComputed();
-        if (!cache)
-            return;   // aborted or upstream failure — rows stay erased/black
+        const auto abortedFn = [this]() { return aborted(); };
+        const std::uint64_t key = hash().value();
 
-        const DD::Image::Box& box = cache->box;
-        if (y < box.y() || y >= box.t())
-            return;
+        for (;;) {
+            if (_ledger.beginRead(key)) {
+                // Setup is Done for this key, so _frame/_shared are stable
+                // for as long as this read is held (a setup re-run drains
+                // readers before touching either).
+                const DD::Image::Box& box = _frame.box;
+                if (y < box.y() || y >= box.t()) {
+                    _ledger.endRead();
+                    return;   // outside the frame: stays erased
+                }
+                const int band = (y - box.y()) / _shared.bandHeight;
+                if (_ledger.bandDone(band)) {
+                    copyRow(y, x, r, channels, row);
+                    _ledger.endRead();
+                    return;
+                }
+                const int y0 = box.y() + band * _shared.bandHeight;
+                const int y1 = std::min(y0 + _shared.bandHeight, box.t());
+                _ledger.endRead();
 
-        const int xs = std::max(x, box.x());
-        const int xe = std::min(r, box.r());
-        if (xs >= xe)
-            return;
+                const deepc::BandClaim claim =
+                    _ledger.acquireBand(key, band, abortedFn);
+                if (claim == deepc::BandClaim::Aborted)
+                    return;
+                if (claim != deepc::BandClaim::Compute)
+                    continue;   // Ready: copy next pass. Stale: re-setup.
 
-        foreach(z, channels) {
-            const int plane = cache->planeIndex(z);
-            if (plane < 0)
-                continue;   // channel this node does not produce; stays erased
+                // This thread OWNS the band.  Compute into private planes,
+                // write the disjoint region, publish or abandon.
+                std::unique_ptr<BandJob> job = acquireJob();
+                const bool ok = computeBand(_frame, *job, y0, y1);
+                releaseJob(std::move(job));
 
-            const float* src = cache->rowPtr(plane, y) - box.x();
-            float* dst = row.writable(z);
-            for (int i = xs; i < xe; ++i)
-                dst[i] = src[i];
+                if (!ok) {
+                    // Abort or upstream failure: Dirty (never Done), wake
+                    // waiters, leave erased/black rows.
+                    _ledger.abandonBand(band);
+                    return;
+                }
+                _ledger.completeBand(band);
+
+                if (_debugBands) {
+                    std::fprintf(stderr,
+                                 "DeepCDefocus: band %d rows [%d,%d) computed by "
+                                 "thread 0x%lx\n",
+                                 band, y0, y1,
+                                 static_cast<unsigned long>(pthread_self()));
+                }
+                continue;   // copy on the next pass
+            }
+
+            // No frame for this key yet: claim (or wait for) the frame-global
+            // setup, then loop back to the read path.
+            const deepc::FrameClaim fclaim = _ledger.beginFrame(key, abortedFn);
+            if (fclaim == deepc::FrameClaim::Aborted)
+                return;
+            if (fclaim == deepc::FrameClaim::SetupCompute) {
+                const bool ok = frameSetup();
+                _ledger.endFrameSetup(ok, key,
+                                      ok ? _shared.bandCount : 0,
+                                      ok ? _shared.maxInFlight : 1,
+                                      ok && _shared.allBandsDone);
+                if (!ok)
+                    return;   // aborted/failed: rows stay erased/black
+            }
         }
     }
 
@@ -720,67 +863,93 @@ private:
     }
 
     // ------------------------------------------------------------------
-    // ensureComputed() — hash-keyed, frame-wide precompute.
+    // copyRow() — one row out of the shared frame, no lock held.
     //
-    // Keyed on Op::hash() rather than a _computed flag cleared by
-    // _validate(): _validate() runs far more often than the inputs actually
-    // change, and a flag would throw away a perfectly good frame on every
-    // viewer interaction.
-    //
-    // Concurrency contract for this phase (per-band concurrency is
-    // M1.P4.T1): one frame-wide DD::Image::Lock. The first render thread to
-    // arrive computes the whole frame while holding it; every other thread
-    // blocks and then finds the finished cache. The lock is held across the
-    // compute — including the deepEngine() calls into input 0 — which cannot
-    // re-enter this node, because input 0 is strictly upstream in a DAG and
-    // has no path back to us. (DD::Image::Lock is a plain, non-recursive
-    // pthread mutex, so any re-entry would deadlock rather than misbehave
-    // quietly — hence the invariant matters.)
-    //
-    // Readers DO take the lock, but only for the pointer snapshot: every
-    // access to _cache/_cachedHash — read or write — happens under the guard,
-    // and what leaves it is a shared_ptr copy to an immutable FrameCache. The
-    // row copy in engine() then runs with no lock held, so a later recompute
-    // can allocate and swap in a new cache without tearing anyone's read.
-    // (Snapshotting under the lock is what makes a bare shared_ptr sufficient
-    // here; a lock-free reader would need atomic_load/atomic_store.)
-    //
-    // On abort or upstream failure the freshly-allocated cache is dropped on
-    // the floor: _cache/_cachedHash keep whatever they had, nothing is
-    // marked valid, and engine() leaves its rows black.
+    // Caller contract: between BandLedger::beginRead()/endRead(), and only
+    // after bandDone(band) — the acquire load there is what makes the band's
+    // writes visible.
     // ------------------------------------------------------------------
-    std::shared_ptr<const FrameCache> ensureComputed()
+    void copyRow(int y, int x, int r, ChannelMask channels, Row& row) const
     {
-        Guard guard(_cacheLock);
+        const DD::Image::Box& box = _frame.box;
 
-        // Read the key INSIDE the guard. Op::hash() is a plain member read of
-        // the value _validate() left behind, so it is safe to call here — and
-        // sampling it outside would let a re-validate between the sample and
-        // the lock publish a cache computed from the new info_ under the old
-        // key, which then never matches and recomputes the frame forever.
-        const DD::Image::Hash h = hash();
+        const int xs = std::max(x, box.x());
+        const int xe = std::min(r, box.r());
+        if (xs >= xe)
+            return;
 
-        if (_cache && _cachedHash == h)
-            return _cache;
+        foreach(z, channels) {
+            const int plane = _frame.planeIndex(z);
+            if (plane < 0)
+                continue;   // channel this node does not produce; stays erased
 
-        std::shared_ptr<FrameCache> fresh = std::make_shared<FrameCache>();
-        if (!computeFrame(*fresh))
-            return nullptr;
+            const float* src = _frame.rowPtr(plane, y) - box.x();
+            float* dst = row.writable(z);
+            for (int i = xs; i < xe; ++i)
+                dst[i] = src[i];
+        }
+    }
 
-        _cache      = fresh;
-        _cachedHash = h;
-        return _cache;
+    // ------------------------------------------------------------------
+    // The BandJob pool.  One job per CONCURRENT band (bounded by the
+    // memory-limit cap), reused across bands and cooks so warmed-up capacity
+    // survives; cleared at frameSetup() so a hash change releases the old
+    // frame's scratch.  _jobLock guards the pool vector only — it is held
+    // for a pointer move, never across any compute.
+    // ------------------------------------------------------------------
+    std::unique_ptr<BandJob> acquireJob()
+    {
+        std::unique_ptr<BandJob> job;
+        {
+            Guard guard(_jobLock);
+            if (!_jobPool.empty()) {
+                job = std::move(_jobPool.back());
+                _jobPool.pop_back();
+            }
+        }
+        if (!job)
+            job.reset(new BandJob);
+
+        // Prime from the frame-global state (pointers and PODs only).  Safe
+        // without the ledger read guard: the caller holds a band claim, and
+        // frameSetup() cannot run while any band is in flight.
+        job->src               = input0();
+        job->holdout           = _shared.holdoutConnected ? input1() : nullptr;
+        job->fp                = &_shared.fp;
+        job->buckets           = &_shared.buckets;
+        job->holdoutBoundaries = &_shared.holdoutBoundaries;
+        job->kernel            = _shared.kernel.get();
+        job->srcBox.set(_shared.srcBox.x(), _shared.srcBox.y(),
+                        _shared.srcBox.r(), _shared.srcBox.t());
+        job->holdoutBox.set(_shared.holdoutBox.x(), _shared.holdoutBox.y(),
+                            _shared.holdoutBox.r(), _shared.holdoutBox.t());
+        job->colorChannels     = &_shared.colorChannels;
+        job->colorPlanes      = &_shared.colorPlanes;
+        job->alphaPlane        = _shared.alphaPlane;
+        job->mattePlane        = _shared.mattePlane;
+        job->padY              = _shared.padY;
+        job->sp                = _shared.spBase;
+        return job;
+    }
+
+    void releaseJob(std::unique_ptr<BandJob> job)
+    {
+        Guard guard(_jobLock);
+        _jobPool.push_back(std::move(job));
     }
 
     // ==================================================================
     //
-    //  THE COOK (M1.P3.T5) — depth range, then band-by-band scatter
+    //  THE COOK (M1.P3.T5 serial; M1.P4.T1 per-band lazy-claim)
     //
-    //  Sequence, all of it under _cacheLock, all of it serial (per-band
-    //  concurrency is M1.P4.T1 — correctness first, deliberately):
+    //  frameSetup() — ONCE per Op::hash(), under the ledger's setup claim
+    //  (nothing else runs while it does; see BandLedger::beginFrame):
     //
     //    1. computeDepthRange()  one cheap full-frame DeepFront/DeepBack/
-    //                            Alpha pass, alpha-weighted
+    //                            Alpha pass, alpha-weighted; ALSO counts
+    //                            samples per source row, which is what the
+    //                            memory budget's per-band SoA estimate is
+    //                            derived from
     //    2. DepthBuckets         bounded-DeltaCoC, from that range
     //       HoldoutBoundaries    uniform in Z over the SAME range, built ONCE
     //                            per frame (a per-band set seams every band
@@ -788,16 +957,25 @@ private:
     //                            one fragment either side of one)
     //       DiscKernelLUT        over the frame's MEASURED radius range, with
     //                            rMin = 0 (milestone Decisions, both halves)
-    //    3. for each band: fetch band +/- padY source rows -> SoA flatten ->
-    //                      holdout LUT -> scatterBandCPU -> saturate +
-    //                      resolveBandCPU -> write the band's disjoint region
+    //    3. deepc::planBands()   band height + the memory-limit cap on
+    //                            CONCURRENT in-flight bands, from the
+    //                            COMBINED bucket-plane + holdout-LUT +
+    //                            SoA-fragment budget (floor 1 band, then
+    //                            shrink B — never deadlock at 0)
     //
-    //  Returns false if the cook was aborted or an upstream deepEngine()
-    //  failed; in that case the caller must not publish the buffer.
+    //  computeBand() — per CLAIMED band, on whichever render thread claimed
+    //  it: fetch band +/- padY source rows -> SoA flatten -> holdout LUT ->
+    //  scatterBandCPU -> saturate + resolveBandCPU -> write the band's
+    //  disjoint region of the shared frame.
+    //
+    //  Both return false if the cook was aborted or an upstream deepEngine()
+    //  failed; the caller then abandons (band -> Dirty, never Done).
     // ==================================================================
 
     // Everything one band needs, plus the scratch that is reused across
-    // bands (and across cooks would be next — M1.P4.T1's per-thread state).
+    // bands and cooks.  M1.P4.T1: one instance per CONCURRENT band, pooled
+    // (_jobPool) — these are the "private bucket planes" of the design's
+    // claiming-thread contract.
     struct BandJob {
         DeepOp* src     = nullptr;
         DeepOp* holdout = nullptr;
@@ -836,11 +1014,31 @@ private:
         std::vector<float> bandMatte;
     };
 
-    bool computeFrame(FrameCache& fc)
+    bool frameSetup()
     {
+        FrameCache& fc = _frame;
+
         DeepOp* src = input0();
         if (!src)
             return false;
+
+        // A hash change made every pooled job's warmed-up capacity stale
+        // (band geometry, channel count, fragment counts all move with it);
+        // release rather than carry two frames' worth. Safe: the setup claim
+        // guarantees no band is in flight, so the pool holds every job.
+        {
+            Guard guard(_jobLock);
+            _jobPool.clear();
+        }
+
+        // Publish-empty defaults: every early "nothing to produce" return
+        // below leaves a valid all-zero frame in which every band is
+        // immediately Done (engine()'s endFrameSetup call passes
+        // _shared.allBandsDone through).
+        _shared.allBandsDone = true;
+        _shared.bandHeight   = 1;
+        _shared.bandCount    = 1;
+        _shared.maxInFlight  = 1;
 
         // Component-wise, not Box copy-assign: the NDK's Box has a
         // user-provided copy constructor, so its implicit copy-assignment
@@ -851,9 +1049,13 @@ private:
             fc.planes.push_back(z);
 
         const size_t nPlanes = fc.planes.size();
-        if (nPlanes == 0 || fc.box.w() <= 0 || fc.box.h() <= 0)
-            return true;   // nothing to produce, but a valid (empty) result
+        if (nPlanes == 0 || fc.box.w() <= 0 || fc.box.h() <= 0) {
+            fc.data.assign(0, 0.0f);
+            _shared.bandCount = 0;   // engine() rejects every y as outside
+            return true;             // nothing to produce, but a valid result
+        }
 
+        _shared.bandHeight = fc.box.h();   // one all-Done band, once valid
         fc.data.assign(nPlanes * fc.planeStride(), 0.0f);
 
         // --- plane routing -------------------------------------------------
@@ -864,25 +1066,26 @@ private:
         // composite's own outAlpha is what lands in the alpha plane. Carrying
         // alpha as an ordinary channel as well would composite it through the
         // colour path — a different expression — and the two would disagree.
-        std::vector<Channel> colorChannels;
-        std::vector<int>     colorPlanes;
+        _shared.colorChannels.clear();
+        _shared.colorPlanes.clear();
         foreach(z, _flattenChannels) {
             if (z == Chan_Alpha)
                 continue;
             const int p = fc.planeIndex(z);
             if (p >= 0) {
-                colorChannels.push_back(z);
-                colorPlanes.push_back(p);
+                _shared.colorChannels.push_back(z);
+                _shared.colorPlanes.push_back(p);
             }
         }
-        const int alphaPlane = fc.planeIndex(Chan_Alpha);
-        const int mattePlane = (_outputHoldoutMatte && _holdoutMatteChannel != Chan_Black)
-                             ? fc.planeIndex(_holdoutMatteChannel)
-                             : -1;
+        _shared.alphaPlane = fc.planeIndex(Chan_Alpha);
+        _shared.mattePlane = (_outputHoldoutMatte && _holdoutMatteChannel != Chan_Black)
+                           ? fc.planeIndex(_holdoutMatteChannel)
+                           : -1;
 
         // Only pixels the deep source covers can carry samples; everything
         // else in the padded box stays exactly 0.0 unless a disc reaches it.
         const DD::Image::Box srcBox = src->deepInfo().box();
+        _shared.srcBox.set(srcBox.x(), srcBox.y(), srcBox.r(), srcBox.t());
         if (srcBox.w() <= 0 || srcBox.h() <= 0 || !fc.box.intersects(srcBox))
             return true;
 
@@ -890,33 +1093,39 @@ private:
         // The depth-range pass, the source flatten and the holdout's
         // depthScale all read this same instance, so they cannot disagree
         // about the ray-distance correction (see rayDepthScaleAt()).
-        deepc::FlattenParams fp;
+        deepc::FlattenParams& fp = _shared.fp;
+        fp                    = deepc::FlattenParams();
         fp.coc                = _cocParams;              // proxy-scaled already
         fp.preMerge           = _preMerge;               // EXPLICIT, never a default
         fp.mergeTolerancePx   = clampedMergeTolerancePx();
         fp.depthIsRayDistance = _depthIsRayDistance;
         fp.formatHeightPx     = _formatHeightPx;
-        fp.channelCount       = static_cast<int>(colorChannels.size());
+        fp.channelCount       = static_cast<int>(_shared.colorChannels.size());
         fp.groups             = deepc::makeSingleChannelGroup(fp.channelCount);
 
         // --- 1. the depth-range pass ---------------------------------------
+        // Also counts deep samples per source row: the memory budget below
+        // estimates each band's SoA fragment count from its fetch window's
+        // sample count, and this pass already touches every sample.
         float depthMin  = 0.0f;
         float depthMax  = 0.0f;
         bool  anyAlpha  = false;
-        if (!computeDepthRange(src, srcBox, fp, depthMin, depthMax, anyAlpha))
+        std::vector<double> rowSamples;
+        if (!computeDepthRange(src, srcBox, fp, depthMin, depthMax, anyAlpha,
+                               rowSamples))
             return false;
         if (!anyAlpha)
             return true;   // no contributing sample anywhere: frame stays black
 
         // --- 2. buckets, holdout boundary set, kernel LUT ------------------
-        const deepc::DepthBuckets buckets =
+        _shared.buckets =
             deepc::makeBoundedDeltaCocBuckets(fp.coc, depthMin, depthMax,
                                               clampedDepthLayers());
+        const deepc::DepthBuckets& buckets = _shared.buckets;
 
         // FRAME-GLOBAL, never per band: a fragment near a band edge scatters
         // into two bands, and per-band sets put a seam along every boundary.
-        const deepc::HoldoutBoundaries holdoutBoundaries =
-            deepc::makeUniformHoldoutBoundaries(buckets);
+        _shared.holdoutBoundaries = deepc::makeUniformHoldoutBoundaries(buckets);
 
         // The frame's MEASURED radius range. radiusPixels() is monotone away
         // from the focal plane on each side, so the frame's largest radius is
@@ -943,11 +1152,12 @@ private:
         // a measured rMin would visibly over-blur every radius between the
         // sharp-path threshold and it. The range parameter exists to bound
         // rMax, which is where the ~1.0GB worst case lives.
-        const deepc::DiscKernelLUT kernel(0.0f, rMax, softness, pixelAspect);
+        _shared.kernel.reset(
+            new deepc::DiscKernelLUT(0.0f, rMax, softness, pixelAspect));
 
         // --- 3. band decomposition -----------------------------------------
         const int W = fc.box.w();
-        const int C = static_cast<int>(colorChannels.size());
+        const int C = static_cast<int>(_shared.colorChannels.size());
         const int K = buckets.bucketCount();
 
         DeepOp* holdout = input1();
@@ -956,8 +1166,11 @@ private:
             const DD::Image::Box& hb = holdout->deepInfo().box();
             holdoutBox.set(hb.x(), hb.y(), hb.r(), hb.t());
         }
+        _shared.holdoutBox.set(holdoutBox.x(), holdoutBox.y(),
+                               holdoutBox.r(), holdoutBox.t());
         const bool holdoutConnected = (holdout != nullptr)
                                    && holdoutBox.w() > 0 && holdoutBox.h() > 0;
+        _shared.holdoutConnected = holdoutConnected;
 
         // The flatten needs to know too (M1.P3.T13): with a holdout connected
         // its same-pixel deposit-collision merge may not carry a fragment
@@ -976,66 +1189,70 @@ private:
         const int padY = static_cast<int>(
             std::ceil((rMax + 0.5f * softness)
                       * ((pixelAspect > 0.0f && std::isfinite(pixelAspect)) ? pixelAspect : 1.0f)));
+        _shared.padY = padY;
 
-        // B = clamp(2*maxRadius, 32, 256), then shrunk (never below 1 row)
-        // until the band's own scratch fits the memory limit. Every term is
-        // evaluated on CLAMPED values, never on raw knob values.
-        int bandHeight = deepc::clampi(static_cast<int>(std::ceil(2.0f * rMax)), 32, 256);
-        bandHeight = std::min(bandHeight, fc.box.h());
-        while (bandHeight > 1
-               && bandScratchBytes(K, C, W, bandHeight, holdoutConnected) > memoryLimitBytes()) {
-            bandHeight = std::max(1, bandHeight / 2);
-        }
+        // --- 4. band height + the concurrent-band cap (M1.P4.T1) -----------
+        //
+        // B = clamp(2*maxRadius, 32, 256), then deepc::planBands() shrinks it
+        // (never below 1 row) until ONE band's scratch fits the memory limit,
+        // and derives the cap on CONCURRENT in-flight bands (floor 1 — never
+        // 0, so the ledger cannot deadlock).  Every term is evaluated on
+        // CLAMPED values, never raw knob values.
+        //
+        // The budget is the COMBINED figure the milestone requires — bucket
+        // planes K*W*B*(C+3)*4, PLUS the holdout LUT (K+1)*W*B*4 the serial
+        // phase's formula already carried (T3 left it out of bytesForBand();
+        // measured 17.0 MB per 4096x64 band at K=16), PLUS the SoA fragment
+        // stream at ~100 B/fragment RESIDENT (61 B logical; milestone
+        // Decisions 2026-07-27), which is the DOMINANT term at 4K (~1.49GB
+        // against ~117MB of planes).  The fragment count is estimated per
+        // band as the deep-sample count over its FETCH window (band +/- padY
+        // rows), from the per-row counts the depth-range pass just gathered;
+        // the cap uses the WORST band's figure, since it is one number for
+        // the whole frame.  See deepc::bandBudgetBytes() for the estimate's
+        // stated error terms.
+        const std::size_t nSrcRows = rowSamples.size();
+        std::vector<double> prefix(nSrcRows + 1, 0.0);
+        for (std::size_t i = 0; i < nSrcRows; ++i)
+            prefix[i + 1] = prefix[i] + rowSamples[i];
 
-        // --- 4. the band loop ----------------------------------------------
-        BandJob job;
-        job.src               = src;
-        job.holdout           = holdoutConnected ? holdout : nullptr;
-        job.fp                = &fp;
-        job.buckets           = &buckets;
-        job.holdoutBoundaries = &holdoutBoundaries;
-        job.kernel            = &kernel;
-        job.srcBox.set(srcBox.x(), srcBox.y(), srcBox.r(), srcBox.t());
-        job.holdoutBox.set(holdoutBox.x(), holdoutBox.y(), holdoutBox.r(), holdoutBox.t());
-        job.colorChannels     = &colorChannels;
-        job.colorPlanes       = &colorPlanes;
-        job.alphaPlane        = alphaPlane;
-        job.mattePlane        = mattePlane;
-        job.padY              = padY;
+        const auto worstBandFragments = [&](int b) -> double {
+            double worst = 0.0;
+            for (int y0 = fc.box.y(); y0 < fc.box.t(); y0 += b) {
+                const int y1  = std::min(y0 + b, fc.box.t());
+                const int fy0 = std::max(srcBox.y(), y0 - padY);
+                const int fy1 = std::min(srcBox.t(), y1 + padY);
+                if (fy1 <= fy0)
+                    continue;
+                const double s = prefix[static_cast<std::size_t>(fy1 - srcBox.y())]
+                               - prefix[static_cast<std::size_t>(fy0 - srcBox.y())];
+                if (s > worst)
+                    worst = s;
+            }
+            return worst;
+        };
 
-        job.sp.bandX         = fc.box.x();
-        job.sp.bandWidth     = W;
-        job.sp.sharpRadiusPx = deepc::kSharpRadiusPx;
+        const int initialBandHeight = std::min(
+            deepc::clampi(static_cast<int>(std::ceil(2.0f * rMax)), 32, 256),
+            fc.box.h());
 
-        for (int y0 = fc.box.y(); y0 < fc.box.t(); y0 += bandHeight) {
-            if (aborted())
-                return false;
-            const int y1 = std::min(y0 + bandHeight, fc.box.t());
-            if (!computeBand(fc, job, y0, y1))
-                return false;
-        }
+        const deepc::BandPlan plan = deepc::planBands(
+            memoryLimitBytes(), fc.box.h(), K, C, W, holdoutConnected,
+            initialBandHeight, worstBandFragments);
 
+        _shared.bandHeight   = plan.bandHeight;
+        _shared.bandCount    = plan.bandCount;
+        _shared.maxInFlight  = plan.maxInFlight;
+        _shared.allBandsDone = false;   // real content: bands start Dirty
+
+        _shared.spBase               = deepc::ScatterParams();
+        _shared.spBase.bandX         = fc.box.x();
+        _shared.spBase.bandWidth     = W;
+        _shared.spBase.sharpRadiusPx = deepc::kSharpRadiusPx;
+
+        // NO BAND LOOP HERE ANY MORE (M1.P4.T1): bands are computed lazily,
+        // per claim, on Nuke's own render threads — see engine().
         return true;
-    }
-
-    // ------------------------------------------------------------------
-    // bandScratchBytes() — the memory-limit formula, in one place
-    //
-    // The design reference's K*W*B*(C+3)*4 bucket planes, plus the holdout
-    // LUT's (K+1)*W*B*4 when a holdout is connected. It does NOT include the
-    // SoA fragment buffers, which dominate both (~100 B/fragment resident;
-    // milestone Decisions) but cannot be sized before the band is flattened —
-    // M1.P4.T1 budgets on the combined figure.
-    // ------------------------------------------------------------------
-    static double bandScratchBytes(int k, int c, int w, int h, bool holdout)
-    {
-        double bytes = static_cast<double>(
-            deepc::BucketPlanes::bytesForBand(k, c, w, h));
-        if (holdout) {
-            bytes += static_cast<double>(k + 1) * static_cast<double>(w)
-                   * static_cast<double>(h) * 4.0;
-        }
-        return bytes;
     }
 
     // ------------------------------------------------------------------
@@ -1068,17 +1285,26 @@ private:
     //
     // Returns false only on abort / upstream failure. `anyAlpha` false means
     // the frame carries no contributing sample at all.
+    //
+    // M1.P4.T1: also fills `rowSamples` — deep samples per source row (index
+    // y - srcBox.y()) — for the memory budget's per-band SoA estimate.  It
+    // counts every sample of every depth-and-alpha-bearing pixel, INCLUDING
+    // alpha<=0 samples the flatten later drops: over-counting is the safe
+    // direction for a budget, and this pass is the one place that already
+    // touches every sample for free.
     // ------------------------------------------------------------------
     bool computeDepthRange(DeepOp* src,
                           const DD::Image::Box& srcBox,
                           const deepc::FlattenParams& fp,
                           float& depthMin,
                           float& depthMax,
-                          bool&  anyAlpha)
+                          bool&  anyAlpha,
+                          std::vector<double>& rowSamples)
     {
         depthMin = 0.0f;
         depthMax = 0.0f;
         anyAlpha = false;
+        rowSamples.assign(static_cast<std::size_t>(std::max(0, srcBox.h())), 0.0);
 
         const int    kBins   = 2048;
         const double kTail   = 1e-4;   // of the frame's total alpha mass
@@ -1115,6 +1341,9 @@ private:
                 if (!have.contains(Chan_DeepFront) || !have.contains(Chan_Alpha))
                     continue;
                 const bool haveBack = have.contains(Chan_DeepBack);
+
+                rowSamples[static_cast<std::size_t>(y - srcBox.y())]
+                    += static_cast<double>(n);
 
                 const float rayScale = deepc::rayDepthScaleAt(fp, x, y);
 
@@ -1240,7 +1469,9 @@ private:
     //   scatterBandCPU -> resolveBandCPU (saturate + composite)
     //   write the band's disjoint region of the frame
     //
-    // Returns false on abort / upstream failure, leaving the frame unpublished.
+    // Returns false on abort / upstream failure; the caller then abandons the
+    // band (Dirty, never Done), so nothing partial is ever published — this
+    // function writes the shared frame only after a fully successful band.
     // ------------------------------------------------------------------
     bool computeBand(FrameCache& fc, BandJob& job, int y0, int y1)
     {
@@ -1385,13 +1616,31 @@ private:
             return false;
 
         // --- scatter + resolve ---------------------------------------------
+        job.sp.bandY      = y0;
+        job.sp.bandHeight = h;
+
         job.planes.allocate(K, C, W, h);   // sizes AND zeroes; keeps capacity
+
+        // CALLER-SIDE GEOMETRY ASSERT (M1.P4.T1 brief): scatterBandCPU()
+        // SILENTLY RETURNS when the planes' geometry disagrees with
+        // params.bandWidth/bandHeight (found at M1.P3.T2's review — the
+        // planes own the memory, so the disagreement must not be resolved in
+        // favour of the side that doesn't).  Under per-band claiming that
+        // silent return would surface as a BLACK BAND published as Done, so
+        // the mismatch is surfaced as a loud error here instead.
+        {
+            const deepc::BucketPlaneView v = job.planes.view();
+            if (!v.valid()
+                || v.width != job.sp.bandWidth || v.height != job.sp.bandHeight) {
+                error("DeepCDefocus: internal band geometry mismatch "
+                      "(planes %dx%d vs band %dx%d) — band left black",
+                      v.width, v.height, job.sp.bandWidth, job.sp.bandHeight);
+                return false;
+            }
+        }
 
         job.bandColor.assign(static_cast<size_t>(C) * static_cast<size_t>(px), 0.0f);
         job.bandAlpha.assign(static_cast<size_t>(px), 0.0f);
-
-        job.sp.bandY      = y0;
-        job.sp.bandHeight = h;
 
         deepc::scatterBandCPU(job.sp, job.soa, holdoutView, *job.kernel,
                               job.planes, job.scatterScratch);
@@ -1435,8 +1684,9 @@ private:
     // ------------------------------------------------------------------
     // flattenPixel() — one deep pixel to one flat pixel.
     //
-    // *** NO LONGER ON THE COOK PATH (M1.P3.T5) ***  computeFrame() now
-    // scatters; this is M1.P2.T2's plain flatten, kept deliberately for two
+    // *** NO LONGER ON THE COOK PATH (M1.P3.T5) ***  the cook now
+    // scatters (frameSetup()/computeBand()); this is M1.P2.T2's plain
+    // flatten, kept deliberately for two
     // reasons the milestone names explicitly:
     //   * it is the REFERENCE the DeepToImage parity gate was established
     //     against, and the parity numbers below are the record of it;

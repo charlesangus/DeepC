@@ -60,9 +60,11 @@
 #ifndef DEEPC_DEFOCUS_SCATTER_H
 #define DEEPC_DEFOCUS_SCATTER_H
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <new>
 #include <type_traits>
 #include <utility>
@@ -3073,6 +3075,480 @@ void resolveBandCPU(const ScatterParams& params,
                     BucketPlanes&        planes,
                     float* __restrict__  outColor,
                     float* __restrict__  outAlpha);
+
+// ===========================================================================
+//
+//  PER-BAND LAZY-CLAIM CONCURRENCY (M1.P4.T1)
+//
+//  The node's frame is computed lazily, one horizontal band at a time, by
+//  whichever of Nuke's render threads asks for a row in that band first.  The
+//  state machine lives HERE, NDK-free, so it is unit-testable with plain
+//  std::thread (the same property scatterBandCPU has); the node instantiates
+//  BandLedger<DD::Image::SignalLock> and the tests instantiate it over a
+//  std::mutex/std::condition_variable monitor.  The two are the SAME code —
+//  what the tests pin is what ships.
+//
+//  Everything below is control state, not pixel data: the shared flat frame
+//  itself stays on the node side.  The ledger only says who may write which
+//  band and when a reader may copy rows out.
+//
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// bandBudgetBytes — the memory-limit knob's COMBINED per-band figure
+//
+// The design reference's bucket-plane formula alone under-budgets by an order
+// of magnitude (milestone Decisions, M1.P3.T1): the SoA fragment buffers are
+// the larger term at 4K.  The combined figure is
+//
+//   K*W*B*(C+3)*4                bucket planes: colour + alpha + the two area
+//                                planes (M1.P3.T9)
+// + (K+1)*W*B*4                  the holdout transmittance LUT, when a holdout
+//                                is connected — the term M1.P3.T3 left out of
+//                                bytesForBand(), measured 17.0 MB per 4096x64
+//                                band at K=16 (17*4096*64*4 = 17,825,792 B;
+//                                the LUT dominates the holdout side's cost and
+//                                its size is spp-independent)
+// + fragments * 100 B            the SoA fragment stream at its RESIDENT cost:
+//                                61 B/fragment logical since M1.P3.T10 dropped
+//                                the boundary pair, ~100 B resident with
+//                                PodBuffer's geometric capacity slack
+//                                (milestone Decisions, 2026-07-27)
+//
+// `fragmentEstimate` is the caller's own forecast of the band's fragment
+// count.  The node derives it from the depth-range pass's per-row sample
+// counts over the band's FETCH window (band +/- padY — the fetch rows are
+// what get flattened, not just the band's own rows), which over-counts
+// alpha<=0 samples the flatten drops and under-counts volumetric splits; both
+// errors are small against the 100-vs-61 resident margin already folded in.
+// ---------------------------------------------------------------------------
+constexpr double kSoAResidentBytesPerFragment = 100.0;
+
+inline double bandBudgetBytes(int bucketCount, int channelCount, int width,
+                              int height, bool holdoutConnected,
+                              double fragmentEstimate)
+{
+    double bytes = static_cast<double>(
+        BucketPlanes::bytesForBand(bucketCount, channelCount, width, height));
+    if (holdoutConnected && bucketCount > 0 && width > 0 && height > 0) {
+        bytes += static_cast<double>(bucketCount + 1)
+               * static_cast<double>(width)
+               * static_cast<double>(height) * 4.0;
+    }
+    if (fragmentEstimate > 0.0)
+        bytes += fragmentEstimate * kSoAResidentBytesPerFragment;
+    return bytes;
+}
+
+// ---------------------------------------------------------------------------
+// planBands — band height + concurrent-band cap from the memory limit
+//
+// The design reference's policy, in one testable place:
+//   * start from B = clamp(2*maxRadius, 32, 256) (the caller passes that in,
+//     already clamped to the frame height);
+//   * if even ONE band busts the limit, SHRINK B (halve, floor 1 row) until it
+//     fits — the limit is honoured by making bands smaller, not by refusing to
+//     render;
+//   * the cap on CONCURRENT in-flight bands is then limit / bytes(B), floored
+//     at 1 — never 0, so one band can always be in flight and nothing can
+//     deadlock waiting for a slot that cannot exist.
+//
+// `fragmentsForBandHeight(b)` returns the caller's WORST-CASE per-band
+// fragment estimate at band height b (worst over the frame's bands, since the
+// cap is one number for all of them).
+// ---------------------------------------------------------------------------
+struct BandPlan {
+    int bandHeight  = 1;
+    int bandCount   = 0;
+    int maxInFlight = 1;
+};
+
+template <typename FragmentsForBandHeight>
+inline BandPlan planBands(double memoryLimitBytes,
+                          int    frameHeight,
+                          int    bucketCount,
+                          int    channelCount,
+                          int    width,
+                          bool   holdoutConnected,
+                          int    initialBandHeight,
+                          FragmentsForBandHeight&& fragmentsForBandHeight)
+{
+    BandPlan plan;
+    if (frameHeight <= 0 || width <= 0) {
+        plan.bandHeight  = 1;
+        plan.bandCount   = 0;
+        plan.maxInFlight = 1;
+        return plan;
+    }
+
+    int b = initialBandHeight;
+    if (b < 1)
+        b = 1;
+    if (b > frameHeight)
+        b = frameHeight;
+
+    double bytes = bandBudgetBytes(bucketCount, channelCount, width, b,
+                                   holdoutConnected, fragmentsForBandHeight(b));
+    while (b > 1 && bytes > memoryLimitBytes) {
+        b = (b / 2 > 0) ? b / 2 : 1;
+        bytes = bandBudgetBytes(bucketCount, channelCount, width, b,
+                                holdoutConnected, fragmentsForBandHeight(b));
+    }
+
+    plan.bandHeight = b;
+    plan.bandCount  = (frameHeight + b - 1) / b;
+
+    // Floor 1: even a band over the limit gets its one slot (the shrink above
+    // already did what it could), so the ledger can never deadlock at 0.
+    int cap = 1;
+    if (bytes > 0.0 && memoryLimitBytes > bytes) {
+        const double slots = memoryLimitBytes / bytes;
+        cap = (slots >= 2.0) ? static_cast<int>(slots) : 1;
+    }
+    if (cap > plan.bandCount)
+        cap = plan.bandCount;
+    if (cap < 1)
+        cap = 1;
+    plan.maxInFlight = cap;
+    return plan;
+}
+
+// ---------------------------------------------------------------------------
+// BandLedger — per-band Dirty -> InProgress -> Done claim/wait state machine
+//
+// MonitorT contract (DD::Image::SignalLock satisfies it verbatim; the unit
+// tests provide a std::mutex + std::condition_variable equivalent):
+//
+//   void lock();                       // plain, non-recursive mutex
+//   void unlock();
+//   bool wait(unsigned long ms = 0);   // atomically release + sleep +
+//                                      // reacquire; 0 = no timeout; spurious
+//                                      // wakeups allowed (every wait here is
+//                                      // in a recheck loop)
+//   void signal();                     // broadcast to ALL waiters
+//
+// PROTOCOL, node side (engine(), one loop per row request):
+//
+//   1. beginRead(key): succeeds iff frame setup is Done for `key`.  The FAST
+//      path is two atomics and no lock at all — this is what replaced the
+//      serial phase's per-row frame-wide lock acquisition (~2160 per thread
+//      per 4K frame).  While reading, bandDone(band) says whether the row's
+//      band is published; if so, copy rows and endRead().
+//   2. Otherwise acquireBand(key, band): blocks while the band is InProgress
+//      (or while the in-flight cap is full), and returns
+//        Compute — the caller now OWNS the band: compute it into private
+//                  bucket planes, write its disjoint region of the shared
+//                  frame, then completeBand() (or abandonBand() on abort);
+//        Ready   — another thread finished it while we waited;
+//        Aborted — abortedFn() went true while waiting;
+//        Stale   — the setup key no longer matches: go back to beginFrame().
+//   3. beginFrame(key): the same claim pattern for the FRAME-GLOBAL setup
+//      (depth range, buckets, kernel LUT, band decomposition, the shared
+//      frame allocation).  SetupCompute's owner must call endFrameSetup().
+//      A setup claim QUIESCES first: it waits until no band is in flight and
+//      no reader is mid-copy, because setup reallocates what they touch.
+//
+// ABORT: a computing thread that sees Op::aborted() calls abandonBand() — the
+// band goes back to Dirty (NEVER Done), every waiter is woken (they re-test
+// abortedFn and leave), and the band's frame region keeps whatever it had
+// (erased/black rows).  Nothing stale is ever published: Done is only ever
+// set by completeBand() from the thread that just wrote the band under the
+// CURRENT setup key, and a setup re-run cannot start while that thread is in
+// flight.
+//
+// _validate's half is invalidate(): on an Op::hash() change it marks every
+// non-in-flight band Dirty and forces the next engine() through beginFrame(),
+// whose owner re-runs setup and resets everything under the new key.  Cheap —
+// no compute, no waiting.
+//
+// MEMORY ORDER: band states are std::atomic so the read fast path needs no
+// lock.  completeBand() stores Done with release AFTER the band's frame
+// region is written; bandDone() loads with acquire before the row copy, so
+// the copy sees the whole band.  Everything else is monitor-guarded.
+// ---------------------------------------------------------------------------
+enum class BandState : std::uint8_t {
+    Dirty      = 0,
+    InProgress = 1,
+    Done       = 2
+};
+
+enum class FrameClaim : std::uint8_t {
+    SetupCompute,   // caller owns setup; MUST call endFrameSetup()
+    Ready,          // setup already Done for this key
+    Aborted         // abortedFn() returned true
+};
+
+enum class BandClaim : std::uint8_t {
+    Compute,        // caller owns the band; MUST completeBand()/abandonBand()
+    Ready,          // band Done
+    Stale,          // setup key changed under us — return to beginFrame()
+    Aborted         // abortedFn() returned true (or band index invalid)
+};
+
+template <typename MonitorT>
+class BandLedger {
+public:
+    // `key` is the frame identity (the node passes Op::hash().value()).  There
+    // is no reserved key value: an all-ones key merely never takes the read
+    // FAST path (kNoFastKey collides with it), it still works via the locked
+    // path.
+    static constexpr std::uint64_t kNoFastKey = ~0ULL;
+
+    // ----- frame setup claim ------------------------------------------------
+    template <typename AbortedFn>
+    FrameClaim beginFrame(std::uint64_t key, AbortedFn&& abortedFn)
+    {
+        _monitor.lock();
+        for (;;) {
+            if (_setupDone && _setupKey == key) {
+                _monitor.unlock();
+                return FrameClaim::Ready;
+            }
+            if (abortedFn()) {
+                _monitor.unlock();
+                return FrameClaim::Aborted;
+            }
+            // Claim setup only when nothing else can be touching the shared
+            // frame: no band in flight (their owners hold pointers into it)
+            // and, below, no reader mid-copy.
+            if (!_setupInProgress && _inFlight == 0) {
+                _setupInProgress = true;
+                _setupDone       = false;
+                // Close the read fast path FIRST; a reader increments
+                // _activeReaders before it checks this, so once the store is
+                // visible no NEW reader can pass, and the drain below only
+                // waits for the ones already copying.
+                //
+                // SEQ_CST IS LOAD-BEARING on this store and on the reader
+                // drain below (and on beginRead()'s increment + key load):
+                // "store gate, then load counter" against "add counter, then
+                // load gate" is the store-buffer pattern, and with only
+                // release/acquire BOTH sides may see the stale value — a
+                // reader slipping past a closed gate exactly while the drain
+                // reads zero.  The default (seq_cst) ordering forbids it.
+                _fastKey.store(kNoFastKey);
+                while (_activeReaders.load() != 0)
+                    _monitor.wait(1);   // readers don't signal; poll at 1ms
+                _monitor.unlock();
+                return FrameClaim::SetupCompute;
+            }
+            _monitor.wait();
+        }
+    }
+
+    // `ok` false = setup aborted/failed: nothing becomes Ready, the next
+    // caller re-claims.  `allBandsDone` publishes an EMPTY frame (no content
+    // anywhere — the shared frame is all zeros and every band is immediately
+    // servable) without a per-band claim cycle.
+    void endFrameSetup(bool ok, std::uint64_t key, int bandCount,
+                       int maxInFlight, bool allBandsDone = false)
+    {
+        _monitor.lock();
+        _setupInProgress = false;
+        if (ok) {
+            if (bandCount < 0)
+                bandCount = 0;
+            if (bandCount > _bandCapacity) {
+                _states.reset(new std::atomic<std::uint8_t>[
+                                  static_cast<std::size_t>(bandCount)]);
+                _bandCapacity = bandCount;
+            }
+            for (int i = 0; i < bandCount; ++i) {
+                _states[i].store(static_cast<std::uint8_t>(
+                                     allBandsDone ? BandState::Done
+                                                  : BandState::Dirty),
+                                 std::memory_order_relaxed);
+            }
+            _bandCount   = bandCount;
+            _maxInFlight = (maxInFlight < 1) ? 1 : maxInFlight;
+            _setupDone   = true;
+            _setupKey    = key;
+            // Reopen the fast path.  The release store is what makes every
+            // write above (band states, count, the caller's frame buffers)
+            // visible to a fast-path reader that acquires this key.
+            _fastKey.store(key, std::memory_order_release);
+        }
+        _monitor.signal();
+        _monitor.unlock();
+    }
+
+    // ----- band claim -------------------------------------------------------
+    template <typename AbortedFn>
+    BandClaim acquireBand(std::uint64_t key, int band, AbortedFn&& abortedFn)
+    {
+        _monitor.lock();
+        for (;;) {
+            if (!_setupDone || _setupKey != key) {
+                _monitor.unlock();
+                return BandClaim::Stale;
+            }
+            if (band < 0 || band >= _bandCount) {
+                // Caller bug (a row outside every band): surfaces as a black
+                // row, never as a hang.
+                _monitor.unlock();
+                return BandClaim::Aborted;
+            }
+            const BandState s = static_cast<BandState>(
+                _states[band].load(std::memory_order_relaxed));
+            if (s == BandState::Done) {
+                _monitor.unlock();
+                return BandClaim::Ready;
+            }
+            if (abortedFn()) {
+                _monitor.unlock();
+                return BandClaim::Aborted;
+            }
+            if (s == BandState::Dirty && _inFlight < _maxInFlight) {
+                _states[band].store(static_cast<std::uint8_t>(BandState::InProgress),
+                                    std::memory_order_relaxed);
+                ++_inFlight;
+                _monitor.unlock();
+                return BandClaim::Compute;
+            }
+            // InProgress, or Dirty with the in-flight cap full: block until a
+            // completion/abandon broadcast, then re-test everything.
+            _monitor.wait();
+        }
+    }
+
+    // The claiming thread finished writing the band's region of the shared
+    // frame.  The release store publishes those writes to the lock-free
+    // read path.
+    void completeBand(int band)
+    {
+        _monitor.lock();
+        if (band >= 0 && band < _bandCount
+            && _states[band].load(std::memory_order_relaxed)
+                   == static_cast<std::uint8_t>(BandState::InProgress)) {
+            _states[band].store(static_cast<std::uint8_t>(BandState::Done),
+                                std::memory_order_release);
+        }
+        if (_inFlight > 0)
+            --_inFlight;
+        _monitor.signal();
+        _monitor.unlock();
+    }
+
+    // Aborted / failed: back to Dirty — NEVER Done — and wake every waiter so
+    // they can re-test abortedFn() and leave their rows black.
+    void abandonBand(int band)
+    {
+        _monitor.lock();
+        if (band >= 0 && band < _bandCount
+            && _states[band].load(std::memory_order_relaxed)
+                   == static_cast<std::uint8_t>(BandState::InProgress)) {
+            _states[band].store(static_cast<std::uint8_t>(BandState::Dirty),
+                                std::memory_order_relaxed);
+        }
+        if (_inFlight > 0)
+            --_inFlight;
+        _monitor.signal();
+        _monitor.unlock();
+    }
+
+    // ----- _validate's half -------------------------------------------------
+    // Op::hash() changed: every non-in-flight band goes Dirty and setup is
+    // invalidated, so the next engine() re-runs it under the new key.  Bands
+    // still InProgress are left for their owners; the setup re-claim cannot
+    // start until they complete or abandon (beginFrame waits for
+    // _inFlight == 0), and endFrameSetup then resets every state anyway.
+    void invalidate()
+    {
+        _monitor.lock();
+        _setupDone = false;
+        _fastKey.store(kNoFastKey);   // seq_cst, same pairing as beginFrame's
+        for (int i = 0; i < _bandCount; ++i) {
+            if (_states[i].load(std::memory_order_relaxed)
+                    == static_cast<std::uint8_t>(BandState::Done)) {
+                _states[i].store(static_cast<std::uint8_t>(BandState::Dirty),
+                                 std::memory_order_relaxed);
+            }
+        }
+        _monitor.signal();
+        _monitor.unlock();
+    }
+
+    // ----- the read path ----------------------------------------------------
+    // beginRead()/endRead() bracket a row copy out of the shared frame.  The
+    // fast path is lock-free: increment the reader count, THEN check the key
+    // (that order is what lets a setup claim close the gate and drain).  The
+    // slow path takes the monitor once — e.g. for a key that collides with
+    // kNoFastKey — and is also what a caller lands on right after computing
+    // its own band.
+    bool beginRead(std::uint64_t key)
+    {
+        // Increment FIRST, then check the gate — and both at seq_cst, paired
+        // with the setup claim's close-then-drain (see beginFrame): weaker
+        // orders admit the store-buffer interleaving where this thread reads
+        // the gate still open while the claimant reads the counter still
+        // zero.  On x86 the RMW is a lock op anyway and the load is plain,
+        // so the fast path stays two cheap atomics and no lock.
+        _activeReaders.fetch_add(1);
+        if (_fastKey.load() == key)
+            return true;
+        _activeReaders.fetch_sub(1);
+
+        _monitor.lock();
+        if (_setupDone && _setupKey == key) {
+            _activeReaders.fetch_add(1);
+            _monitor.unlock();
+            return true;
+        }
+        _monitor.unlock();
+        return false;
+    }
+
+    void endRead()
+    {
+        _activeReaders.fetch_sub(1);
+    }
+
+    // Only meaningful between beginRead() and endRead() (or under the
+    // monitor): is this band published?
+    bool bandDone(int band) const
+    {
+        if (band < 0 || band >= _bandCount)
+            return false;
+        return _states[band].load(std::memory_order_acquire)
+            == static_cast<std::uint8_t>(BandState::Done);
+    }
+
+    // ----- observers (tests + instrumentation) ------------------------------
+    int bandCount() const { return _bandCount; }
+
+    int inFlight()
+    {
+        _monitor.lock();
+        const int n = _inFlight;
+        _monitor.unlock();
+        return n;
+    }
+
+    BandState bandState(int band) const
+    {
+        if (band < 0 || band >= _bandCount)
+            return BandState::Dirty;
+        return static_cast<BandState>(
+            _states[band].load(std::memory_order_acquire));
+    }
+
+private:
+    MonitorT _monitor;
+
+    // Guarded by _monitor:
+    bool          _setupDone       = false;
+    bool          _setupInProgress = false;
+    std::uint64_t _setupKey        = 0;
+    int           _bandCount       = 0;
+    int           _bandCapacity    = 0;
+    int           _inFlight        = 0;
+    int           _maxInFlight     = 1;
+
+    // Lock-free (the read fast path):
+    std::atomic<std::uint64_t> _fastKey{kNoFastKey};
+    std::atomic<int>           _activeReaders{0};
+    std::unique_ptr<std::atomic<std::uint8_t>[]> _states;
+};
 
 } // namespace deepc
 

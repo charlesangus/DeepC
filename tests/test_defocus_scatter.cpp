@@ -49,9 +49,13 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <limits>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -6228,4 +6232,416 @@ TEST_CASE("tidyOverlapping terminates and stays bounded on tie-heavy randomised 
             REQUIRE((disjoint || identical));
         }
     }
+}
+
+// ===========================================================================
+//
+//  M1.P4.T1 — per-band lazy-claim concurrency
+//
+//  BandLedger is the SAME template the node instantiates over DD::Image::
+//  SignalLock; here it runs over a std::mutex/std::condition_variable
+//  monitor, driven by real std::threads, so the claim/wait/abort logic that
+//  ships is the logic pinned here.  bandBudgetBytes()/planBands() are the
+//  memory-limit arithmetic, pinned against hand-derived byte counts.
+//
+// ===========================================================================
+
+namespace {
+
+// The MonitorT contract, over std primitives (see BandLedger's header: the
+// node's instantiation uses DD::Image::SignalLock, which has this exact
+// surface).
+struct StdMonitor {
+    std::mutex              m;
+    std::condition_variable cv;
+
+    void lock()   { m.lock(); }
+    void unlock() { m.unlock(); }
+
+    bool wait(unsigned long timeoutMs = 0)
+    {
+        std::unique_lock<std::mutex> ul(m, std::adopt_lock);
+        if (timeoutMs == 0)
+            cv.wait(ul);
+        else
+            cv.wait_for(ul, std::chrono::milliseconds(timeoutMs));
+        ul.release();
+        return true;
+    }
+
+    void signal() { cv.notify_all(); }
+};
+
+using TestLedger = BandLedger<StdMonitor>;
+
+bool neverAborted() { return false; }
+
+} // namespace
+
+TEST_CASE("bandBudgetBytes: bucket planes + holdout LUT + resident SoA, "
+          "against hand-derived byte counts")
+{
+    // The design reference's 4K default band: K=16, C=4, 4096x64.
+    // Planes: K*W*B*(C+3)*4 = 16*4096*64*7*4 = 117,440,512 (~117MB).
+    CHECK(bandBudgetBytes(16, 4, 4096, 64, false, 0.0)
+          == doctest::Approx(117440512.0));
+
+    // The holdout term M1.P3.T3 left out of bytesForBand(): (K+1)*W*B*4 =
+    // 17*4096*64*4 = 17,825,792 — the 17.0 MB per 4096x64 band at K=16 the
+    // milestone measured at T3's review.
+    CHECK(bandBudgetBytes(16, 4, 4096, 64, true, 0.0)
+          - bandBudgetBytes(16, 4, 4096, 64, false, 0.0)
+          == doctest::Approx(17825792.0));
+
+    // The SoA term, at the revised ~100 B/fragment RESIDENT figure
+    // (61 B logical; milestone Decisions 2026-07-27).
+    CHECK(kSoAResidentBytesPerFragment == doctest::Approx(100.0));
+    CHECK(bandBudgetBytes(16, 4, 4096, 64, false, 1.0e6)
+          == doctest::Approx(117440512.0 + 1.0e8));
+
+    // K=128 planes: 128*4096*64*7*4 = 939,524,096 (~940MB, the design
+    // reference's K=128 figure).
+    CHECK(bandBudgetBytes(128, 4, 4096, 64, false, 0.0)
+          == doctest::Approx(939524096.0));
+
+    // Degenerate inputs count as zero, never negative or wrapped.
+    CHECK(bandBudgetBytes(0, 4, 4096, 64, true, 0.0) == doctest::Approx(0.0));
+    CHECK(bandBudgetBytes(16, 4, -1, 64, true, 100.0)
+          == doctest::Approx(100.0 * kSoAResidentBytesPerFragment));
+}
+
+TEST_CASE("planBands: shrink-to-fit floors at 1 row and the concurrent cap "
+          "floors at 1 band — never 0, never a deadlock")
+{
+    const auto noFragments = [](int) { return 0.0; };
+
+    // Fits outright: 4GB limit, 2160 rows, K=16 C=4 W=4096, B=256.
+    // bytes(256) = 16*4096*256*7*4 = 469,762,048; cap = floor(4GiB / that)
+    // = 9; bandCount = ceil(2160/256) = 9.
+    {
+        const BandPlan p = planBands(4.0 * 1024.0 * 1024.0 * 1024.0,
+                                     2160, 16, 4, 4096, false, 256, noFragments);
+        CHECK(p.bandHeight == 256);
+        CHECK(p.bandCount == 9);
+        CHECK(p.maxInFlight == 9);
+    }
+
+    // Shrinks: 64MB limit. bytes(256)=470MB > 64MB -> 128 (235MB) -> 64
+    // (117MB) -> 32 (58.7MB fits). One band in flight (64MB/58.7MB < 2).
+    {
+        const BandPlan p = planBands(64.0 * 1024.0 * 1024.0,
+                                     2160, 16, 4, 4096, false, 256, noFragments);
+        CHECK(p.bandHeight == 32);
+        CHECK(p.bandCount == (2160 + 31) / 32);
+        CHECK(p.maxInFlight == 1);
+    }
+
+    // Even ONE row over the limit: bandHeight floors at 1 and the cap floors
+    // at 1 — the band is over budget and still gets its slot (the design's
+    // "never deadlock at 0").  bytes(1) = 16*4096*7*4 = 1,835,008 > 1MB.
+    {
+        const BandPlan p = planBands(1.0 * 1024.0 * 1024.0,
+                                     2160, 16, 4, 4096, false, 256, noFragments);
+        CHECK(p.bandHeight == 1);
+        CHECK(p.bandCount == 2160);
+        CHECK(p.maxInFlight == 1);
+    }
+
+    // The fragment estimator participates in the shrink: 20 spp over a 4096
+    // window at 100 B resident dominates the planes and forces the halving.
+    // bytes(256) with fragments = 470MB + 4096*256*20*100 = 2.56GB.
+    {
+        const auto sppFragments = [](int b) {
+            return 4096.0 * static_cast<double>(b) * 20.0;
+        };
+        const BandPlan withFrag = planBands(1.0 * 1024.0 * 1024.0 * 1024.0,
+                                            2160, 16, 4, 4096, false, 256,
+                                            sppFragments);
+        const BandPlan without  = planBands(1.0 * 1024.0 * 1024.0 * 1024.0,
+                                            2160, 16, 4, 4096, false, 256,
+                                            noFragments);
+        CHECK(withFrag.bandHeight < without.bandHeight);
+        CHECK(withFrag.bandHeight == 64);   // 64: 117MB + 524MB = 642MB <= 1GB
+        CHECK(withFrag.maxInFlight == 1);
+        CHECK(without.bandHeight == 256);
+    }
+
+    // The cap never exceeds the band count (extra slots could never be
+    // claimed), and a degenerate frame is 0 bands with the floor cap.
+    {
+        const BandPlan tiny = planBands(64.0 * 1024.0 * 1024.0 * 1024.0,
+                                        40, 16, 4, 64, false, 256, noFragments);
+        CHECK(tiny.bandHeight == 40);   // clamped to the frame height
+        CHECK(tiny.bandCount == 1);
+        CHECK(tiny.maxInFlight == 1);
+
+        const BandPlan empty = planBands(1.0e9, 0, 16, 4, 64, false, 256,
+                                         noFragments);
+        CHECK(empty.bandCount == 0);
+        CHECK(empty.maxInFlight == 1);
+    }
+}
+
+TEST_CASE("BandLedger: the Dirty -> InProgress -> Done protocol, single thread")
+{
+    TestLedger ledger;
+
+    // Nothing exists yet: reads fail, band claims are Stale (caller must go
+    // set up the frame).
+    CHECK(!ledger.beginRead(1));
+    CHECK(ledger.acquireBand(1, 0, neverAborted) == BandClaim::Stale);
+
+    // First arrival claims setup; a repeat claim for the same key is Ready.
+    CHECK(ledger.beginFrame(1, neverAborted) == FrameClaim::SetupCompute);
+    ledger.endFrameSetup(true, 1, 8, 2);
+    CHECK(ledger.beginFrame(1, neverAborted) == FrameClaim::Ready);
+    CHECK(ledger.bandCount() == 8);
+
+    // Reads now succeed, but no band is Done yet.
+    CHECK(ledger.beginRead(1));
+    CHECK(!ledger.bandDone(0));
+    ledger.endRead();
+    CHECK(!ledger.beginRead(2));   // wrong key
+
+    // Claim -> InProgress -> complete -> Done -> later claims are Ready.
+    CHECK(ledger.acquireBand(1, 0, neverAborted) == BandClaim::Compute);
+    CHECK(ledger.bandState(0) == BandState::InProgress);
+    CHECK(ledger.inFlight() == 1);
+    ledger.completeBand(0);
+    CHECK(ledger.bandState(0) == BandState::Done);
+    CHECK(ledger.inFlight() == 0);
+    CHECK(ledger.acquireBand(1, 0, neverAborted) == BandClaim::Ready);
+    CHECK(ledger.beginRead(1));
+    CHECK(ledger.bandDone(0));
+    CHECK(!ledger.bandDone(1));
+    ledger.endRead();
+
+    // Abandon: back to Dirty — NEVER Done — and reclaimable.
+    CHECK(ledger.acquireBand(1, 1, neverAborted) == BandClaim::Compute);
+    ledger.abandonBand(1);
+    CHECK(ledger.bandState(1) == BandState::Dirty);
+    CHECK(ledger.inFlight() == 0);
+    CHECK(ledger.acquireBand(1, 1, neverAborted) == BandClaim::Compute);
+    ledger.completeBand(1);
+    CHECK(ledger.bandState(1) == BandState::Done);
+
+    // A Done band is served even under abort (the data is already valid);
+    // a Dirty band under abort is Aborted, not claimed.
+    const auto alwaysAborted = []() { return true; };
+    CHECK(ledger.acquireBand(1, 1, alwaysAborted) == BandClaim::Ready);
+    CHECK(ledger.acquireBand(1, 2, alwaysAborted) == BandClaim::Aborted);
+    CHECK(ledger.bandState(2) == BandState::Dirty);
+    CHECK(ledger.beginFrame(2, alwaysAborted) == FrameClaim::Aborted);
+
+    // Out-of-range band: a black row, never a hang.
+    CHECK(ledger.acquireBand(1, 8, neverAborted) == BandClaim::Aborted);
+    CHECK(ledger.acquireBand(1, -1, neverAborted) == BandClaim::Aborted);
+
+    // invalidate() = _validate's hash-change half: every non-in-flight band
+    // goes Dirty, reads and claims for the old key fail, setup re-runs.
+    ledger.invalidate();
+    CHECK(!ledger.beginRead(1));
+    CHECK(ledger.acquireBand(1, 0, neverAborted) == BandClaim::Stale);
+    CHECK(ledger.bandState(0) == BandState::Dirty);
+    CHECK(ledger.bandState(1) == BandState::Dirty);
+    CHECK(ledger.beginFrame(2, neverAborted) == FrameClaim::SetupCompute);
+    ledger.endFrameSetup(true, 2, 4, 1);
+    CHECK(ledger.beginRead(2));
+    CHECK(!ledger.bandDone(0));
+    ledger.endRead();
+
+    // A failed setup publishes nothing; the next caller re-claims.
+    ledger.invalidate();
+    CHECK(ledger.beginFrame(3, neverAborted) == FrameClaim::SetupCompute);
+    ledger.endFrameSetup(false, 3, 0, 1);
+    CHECK(!ledger.beginRead(3));
+    CHECK(ledger.beginFrame(3, neverAborted) == FrameClaim::SetupCompute);
+    ledger.endFrameSetup(true, 3, 2, 1);
+
+    // The empty-frame path: every band is Done at publish, no claim cycle.
+    ledger.invalidate();
+    CHECK(ledger.beginFrame(4, neverAborted) == FrameClaim::SetupCompute);
+    ledger.endFrameSetup(true, 4, 3, 1, /*allBandsDone=*/true);
+    CHECK(ledger.beginRead(4));
+    CHECK(ledger.bandDone(0));
+    CHECK(ledger.bandDone(2));
+    ledger.endRead();
+}
+
+TEST_CASE("BandLedger: 8 threads x 32 bands x 50 generations — every band "
+          "computed EXACTLY once per generation, in-flight never exceeds the "
+          "cap, waiters always wake")
+{
+    constexpr int kThreads     = 8;
+    constexpr int kBands       = 32;
+    constexpr int kGenerations = 50;
+    constexpr int kCap         = 3;
+
+    TestLedger ledger;
+
+    for (int gen = 0; gen < kGenerations; ++gen) {
+        const std::uint64_t key = 100 + static_cast<std::uint64_t>(gen);
+
+        // Main is quiesced between generations, so the setup claim is
+        // deterministic.
+        ledger.invalidate();
+        REQUIRE(ledger.beginFrame(key, neverAborted) == FrameClaim::SetupCompute);
+        ledger.endFrameSetup(true, key, kBands, kCap);
+
+        std::atomic<int> computes[kBands] = {};
+        std::atomic<int> concurrent{0};
+        std::atomic<int> maxConcurrent{0};
+        std::atomic<int> readyServes{0};
+
+        std::vector<std::thread> workers;
+        workers.reserve(kThreads);
+        for (int t = 0; t < kThreads; ++t) {
+            workers.emplace_back([&, t] {
+                // Each thread sweeps every band, starting at its own offset,
+                // exactly like render threads asking for rows in different
+                // bands.
+                for (int i = 0; i < kBands; ++i) {
+                    const int band = (t * 5 + i) % kBands;
+                    const BandClaim claim =
+                        ledger.acquireBand(key, band, neverAborted);
+                    if (claim == BandClaim::Compute) {
+                        const int now = concurrent.fetch_add(1) + 1;
+                        int prev = maxConcurrent.load();
+                        while (prev < now
+                               && !maxConcurrent.compare_exchange_weak(prev, now)) {
+                        }
+                        computes[band].fetch_add(1);
+                        // A little real work, so claims overlap in time.
+                        volatile double sink = 0.0;
+                        for (int w = 0; w < 2000; ++w)
+                            sink = sink + w * 1e-9;
+                        concurrent.fetch_sub(1);
+                        ledger.completeBand(band);
+                    }
+                    else {
+                        // The ONLY other legal outcome here is Ready — the
+                        // key never changes and nothing aborts, so a waiter
+                        // blocked on an InProgress band must wake into Done.
+                        // (CHECK, not REQUIRE: doctest's REQUIRE throws, which
+                        // must not leave a spawned thread.)
+                        CHECK(claim == BandClaim::Ready);
+                        if (claim == BandClaim::Ready) {
+                            readyServes.fetch_add(1);
+                            const bool readable = ledger.beginRead(key);
+                            CHECK(readable);
+                            if (readable) {
+                                CHECK(ledger.bandDone(band));
+                                ledger.endRead();
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        for (std::thread& w : workers)
+            w.join();
+
+        for (int b = 0; b < kBands; ++b)
+            REQUIRE(computes[b].load() == 1);        // exactly one owner, ever
+        REQUIRE(maxConcurrent.load() <= kCap);       // the memory cap held
+        REQUIRE(ledger.inFlight() == 0);
+        REQUIRE(readyServes.load() == kThreads * kBands - kBands);
+        for (int b = 0; b < kBands; ++b)
+            REQUIRE(ledger.bandState(b) == BandState::Done);
+    }
+}
+
+TEST_CASE("BandLedger: an aborted band resets to Dirty, wakes its waiters "
+          "into Aborted, and is recomputable after the abort clears")
+{
+    TestLedger ledger;
+    REQUIRE(ledger.beginFrame(9, neverAborted) == FrameClaim::SetupCompute);
+    ledger.endFrameSetup(true, 9, 4, 2);
+
+    std::atomic<bool> abortFlag{false};
+    const auto abortedFn = [&]() { return abortFlag.load(); };
+
+    // The owner claims band 0 and holds it.
+    REQUIRE(ledger.acquireBand(9, 0, abortedFn) == BandClaim::Compute);
+
+    // Four waiters block on it (they can neither claim it nor read it).
+    constexpr int kWaiters = 4;
+    std::atomic<int> abortedSeen{0};
+    std::vector<std::thread> waiters;
+    for (int t = 0; t < kWaiters; ++t) {
+        waiters.emplace_back([&] {
+            const BandClaim claim = ledger.acquireBand(9, 0, abortedFn);
+            // Deterministic: the abort flag is set BEFORE the abandon
+            // broadcast, so a woken waiter can only see Dirty + aborted.
+            if (claim == BandClaim::Aborted)
+                abortedSeen.fetch_add(1);
+        });
+    }
+
+    // Let the waiters reach the wait; exact timing does not matter — a
+    // waiter that has not yet blocked takes the same Aborted branch on
+    // entry.
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+    // The cook is cancelled: flag first, then abandon (matching engine(),
+    // where Op::aborted() is already true when computeBand returns false).
+    abortFlag.store(true);
+    ledger.abandonBand(0);
+
+    for (std::thread& w : waiters)
+        w.join();
+
+    CHECK(abortedSeen.load() == kWaiters);            // every waiter woke
+    CHECK(ledger.bandState(0) == BandState::Dirty);   // NEVER Done
+    CHECK(ledger.inFlight() == 0);
+
+    // Next cook (abort cleared): the band is claimable and completable.
+    abortFlag.store(false);
+    REQUIRE(ledger.acquireBand(9, 0, abortedFn) == BandClaim::Compute);
+    ledger.completeBand(0);
+    CHECK(ledger.bandState(0) == BandState::Done);
+}
+
+TEST_CASE("BandLedger: a setup re-claim drains active readers first, and the "
+          "read gate is closed while setup is in progress")
+{
+    TestLedger ledger;
+    REQUIRE(ledger.beginFrame(1, neverAborted) == FrameClaim::SetupCompute);
+    ledger.endFrameSetup(true, 1, 2, 1);
+    REQUIRE(ledger.acquireBand(1, 0, neverAborted) == BandClaim::Compute);
+    ledger.completeBand(0);
+
+    // Main holds a read (mid-row-copy); a hash change arrives on another
+    // thread.  Its setup claim MUST NOT return until the read ends —
+    // otherwise it would reallocate the frame under the copy.
+    REQUIRE(ledger.beginRead(1));
+    REQUIRE(ledger.bandDone(0));
+
+    std::atomic<int> seq{0};
+    int mainOrder = -1, workerOrder = -1;
+    std::thread worker([&] {
+        const FrameClaim claim = ledger.beginFrame(2, neverAborted);
+        workerOrder = seq.fetch_add(1);
+        // CHECK, not REQUIRE: doctest's REQUIRE throws, which must not leave
+        // a spawned thread — and endFrameSetup below must run regardless, or
+        // the main thread would hang.
+        CHECK(claim == FrameClaim::SetupCompute);
+
+        // While setup is in progress the read gate is closed for EVERY key.
+        CHECK(!ledger.beginRead(1));
+        CHECK(!ledger.beginRead(2));
+
+        ledger.endFrameSetup(true, 2, 2, 1);
+    });
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    mainOrder = seq.fetch_add(1);   // BEFORE endRead: any later increment is
+    ledger.endRead();               // provably after the drain completed
+    worker.join();
+
+    CHECK(workerOrder > mainOrder);   // the claim outwaited the reader
+    CHECK(ledger.beginRead(2));       // reopened under the new key
+    CHECK(!ledger.bandDone(0));       // ...with every band reset to Dirty
+    ledger.endRead();
+    CHECK(!ledger.beginRead(1));      // the old key stays dead
 }
