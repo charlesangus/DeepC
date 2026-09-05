@@ -91,7 +91,7 @@ node; v3 (Milestone 3) adds a CUDA backend behind the seams v1/v2 leave in place
 
 # Open questions
 
-(none — all resolved; the bucket-composite question's ruling is M1's `## Decisions` entry of
-2026-08-16, "the bucket composite is `CoveragePartition`". Project-wide decisions:
-`PLAN/DECISIONS/INDEX.md`. The running status narrative now lives in the M1 file's
-`## Status log`.)
+(none — all resolved; the bucket-composite question's ruling — "the bucket composite is
+`CoveragePartition`", 2026-08-16 — is in the archived M1 decisions log,
+`PLAN/ARCHIVE/M1-history.md`. Project-wide decisions: `PLAN/DECISIONS/INDEX.md`. Current
+state and carried obligations: the M1 file's `## Status log`.)
