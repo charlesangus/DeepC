@@ -410,7 +410,7 @@ l. small-CoC transition: shallow depth ramp crossing 0–2px CoC ⇒ no chatter/
 
 ## Phase 1.4: Concurrency + performance
 
-- [ ] M1.P4.T1 — Per-band lazy-claim concurrency
+- [x] M1.P4.T1 — Per-band lazy-claim concurrency
   - files: `src/DeepCDefocus.cpp`, `src/DeepCDefocusScatter.h`/`.cpp`
   - approach: replace Phase 1.3's frame-wide lock with per-band atomic state
     (`Dirty → InProgress → Done`) plus `DDImage/Thread.h` `Lock`/`Guard`/`Condition`; a claiming
@@ -522,6 +522,25 @@ l. small-CoC transition: shallow depth ramp crossing 0–2px CoC ⇒ no chatter/
 > [ARCHIVE/M1-history.md](../ARCHIVE/M1-history.md). Task briefs saying "this file's
 > `## Decisions`" resolve there. Append NEW decisions below this note.
 
+- 2026-09-05 — **M1.P4.T1 closed (code: f56fe2c on claude/deep-defocus-node-plan-o0ld83), with
+  its interactive-abort clause carried, not verified.** The implementation found uncommitted in
+  the tree (in flight since 2026-08-23) was complete against the brief — `BandLedger`
+  (Dirty→InProgress→Done, NDK-free, instantiated over `std::mutex` in tests and
+  `DD::Image::SignalLock` in the node), `planBands`/`bandBudgetBytes` budgeting the COMBINED
+  bucket-plane + holdout-LUT + resident-SoA (100 B/fragment) total per the brief, floor-1 cap
+  then shrink-B, `engine()` rewired to per-band claims with a lock-free done-band fast path, the
+  serial `shared_ptr<const FrameCache>` publish-by-copy deleted, the caller-side band-geometry
+  assert (silent `scatterBandCPU` return surfaced as a loud `error()`), every `deepEngine()`
+  bool checked, `_validate` marking all bands Dirty on an `Op::hash()` change. Verified
+  2026-09-05: local build clean; both unit suites green (140,887 + 212,556 assertions, including
+  an 8-thread × 32-band × 50-generation ledger stress, the abort-resets-to-Dirty path, and
+  setup-reclaim reader draining); full harness (a)–(l) IDENTICAL to the serial baseline —
+  PASS=86 FAIL=2 XFAIL=9 SKIP=1 with the two FAILs confirmed to be `f3e`/`f3f`. The "manually
+  abort a cook mid-render" clause could NOT be exercised: headless Nuke cannot trigger a
+  recoverable mid-cook cancel (same blocker as M1.P3.T5's abort clause and harness `e4`). The
+  ledger's abort protocol is unit-tested; the END-TO-END interactive abort check is carried to
+  the same interactive/Viewer pass M1.P3.T5 owes, before the verification gate.
+
 **Verification gate:** the Phase 1.0 local build (`-D Nuke_ROOT=/usr/local/Nuke17.0v3`) green
 throughout, plus `./docker-build.sh --linux` (and once, at M1.P5.T1, `--windows`) both green
 wherever docker is available before merge; all unit tests in `tests/test_defocus_math.cpp` and
@@ -538,11 +557,13 @@ Nuke; `-fopt-info-vec` confirms the scatter loop vectorized (or the omp-simd fal
 **Current state (2026-09-05).** Phases 1.0–1.3 are COMPLETE (M1.P3.T18 closed 1.3 on
 2026-08-23) except M1.P3.T5's abort-recovery clause, which needs an interactive Nuke pass
 (headless cannot trigger a recoverable mid-cook cancel; harness check `e4` SKIPs on the same
-blocker). Harness baseline: **PASS=86 FAIL=2 XFAIL=9 SKIP=1, exit 1 by design** (`f3e`/`f3f`
-are deliberate plain FAILs gating the unequal-density over-read); both unit suites green.
-Branch `claude/deep-defocus-node-plan-o0ld83` committed, NOT pushed; no PR yet. M1.P4.T1's
-implementation (BandLedger, budget formula, band planner + unit suite) is in flight,
-uncommitted in the working tree, building and green as of 2026-09-05.
+blocker). **M1.P4.T1 is COMMITTED and closed (f56fe2c, 2026-09-05)** — full harness re-run
+identical to the serial baseline (**PASS=86 FAIL=2 XFAIL=9 SKIP=1, exit 1 by design**,
+`f3e`/`f3f` the deliberate plain FAILs gating the unequal-density over-read); both unit suites
+green. Its interactive-abort clause is carried to the same interactive pass T5 owes (see
+Decisions, 2026-09-05). Next: M1.P4.T2 (vectorization check + perf gate + `merge_tolerance`
+default review). Branch `claude/deep-defocus-node-plan-o0ld83` committed, NOT pushed; no PR
+yet.
 
 **Standing lesson (recorded eight times over — full history in the archive):** every wrong
 figure in this plan was a measurement that never reached the phenomenon it claimed to bound.
