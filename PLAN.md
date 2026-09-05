@@ -2,7 +2,7 @@
 title: DeepCDefocus — deep-input, flat-output defocus node
 status: running
 current: M1.P4.T2
-pm_heartbeat: 2026-09-05T12:30:06-04:00
+pm_heartbeat: 2026-09-05T17:37:20-04:00
 ship: pr-per-milestone
 ---
 
@@ -56,9 +56,11 @@ node; v3 (Milestone 3) adds a CUDA backend behind the seams v1/v2 leave in place
   dependency) for incidental vector math — do not add Eigen or glm. Reuse
   `deepc::tidyOverlapping()` / `SampleRecord` from `src/DeepSampleOptimizer.h` (verified
   present) rather than reimplementing sample tidying/merging.
-- **Local build is the dev-loop compile gate in this environment; docker is not available
-  here.** `docker` is installed but its daemon isn't running in this environment (no
-  `/var/run/docker.sock`), so `./docker-build.sh` cannot be used for iterative compiles here.
+- **Local build is the dev-loop compile gate in this environment; the docker gate belongs to the
+  user/CI.** The docker daemon DOES run here as of 2026-09-05, but Docker Hub's blob CDN is
+  unroutable from this machine, so no image can be pulled or built — `./docker-build.sh` cannot be
+  used here at all. Separately, NukeDockerBuild ships no Dockerfile past Nuke 16.0, so that gate
+  covers 16.0 only wherever it runs (`PLAN/DECISIONS/2026-09-05-docker-gate-available-here.md`).
   However, **licensed Nuke SDK installs are present locally** at `/usr/local/Nuke16.0v9`,
   `/usr/local/Nuke16.1v3`, and `/usr/local/Nuke17.0v3` — full NDK headers plus `libDDImage.so`
   et al. — so NDK-facing code compiles and links directly via
@@ -70,10 +72,10 @@ node; v3 (Milestone 3) adds a CUDA backend behind the seams v1/v2 leave in place
   `NUKE_PATH=<dir> /usr/local/Nuke17.0v3/Nuke17.0 -t <script.py>` loads a locally-built plugin with
   no GUI and no licensing obstacle, so every in-Nuke verification in this plan can be scripted
   rather than run by hand. `./docker-build.sh --linux`/`--windows`
-  remain the pre-merge/release gate (exact production toolchain across all three Nuke minor
-  versions, plus the Windows cross-compile that only NukeDockerBuild can do) — run it wherever
-  docker is available (e.g. the user's machine or CI) before a milestone's PR merges; don't
-  block milestone progress on it being runnable from this session.
+  remain the pre-merge/release gate (the release toolchain, plus the Windows cross-compile that
+  only NukeDockerBuild can do) — the user runs it before a milestone's PR merges; don't block
+  milestone progress on it. The local SDKs cover all three minor versions, which is more version
+  coverage than the docker path currently offers.
 - **House style**: 4-space indentation, `_` member prefix, lowerCamelCase (per README
   conventions).
 - **Branch**: all work happens on the existing branch `claude/deep-defocus-node-plan-o0ld83`

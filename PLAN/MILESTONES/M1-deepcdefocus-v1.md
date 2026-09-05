@@ -541,6 +541,26 @@ l. small-CoC transition: shallow depth ramp crossing 0–2px CoC ⇒ no chatter/
   ledger's abort protocol is unit-tested; the END-TO-END interactive abort check is carried to
   the same interactive/Viewer pass M1.P3.T5 owes, before the verification gate.
 
+- 2026-09-05 — **The end-to-end interactive mid-cook abort check is CLOSED AS DOCUMENTED, not
+  verified.** Both M1.P3.T5 and M1.P4.T1 carried a clause requiring a real cancelled cook. It
+  cannot be exercised in this environment: headless Nuke has no recoverable cancel
+  (`nuke.cancel()` from a timer thread does nothing, `SIGINT` kills the process — harness check
+  `e4` SKIPs for the same reason), and there is no X or Wayland display here to drive a Viewer.
+  Put to the user, who ruled: ship it documented rather than spend a task on an Xvfb or
+  render-thread workaround. What stands behind it is the `BandLedger`'s unit-tested abort
+  protocol — aborted band resets to `Dirty`, waiters woken, next cook succeeds — exercised in
+  `tests/test_defocus_scatter.cpp` including an 8-thread × 32-band × 50-generation stress. What
+  is NOT covered is the path through `Op::aborted()` and Nuke's own row scheduler under a real
+  cancel. The milestone PR body must say so, and the node's help text must not claim otherwise.
+
+- 2026-09-05 — **The docker-build gate stays with the user/CI, and covers Nuke 16.0 only.** The
+  daemon came up in this environment but Docker Hub's blob CDN is unroutable from this machine
+  (verified outside the sandbox), so no image can be pulled or built here; separately,
+  NukeDockerBuild ships no Dockerfile past 16.0, so `docker-build.sh`'s 16.1/17.0 legs SKIP
+  wherever it runs. Full reasoning in `PLAN/DECISIONS/2026-09-05-docker-gate-available-here.md`.
+  The verification gate's docker clause is therefore an obligation on the user before merge, not
+  something this session can discharge.
+
 **Verification gate:** the Phase 1.0 local build (`-D Nuke_ROOT=/usr/local/Nuke17.0v3`) green
 throughout, plus `./docker-build.sh --linux` (and once, at M1.P5.T1, `--windows`) both green
 wherever docker is available before merge; all unit tests in `tests/test_defocus_math.cpp` and
