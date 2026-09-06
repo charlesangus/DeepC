@@ -465,7 +465,7 @@ l. small-CoC transition: shallow depth ramp crossing 0–2px CoC ⇒ no chatter/
 
 ## Phase 1.5: Integration polish
 
-- [ ] M1.P5.T1 — CMake wiring
+- [x] M1.P5.T1 — CMake wiring
   - files: `src/CMakeLists.txt`
   - approach: **the plugin registration and `target_sources` half of this task moved forward to
     M1.P3.T7** (the build gate was vacuous without it); what remains here is the compile options and
@@ -636,6 +636,19 @@ l. small-CoC transition: shallow depth ramp crossing 0–2px CoC ⇒ no chatter/
   newest `DeepCDefocus.so` under `build/*/src`; a scratch build dir holding only that one plugin
   silently produced `PASS=64 FAIL=4` with scenes (a),(c),(e),(f) raising
   `DeepCConstant: Unknown command`. A wrong-plugin-dir run looks like a code regression.
+
+- 2026-09-05 — **M1.P5.T1 closed as discharged by M1.P4.T2 (b99f92e), not separately implemented.**
+  Its whole code half had already landed: registration in `PLUGINS`/`FILTER_NODES` under the
+  `if (UNIX)` guard and `target_sources(... DeepCDefocusScatter.cpp)` came forward to M1.P3.T7, and
+  M1.P4.T2 added `target_compile_options(DeepCDefocus PRIVATE -mavx2 -mfma -ffp-contract=off)`
+  per-target, leaving the project-wide `-mavx` floor untouched for every other node. The brief's
+  "move or duplicate the `fp-contract=off` guard onto the scatter TU" clause is satisfied by that
+  target-scope flag — which is now the ONLY live guard on shipped arithmetic, since the
+  `flattenPixel()` pragma protects code with no call sites since M1.P3.T5. The remaining clause is
+  the cross-platform check (`docker-build.sh --linux`/`--windows`), which this environment cannot
+  run and which the user owns before merge; it is carried to the verification gate, where
+  `--windows` matters most since it proves every OTHER node still builds with `DeepCDefocus`
+  correctly absent.
 
 **Verification gate:** the Phase 1.0 local build (`-D Nuke_ROOT=/usr/local/Nuke17.0v3`) green
 throughout, plus `./docker-build.sh --linux` (and once, at M1.P5.T1, `--windows`) both green
