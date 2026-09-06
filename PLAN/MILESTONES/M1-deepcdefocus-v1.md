@@ -505,7 +505,7 @@ l. small-CoC transition: shallow depth ramp crossing 0–2px CoC ⇒ no chatter/
     README entry present and follows the existing plugin-list format.
   - size: S
 
-- [ ] M1.P5.T3 — Validation scene scripts
+- [x] M1.P5.T3 — Validation scene scripts
   - files: `tests/nuke/*.nk` (new, one per validation scene a–l from the Design reference)
   - approach: commit one `.nk` script per validation scene (a)–(l) so each is reproducible, not
     just run-once-by-hand. Each script should isolate its scenario (e.g. scene (c) is a
@@ -677,6 +677,42 @@ Nuke; `-fopt-info-vec` confirms the scatter loop vectorized (or the omp-simd fal
   figure it sits next to. The icon and menu entry are verified by mechanism (the generated
   `menu.py` lists `DeepCDefocus` under Filter with a `DeepCDefocus.png` icon, and `init.py`
   puts `icons/` on the plugin path) rather than by eye — there is no display here.
+
+- 2026-09-06 — **M1.P5.T3 closed (code: 520c8e3 on claude/deep-defocus-node-plan-o0ld83), with
+  its scope widened to the known defects.** Twelve `.nk` scripts, built by
+  `tests/nuke/generate_scene_scripts.py` through `harness.py`/`scenes.py`'s own construction
+  helpers so an opened script is the graph the harness measures. Verified by rendering every
+  saved script and comparing each against the harness baseline (PASS=86 FAIL=2 XFAIL=9 SKIP=1):
+  every figure is identical, down to pixel populations and worst-pixel coordinates — `a1`
+  1.788e-07, `b1` 0.0, `c1/c2` exact, `d1/d2` 0 nonzero, `e0`–`e3` 12 px bloom / 0 px mid-edge /
+  0 bleed, `f1` 4.367e-08, `g1`–`g3` ≤ 3.862e-05, `h3a`–`h3d` ≤ 1.335e-06, `i1`–`i5` dip 0.5133
+  over 24 px, `j0`–`j3` ry/rx 2.000 and pad 101/202, `k3/k4` 0.0 vs truth, `l1`–`l3` ≤ 2.084e-03.
+  **The scripts now carry the milestone's known defects, not only its passes** — the brief did
+  not ask for this and it is the substantive addition: scene (f) reproduces `f3e`'s
+  unequal-density over-read (0.49971 merged against an additive 0.28167, +77.4%) with the
+  additive oracle wired in as a plus/difference branch, and scene (g) reproduces `g4`/`g5`'s
+  α<1 ramp readings (−0.0325 at α=0.90, +0.0593 at α=0.10). Before that, a GUI user opening
+  either script saw only green, which is exactly the failure mode the standing lesson names.
+  **Two cells cannot be pinned in a static script and say so in their StickyNotes:** `k1`/`k2`
+  needs the root in two proxy states within one cook, and `e4`'s mid-cook cancel is not
+  exercisable headless (the same blocker as the abort clause closed as documented on
+  2026-09-05).
+  **Known limitation of the format:** Nuke serialises only knobs that are off their default, so
+  the scripts inherit the node's defaults for `depth_layers`, `pre_merge`, `merge_tolerance`,
+  `max_radius` and `channels` wherever `Settings` matches them (all five do today). The
+  harness's "every knob explicit" discipline does not survive into a `.nk`, and the Python API
+  exposes no way to force serialisation of a default-valued knob — so if a node default ever
+  changes, these scripts drift while the harness does not.
+
+- 2026-09-06 — **The host-protection tooling stays local-only, by user ruling.**
+  `scripts/hostguard.sh`, `scripts/hostguard-hook.py` and `.claude/settings.json` (the
+  PreToolUse hook that blocks unwrapped builds and Nuke runs) are NOT committed and must not
+  enter M1's PR. Consequence worth knowing: `tests/nuke/run_validation.sh` carries a
+  `--threads` flag that hostguard forwards to cap Nuke's core count, and that change stays
+  **uncommitted in the working tree** rather than being reverted — reverting it would leave the
+  guard unable to cap a validation run, which is the exact hazard that cost a hard reboot on
+  2026-09-05. So `run_validation.sh` shows permanently modified here, and every commit and the
+  PR must exclude it.
 
 ## Status log
 
