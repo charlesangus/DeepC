@@ -2,7 +2,7 @@
 title: DeepCDefocus — deep-input, flat-output defocus node
 status: running
 current: null
-pm_heartbeat: 2026-09-06T14:25:20-04:00
+pm_heartbeat: 2026-09-06T16:07:30-04:00
 ship: pr-per-milestone
 ---
 
@@ -94,7 +94,7 @@ node; v3 (Milestone 3) adds a CUDA backend behind the seams v1/v2 leave in place
 
 | ID | Milestone                                          | Status | File |
 |----|-----------------------------------------------------|--------|------|
-| M1 | DeepCDefocus v1 (CPU, round bokeh, holdout)          | doing  | [M1-deepcdefocus-v1.md](PLAN/MILESTONES/M1-deepcdefocus-v1.md) |
+| M1 | DeepCDefocus v1 (CPU, round bokeh, holdout)          | done   | [M1-deepcdefocus-v1.md](PLAN/MILESTONES/M1-deepcdefocus-v1.md) |
 | M2 | DeepCKernelField + aberrations                       | todo   | [M2-kernelfield-aberrations.md](PLAN/MILESTONES/M2-kernelfield-aberrations.md) |
 | M3 | CUDA backend                                         | todo   | [M3-cuda-backend.md](PLAN/MILESTONES/M3-cuda-backend.md) |
 

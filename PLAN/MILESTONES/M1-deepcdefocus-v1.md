@@ -774,21 +774,36 @@ Nuke; `-fopt-info-vec` confirms the scatter loop vectorized (or the omp-simd fal
   the line anchors (`Line could not be resolved`), several pointing at context lines outside the
   diff hunks. **The repo has no CI**, so this round was the only gate on the PR.
 
+- 2026-09-06 — **M1 IS SHIPPED. PR #105 merged to `master` as `b1f17ff`.** Merged with a merge
+  commit, not a squash, matching the repo's existing convention (`Merge pull request #NN from …`),
+  and the branch `claude/deep-defocus-node-plan-o0ld83` was **kept**, not deleted, since the board's
+  branch constraint puts M2 and M3 on it too and a true merge leaves it in sync with `master`.
+  Merged with the `--windows` gate clause **unrun, by user ruling** — it is recorded as
+  carried-not-verified in the PR body and here. It remains the one check nobody has made: that every
+  OTHER node still builds with `DeepCDefocus` correctly absent from the Windows build. The
+  `if (UNIX)` guard in `src/CMakeLists.txt` is new code touching a shared plugin list, so that is the
+  one regression this milestone could plausibly have introduced. **Whoever next has a machine that
+  can run `./docker-build.sh --windows` should run it.**
+
 ## Status log
 
 > The full "Where things stand" narrative through 2026-08-23 is archived verbatim in
 > [ARCHIVE/M1-history.md](../ARCHIVE/M1-history.md). Kept live below: the current state, the
 > standing lesson's operative rule, and the carried obligations.
 
-**Current state (2026-09-05).** **Phases 1.0–1.4 are COMPLETE.** M1.P4.T1 closed at f56fe2c
-and **M1.P4.T2 at b99f92e**, both with the full harness identical to the serial baseline
-(**PASS=86 FAIL=2 XFAIL=9 SKIP=1, exit 1 by design**, `f3e`/`f3f` the deliberate plain FAILs
-gating the unequal-density over-read) and both unit suites green (27/140,887 and 64/212,725).
-The interactive mid-cook abort clause owed by M1.P3.T5 and M1.P4.T1 is **CLOSED AS DOCUMENTED**
-by user ruling (see Decisions, 2026-09-05) — not verified end to end, and the PR body and node
-help must say so. Next: Phase 1.5 (T1 CMake, T2 help/icon/README, T3 scene scripts), then the
-verification gate and PR. Branch `claude/deep-defocus-node-plan-o0ld83` committed, NOT pushed; no
-PR yet.
+**MILESTONE COMPLETE (2026-09-06).** All five phases done, the verification gate green except
+the one clause below, and PR #105 merged to `master` as `b1f17ff`. Shipped: `DeepCDefocus`, a
+deep-input/flat-output defocus node with depth-correct pixel-sharp holdouts, plus `tidyOverlapping()`
+fixes that change shipped `DeepCBlur`/`DeepCBlur2` behaviour (release note in the PR body).
+
+Gate at close: local build clean against all three SDKs; both unit suites green (27/140,887 and
+64/212,725); validation scenes (a)–(l) green with the harness at PASS=86 FAIL=2 XFAIL=9 SKIP=1 and
+every committed `.nk` reproducing its cell exactly; scatter vectorized (901 AVX/AVX2/FMA instructions
+in the module); 2K/20spp perf profile recorded; `./docker-build.sh --linux` green across all 28
+plugins under the release toolchain.
+
+**The one thing carried unverified:** `./docker-build.sh --windows`. See the 2026-09-06 decision
+above. The interactive mid-cook abort check is separately closed-as-documented (2026-09-05 ruling).
 
 **Note for M1.P5.T1:** most of its brief is already discharged — M1.P4.T2 landed the per-target
 `-mavx2 -mfma -ffp-contract=off` and the `-fopt-info-vec` variant. What remains is the
