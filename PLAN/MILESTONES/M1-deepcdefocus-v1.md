@@ -440,7 +440,7 @@ l. small-CoC transition: shallow depth ramp crossing 0–2px CoC ⇒ no chatter/
     mid-render and confirm clean recovery (no crash, no stuck lock, next cook succeeds).
   - size: L
 
-- [ ] M1.P4.T2 — Vectorization check and perf gate
+- [x] M1.P4.T2 — Vectorization check and perf gate
   - files: `src/CMakeLists.txt` (add per-target `-mavx2 -mfma` and a `-fopt-info-vec` build
     variant for the scatter TU — final wiring lands in Phase 1.5's T1, this task just needs the
     flag to inspect vectorization), `src/DeepCDefocusScatter.cpp`
@@ -561,6 +561,82 @@ l. small-CoC transition: shallow depth ramp crossing 0–2px CoC ⇒ no chatter/
   The verification gate's docker clause is therefore an obligation on the user before merge, not
   something this session can discharge.
 
+- 2026-09-05 — **M1.P4.T2's concurrency hedge is a thread REDIRECT, not the specified
+  `Thread::spawn` prefetch pool — deviation reviewed and ACCEPTED.** Band concurrency did collapse
+  as the brief anticipated: Nuke hands its render threads consecutive rows, so all of them land in
+  one 32-row band, one claims it and the rest park in the ledger's monitor. Measured 1.39 of 4
+  cores busy, with CPU-seconds flat across `-m 1`/`-m 2`/`-m 4` (idleness, not contention). Instead
+  of spawning a pool, `BandLedger::tryClaimDirtyBand()` lets a thread that would have parked claim
+  a different `Dirty` band within the requested window — same monitor, same three states, no new
+  synchronisation primitive and no spawned threads. Back-to-back A/B: 1.72 → 2.76 cores busy at
+  2048×1080, 1.73 → 2.87 at 1024×540 (1.21× and 1.57× wall), with all 98 harness measurements
+  byte-identical.
+
+  **The decisive argument is abort scoping, which the plan-time brief did not anticipate.**
+  `EngineContext` (NDK `EngineContext.h:13-30`) is pushed on a THREAD-LOCAL stack precisely so
+  `Op::aborted()` resolves against the tree being cooked rather than every tree the Op belongs to.
+  A redirected render thread never leaves its own `engine()` call and keeps that context; a
+  `Thread::spawn`'d prefetch thread has none, so its `aborted()` degrades to "any tree" — in a comp
+  feeding two Viewers, it would abandon bands because an unrelated tree aborted and keep computing
+  when the tree that wants the pixels aborted. Reconstructing the context from inside a plugin is
+  not worth it. The redirect also inherits the `maxInFlight` memory cap for free, adds no thread
+  lifetime to own across `Op` destruction and library unload, and avoids the
+  `OpHints::eInternalMultithreaded` contract a self-threading op owes the host scheduler.
+  **Do not rebuild this as a spawn pool.**
+
+  Near-miss worth keeping: the FIRST version searched unwindowed and handed waiters the PADDING
+  bands — the decomposition covers the box padded by `max_radius`, but `engine()` is never called
+  outside `requestedBox()`. That computed 24 bands where 18 carry a requested row: a 65%
+  REGRESSION (10.657 s → 16.061 s). Windowing the claim to the requested band range fixed it. Any
+  future change to the band window must re-check this.
+
+- 2026-09-05 — **`merge_tolerance` keeps its 0.25 default; the knob is re-documented instead.**
+  The old tooltip's "lossless when radii are equal" was true and useless. Re-measured on the
+  post-M1.P3.T19 bin grid: bins are `radius²/512` px wide below 16 px, so NO positive scalar
+  default is lossless — 0.25 spans 512 bins at r=0.5 and 8 at r=4, and only drops under one bin
+  above r=11.31. Harness `i7` still reads 9.0e-02 on 100% of pixels for a pair 0.20 px apart at
+  r=1.2/1.4 (`i7b` control 0.0, `i7c` same-bin pair 0.0). What it buys, back-to-back on
+  2048×1080/20 spp: −52.9% fragments, −59.4% row spans, −61.3% pixel deposits, 1.37× wall
+  (18.250 s vs 25.051 s). A content-dependent error for 1.37× is defensible **if stated**, so the
+  tooltip now carries the bin-width law, the 9.0e-02 figure, the speed numbers, and "set 0 for an
+  exact scatter".
+
+- 2026-09-05 — **`-ffp-contract=off` stays, at target scope, priced rather than assumed.** Building
+  the scatter TU with contraction enabled puts 205 `vfmadd` in the `.so` (so the change reaches the
+  code) and buys 18.103 s against 18.278 s median — 1.0%, inside this box's noise — while moving
+  three holdout parity readings (`b1` vs `DeepHoldout2`, `b1` vs `DeepMerge2`, `b2`) off exact zero
+  to 5.96e-08. Scene (a)'s size-0 parity is unaffected (the sharp path multiplies by 1.0). Not a
+  trade worth making. A `DEEPC_DEFOCUS_SCATTER_FP_CONTRACT` option, defaulted OFF, keeps the number
+  re-checkable. Note this makes the CMake flag the only LIVE guard on shipped arithmetic — the
+  flatten path that carries the `fp-contract=off` pragma has been dead code since M1.P3.T5.
+
+- 2026-09-05 — **The perf baseline is the WORK COUNTERS, not the seconds.** This box (Intel N100,
+  4 cores, 6 W TDP, shared host) measured the identical 2048×1080 / 20-spp configuration at
+  41.9 s and at 19.1 s hours apart with BIT-IDENTICAL `ScatterStats`, and one same-process rep pair
+  read 18.4 s and 35.3 s. So the regression gate for future work is:
+  `bands=34 fragments=23101440 sharp=2887680 culled=3244032 rowSpans=86259712
+  pixelDeposits=486594560` at 2048×1080, 20 spp, 5 depth clusters × 4 layers, K=16, `pre_merge` on,
+  `merge_tolerance` 0.25, `max_radius` 100, CoC size 20 / focus 10 — reproducible via
+  `tests/nuke/run_profile.sh`. Wall clock (median 19.1 s, 7 reps, graph rebuilt per rep — Nuke
+  caches an Op against its hash, so re-executing one Write times a cache hit) is indicative only.
+  Every comparative claim in this milestone is from a back-to-back A/B, never across sessions.
+
+- 2026-09-05 — **`memory_limit` over-delivers rather than under-delivers; formula left alone.** The
+  hedge made `maxInFlight` bind for the first time, so the budget was re-measured against peak
+  `VmRSS` (sampled off-thread at 10 ms, minus the same scene with the node out of the graph;
+  sampler validated against a known 500 MiB allocation, read 0.488 vs 0.488 GB). At 4K/20spp/K=64
+  with a 1.5 GB limit the node's own peak is **0.84×** what the knob promised; at 2048×1080/K=16
+  with 0.5 GB, **0.49×**. The suspected uncounted terms turned out not to be per-band — the
+  scatter/flatten scratch is sized per PIXEL, and the band output planes are 0.6% of a 4K/K=64
+  band. The headroom is the 100-vs-61 B/fragment resident margin. Recorded above the formula rather
+  than widening it; the genuinely larger uncounted item is Nuke's own `DeepPlane` fetch buffers,
+  outside this node's allocator entirely.
+
+- 2026-09-05 — **Harness runs MUST set `DEEPC_PLUGIN_DIR`.** `run_validation.sh` otherwise picks the
+  newest `DeepCDefocus.so` under `build/*/src`; a scratch build dir holding only that one plugin
+  silently produced `PASS=64 FAIL=4` with scenes (a),(c),(e),(f) raising
+  `DeepCConstant: Unknown command`. A wrong-plugin-dir run looks like a code regression.
+
 **Verification gate:** the Phase 1.0 local build (`-D Nuke_ROOT=/usr/local/Nuke17.0v3`) green
 throughout, plus `./docker-build.sh --linux` (and once, at M1.P5.T1, `--windows`) both green
 wherever docker is available before merge; all unit tests in `tests/test_defocus_math.cpp` and
@@ -574,16 +650,30 @@ Nuke; `-fopt-info-vec` confirms the scatter loop vectorized (or the omp-simd fal
 > [ARCHIVE/M1-history.md](../ARCHIVE/M1-history.md). Kept live below: the current state, the
 > standing lesson's operative rule, and the carried obligations.
 
-**Current state (2026-09-05).** Phases 1.0–1.3 are COMPLETE (M1.P3.T18 closed 1.3 on
-2026-08-23) except M1.P3.T5's abort-recovery clause, which needs an interactive Nuke pass
-(headless cannot trigger a recoverable mid-cook cancel; harness check `e4` SKIPs on the same
-blocker). **M1.P4.T1 is COMMITTED and closed (f56fe2c, 2026-09-05)** — full harness re-run
-identical to the serial baseline (**PASS=86 FAIL=2 XFAIL=9 SKIP=1, exit 1 by design**,
-`f3e`/`f3f` the deliberate plain FAILs gating the unequal-density over-read); both unit suites
-green. Its interactive-abort clause is carried to the same interactive pass T5 owes (see
-Decisions, 2026-09-05). Next: M1.P4.T2 (vectorization check + perf gate + `merge_tolerance`
-default review). Branch `claude/deep-defocus-node-plan-o0ld83` committed, NOT pushed; no PR
-yet.
+**Current state (2026-09-05).** **Phases 1.0–1.4 are COMPLETE.** M1.P4.T1 closed at f56fe2c
+and **M1.P4.T2 at b99f92e**, both with the full harness identical to the serial baseline
+(**PASS=86 FAIL=2 XFAIL=9 SKIP=1, exit 1 by design**, `f3e`/`f3f` the deliberate plain FAILs
+gating the unequal-density over-read) and both unit suites green (27/140,887 and 64/212,725).
+The interactive mid-cook abort clause owed by M1.P3.T5 and M1.P4.T1 is **CLOSED AS DOCUMENTED**
+by user ruling (see Decisions, 2026-09-05) — not verified end to end, and the PR body and node
+help must say so. Next: Phase 1.5 (T1 CMake, T2 help/icon/README, T3 scene scripts), then the
+verification gate and PR. Branch `claude/deep-defocus-node-plan-o0ld83` committed, NOT pushed; no
+PR yet.
+
+**Note for M1.P5.T1:** most of its brief is already discharged — M1.P4.T2 landed the per-target
+`-mavx2 -mfma -ffp-contract=off` and the `-fopt-info-vec` variant. What remains is the
+cross-platform check, which the user runs (docker is unavailable here; see Decisions) and which
+covers **Nuke 16.0 only** upstream. Re-scope T1 rather than executing it as written.
+
+**Open, non-blocking, from M1.P4.T2's review:** nobody has confirmed how many render threads
+Nuke's *Viewer* dispatches for a flat `Iop` — the headers imply plural (`OpHints.h:20-26`
+multi-threads non-planar 2D Iops by default; `Op.h:2024-2030` presupposes several render threads
+on a Viewer-connected Iop), but the scheduler is not in the public headers. It matters only
+because the band hedge redirects *blocked* threads and so cannot help a genuinely single-threaded
+cook. Five-minute check whenever someone has a GUI: open the node in a Viewer with
+`DEEPC_DEFOCUS_DEBUG_BANDS=1` and count distinct thread ids. If it comes back "one thread", the
+answer is still NOT a spawn pool (see the abort-scoping argument in Decisions) — it is
+parallelising inside `computeBand`'s scatter loop.
 
 **Standing lesson (recorded eight times over — full history in the archive):** every wrong
 figure in this plan was a measurement that never reached the phenomenon it claimed to bound.
@@ -592,10 +682,9 @@ than bounding them on one side, validate re-pins against an independent oracle r
 against the new output, and give every XFAIL a hard outer bound so it cannot swallow a later
 regression.
 
-Remaining in this milestone: Phase 1.4 (T1 concurrency, T2 vectorization/perf gate — plus the
-`merge_tolerance` default review owed from T16), then Phase 1.5 (T1 CMake, T2 help/README — owed
-the coverage-deficit spec and T24's low-α bound documentation, T3 scene scripts), then the
-verification gate and PR. Twenty-one tasks
+Remaining in this milestone: Phase 1.5 only (T1 CMake — mostly discharged, see above; T2
+help/README — owed the coverage-deficit spec, T24's low-α bound documentation and the
+unverified-abort note; T3 scene scripts), then the verification gate and PR. Twenty-one tasks
 have now been added by execution findings (M1.P3.T0, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16,
 T17, T18, T19, T20, T21, T22, T23, T24, plus the enlarged M1.P3.T4 test list).
 No PR yet — `ship: pr-per-milestone` puts that at M1's verification gate. The branch
