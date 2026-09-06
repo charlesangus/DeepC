@@ -1,0 +1,125 @@
+version 17.0 v3
+Root {
+ inputs 0
+ name scene_a_size0_parity.nk
+ last_frame 1
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ proxy_type scale
+ proxy_format "1024 778 0 0 1024 778 1 1K_Super_35(full-ap)"
+ colorManagement Nuke
+ workingSpaceLUT linear
+ monitorLut sRGB
+ monitorOutLUT rec709
+ int8Lut sRGB
+ int16Lut sRGB
+ logLut Cineon
+ floatLut linear
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant4
+}
+Expression {
+ expr0 (0.5+0.5*sin(x*0.031+5.100000))*(0.050000+0.900000*(0.5+0.5*sin(x*0.013+y*0.021+9.300000)))
+ expr1 (0.5+0.5*sin(y*0.027+6.900000))*(0.050000+0.900000*(0.5+0.5*sin(x*0.013+y*0.021+9.300000)))
+ expr2 (0.5+0.5*sin((x+y)*0.019+2.700000))*(0.050000+0.900000*(0.5+0.5*sin(x*0.013+y*0.021+9.300000)))
+ expr3 (0.050000+0.900000*(0.5+0.5*sin(x*0.013+y*0.021+9.300000)))
+ name Expression4
+}
+DeepFromImage {
+ set_z true
+ z 17
+ name DeepFromImage4
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant3
+}
+Expression {
+ expr0 (0.5+0.5*sin(x*0.031+3.400000))*(0.050000+0.900000*(0.5+0.5*sin(x*0.013+y*0.021+6.200000)))
+ expr1 (0.5+0.5*sin(y*0.027+4.600000))*(0.050000+0.900000*(0.5+0.5*sin(x*0.013+y*0.021+6.200000)))
+ expr2 (0.5+0.5*sin((x+y)*0.019+1.800000))*(0.050000+0.900000*(0.5+0.5*sin(x*0.013+y*0.021+6.200000)))
+ expr3 (0.050000+0.900000*(0.5+0.5*sin(x*0.013+y*0.021+6.200000)))
+ name Expression3
+}
+DeepFromImage {
+ set_z true
+ z 11
+ name DeepFromImage3
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant2
+}
+Expression {
+ expr0 (0.5+0.5*sin(x*0.031+1.700000))*(0.050000+0.900000*(0.5+0.5*sin(x*0.013+y*0.021+3.100000)))
+ expr1 (0.5+0.5*sin(y*0.027+2.300000))*(0.050000+0.900000*(0.5+0.5*sin(x*0.013+y*0.021+3.100000)))
+ expr2 (0.5+0.5*sin((x+y)*0.019+0.900000))*(0.050000+0.900000*(0.5+0.5*sin(x*0.013+y*0.021+3.100000)))
+ expr3 (0.050000+0.900000*(0.5+0.5*sin(x*0.013+y*0.021+3.100000)))
+ name Expression2
+}
+DeepFromImage {
+ set_z true
+ z 7.5
+ name DeepFromImage2
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant1
+}
+Expression {
+ expr0 (0.5+0.5*sin(x*0.031+0.000000))*(0.050000+0.900000*(0.5+0.5*sin(x*0.013+y*0.021+0.000000)))
+ expr1 (0.5+0.5*sin(y*0.027+0.000000))*(0.050000+0.900000*(0.5+0.5*sin(x*0.013+y*0.021+0.000000)))
+ expr2 (0.5+0.5*sin((x+y)*0.019+0.000000))*(0.050000+0.900000*(0.5+0.5*sin(x*0.013+y*0.021+0.000000)))
+ expr3 (0.050000+0.900000*(0.5+0.5*sin(x*0.013+y*0.021+0.000000)))
+ name Expression1
+}
+DeepFromImage {
+ set_z true
+ z 4
+ name DeepFromImage1
+}
+DeepMerge2 {
+ inputs 4
+ name DeepMerge1
+ xpos 0
+}
+set N18de4420 [stack 0]
+DeepCDefocus {
+ coc_mode Manual
+ size 0
+ name DeepCDefocus1
+ label "measured: DeepCDefocus\nsize=0"
+ xpos 120
+ ypos 120
+}
+push $N18de4420
+DeepToImage {
+ name DeepToImage1
+ label "reference: DeepToImage\nvolumetric ON"
+ xpos -120
+ ypos 120
+}
+Merge2 {
+ inputs 2
+ operation difference
+ name Merge1
+ label "reference vs measured"
+ xpos 0
+ ypos 240
+}
+StickyNote {
+ inputs 0
+ name StickyNote1
+ label "Scene (a) -- size=0 / all-in-focus parity\n\nCheck: at size=0 the node must match stock DeepToImage (volumetric_composition ON) to within a couple of ULP -- NOT bit-exact, because the mandatory fractional two-bucket split cannot land a sample exactly on a bucket centre.\n\nPinned here: the point-sample row (4 depth-separated textured layers), tolerance 2e-07 absolute. The harness also runs a coincident-depth row and an overlapping-volumetric-spans row (tolerance 2.4e-07) and a pair of non-occluding-holdout rows, none reproduced here."
+ note_font_size 14
+ xpos 280
+}

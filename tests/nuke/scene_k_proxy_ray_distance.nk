@@ -1,0 +1,106 @@
+version 17.0 v3
+Root {
+ inputs 0
+ name scene_k_proxy_ray_distance.nk
+ last_frame 1
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ proxy_type scale
+ proxy_format "1024 778 0 0 1024 778 1 1K_Super_35(full-ap)"
+ colorManagement Nuke
+ workingSpaceLUT linear
+ monitorLut sRGB
+ monitorOutLUT rec709
+ int8Lut sRGB
+ int16Lut sRGB
+ logLut Cineon
+ floatLut linear
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant1
+}
+Rectangle {
+ area {8 8 9 9}
+ color {1 1 1 1}
+ name Rectangle1
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 8
+ name DeepFromImage1
+ xpos -220
+}
+DeepCDefocus {
+ coc_mode Manual
+ depth_is_ray_distance true
+ size 20
+ focal_length 20
+ name DeepCDefocus1
+ label "ray-distance ON, depth=8.0 (ray length)"
+ xpos -220
+ ypos 120
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant2
+}
+Rectangle {
+ area {8 8 9 9}
+ color {1 1 1 1}
+ name Rectangle2
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 8
+ name DeepFromImage2
+ xpos 0
+}
+DeepCDefocus {
+ coc_mode Manual
+ size 20
+ focal_length 20
+ name DeepCDefocus2
+ label "ray-distance OFF, same depth=8.0 (uncorrected -- expect a visibly different radius)"
+ xpos 0
+ ypos 120
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant3
+}
+Rectangle {
+ area {8 8 9 9}
+ color {1 1 1 1}
+ name Rectangle3
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 5.151129292
+ name DeepFromImage3
+ xpos 220
+}
+DeepCDefocus {
+ coc_mode Manual
+ size 20
+ focal_length 20
+ name DeepCDefocus3
+ label "ground truth: depth=5.15113 (Z, not ray length) -- must match 'ray-distance ON'"
+ xpos 220
+ ypos 120
+}
+StickyNote {
+ inputs 0
+ name StickyNote1
+ label "Scene (k) -- proxy + ray-distance\n\nCheck: depth_is_ray_distance on a wide-FOV corner pixel must reproduce ground-truth Z (and be a no-op at the optical centre); separately, proxy 0.5 must halve the render's radii, not double the blur.\n\nPinned here: the ray-distance check only (a 20mm lens on a 36mm filmback, corner pixel at (8,8)). Three branches at the same pixel: 'ray on' (depth=ray length, corrected), 'ray off' (same depth, uncorrected) and 'ground truth' (depth set directly to the true Z) -- 'ray on' should match 'ground truth' and visibly differ from 'ray off'. The proxy-scale sweep (k1/k2) needs the root in two different proxy states at once and is not reproducible as one static script."
+ note_font_size 14
+ xpos 400
+}

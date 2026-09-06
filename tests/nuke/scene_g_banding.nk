@@ -1,0 +1,126 @@
+version 17.0 v3
+Root {
+ inputs 0
+ name scene_g_banding.nk
+ last_frame 1
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ proxy_type scale
+ proxy_format "1024 778 0 0 1024 778 1 1K_Super_35(full-ap)"
+ colorManagement Nuke
+ workingSpaceLUT linear
+ monitorLut sRGB
+ monitorOutLUT rec709
+ int8Lut sRGB
+ int16Lut sRGB
+ logLut Cineon
+ floatLut linear
+}
+Constant {
+ inputs 0
+ color {0.4 0.55 0.7 1}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant1
+}
+Expression {
+ channel0 depth
+ expr0 1.0/(1720.000000/(300.0-y))
+ name Expression1
+}
+DeepFromImage {
+ name DeepFromImage1
+ xpos 0
+}
+set N195a8030 [stack 0]
+DeepCDefocus {
+ coc_mode Manual
+ size 86
+ depth_layers 8
+ name DeepCDefocus1
+ label K=8
+ xpos -220
+ ypos 140
+}
+push $N195a8030
+DeepCDefocus {
+ coc_mode Manual
+ size 86
+ name DeepCDefocus2
+ label K=16
+ xpos 0
+ ypos 140
+}
+push $N195a8030
+DeepCDefocus {
+ coc_mode Manual
+ size 86
+ depth_layers 64
+ name DeepCDefocus3
+ label K=64
+ xpos 220
+ ypos 140
+}
+StickyNote {
+ inputs 0
+ name StickyNote1
+ label "Scene (g) -- banding on a receding ground plane\n\nCheck: an opaque ground plane receding continuously through focus must show no visible seams at bucket boundaries at K=16; compare K=8 vs K=64.\n\nTop row: three DeepCDefocus branches off the same OPAQUE ground-plane source, depth_layers=8/16/64 (16 is the shipping default). That is the harness's g1/g2/g3 and the scene's own stated criterion, and it PASSES -- the worst row-to-row seam is 3.9e-05 against the 1/255 an 8-bit view resolves.\n\nBottom row: the SAME ramp at alpha < 1, which is where the residual is. Both branches are documented XFAILs in the harness and neither reads its input alpha back -- see their own note."
+ note_font_size 14
+ xpos 300
+}
+Constant {
+ inputs 0
+ color {0.36 0.495 0.63 0.9}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant2
+}
+Expression {
+ channel0 depth
+ expr0 1.0/(1720.000000/(300.0-y))
+ name Expression2
+}
+DeepFromImage {
+ name DeepFromImage2
+ label "same ramp, alpha 0.90"
+ xpos -220
+ ypos 320
+}
+DeepCDefocus {
+ coc_mode Manual
+ size 86
+ name DeepCDefocus4
+ label "K=16, expect a flat 0.90"
+ xpos -220
+ ypos 440
+}
+Constant {
+ inputs 0
+ color {0.04 0.055 0.07 0.1}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant3
+}
+Expression {
+ channel0 depth
+ expr0 1.0/(1720.000000/(300.0-y))
+ name Expression3
+}
+DeepFromImage {
+ name DeepFromImage3
+ label "same ramp, alpha 0.10"
+ xpos 0
+ ypos 320
+}
+DeepCDefocus {
+ coc_mode Manual
+ size 86
+ name DeepCDefocus5
+ label "K=16, expect a flat 0.10"
+ xpos 0
+ ypos 440
+}
+StickyNote {
+ inputs 0
+ name StickyNote2
+ label "The alpha<1 arms of the same ramp (harness g4 and g5) -- both XFAIL\n\nIdentical rig to the opaque branches above, at K=16, with the plane's premultiplied colour scaled to alpha 0.90 and alpha 0.10. The correct interior flat field is the input alpha exactly. It is not:\n\n  alpha 0.90 (g4): reads 0.8707, a 3.25% DEFICIT\n  alpha 0.10 (g5): reads 0.1059, a 5.93% OVER-READ\n\nThe over-read is in the direction the honest-alpha contract forbids and it grows as alpha falls (the harness also pins alpha 0.30 at +3.40% and alpha 0.01 at +7.06%, not reproduced here). Both are one bucket pooling a head and a rear at unequal per-unit opacity -- accumulation-time information loss, which no per-bucket composite rule can undo.\n\nBoth harness checks are pinned BANDS around their reading, so any change to these numbers -- an improvement included -- must re-pin them."
+ note_font_size 14
+ xpos 300
+ ypos 320
+}

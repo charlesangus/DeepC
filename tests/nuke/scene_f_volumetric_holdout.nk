@@ -1,0 +1,333 @@
+version 17.0 v3
+Root {
+ inputs 0
+ name scene_f_volumetric_holdout.nk
+ last_frame 1
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ proxy_type scale
+ proxy_format "1024 778 0 0 1024 778 1 1K_Super_35(full-ap)"
+ colorManagement Nuke
+ workingSpaceLUT linear
+ monitorLut sRGB
+ monitorOutLUT rec709
+ int8Lut sRGB
+ int16Lut sRGB
+ logLut Cineon
+ floatLut linear
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant8
+}
+Rectangle {
+ area {224 0 256 256}
+ color {1 1 1 1}
+ name Rectangle8
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 23.5
+ name DeepFromImage8
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant7
+}
+Rectangle {
+ area {192 0 224 256}
+ color {1 1 1 1}
+ name Rectangle7
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 21
+ name DeepFromImage7
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant6
+}
+Rectangle {
+ area {160 0 192 256}
+ color {1 1 1 1}
+ name Rectangle6
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 18.5
+ name DeepFromImage6
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant5
+}
+Rectangle {
+ area {128 0 160 256}
+ color {1 1 1 1}
+ name Rectangle5
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 16
+ name DeepFromImage5
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant4
+}
+Rectangle {
+ area {96 0 128 256}
+ color {1 1 1 1}
+ name Rectangle4
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 13.5
+ name DeepFromImage4
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant3
+}
+Rectangle {
+ area {64 0 96 256}
+ color {1 1 1 1}
+ name Rectangle3
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 11
+ name DeepFromImage3
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant2
+}
+Rectangle {
+ area {32 0 64 256}
+ color {1 1 1 1}
+ name Rectangle2
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 8.5
+ name DeepFromImage2
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant1
+}
+Rectangle {
+ area {0 0 32 256}
+ color {1 1 1 1}
+ name Rectangle1
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 6
+ name DeepFromImage1
+}
+DeepMerge2 {
+ inputs 8
+ name DeepMerge1
+ xpos 0
+}
+set N1946e770 [stack 0]
+DeepCDefocus {
+ coc_mode Manual
+ size 0
+ name DeepCDefocus1
+ label "no holdout: every strip must read 1.0"
+ xpos -140
+ ypos 140
+}
+DeepCConstant {
+ inputs 0
+ color_front {0 0 0 0.9}
+ color_back {0 0 0 0.9}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ alpha_mode uniform
+ front 5
+ back 25
+ name DeepCConstant1
+ label "fog holdout, alpha 0.90, z=\[5, 25]"
+ xpos 200
+}
+push $N1946e770
+DeepCDefocus {
+ inputs 2
+ coc_mode Manual
+ size 0
+ name DeepCDefocus2
+ label "holdout wired: attenuation vs analytic (1-alpha)^t"
+ xpos 140
+ ypos 140
+}
+StickyNote {
+ inputs 0
+ name StickyNote1
+ label "Scene (f) -- volumetric holdout\n\nCheck: a partial-alpha fog-slab holdout must attenuate a depth-graded series of probe strips by the analytic (1-alpha)^t, t the fractional depth across the fog span.\n\nPinned here (top row): fog slab alpha 0.90 spanning z=\[5, 25] at size=0, against the same probe strips rendered with no holdout for comparison. That is the harness's f1, and it PASSES (4.4e-08 against a 1e-06 gate).\n\nThe bottom row pins the harness's f3e, which FAILS -- see its own note. The harness's other scene-(f) rows are not reproduced here: f2 (opaque-holdout erasure onset, XFAIL), f3/f3b (equal-density fog density, PASS), f3c/f3d (equal-density overlapping slabs, XFAIL) and f3f-f3i (the rest of the unequal-density family; f3f FAILS)."
+ note_font_size 14
+ xpos 340
+}
+DeepCConstant {
+ inputs 0
+ color_front {0.025 0.025 0.025 0.05}
+ color_back {0.025 0.025 0.025 0.05}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ alpha_mode uniform
+ front 8
+ back 16
+ name DeepCConstant4
+}
+DeepCrop {
+ use_znear false
+ use_zfar false
+ bbox {2 2 18 18}
+ name DeepCrop3
+ label "range anchor (see the note)"
+ xpos 20
+ ypos 320
+}
+set N194f5b30 [stack 0]
+DeepCDefocus {
+ coc_mode Manual
+ focus_distance 30
+ size 14
+ name DeepCDefocus3
+ label "anchor alone"
+ xpos -300
+ ypos 460
+}
+push $N194f5b30
+DeepCConstant {
+ inputs 0
+ color_front {0.03 0.05 0.07 0.1}
+ color_back {0.03 0.05 0.07 0.1}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ alpha_mode uniform
+ front 9
+ back 13
+ name DeepCConstant3
+}
+DeepCrop {
+ use_znear false
+ use_zfar false
+ bbox {132 108 172 148}
+ name DeepCrop2
+ label "card B: alpha 0.10, z=\[9, 13]"
+ xpos -140
+ ypos 320
+}
+set N194db430 [stack 0]
+DeepCConstant {
+ inputs 0
+ color_front {0.693 0.495 0.297 0.99}
+ color_back {0.693 0.495 0.297 0.99}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ alpha_mode uniform
+ front 8
+ back 12
+ name DeepCConstant2
+}
+DeepCrop {
+ use_znear false
+ use_zfar false
+ bbox {84 108 124 148}
+ name DeepCrop1
+ label "card A: alpha 0.99, z=\[8, 12]"
+ xpos -300
+ ypos 320
+}
+set N194c1390 [stack 0]
+DeepMerge2 {
+ inputs 3
+ name DeepMerge4
+}
+DeepCDefocus {
+ coc_mode Manual
+ focus_distance 30
+ size 14
+ name DeepCDefocus6
+ label merged
+ xpos 180
+ ypos 460
+}
+push $N194f5b30
+push $N194db430
+DeepMerge2 {
+ inputs 2
+ name DeepMerge3
+}
+DeepCDefocus {
+ coc_mode Manual
+ focus_distance 30
+ size 14
+ name DeepCDefocus5
+ label "solo B"
+ xpos 20
+ ypos 460
+}
+push $N194f5b30
+push $N194c1390
+DeepMerge2 {
+ inputs 2
+ name DeepMerge2
+}
+DeepCDefocus {
+ coc_mode Manual
+ focus_distance 30
+ size 14
+ name DeepCDefocus4
+ label "solo A"
+ xpos -140
+ ypos 460
+}
+Merge2 {
+ inputs 2
+ operation plus
+ name Merge1
+ label "soloA + soloB"
+ xpos -60
+ ypos 560
+}
+Merge2 {
+ inputs 2
+ operation difference
+ name Merge2
+ label "oracle vs merged: every nonzero pixel here is alpha the composite invented or lost"
+ xpos 60
+ ypos 640
+}
+StickyNote {
+ inputs 0
+ name StickyNote2
+ label "f3e -- unequal-density over-read (a PLAIN FAIL, not an xfail)\n\nTwo 40x40 cards 8 px apart, depth spans \[8,12] at alpha 0.99 and \[9,13] at alpha 0.10, defocused at size=14. Below saturation the node's area model is additive, so the merged render must equal the sum of the two cards rendered SEPARATELY. It does not: the harness reads +77.411% high on the worst probed pixel against a 0.5% gate, i.e. the node INVENTS alpha, the one direction the honest-alpha contract forbids.\n\n'soloA + soloB' is that oracle and 'oracle vs merged' is the error. The faint corner card is the RANGE ANCHOR: every branch here must measure the same depth range, or solo and merged would be bucketed differently and the identity would not be exact. Pixels its own blur reaches are excluded from the harness's reading, which is what the 'anchor alone' branch is for.\n\nThe harness's percentage is over a filtered pixel set (anchor-free, both cards present, estimated coverage <= 0.90) and is not what the difference node displays; the difference node shows WHERE the over-read is."
+ note_font_size 14
+ xpos 340
+ ypos 320
+}
