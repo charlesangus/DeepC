@@ -1,3 +1,8 @@
+> **SUPERSEDED IN PART, 2026-09-06.** Blocker #1 below is wrong: `mirror.gcr.io` serves
+> Docker Hub and is routable, so images CAN be built here and `./docker-build.sh --linux`
+> now runs green. See [2026-09-06-docker-linux-gate-runs-here.md](2026-09-06-docker-linux-gate-runs-here.md).
+> Blocker #2 (no upstream Dockerfile past 16.0) still stands.
+
 # The docker gate still cannot run here — the daemon came up, the registry did not
 
 **2026-09-05.** The plan's `# Context and constraints` said docker was installed but its daemon

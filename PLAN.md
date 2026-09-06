@@ -56,11 +56,18 @@ node; v3 (Milestone 3) adds a CUDA backend behind the seams v1/v2 leave in place
   dependency) for incidental vector math — do not add Eigen or glm. Reuse
   `deepc::tidyOverlapping()` / `SampleRecord` from `src/DeepSampleOptimizer.h` (verified
   present) rather than reimplementing sample tidying/merging.
-- **Local build is the dev-loop compile gate in this environment; the docker gate belongs to the
-  user/CI.** The docker daemon DOES run here as of 2026-09-05, but Docker Hub's blob CDN is
-  unroutable from this machine, so no image can be pulled or built — `./docker-build.sh` cannot be
-  used here at all. Separately, NukeDockerBuild ships no Dockerfile past Nuke 16.0, so that gate
-  covers 16.0 only wherever it runs (`PLAN/DECISIONS/2026-09-05-docker-gate-available-here.md`).
+- **Local build is the dev-loop compile gate; the docker build is the RELEASE gate, and it runs
+  here.** As of 2026-09-06 `./docker-build.sh --linux` runs green on this machine — Docker Hub's
+  blob CDN is unroutable, but `mirror.gcr.io` serves the same images, AlmaLinux 8 stands in for the
+  unroutable Rocky 8 package mirrors, and the local Nuke SDK is fed in as a BuildKit named context
+  in place of the unroutable Foundry installer download
+  (`PLAN/DECISIONS/2026-09-06-docker-linux-gate-runs-here.md`). Two limits stand: NukeDockerBuild
+  ships no Dockerfile past Nuke 16.0, so the gate covers **16.0 only**; and `--windows` is
+  impossible here, needing the Windows Nuke SDK from that same unroutable host.
+  **The local build's binaries are NOT shippable** — they require `GLIBC_2.29` and cannot load on
+  RHEL 8, which Nuke 16/17 is supported on; four plugins are affected, `DeepCDefocus` among them
+  (`PLAN/DECISIONS/2026-09-06-local-build-is-not-shippable.md`). Cut release artifacts from the
+  container build only.
   However, **licensed Nuke SDK installs are present locally** at `/usr/local/Nuke16.0v9`,
   `/usr/local/Nuke16.1v3`, and `/usr/local/Nuke17.0v3` — full NDK headers plus `libDDImage.so`
   et al. — so NDK-facing code compiles and links directly via

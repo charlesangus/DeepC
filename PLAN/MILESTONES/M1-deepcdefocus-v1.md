@@ -714,6 +714,40 @@ Nuke; `-fopt-info-vec` confirms the scatter loop vectorized (or the omp-simd fal
   2026-09-05. So `run_validation.sh` shows permanently modified here, and every commit and the
   PR must exclude it.
 
+- 2026-09-06 — **The §3a decision publication is narrowed to the PR body for M1; no `docs/decisions/`
+  tree is added.** The board sets no `publish_decisions`, so the format's default would copy all five
+  `PLAN/DECISIONS/*.md` files into `docs/decisions/` in the code repo at this gate. Not doing that
+  here, for three reasons: the user has just ruled that non-node artifacts stay out of the repo (the
+  hostguard entry above); two of the five (`local-nuke-sdk-compile-gate`,
+  `docker-gate-available-here`) are dev-environment notes with no bearing on a reader of the code;
+  and the obligation the milestone actually states is that **the PR body carries the shipped-node
+  release note** from `tidyoverlapping-single-pass` and `volumetric-tidying-semantics`, which it
+  does. Adding a top-level `docs/` tree to a public plugin repo is a structural change M1 was not
+  asked to make. Revisit if a later milestone wants the ADR trail in-repo.
+
+- 2026-09-06 — **The verification gate is GREEN except the Windows leg, which is environmentally
+  impossible.** Run at the close of Phase 1.5:
+  local build (`-D Nuke_ROOT=/usr/local/Nuke17.0v3`) clean; both unit suites green (27/140,887 and
+  64/212,725, matching the M1.P4.T2 figures exactly); validation scenes (a)–(l) green in Nuke with
+  the harness at its baseline PASS=86 FAIL=2 XFAIL=9 SKIP=1 (`f3e`/`f3f` the deliberate gates) and
+  every committed `.nk` reproducing its cell; vectorization and the 2K/20spp perf profile recorded
+  at M1.P4.T2. **`./docker-build.sh --linux` was expected to be impossible here and is not** — it
+  ran unmodified and produced all 28 plugins including `DeepCDefocus.so` under GCC 11.2.1 on an
+  RHEL 8 rebuild against the Nuke 16.0v9 SDK, 0 errors and 0 warnings attributable to
+  `DeepCDefocus*`, with `-mavx2 -mfma -ffp-contract=off` accepted verbatim and 901 AVX/AVX2/FMA
+  instructions in the module. The only `DeepCDefocus` diagnostic anywhere is the deprecated
+  `Op::Description(name, menu, ctor)` under the 16.1/17.0 SDKs, which every one of the 28 plugins
+  gets and which is an SDK-version effect, not a toolchain one.
+  **`--windows` cannot run here at all** and is the one gate clause carried unverified: it needs the
+  Windows Nuke SDK from the unroutable Foundry host. What it would prove — that every OTHER node
+  still builds with `DeepCDefocus` correctly absent — has no substitute on this machine, so it goes
+  to the user or CI before merge.
+  Two findings came out of that run and are recorded project-wide rather than here, because they
+  outlive M1: the docker gate's real blockers and their workarounds
+  (`PLAN/DECISIONS/2026-09-06-docker-linux-gate-runs-here.md`), and that **the local dev build's
+  binaries require `GLIBC_2.29` and cannot load on RHEL 8** — four plugins, `DeepCDefocus` among
+  them (`PLAN/DECISIONS/2026-09-06-local-build-is-not-shippable.md`).
+
 ## Status log
 
 > The full "Where things stand" narrative through 2026-08-23 is archived verbatim in
