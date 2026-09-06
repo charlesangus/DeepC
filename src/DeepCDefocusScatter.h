@@ -61,11 +61,13 @@
 #define DEEPC_DEFOCUS_SCATTER_H
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <memory>
 #include <new>
+#include <thread>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -3121,6 +3123,25 @@ void resolveBandCPU(const ScatterParams& params,
 // what get flattened, not just the band's own rows), which over-counts
 // alpha<=0 samples the flatten drops and under-counts volumetric splits; both
 // errors are small against the 100-vs-61 resident margin already folded in.
+//
+// WHAT THE KNOB ACTUALLY DELIVERS.  The figure omits the band's own output
+// planes (W*B*(C+2)*4 — 2.95 MB against a 485 MB band at 4K/K=64) and the
+// flatten/scatter scratch, which is sized per PIXEL (one pixel's sample
+// count), not per band.  Measured against peak RSS, on the two configurations
+// where maxInFlight actually binds — it does not bind until per-band claims
+// let a frame keep several bands in flight at once:
+//
+//   3840x2160, 20 spp, K=64, limit 1.5 GB: cap 3, promised 1.456 GiB,
+//     process peak +1.489 GiB, of which +0.270 GiB is the same scene with
+//     this node out of the graph -> the node's own peak is 0.84x promised.
+//   2048x1080, 20 spp, K=16, limit 0.5 GB: cap 2, promised 0.372 GiB,
+//     process peak +0.260 GiB, source-only +0.079 GiB -> 0.49x promised.
+//
+// So the limit is a real ceiling with 1.2x-2.0x headroom, not an estimate to
+// be padded.  The headroom is the 100-vs-61 B/fragment resident margin: it is
+// the whole band at K=16 (0.172 GB of 0.186) and under half of it at K=64,
+// where the exactly-allocated bucket planes dominate — which is why the
+// 4K/K=64 reading sits so much closer to the promise.
 // ---------------------------------------------------------------------------
 constexpr double kSoAResidentBytesPerFragment = 100.0;
 
@@ -3234,15 +3255,19 @@ inline BandPlan planBands(double memoryLimitBytes,
 //      serial phase's per-row frame-wide lock acquisition (~2160 per thread
 //      per 4K frame).  While reading, bandDone(band) says whether the row's
 //      band is published; if so, copy rows and endRead().
-//   2. Otherwise acquireBand(key, band): blocks while the band is InProgress
-//      (or while the in-flight cap is full), and returns
+//   2. Otherwise tryClaimDirtyBand(key, band): a NON-blocking claim of the
+//      first Dirty band from `band` onwards, which is what keeps the other
+//      render threads off the monitor while one of them computes the band
+//      they all asked for (see that function).
+//   3. Only when that finds nothing, acquireBand(key, band): blocks while the
+//      band is InProgress (or while the in-flight cap is full), and returns
 //        Compute — the caller now OWNS the band: compute it into private
 //                  bucket planes, write its disjoint region of the shared
 //                  frame, then completeBand() (or abandonBand() on abort);
 //        Ready   — another thread finished it while we waited;
 //        Aborted — abortedFn() went true while waiting;
 //        Stale   — the setup key no longer matches: go back to beginFrame().
-//   3. beginFrame(key): the same claim pattern for the FRAME-GLOBAL setup
+//   4. beginFrame(key): the same claim pattern for the FRAME-GLOBAL setup
 //      (depth range, buckets, kernel LUT, band decomposition, the shared
 //      frame allocation).  SetupCompute's owner must call endFrameSetup().
 //      A setup claim QUIESCES first: it waits until no band is in flight and
@@ -3327,8 +3352,18 @@ public:
                 // reader slipping past a closed gate exactly while the drain
                 // reads zero.  The default (seq_cst) ordering forbids it.
                 _fastKey.store(kNoFastKey);
-                while (_activeReaders.load() != 0)
-                    _monitor.wait(1);   // readers don't signal; poll at 1ms
+                // Readers never signal, so this drain has to poll -- but NOT
+                // with the monitor's timed wait.  DD::Image::SignalLock::
+                // wait(ms) builds an ABSOLUTE timespec of {0, ms*1000}, which
+                // is always in the past, so pthread_cond_timedwait returns
+                // ETIMEDOUT at once and the loop would spin on the lock
+                // (measured: 0.0106 ms per call, not 1 ms).  Sleeping off the
+                // lock is also the same wait in the tests as in the node.
+                while (_activeReaders.load() != 0) {
+                    _monitor.unlock();
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    _monitor.lock();
+                }
                 _monitor.unlock();
                 return FrameClaim::SetupCompute;
             }
@@ -3409,6 +3444,69 @@ public:
             // completion/abandon broadcast, then re-test everything.
             _monitor.wait();
         }
+    }
+
+    // Non-blocking claim of a Dirty band inside [first, last], searched
+    // forward from `from` and wrapping within that window.  Returns the
+    // claimed band, or -1 when there is nothing to claim right now (no Dirty
+    // band in the window, the in-flight cap is full, the setup key has moved
+    // on, or `from` lies outside the window).  A claim carries the same
+    // obligation as acquireBand()'s Compute: completeBand() or abandonBand().
+    //
+    // WHY THIS EXISTS.  Nuke hands its render threads CONSECUTIVE rows, so all
+    // of them sit inside one band; without this the first arrival computes it
+    // and the rest block in acquireBand() for the whole of that compute.
+    // Measured back to back on a 2048x1080 / 20-samples-per-pixel frame (34
+    // bands of 32 rows), four render threads on four cores: without this call
+    // 22.66 s median wall, 1.47 bands in flight, 1.72 of 4 cores busy; with it
+    // 18.74 s, 2.62 bands, 2.76 cores.  The same 34 bands are computed either
+    // way.  On a frame where the deep-input pull is a smaller share of the
+    // band (1024x540, max_radius 100, radii to 10 px) it is 10.66 s -> 6.80 s.
+    //
+    // THE WINDOW IS NOT OPTIONAL.  The band decomposition covers the node's
+    // PADDED output box, and engine() is never called outside Iop::
+    // requestedBox() — so an unwindowed search hands waiters the pad bands
+    // nobody will ever ask for.  Measured with the window left out, on that
+    // 1024x540 frame: 24 bands computed against the 18 that carry a requested
+    // row, and 16.06 s against 9.74 s median wall — a LOSS.  The caller passes
+    // the band range its requested box covers.
+    int tryClaimDirtyBand(std::uint64_t key, int from, int first, int last)
+    {
+        _monitor.lock();
+        if (!_setupDone || _setupKey != key || _bandCount <= 0
+            || _inFlight >= _maxInFlight) {
+            _monitor.unlock();
+            return -1;
+        }
+        if (first < 0)          first = 0;
+        if (last > _bandCount - 1) last = _bandCount - 1;
+        if (first > last) {
+            _monitor.unlock();
+            return -1;
+        }
+        // PRECONDITION: `from` is inside the window.  Outside it the only
+        // safe answer is none -- clamping would hand the caller a band its
+        // own row request cannot use, which costs a whole band's compute
+        // before it reaches the one it asked for.
+        if (from < first || from > last) {
+            _monitor.unlock();
+            return -1;
+        }
+        const int span = last - first + 1;
+        for (int i = 0; i < span; ++i) {
+            const int band = first + (from - first + i) % span;
+            if (static_cast<BandState>(
+                    _states[band].load(std::memory_order_relaxed))
+                != BandState::Dirty)
+                continue;
+            _states[band].store(static_cast<std::uint8_t>(BandState::InProgress),
+                                std::memory_order_relaxed);
+            ++_inFlight;
+            _monitor.unlock();
+            return band;
+        }
+        _monitor.unlock();
+        return -1;
     }
 
     // The claiming thread finished writing the band's region of the shared

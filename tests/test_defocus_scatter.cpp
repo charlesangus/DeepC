@@ -6551,6 +6551,211 @@ TEST_CASE("BandLedger: 8 threads x 32 bands x 50 generations — every band "
     }
 }
 
+TEST_CASE("BandLedger: tryClaimDirtyBand hands a waiter a DIFFERENT band, "
+          "respects the in-flight cap, and never claims twice")
+{
+    TestLedger ledger;
+    REQUIRE(ledger.beginFrame(11, neverAborted) == FrameClaim::SetupCompute);
+    ledger.endFrameSetup(true, 11, 6, 3);
+
+    // The search starts at the caller's own band, so an uncontended caller
+    // gets exactly the band it asked for.
+    CHECK(ledger.tryClaimDirtyBand(11, 2, 0, 5) == 2);
+    CHECK(ledger.bandState(2) == BandState::InProgress);
+    CHECK(ledger.inFlight() == 1);
+
+    // A second caller asking for the SAME band gets the next Dirty one
+    // instead of blocking — this is the whole point of the call.
+    CHECK(ledger.tryClaimDirtyBand(11, 2, 0, 5) == 3);
+    CHECK(ledger.tryClaimDirtyBand(11, 2, 0, 5) == 4);
+    CHECK(ledger.inFlight() == 3);
+
+    // The in-flight cap is 3: nothing more may be claimed, even though bands
+    // 0, 1 and 5 are still Dirty.
+    CHECK(ledger.tryClaimDirtyBand(11, 0, 0, 5) == -1);
+    CHECK(ledger.bandState(0) == BandState::Dirty);
+
+    // Completing one frees exactly one slot, and the search wraps.
+    ledger.completeBand(3);
+    CHECK(ledger.tryClaimDirtyBand(11, 5, 0, 5) == 5);
+    ledger.completeBand(5);
+    CHECK(ledger.tryClaimDirtyBand(11, 5, 0, 5) == 0);   // wrapped past the end
+
+    // A Done band is never re-claimed, and an abandoned one is.
+    ledger.completeBand(0);
+    ledger.completeBand(2);
+    ledger.abandonBand(4);
+    CHECK(ledger.tryClaimDirtyBand(11, 0, 0, 5) == 1);
+    CHECK(ledger.tryClaimDirtyBand(11, 0, 0, 5) == 4);
+    ledger.completeBand(1);
+    ledger.completeBand(4);
+    CHECK(ledger.tryClaimDirtyBand(11, 0, 0, 5) == -1);   // every band Done
+
+    // Wrong key / no setup: -1, never a claim.
+    CHECK(ledger.tryClaimDirtyBand(12, 0, 0, 5) == -1);
+    ledger.invalidate();
+    CHECK(ledger.tryClaimDirtyBand(11, 0, 0, 5) == -1);
+
+    // A start OUTSIDE the window claims nothing at all.  It is the caller's
+    // precondition to pass its own band, and the alternative -- clamping into
+    // the window -- would hand the caller a band its row request cannot use,
+    // costing it a whole band's compute before it reaches the one it needs.
+    REQUIRE(ledger.beginFrame(13, neverAborted) == FrameClaim::SetupCompute);
+    ledger.endFrameSetup(true, 13, 2, 2);
+    CHECK(ledger.tryClaimDirtyBand(13, 99, 0, 1) == -1);
+    CHECK(ledger.tryClaimDirtyBand(13, -7, 0, 1) == -1);
+    CHECK(ledger.bandState(0) == BandState::Dirty);
+    CHECK(ledger.bandState(1) == BandState::Dirty);
+    CHECK(ledger.inFlight() == 0);
+    CHECK(ledger.tryClaimDirtyBand(13, 0, 0, 1) == 0);
+    CHECK(ledger.tryClaimDirtyBand(13, 1, 0, 1) == 1);
+    // Both back, or the next beginFrame() would quiesce forever waiting on
+    // claims this test never released.
+    ledger.completeBand(0);
+    ledger.completeBand(1);
+
+    // THE WINDOW: bands outside [first, last] are never handed out, however
+    // Dirty they are.  This is what keeps a waiter off the pad bands the node
+    // decomposes but engine() is never called for -- computing those cost
+    // 24 bands against 18 and 65% of the frame's wall clock when measured.
+    REQUIRE(ledger.beginFrame(14, neverAborted) == FrameClaim::SetupCompute);
+    ledger.endFrameSetup(true, 14, 10, 4);
+    CHECK(ledger.tryClaimDirtyBand(14, 3, 3, 5) == 3);
+    CHECK(ledger.tryClaimDirtyBand(14, 3, 3, 5) == 4);
+    CHECK(ledger.tryClaimDirtyBand(14, 3, 3, 5) == 5);
+    CHECK(ledger.tryClaimDirtyBand(14, 3, 3, 5) == -1);   // window exhausted
+    CHECK(ledger.bandState(0) == BandState::Dirty);       // ...though 0 is free
+    CHECK(ledger.bandState(9) == BandState::Dirty);
+    // A window wider than the ledger clamps; an inverted one claims nothing.
+    CHECK(ledger.tryClaimDirtyBand(14, 0, -5, 99) == 0);
+    CHECK(ledger.tryClaimDirtyBand(14, 0, 6, 2) == -1);
+}
+
+TEST_CASE("BandLedger: tryClaimDirtyBand under 8 threads computes every band "
+          "exactly once and never exceeds the cap")
+{
+    constexpr int kThreads = 8;
+    constexpr int kBands   = 64;
+    constexpr int kCap     = 3;
+
+    TestLedger ledger;
+    REQUIRE(ledger.beginFrame(21, neverAborted) == FrameClaim::SetupCompute);
+    ledger.endFrameSetup(true, 21, kBands, kCap);
+
+    std::vector<std::atomic<int>> computed(kBands);
+    for (std::atomic<int>& c : computed)
+        c.store(0);
+    std::atomic<int> live{0};
+    std::atomic<int> peak{0};
+    std::atomic<int> claimed{0};
+
+    std::vector<std::thread> workers;
+    for (int t = 0; t < kThreads; ++t) {
+        workers.emplace_back([&, t] {
+            for (;;) {
+                const int band = ledger.tryClaimDirtyBand(21, t * 7, 0, kBands - 1);
+                if (band < 0) {
+                    if (claimed.load() >= kBands)
+                        return;
+                    std::this_thread::yield();
+                    continue;
+                }
+                const int now = live.fetch_add(1) + 1;
+                int seen = peak.load();
+                while (now > seen && !peak.compare_exchange_weak(seen, now)) {}
+                computed[static_cast<std::size_t>(band)].fetch_add(1);
+                claimed.fetch_add(1);
+                std::this_thread::yield();
+                live.fetch_sub(1);
+                ledger.completeBand(band);
+            }
+        });
+    }
+    for (std::thread& w : workers)
+        w.join();
+
+    for (int b = 0; b < kBands; ++b) {
+        CHECK(computed[static_cast<std::size_t>(b)].load() == 1);
+        CHECK(ledger.bandState(b) == BandState::Done);
+    }
+    CHECK(peak.load() <= kCap);
+    CHECK(ledger.inFlight() == 0);
+}
+
+// StdMonitor's wait(ms) really does sleep, so it would HIDE a spin in the
+// setup claim's reader drain rather than pin it.  DD::Image::SignalLock's
+// does not: wait(ms) builds an ABSOLUTE timespec of {0, ms*1000}, always in
+// the past, so pthread_cond_timedwait returns ETIMEDOUT at once (measured at
+// 0.0106 ms per call against the 1 ms asked for).  This double reproduces
+// that and counts the monitor traffic the drain generates.
+namespace {
+
+std::atomic<long> gDrainLocks{0};
+
+struct SpinProneMonitor {
+    std::mutex              m;
+    std::condition_variable cv;
+
+    void lock()   { m.lock(); gDrainLocks.fetch_add(1); }
+    void unlock() { m.unlock(); }
+
+    bool wait(unsigned long timeoutMs = 0)
+    {
+        if (timeoutMs != 0) {
+            // ETIMEDOUT immediately -- but pthread_cond_timedwait still
+            // releases and reacquires the mutex on its way out, and that
+            // churn is what a spin here costs.
+            unlock();
+            lock();
+            return false;
+        }
+        std::unique_lock<std::mutex> ul(m, std::adopt_lock);
+        cv.wait(ul);
+        ul.release();
+        return true;
+    }
+
+    void signal() { cv.notify_all(); }
+};
+
+} // namespace
+
+TEST_CASE("BandLedger: the setup claim's reader drain sleeps rather than "
+          "spinning on a monitor whose timed wait does not wait")
+{
+    constexpr int kReadMs = 60;
+
+    BandLedger<SpinProneMonitor> ledger;
+    REQUIRE(ledger.beginFrame(31, neverAborted) == FrameClaim::SetupCompute);
+    ledger.endFrameSetup(true, 31, 4, 2);
+
+    // One reader holds the frame open; the setup claim below cannot return
+    // until it lets go.
+    REQUIRE(ledger.beginRead(31));
+    std::thread reader([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(kReadMs));
+        ledger.endRead();
+    });
+
+    gDrainLocks.store(0);
+    const auto started = std::chrono::steady_clock::now();
+    REQUIRE(ledger.beginFrame(32, neverAborted) == FrameClaim::SetupCompute);
+    const double drainMs = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - started).count();
+    const long locks = gDrainLocks.load();
+    reader.join();
+    ledger.endFrameSetup(true, 32, 4, 2);
+
+    // The drain really did wait for the reader (without this the lock count
+    // below would be small for the wrong reason).
+    CHECK(drainMs >= 0.5 * kReadMs);
+
+    // A 1 ms poll over ~60 ms is ~60 monitor acquisitions.  A spin is
+    // ~5,600 per 60 ms at the measured 0.0106 ms per immediate return, and
+    // unbounded once the sleep is removed entirely.
+    CHECK(locks < 1000);
+}
+
 TEST_CASE("BandLedger: an aborted band resets to Dirty, wakes its waiters "
           "into Aborted, and is recomputable after the abort clears")
 {

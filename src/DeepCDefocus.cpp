@@ -25,9 +25,12 @@
 //      -> BandLedger::completeBand() publishes it (release/acquire) to the
 //         lock-free row-copy path
 //
-//  Threads needing a band another thread is computing block on the ledger
-//  until it is Done.  An aborted band goes back to Dirty (never Done), wakes
-//  its waiters, and leaves erased/black rows.  _validate marks all bands
+//  A thread whose band another thread is already computing claims a
+//  different Dirty band instead (BandLedger::tryClaimDirtyBand) and only
+//  blocks on the ledger when there is none: Nuke hands its render threads
+//  consecutive rows, so all of them land in one band and three of four
+//  otherwise wait out its compute.  An aborted band goes back to Dirty
+//  (never Done), wakes its waiters, and leaves erased/black rows.  _validate marks all bands
 //  Dirty on an Op::hash() change.  The serial phase's shared_ptr<const
 //  FrameCache> publish-by-copy and its per-row frame-wide lock acquisition
 //  are GONE — both were correct for the serial phase and both are wrong for
@@ -70,6 +73,7 @@
 #include "DeepSampleOptimizer.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -302,6 +306,8 @@ class DeepCDefocus : public DD::Image::Iop
     DD::Image::Hash _validatedHash;   // _validate()'s half of invalidation
     bool            _debugBands = false;   // DEEPC_DEFOCUS_DEBUG_BANDS=1:
                                            // log band -> thread claims
+    bool            _debugStats = false;   // DEEPC_DEFOCUS_DEBUG_STATS=1:
+                                           // log per-band scatter work counts
 
 public:
     DeepCDefocus(Node* node) : Iop(node),
@@ -337,6 +343,12 @@ public:
         // threads claim distinct bands.  Off by default; costs one getenv per
         // Op construction and nothing per row.
         _debugBands = (std::getenv("DEEPC_DEFOCUS_DEBUG_BANDS") != nullptr);
+
+        // Work instrumentation: when set, every band logs the scatter's own
+        // counters to stderr.  Wall clock cannot resolve a knob that changes
+        // the fragment count by a few percent on a thermally throttled box;
+        // these counters are exact and machine-independent.
+        _debugStats = (std::getenv("DEEPC_DEFOCUS_DEBUG_STATS") != nullptr);
     }
 
     int minimum_inputs() const override { return 1; }
@@ -493,11 +505,28 @@ public:
                     "compositor. Memory scales with K.");
 
         Bool_knob(f, &_preMerge, "pre_merge", "pre-merge");
-        Tooltip(f, "Merge adjacent-depth samples within merge_tolerance before "
-                    "scatter (lossless when radii are equal). The tidy pass "
-                    "itself is correctness-required and always on.");
+        Tooltip(f, "Group adjacent-depth samples of one pixel whose CoC radii "
+                    "are within merge_tolerance, and scatter each group as a "
+                    "single fragment. A speed/accuracy trade, not a free "
+                    "optimisation - see merge_tolerance. The tidy pass "
+                    "itself is correctness-required and always on; this knob "
+                    "does not affect it.");
 
         Float_knob(f, &_mergeTolerance, IRange(0.0, 2.0), "merge_tolerance", "merge tolerance");
+        Tooltip(f, "How far apart, in CoC-radius pixels, two samples of one "
+                    "pixel may be and still be grouped by pre-merge.\n\n"
+                    "LOSSY AT ANY USEFUL VALUE. A group rasterises ONE disc, "
+                    "at its front member's radius, so it is exact only when "
+                    "the grouped radii round to the same kernel-radius bin - "
+                    "and those bins are radius^2/512 px wide below 16 px "
+                    "(0.0005 px at radius 0.5, 0.002 px at radius 1, 0.03 px "
+                    "at radius 4). At the 0.25 default, two same-pixel layers "
+                    "0.20 px apart at radius 1.2 and 1.4 move every rendered "
+                    "pixel by 9.0e-02.\n\n"
+                    "It buys that back: on a 2048x1080 frame at 20 samples "
+                    "per pixel the default removes 53% of the fragments and "
+                    "61% of the pixel deposits against 0, and renders 1.37x "
+                    "faster. Set 0 for an exact scatter.");
 
         Float_knob(f, &_memoryLimit, IRange(1.0, 64.0), "memory_limit", "memory limit (GB)");
         Tooltip(f, "Caps concurrent in-flight bands (floors at 1 band, then "
@@ -767,11 +796,11 @@ public:
     //     fast path is two atomic ops, and bandDone() is an acquire load —
     //     this is what replaced the serial phase's per-row frame-wide lock
     //     acquisition (~2160 per thread per 4K frame).
-    //   * the band is Dirty -> claim it (blocking while the memory-limit cap
-    //     is full), compute it into a pooled BandJob's private planes, write
-    //     its disjoint region of the shared frame, publish, loop to copy.
-    //     Threads wanting a band another thread is computing block on the
-    //     ledger until it is Done.
+    //   * the band is not Done -> claim a Dirty band, PREFERRING the row's
+    //     own but taking any other rather than queueing behind it, compute it
+    //     into a pooled BandJob's private planes, write its disjoint region of
+    //     the shared frame, publish, loop to copy.  Only a thread that finds
+    //     no Dirty band at all blocks on the ledger.
     //   * abort / upstream failure -> the band goes back to Dirty (never
     //     Done), waiters are woken, and the row stays erased/black.
     // ------------------------------------------------------------------
@@ -801,37 +830,76 @@ public:
                     _ledger.endRead();
                     return;
                 }
-                const int y0 = box.y() + band * _shared.bandHeight;
-                const int y1 = std::min(y0 + _shared.bandHeight, box.t());
+                const int boxY        = box.y();
+                const int boxT        = box.t();
+                const int bandHeight  = _shared.bandHeight;
+
+                // The bands a row request can ever reach.  The decomposition
+                // covers the PADDED box; engine() is never called outside
+                // requestedBox(), so the pad bands beyond it are work nobody
+                // asks for and the claim below must not offer them.
+                const DD::Image::Box& req = requestedBox();
+                const int firstBand = (std::max(req.y(), boxY) - boxY) / bandHeight;
+                const int lastBand  = (std::min(req.t(), boxT) - 1 - boxY) / bandHeight;
                 _ledger.endRead();
 
-                const deepc::BandClaim claim =
-                    _ledger.acquireBand(key, band, abortedFn);
-                if (claim == deepc::BandClaim::Aborted)
-                    return;
-                if (claim != deepc::BandClaim::Compute)
-                    continue;   // Ready: copy next pass. Stale: re-setup.
+                // Take another Dirty band rather than queueing behind this
+                // one.  Nuke hands its render threads consecutive rows, so
+                // they all sit in the same band and all but the first would
+                // otherwise wait out its whole compute — measured at 1.47
+                // bands in flight and 1.72 of 4 cores busy without this.  The
+                // search starts at the row's own band, so the uncontended case
+                // still claims exactly the band that was asked for.
+                //
+                // In-window only: that is tryClaimDirtyBand()'s precondition,
+                // and it is also the guard against an empty requestedBox(),
+                // where req.t()-1-boxY is negative and truncates TOWARD ZERO
+                // -- lastBand would come out 0, not -1.
+                int work = -1;
+                if (band >= firstBand && band <= lastBand) {
+                    work = _ledger.tryClaimDirtyBand(key, band,
+                                                     firstBand, lastBand);
+                }
+                if (work < 0) {
+                    const deepc::BandClaim claim =
+                        _ledger.acquireBand(key, band, abortedFn);
+                    if (claim == deepc::BandClaim::Aborted)
+                        return;
+                    if (claim != deepc::BandClaim::Compute)
+                        continue;   // Ready: copy next pass. Stale: re-setup.
+                    work = band;
+                }
+
+                const int y0 = boxY + work * bandHeight;
+                const int y1 = std::min(y0 + bandHeight, boxT);
 
                 // This thread OWNS the band.  Compute into private planes,
                 // write the disjoint region, publish or abandon.
                 std::unique_ptr<BandJob> job = acquireJob();
-                const bool ok = computeBand(_frame, *job, y0, y1);
+                double fetchMs = 0.0;
+                const auto bandStart = std::chrono::steady_clock::now();
+                const bool ok = computeBand(_frame, *job, y0, y1,
+                                            _debugBands ? &fetchMs : nullptr);
+                const double bandMs =
+                    std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - bandStart).count();
                 releaseJob(std::move(job));
 
                 if (!ok) {
                     // Abort or upstream failure: Dirty (never Done), wake
                     // waiters, leave erased/black rows.
-                    _ledger.abandonBand(band);
+                    _ledger.abandonBand(work);
                     return;
                 }
-                _ledger.completeBand(band);
+                _ledger.completeBand(work);
 
                 if (_debugBands) {
                     std::fprintf(stderr,
                                  "DeepCDefocus: band %d rows [%d,%d) computed by "
-                                 "thread 0x%lx\n",
-                                 band, y0, y1,
-                                 static_cast<unsigned long>(pthread_self()));
+                                 "thread 0x%lx in %.3f ms fetch %.3f ms\n",
+                                 work, y0, y1,
+                                 static_cast<unsigned long>(pthread_self()),
+                                 bandMs, fetchMs);
                 }
                 continue;   // copy on the next pass
             }
@@ -849,6 +917,13 @@ public:
                                       ok && _shared.allBandsDone);
                 if (!ok)
                     return;   // aborted/failed: rows stay erased/black
+                if (_debugBands) {
+                    std::fprintf(stderr,
+                                 "DeepCDefocus: setup bands %d height %d "
+                                 "maxInFlight %d\n",
+                                 _shared.bandCount, _shared.bandHeight,
+                                 _shared.maxInFlight);
+                }
             }
         }
     }
@@ -1245,6 +1320,19 @@ private:
         _shared.maxInFlight  = plan.maxInFlight;
         _shared.allBandsDone = false;   // real content: bands start Dirty
 
+        if (_debugBands) {
+            const double fragments = worstBandFragments(plan.bandHeight);
+            const double perBand = deepc::bandBudgetBytes(
+                K, C, W, plan.bandHeight, holdoutConnected, fragments);
+            std::fprintf(stderr,
+                         "DeepCDefocus: budget limitGB %.3f bandGB %.3f "
+                         "maxInFlight %d promisedGB %.3f fragments %.0f\n",
+                         memoryLimitBytes() / 1073741824.0,
+                         perBand / 1073741824.0, plan.maxInFlight,
+                         perBand * plan.maxInFlight / 1073741824.0,
+                         fragments);
+        }
+
         _shared.spBase               = deepc::ScatterParams();
         _shared.spBase.bandX         = fc.box.x();
         _shared.spBase.bandWidth     = W;
@@ -1473,7 +1561,8 @@ private:
     // band (Dirty, never Done), so nothing partial is ever published — this
     // function writes the shared frame only after a fully successful band.
     // ------------------------------------------------------------------
-    bool computeBand(FrameCache& fc, BandJob& job, int y0, int y1)
+    bool computeBand(FrameCache& fc, BandJob& job, int y0, int y1,
+                     double* fetchMs = nullptr)
     {
         const int h = y1 - y0;
         const int W = fc.box.w();
@@ -1492,6 +1581,7 @@ private:
 
         const ChannelSet need = neededDeepChannels();
 
+        const auto fetchStart = std::chrono::steady_clock::now();
         for (int y = fy0; y < fy1; ++y) {
             if (aborted())
                 return false;
@@ -1511,6 +1601,10 @@ private:
                                          job.samples, job.flattenScratch,
                                          job.soa, nullptr);
             }
+        }
+        if (fetchMs) {
+            *fetchMs = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - fetchStart).count();
         }
 
         // --- holdout -------------------------------------------------------
@@ -1642,8 +1736,17 @@ private:
         job.bandColor.assign(static_cast<size_t>(C) * static_cast<size_t>(px), 0.0f);
         job.bandAlpha.assign(static_cast<size_t>(px), 0.0f);
 
+        deepc::ScatterStats stats;
         deepc::scatterBandCPU(job.sp, job.soa, holdoutView, *job.kernel,
-                              job.planes, job.scatterScratch);
+                              job.planes, job.scatterScratch,
+                              _debugStats ? &stats : nullptr);
+        if (_debugStats) {
+            std::fprintf(stderr,
+                         "DeepCDefocus: stats rows [%d,%d) fragments %zu "
+                         "sharp %zu culled %zu rowSpans %zu pixelDeposits %zu\n",
+                         y0, y1, stats.fragments, stats.sharpFragments,
+                         stats.culled, stats.rowSpans, stats.pixelDeposits);
+        }
         deepc::resolveBandCPU(job.sp, job.planes,
                               job.bandColor.data(), job.bandAlpha.data());
 

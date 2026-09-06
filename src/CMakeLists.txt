@@ -133,6 +133,37 @@ endif()
 # Link the CPU scatter kernel into DeepCDefocus (Linux-only, see above)
 if (UNIX)
     target_sources(DeepCDefocus PRIVATE DeepCDefocusScatter.cpp)
+
+    # AVX2/FMA for the scatter's row-span multiply-adds, on THIS target only —
+    # the project-wide floor above stays -mavx for every other node.
+    #
+    # -ffp-contract=off is not optional next to -mfma: GCC contracts a*b+c into
+    # a single fused op by default, which changes the shipped pixels against the
+    # unfused arithmetic this node's parity gates are stated in.  Priced rather
+    # than assumed (see the option below): letting the scatter TU contract puts
+    # 205 vfmadd into the .so and buys 18.10 s against 18.28 s median on a
+    # 2048x1080 20-samples-per-pixel frame -- inside this box's run-to-run
+    # noise -- while moving three holdout parity readings off exact 0 to
+    # 5.96e-08.
+    target_compile_options(DeepCDefocus PRIVATE -mavx2 -mfma -ffp-contract=off)
+
+    option(DEEPC_DEFOCUS_VEC_REPORT
+           "Emit GCC vectorizer notes while compiling DeepCDefocus" OFF)
+    if (DEEPC_DEFOCUS_VEC_REPORT)
+        target_compile_options(DeepCDefocus PRIVATE
+                               -fopt-info-vec-optimized -fopt-info-vec-missed)
+    endif()
+
+    # Measurement-only: re-enable FMA contraction on the scatter TU alone, so
+    # the cost of the -ffp-contract=off above can be priced rather than assumed.
+    # Later flags win in GCC, so this overrides the target option on this file.
+    option(DEEPC_DEFOCUS_SCATTER_FP_CONTRACT
+           "Allow FMA contraction in DeepCDefocusScatter.cpp (measurement only)"
+           OFF)
+    if (DEEPC_DEFOCUS_SCATTER_FP_CONTRACT)
+        set_source_files_properties(DeepCDefocusScatter.cpp PROPERTIES
+                                    COMPILE_OPTIONS "-ffp-contract=fast")
+    endif()
 endif()
 
 # Link Qt6 into DeepCShuffle2 for ShuffleMatrixKnob widget
