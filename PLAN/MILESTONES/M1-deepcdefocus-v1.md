@@ -356,7 +356,7 @@ l. small-CoC transition: shallow depth ramp crossing 0–2px CoC ⇒ no chatter/
 - [x] M1.P3.T24 — Gate and rule on the low-α ramp over-read (the target M1.P3.T23 never measured)
 - [x] M1.P3.T18 — Decide the holdout interpolant, delete the losers (needs T12 + T16)
 
-- [ ] M1.P3.T5 — Wire scatter into `engine()` (serial, single frame-wide lock)
+- [x] M1.P3.T5 — Wire scatter into `engine()` (serial, single frame-wide lock)
   - files: `src/DeepCDefocus.cpp`, `src/DeepCDefocusScatter.h`/`.cpp`
   - approach: `computeDepthRange()` — a separate cheap full-frame `DeepFront/DeepBack/Alpha`
     pass, alpha-weighted, producing the ΔCoC bucket boundaries. **It must apply the same
@@ -490,7 +490,7 @@ l. small-CoC transition: shallow depth ramp crossing 0–2px CoC ⇒ no chatter/
     builds with `DeepCDefocus` correctly absent.
   - size: S
 
-- [ ] M1.P5.T2 — Node help, icon, README entry
+- [x] M1.P5.T2 — Node help, icon, README entry
   - files: `src/DeepCDefocus.cpp`/`.h` (help text knob), `icons/DeepCDefocus.png` (new),
     `README.md`
   - approach: node help text covering holdout semantics, the coverage-deficit/renderer-settings
@@ -656,6 +656,27 @@ wherever docker is available before merge; all unit tests in `tests/test_defocus
 `tests/test_defocus_scatter.cpp` pass; all validation scenes (a)–(l) in `tests/nuke/` pass in
 Nuke; `-fopt-info-vec` confirms the scatter loop vectorized (or the omp-simd fallback does); the
 2K/20spp perf profile is recorded. PR merges via `/address-pr-review --auto`.
+
+- 2026-09-06 — **M1.P3.T5's checkbox closed retroactively.** Its two open clauses were both
+  discharged elsewhere and nothing was left to do: the size-0 parity failure was M1.P3.T13's
+  defect (fixed there, and the harness has read `a`-scene parity green ever since), and the
+  interactive mid-cook abort clause is closed as documented by the 2026-09-05 ruling above.
+  The box stayed unchecked only because no task boundary went back for it.
+
+- 2026-09-06 — **M1.P5.T2 closed (code: ae72e8c on claude/deep-defocus-node-plan-o0ld83).**
+  The implementation was found uncommitted in the tree (in flight since 2026-09-05) and was
+  complete against the brief: help text, `node_shape()` → `DeepOp::DeepNodeShape()`, the
+  channels and depth_layers tooltips, a 24×24 RGBA icon matching the existing set, and the
+  README plugin-list entry. Verified 2026-09-06: local build clean; in headless Nuke the node
+  creates, `help()` is 8,325 chars with every required section present and no "Phase 1.2
+  skeleton" placeholder left, and both tooltips carry their added clauses. **Every measured
+  figure in the help text was re-checked against this file's own record** — the low-α
+  +5.9/+3.4/+6.5/+7.1/+0.34% set against M1.P3.T24, the 0.432-vs-0.252 overlap pair against
+  M1.P3.T21's risk row, and the 1.0/0.25/0.001 holdout bracket against the design reference —
+  and all of them hold, including that +7.1% is genuinely the α→0 limit and not the slope-0.5
+  figure it sits next to. The icon and menu entry are verified by mechanism (the generated
+  `menu.py` lists `DeepCDefocus` under Filter with a `DeepCDefocus.png` icon, and `init.py`
+  puts `icons/` on the plugin path) rather than by eye — there is no display here.
 
 ## Status log
 
