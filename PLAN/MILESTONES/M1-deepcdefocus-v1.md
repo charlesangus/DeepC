@@ -758,6 +758,22 @@ Nuke; `-fopt-info-vec` confirms the scatter loop vectorized (or the omp-simd fal
   split change and the 3.1e-03 coincident-point ordering move), the two carried-not-verified items
   (`--windows`, interactive abort), the measured known limitations, and the GLIBC_2.29 finding.
 
+- 2026-09-06 — **M1's review round is closed (fixes: 0fd188c).** Codex reviewed PR #105
+  (`5h 9%, 7d 6%`, plan plus) and returned **six findings, all minor/nit, with no correctness,
+  thread-safety or numerical findings**. Five were one class — comments narrating implementation
+  history and citing task IDs and plan artifacts. The sixth was substantive: `DeepSampleOptimizer.h`
+  still described `tidyOverlapping()` as merging via front-to-back `over`, which stopped being true
+  at M1.P3.T0; being a shared header, the wrong compositing contract reached
+  `DeepCBlur`/`DeepCBlur2`'s readers too. All six fixed, plus a sweep of the files the reviewer only
+  sampled, plus the task IDs living in doctest names and one `static_assert` message.
+  **The change is provably comment- and string-only:** with comments stripped, six of the nine files
+  are byte-identical to their previous state and every differing line in the other three is a test
+  name or assert message; both `#pragma GCC` fp-contract pairs are intact; both suites came back at
+  27/140,887 and 64/212,725, unchanged, which is what proves only names moved.
+  Findings were posted as a single PR comment rather than inline threads — the review API rejected
+  the line anchors (`Line could not be resolved`), several pointing at context lines outside the
+  diff hunks. **The repo has no CI**, so this round was the only gate on the PR.
+
 ## Status log
 
 > The full "Where things stand" narrative through 2026-08-23 is archived verbatim in
