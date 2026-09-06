@@ -748,6 +748,16 @@ Nuke; `-fopt-info-vec` confirms the scatter loop vectorized (or the omp-simd fal
   binaries require `GLIBC_2.29` and cannot load on RHEL 8** — four plugins, `DeepCDefocus` among
   them (`PLAN/DECISIONS/2026-09-06-local-build-is-not-shippable.md`).
 
+- 2026-09-06 — **M1's PR is open: [#105](https://github.com/charlesangus/DeepC/pull/105).** The
+  branch had to be force-pushed (user-approved): `origin` carried one commit local history did not,
+  `96be15e` "Add DeepCDefocus implementation plan", whose only content was
+  `.planning/DEEPCDEFOCUS-PLAN.md` — the superseded July sketch, in a tree this branch deliberately
+  deletes. **The repo has no CI** (`.github/workflows/` does not exist), so the review round is the
+  only gate on this PR. The PR body carries the shipped-node release note for
+  `DeepCBlur`/`DeepCBlur2` (all four `tidyOverlapping()` consequences, including the 2.32e-02 / 12.4%
+  split change and the 3.1e-03 coincident-point ordering move), the two carried-not-verified items
+  (`--windows`, interactive abort), the measured known limitations, and the GLIBC_2.29 finding.
+
 ## Status log
 
 > The full "Where things stand" narrative through 2026-08-23 is archived verbatim in
