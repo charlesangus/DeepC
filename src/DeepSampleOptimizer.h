@@ -4,13 +4,21 @@
 //
 //  DeepSampleOptimizer — Header-only deep sample merge & cap utility
 //
-//  Provides reusable per-pixel deep sample optimization: merges nearby-depth
-//  samples via front-to-back over-compositing and caps total sample count.
-//  Extracted from DeepThinner v2.0 Pass 6 (Smart Merge) and Pass 7 (Max
-//  Samples) and generalized to arbitrary channel sets.
+//  Two reusable per-pixel utilities over arbitrary channel sets:
 //
-//  Zero Nuke SDK dependencies — only standard library headers. Designed to be
-//  testable in isolation with a trivial harness.
+//    tidyOverlapping() splits overlapping depth intervals until every
+//      interval is disjoint from or identical to every other, then merges the
+//      coincident ones. The merge rule depends on the interval: VOLUMETRIC
+//      spans (zBack > zFront) sharing an interval are co-located media, so
+//      they combine by the OpenEXR mixture model — optical depths
+//      u = -ln(1-alpha) add, alpha = 1 - e^-u — which is order-independent.
+//      POINT samples (zBack == zFront) are coincident surfaces with a real
+//      ordering and combine by front-to-back `over`, which is not.
+//
+//    optimizeSamples() groups samples within a Z and colour tolerance, merges
+//      each group by front-to-back `over`, and caps the total sample count.
+//
+//  Zero Nuke SDK dependencies — only standard library headers.
 //
 // ============================================================================
 
@@ -55,88 +63,296 @@ inline float colorDistance(const std::vector<float>& a, float alphaA,
     return d;
 }
 
+namespace detail {
+
 // ---------------------------------------------------------------------------
-// tidyOverlapping — split overlapping depth intervals and over-merge
+// splitSpan — cut `cur` at depth z, moving the far portion into `back`
 //
-// Walks a depth-sorted sample list.  When sample[i].zBack > sample[i+1].zFront
-// (overlap), the earlier volumetric sample is split at the overlap boundary.
-// After all splits, samples at identical [zFront,zBack] are over-composited.
+// `z` MUST lie strictly inside `cur` (cur.zFront < z < cur.zBack); the caller
+// guarantees it.  `cur` becomes the near piece [cur.zFront, z] in place.
+// ---------------------------------------------------------------------------
+inline void splitSpan(SampleRecord& cur, float z, SampleRecord& back)
+{
+    const double totalRange = static_cast<double>(cur.zBack)
+                            - static_cast<double>(cur.zFront);
+    const double ratio = (static_cast<double>(z)
+                        - static_cast<double>(cur.zFront)) / totalRange;
+
+    // Subdivide the span's OPTICAL DEPTH, not its alpha directly.
+    // A homogeneous medium of alpha a across the whole interval has
+    // optical depth u = -ln(1-a); the piece covering a fraction
+    // `ratio` of the interval carries u*ratio of it, so
+    //
+    //     alpha_front = 1 - e^(-u*ratio)
+    //
+    // which is algebraically the same 1 - (1-a)^ratio as before but
+    // evaluated through log1p/expm1, so it stays accurate for thin
+    // media instead of cancelling against 1.
+    //
+    // The identity that has to hold is that splitting a span
+    // preserves its transmittance: 1 - (1-a_front)(1-a_back) == a.
+    // Measured on a span split in half, relative error in that
+    // identity, old float `pow` form vs this one:
+    //     a = 1e-02   1.8e-06  ->  1.4e-08
+    //     a = 1e-04   1.4e-04  ->  2.8e-09
+    //     a = 1e-06   7.3e-02  ->  2.5e-08
+    //     a = 1e-07   1.9e-01  ->  1.4e-08
+    // Alphas that small are routine rather than exotic here:
+    // DeepCBlur multiplies every gathered sample's alpha by its
+    // kernel weight before calling this.
+    //
+    // Premultiplied colour scales with alpha — the transfer
+    // equation's homogeneous solution is C = (j/sigma)*alpha, so a
+    // piece keeps alpha_piece/a of it.  That ratio has a finite
+    // limit as a -> 0 (the purely emissive case, where colour simply
+    // splits by length), which the old `alpha > 1e-6 ? ... : 0` guard
+    // discarded along with 100% of a thin span's colour: below that
+    // threshold BOTH pieces came out black. This is the same
+    // small-alpha cancellation the coincident merge below avoids, and
+    // it is fixed the same way rather than with a magic epsilon.
+    double alphaFrontD, alphaBackD, scaleFrontD, scaleBackD;
+    const double a = (cur.alpha < 0.0f) ? 0.0
+                   : (cur.alpha > 1.0f) ? 1.0
+                   : static_cast<double>(cur.alpha);
+    if (a >= 1.0) {
+        // Opaque: every piece is opaque. Both keep the full colour,
+        // which is right because only the front piece is ever
+        // visible — the back sits behind an alpha-1 sample.
+        alphaFrontD = alphaBackD = 1.0;
+        scaleFrontD = scaleBackD = 1.0;
+    } else if (a <= 0.0) {
+        // Non-absorbing emissive limit: alpha stays 0 and the
+        // emission divides by length.
+        alphaFrontD = alphaBackD = 0.0;
+        scaleFrontD = ratio;
+        scaleBackD  = 1.0 - ratio;
+    } else {
+        const double u = -std::log1p(-a);
+        alphaFrontD = -std::expm1(-u * ratio);
+        alphaBackD  = -std::expm1(-u * (1.0 - ratio));
+        scaleFrontD = alphaFrontD / a;
+        scaleBackD  = alphaBackD  / a;
+    }
+
+    const float alphaFront = static_cast<float>(alphaFrontD);
+    const float alphaBack  = static_cast<float>(alphaBackD);
+
+    // Build back portion first (we'll overwrite cur for the front)
+    back.zFront = z;
+    back.zBack  = cur.zBack;
+    back.alpha  = alphaBack;
+    back.channels.resize(cur.channels.size());
+
+    const float scaleFront = static_cast<float>(scaleFrontD);
+    const float scaleBack  = static_cast<float>(scaleBackD);
+
+    for (size_t c = 0; c < cur.channels.size(); ++c) {
+        back.channels[c] = cur.channels[c] * scaleBack;
+        cur.channels[c]  = cur.channels[c] * scaleFront;
+    }
+
+    cur.zBack  = z;
+    cur.alpha  = alphaFront;
+}
+
+} // namespace detail
+
+// ---------------------------------------------------------------------------
+// tidyOverlapping — split overlapping depth intervals and merge coincident ones
+//
+// Walks a depth-sorted sample list.  Overlapping volumetric samples are cut so
+// that every resulting interval is either disjoint from or identical to every
+// other.  After all splits, samples sharing an identical [zFront,zBack] are
+// merged — by the OpenEXR volume-mixture rule if the interval has extent, by
+// `over` if it is a point.  See the merge pass.
+//
+// This is the tidying algorithm of the OpenEXR "Interpreting Deep Pixels"
+// note, and it reproduces stock Nuke DeepToImage (volumetric_composition on,
+// its default) to float precision.
 // ---------------------------------------------------------------------------
 inline void tidyOverlapping(std::vector<SampleRecord>& samples)
 {
     if (samples.size() < 2)
         return;
 
-    // --- Split pass: iterate until no overlaps remain ---
-    bool changed = true;
-    while (changed) {
-        changed = false;
-        // Sort by zFront, then by zBack ascending
-        std::sort(samples.begin(), samples.end(),
-            [](const SampleRecord& a, const SampleRecord& b) {
-                return (a.zFront != b.zFront) ? a.zFront < b.zFront
-                                              : a.zBack < b.zBack;
-            });
-
-        for (size_t i = 0; i + 1 < samples.size(); ++i) {
-            SampleRecord& cur  = samples[i];
-            const SampleRecord& nxt = samples[i + 1];
-
-            // No overlap?
-            if (cur.zBack <= nxt.zFront)
-                continue;
-
-            // Point sample — cannot be split; skip
-            if (cur.zFront == cur.zBack)
-                continue;
-
-            // Split cur at z = nxt.zFront
-            float z = nxt.zFront;
-            float totalRange = cur.zBack - cur.zFront;
-            float frontRange = z - cur.zFront;
-            float ratio      = frontRange / totalRange;
-
-            // Subdivide alpha: alpha_front = 1 - (1 - alpha)^ratio
-            float oneMinusA = 1.0f - cur.alpha;
-            float alphaFront = (oneMinusA <= 0.0f) ? cur.alpha
-                             : 1.0f - std::pow(oneMinusA, ratio);
-            float alphaBack  = (oneMinusA <= 0.0f) ? cur.alpha
-                             : 1.0f - std::pow(oneMinusA, 1.0f - ratio);
-
-            // Build back portion first (we'll overwrite cur for the front)
-            SampleRecord back;
-            back.zFront = z;
-            back.zBack  = cur.zBack;
-            back.alpha  = alphaBack;
-            back.channels.resize(cur.channels.size());
-
-            // Premultiplied channels scale proportionally with alpha
-            float scaleFront = (cur.alpha > 1e-6f) ? alphaFront / cur.alpha : 0.0f;
-            float scaleBack  = (cur.alpha > 1e-6f) ? alphaBack  / cur.alpha : 0.0f;
-
-            for (size_t c = 0; c < cur.channels.size(); ++c) {
-                back.channels[c] = cur.channels[c] * scaleBack;
-                cur.channels[c]  = cur.channels[c] * scaleFront;
-            }
-
-            cur.zBack  = z;
-            cur.alpha  = alphaFront;
-
-            samples.insert(samples.begin() + static_cast<long>(i + 1), std::move(back));
-            changed = true;
-            break;  // restart scan after structural change
-        }
-    }
-
-    // --- Over-merge pass: collapse samples at identical [zFront, zBack] ---
+    // Sort by zFront, then by zBack ascending
     std::sort(samples.begin(), samples.end(),
         [](const SampleRecord& a, const SampleRecord& b) {
             return (a.zFront != b.zFront) ? a.zFront < b.zFront
                                           : a.zBack < b.zBack;
         });
 
-    std::vector<SampleRecord> result;
+    // --- Split pass: one front-to-back sweep ---
+    //
+    // All the cutting happens in one pass over the depth axis.  Splitting one
+    // overlapping pair at a time, re-sorting and restarting the scan measures
+    // at ~O(n^3.7) — 9.96ms for a single pixel of 32 mutually overlapping
+    // spans, which puts a frame of fog out of reach entirely.
+    //
+    // The sweep keeps a *group*: every record whose front is the current depth
+    // f (the smallest front still unemitted).  The far pieces earlier cuts
+    // produced wait in the queue below until the sweep reaches their front.  A
+    // group is resolved in at most two rounds:
+    //
+    //   round 1 — cut every group member that reaches past `bmin`, the nearest
+    //             back in the group, at `bmin`.  Afterwards every member of
+    //             the group with any extent ends at exactly `bmin`.
+    //   round 2 — if `bmin` still reaches past `fnext`, the next front the
+    //             sweep will visit, cut there too.  Afterwards the group ends
+    //             at `fnext` and nothing else in the list starts before that.
+    //
+    // The group is then final — no endpoint anywhere in the list lies strictly
+    // inside it — and is emitted.  The two rounds are ORDERED, not
+    // interchangeable: a shared-front conflict (the `bmin` cut, at index i-1)
+    // outranks a crossing-front one (the `fnext` cut, at index i) for the same
+    // record, so a span reaching past both is cut at `bmin` FIRST even when
+    // `fnext` is nearer.  That fixes the cut chain, and with it the float
+    // rounding of every piece.
+    //
+    // Termination is structural rather than incidental: every cut point is the
+    // front or back of a record that already exists, so the set of distinct
+    // endpoints never grows; each iteration emits its whole group and every
+    // record it queues starts strictly beyond f, so f strictly increases and
+    // the sweep runs at most once per distinct endpoint.  Nothing restarts and
+    // nothing is re-sorted.
+    std::vector<SampleRecord> out;
+    out.reserve(samples.size() + 4);
+
+    // Waiting far pieces.  `pool` owns them (append-only, so an index into it
+    // stays valid); `heap` is a min-heap of pool indices ordered by front, ties
+    // broken by index so a group always sees them in the order they were cut.
+    // A sorted vector would be simpler but its insertions are linear, and the
+    // queue reaches O(n^2) entries on mutually overlapping spans, which put the
+    // whole sweep back to O(n^3).
+    std::vector<SampleRecord> pool;
+    std::vector<size_t>       heap;
+    const auto later = [&pool](size_t a, size_t b) {
+        return (pool[a].zFront != pool[b].zFront) ? pool[a].zFront > pool[b].zFront
+                                                  : a > b;
+    };
+    const auto queueSplit = [&](SampleRecord& src, float z) {
+        pool.emplace_back();
+        detail::splitSpan(src, z, pool.back());
+        heap.push_back(pool.size() - 1);
+        std::push_heap(heap.begin(), heap.end(), later);
+    };
+
+    size_t oi = 0;
+    while (oi < samples.size() || !heap.empty()) {
+        if (heap.empty())
+            pool.clear();               // between clusters — reclaim the shells
+
+        float f;
+        if (oi >= samples.size())
+            f = pool[heap.front()].zFront;
+        else if (heap.empty())
+            f = samples[oi].zFront;
+        else
+            f = std::min(samples[oi].zFront, pool[heap.front()].zFront);
+
+        // --- Gather the group at depth f ---
+        const size_t gStart = out.size();
+        while (oi < samples.size() && samples[oi].zFront == f)
+            out.push_back(std::move(samples[oi++]));
+        while (!heap.empty() && pool[heap.front()].zFront == f) {
+            std::pop_heap(heap.begin(), heap.end(), later);
+            out.push_back(std::move(pool[heap.back()]));
+            heap.pop_back();
+        }
+
+        if (out.size() == gStart) {
+            // Unordered depths (NaN) compare false against everything, so no
+            // record matched. Consume one anyway; the sweep must not stall.
+            if (oi < samples.size()) {
+                out.push_back(std::move(samples[oi++]));
+            } else {
+                std::pop_heap(heap.begin(), heap.end(), later);
+                out.push_back(std::move(pool[heap.back()]));
+                heap.pop_back();
+            }
+            continue;
+        }
+
+        // --- bmin: nearest back among group members that have extent ---
+        bool  anyLong = false;
+        float bmin    = 0.0f;
+        for (size_t k = gStart; k < out.size(); ++k) {
+            if (out[k].zBack > f) {
+                if (!anyLong || out[k].zBack < bmin)
+                    bmin = out[k].zBack;
+                anyLong = true;
+            }
+        }
+        // Points (zBack == zFront) and inverted spans are never split; a group
+        // holding only those is already final.
+        if (!anyLong)
+            continue;
+
+        // --- Round 1: level the group off at bmin ---
+        for (size_t k = gStart; k < out.size(); ++k)
+            if (out[k].zBack > bmin)
+                queueSplit(out[k], bmin);
+
+        // --- Round 2: cut at the next front if the group still reaches it ---
+        float fnext;
+        if (oi >= samples.size() && heap.empty())
+            continue;                       // nothing follows — the group is final
+        else if (oi >= samples.size())
+            fnext = pool[heap.front()].zFront;
+        else if (heap.empty())
+            fnext = samples[oi].zFront;
+        else
+            fnext = std::min(samples[oi].zFront, pool[heap.front()].zFront);
+
+        if (bmin > fnext)
+            for (size_t k = gStart; k < out.size(); ++k)
+                if (out[k].zBack > fnext)
+                    queueSplit(out[k], fnext);
+    }
+
+    // The sweep emptied `samples`; take the swept records and keep its buffer
+    // to build the merged result in, so the merge pass reuses that allocation
+    // instead of making one.  (It still has to grow if the sweep split
+    // anything, since the buffer was only sized for the input.)
+    samples.swap(out);
+
+    // --- Over-merge pass: collapse samples at identical [zFront, zBack] ---
+    //
+    // The sweep already leaves `samples` in (zFront, zBack) order — groups come
+    // out in increasing depth, and within a group inverted spans precede points
+    // precede the equal-length pieces — so this sort is a no-op on the ordering
+    // the merge below actually reads. It is NOT a no-op on the ordering of
+    // COINCIDENT samples, which is why it is here: `std::sort` is unstable
+    // above 16 elements, and the point-sample merge below is `over`, which is
+    // order-dependent.
+    //
+    // GOTCHA, because it is a real reproducibility limit: for coincident POINT
+    // samples and INVERTED spans, which permutation the unstable sort lands on
+    // depends on the SPLIT count, not the input count, so it is reachable from
+    // inputs of any size.  When those samples share an unpremultiplied colour
+    // the difference stays at 1 ulp (measured <= 3e-07); when they are
+    // genuinely different surfaces at one depth, `over` is not
+    // order-independent and the difference is unbounded (measured up to 0.89
+    // absolute in a colour channel).  Alpha is unaffected either way
+    // (<= 1.2e-07), since `over`'s alpha is 1 - prod(1 - a_s) whatever the
+    // order.  The volumetric mixture merge is order-independent, so the sort
+    // cannot reach it at all.  Making BOTH sorts `std::stable_sort` would pin
+    // the point case down; that is a deliberate behaviour change and has not
+    // been taken here.
+    std::sort(samples.begin(), samples.end(),
+        [](const SampleRecord& a, const SampleRecord& b) {
+            return (a.zFront != b.zFront) ? a.zFront < b.zFront
+                                          : a.zBack < b.zBack;
+        });
+
+    std::vector<SampleRecord>& result = out;
+    result.clear();
     result.reserve(samples.size());
+
+    // Scratch for the volumetric merge below, hoisted so a pixel pays at most
+    // one allocation for it however many coincident groups it contains (and
+    // none at all if it contains none).
+    std::vector<double> acc;
 
     size_t i = 0;
     while (i < samples.size()) {
@@ -151,7 +367,6 @@ inline void tidyOverlapping(std::vector<SampleRecord>& samples)
         if (j - i == 1) {
             result.push_back(std::move(samples[i]));
         } else {
-            // Over-composite the group front-to-back
             const size_t nChan = samples[i].channels.size();
             SampleRecord merged;
             merged.zFront = samples[i].zFront;
@@ -159,16 +374,112 @@ inline void tidyOverlapping(std::vector<SampleRecord>& samples)
             merged.alpha  = 0.0f;
             merged.channels.resize(nChan, 0.0f);
 
-            float alphaAcc = 0.0f;
-            for (size_t s = i; s < j; ++s) {
-                float w = 1.0f - alphaAcc;
-                if (w <= 0.0f) break;
-                const size_t nc = std::min(nChan, samples[s].channels.size());
-                for (size_t c = 0; c < nc; ++c)
-                    merged.channels[c] += samples[s].channels[c] * w;
-                alphaAcc += samples[s].alpha * w;
+            if (samples[i].zBack > samples[i].zFront) {
+                // --- VOLUMETRIC group: co-located media, NOT stacked layers.
+                //
+                // Samples sharing an interval [zf,zb] with zb > zf are two
+                // volumes occupying the same space, so neither is "in front"
+                // of the other and `over` is the wrong composite: it is
+                // order-dependent, and it biases the result toward whichever
+                // sample the sort happened to place first.
+                //
+                // The right combination is the one the OpenEXR "Interpreting
+                // Deep Pixels" note calls mergeOverlappingSamples: a uniform
+                // medium of alpha a over the interval has optical depth
+                // u = -ln(1-a), and co-located media ADD optical depth and
+                // ADD emission.  Solving the transfer equation over the
+                // combined medium gives
+                //
+                //     u     = sum_s u_s,          u_s   = -log1p(-a_s)
+                //     alpha = 1 - e^-u            (== 1 - prod(1 - a_s),
+                //                                  i.e. the same alpha `over`
+                //                                  produces — only colour
+                //                                  differs)
+                //     C     = (sum_s C_s * u_s/a_s) * alpha/u
+                //
+                // which is order-independent and reproduces a direct ray
+                // march through the media exactly.  This is also what Nuke's
+                // own CombineOverlappingSamples does (measured: stock
+                // DeepToImage with volumetric_composition on agrees to 7
+                // decimals; with it off it reproduces the `over` form below).
+                //
+                // NOTE the alpha channel, when the caller carries alpha as an
+                // ordinary channel too, comes out of this consistent with
+                // `merged.alpha` for free: C_s = a_s makes its term u_s, so
+                // the sum is u and the result is u * alpha/u == alpha.
+                //
+                // Both the optical depth (where the small-alpha cancellation
+                // lives) and the colour sum accumulate in double: a float sum
+                // drifts past the 2e-07 tolerance the coincident-sample gate
+                // is stated at once a group holds ~5 or more samples
+                // (measured 2.1e-07 at 5, 4.2e-07 at 40; in double it stays
+                // under 2e-07 at every count).
+                double u = 0.0;
+                int    opaque = 0;
+                acc.assign(nChan, 0.0);
+
+                for (size_t s = i; s < j; ++s) {
+                    const double a = (samples[s].alpha < 0.0f) ? 0.0
+                                   : (samples[s].alpha > 1.0f) ? 1.0
+                                   : static_cast<double>(samples[s].alpha);
+                    const size_t nc = std::min(nChan, samples[s].channels.size());
+                    if (a >= 1.0) {
+                        ++opaque;
+                        continue;                       // handled below
+                    }
+                    const double us = -std::log1p(-a);
+                    // v = u/a is the sample's emission per unit optical
+                    // depth; a -> 0 is the non-absorbing emissive limit
+                    // v -> 1 (colour simply adds), which is also OpenEXR's
+                    // guarded value.
+                    const double v = (a > 0.0) ? us / a : 1.0;
+                    u += us;
+                    for (size_t c = 0; c < nc; ++c)
+                        acc[c] += static_cast<double>(samples[s].channels[c]) * v;
+                }
+
+                if (opaque > 0) {
+                    // An opaque member makes the whole interval opaque and
+                    // swamps every finite-density member.  With several,
+                    // none is in front, so they average — the u -> infinity
+                    // limit of the formula above, and OpenEXR's own
+                    // (c1 + c2) / 2 case.
+                    std::fill(acc.begin(), acc.end(), 0.0);
+                    for (size_t s = i; s < j; ++s) {
+                        if (!(samples[s].alpha >= 1.0f)) continue;
+                        const size_t nc = std::min(nChan, samples[s].channels.size());
+                        for (size_t c = 0; c < nc; ++c)
+                            acc[c] += static_cast<double>(samples[s].channels[c]);
+                    }
+                    merged.alpha = 1.0f;
+                    for (size_t c = 0; c < nChan; ++c)
+                        merged.channels[c] = static_cast<float>(acc[c] / opaque);
+                } else {
+                    const double alpha = -std::expm1(-u);
+                    const double w     = (u > 0.0) ? alpha / u : 1.0;
+                    merged.alpha = static_cast<float>(alpha);
+                    for (size_t c = 0; c < nChan; ++c)
+                        merged.channels[c] = static_cast<float>(acc[c] * w);
+                }
+            } else {
+                // --- POINT group (zFront == zBack): genuine coincident
+                // surfaces with an arbitrary but real ordering.  Stock
+                // DeepToImage composites these one at a time with `over`
+                // (measured: Nuke gives the same, order-dependent, answer
+                // with volumetric_composition on OR off), and DeepCDefocus'
+                // bit-exact point-sample parity gate depends on matching
+                // it.
+                float alphaAcc = 0.0f;
+                for (size_t s = i; s < j; ++s) {
+                    float w = 1.0f - alphaAcc;
+                    if (w <= 0.0f) break;
+                    const size_t nc = std::min(nChan, samples[s].channels.size());
+                    for (size_t c = 0; c < nc; ++c)
+                        merged.channels[c] += samples[s].channels[c] * w;
+                    alphaAcc += samples[s].alpha * w;
+                }
+                merged.alpha = alphaAcc;
             }
-            merged.alpha = alphaAcc;
             result.push_back(std::move(merged));
         }
         i = j;

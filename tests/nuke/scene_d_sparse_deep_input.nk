@@ -1,0 +1,61 @@
+version 17.0 v3
+Root {
+ inputs 0
+ name scene_d_sparse_deep_input.nk
+ last_frame 1
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ proxy_type scale
+ proxy_format "1024 778 0 0 1024 778 1 1K_Super_35(full-ap)"
+ colorManagement Nuke
+ workingSpaceLUT linear
+ monitorLut sRGB
+ monitorOutLUT rec709
+ int8Lut sRGB
+ int16Lut sRGB
+ logLut Cineon
+ floatLut linear
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant1
+}
+Rectangle {
+ area {64 64 192 192}
+ color {0.6 0.4 0.2 1}
+ name Rectangle1
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 10
+ name DeepFromImage1
+ xpos 0
+}
+set N19280020 [stack 0]
+DeepCDefocus {
+ coc_mode Manual
+ size 0
+ name DeepCDefocus1
+ label "sharp: outside the card must be bitwise 0"
+ xpos -120
+ ypos 120
+}
+push $N19280020
+DeepCDefocus {
+ coc_mode Manual
+ focus_distance 30
+ size 12
+ name DeepCDefocus2
+ label "defocused: beyond the scatter radius must still be bitwise 0"
+ xpos 120
+ ypos 120
+}
+StickyNote {
+ inputs 0
+ name StickyNote1
+ label "Scene (d) -- sparse deep input\n\nCheck: zero-sample regions must render exactly black, including beyond the scatter radius once the card is defocused.\n\nTwo branches share one card source: 'sharp' (size=0) and 'defocused' (size=12, focus_distance=30). Both must read bitwise zero outside the card (plus its scatter radius for the defocused branch)."
+ note_font_size 14
+ xpos 300
+}

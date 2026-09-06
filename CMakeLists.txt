@@ -1,6 +1,14 @@
 cmake_minimum_required(VERSION 3.15 FATAL_ERROR)
 project(DeepC)
 
+# Default to Release for single-config generators only (multi-config ones
+# ignore CMAKE_BUILD_TYPE), and only when the user has not chosen explicitly.
+# Without this the project passes no -O flag at all.
+if (NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Choose the type of build." FORCE)
+    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "RelWithDebInfo" "MinSizeRel")
+endif()
+
 cmake_policy(SET CMP0074 NEW)
 
 set(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
@@ -35,6 +43,27 @@ endif()
 
 # add sub directory
 add_subdirectory(src)
+
+# Off by default, so the normal plugin build is unaffected. Neither target
+# includes an NDK header or links DDImage: the scatter core is compiled in
+# directly rather than linked from the plugin, so the tests do not require
+# DeepCDefocus.so.
+option(DEEPC_BUILD_TESTS "Build the doctest unit tests for the math/kernel foundation and the scatter core" OFF)
+if (DEEPC_BUILD_TESTS)
+    enable_testing()
+
+    add_executable(test_defocus_math tests/test_defocus_math.cpp)
+    target_compile_features(test_defocus_math PRIVATE cxx_std_17)
+    add_test(NAME test_defocus_math COMMAND test_defocus_math)
+
+    add_executable(test_defocus_scatter
+        tests/test_defocus_scatter.cpp
+        src/DeepCDefocusScatter.cpp)
+    target_compile_features(test_defocus_scatter PRIVATE cxx_std_17)
+    find_package(Threads REQUIRED)
+    target_link_libraries(test_defocus_scatter PRIVATE Threads::Threads)
+    add_test(NAME test_defocus_scatter COMMAND test_defocus_scatter)
+endif()
 
 # install directory
 install(FILES

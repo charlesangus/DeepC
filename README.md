@@ -29,6 +29,7 @@ You can read a quick description of some below.
 - ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCColorLookup.png)  [DeepCColorlookup](https://github.com/charlesangus/DeepC/wiki/DeepCColorlookup)
 - ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCConstant.png)  [DeepCConstant](https://github.com/charlesangus/DeepC/wiki/DeepCConstant)
 - ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCCopyBBox.png)  [DeepCCopyBBox](https://github.com/charlesangus/DeepC/wiki/DeepCCopyBBox)
+- ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCDefocus.png)  [DeepCDefocus](https://github.com/charlesangus/DeepC/wiki/DeepCDefocus) — Defocus / depth of field from a deep image, with depth-correct holdouts that stay pixel-sharp. Linux only — excluded from the Windows build.
 - ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCGamma.png)  [DeepCGamma](https://github.com/charlesangus/DeepC/wiki/DeepCGamma)
 - ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCGrade.png)  [DeepCGrade](https://github.com/charlesangus/DeepC/wiki/DeepCGrade)
 - ![](https://raw.githubusercontent.com/charlesangus/DeepC/master/icons/DeepCID.png)  [DeepCID](https://github.com/charlesangus/DeepC/wiki/DeepCID)
@@ -110,6 +111,17 @@ Release archives are placed in the `release/` directory:
 release/DeepC-Linux-Nuke16.0.zip
 release/DeepC-Windows-Nuke16.0.zip
 ```
+
+### Local development build
+
+For iterative development without Docker, use CMake directly against a local Nuke SDK installation:
+
+```bash
+cmake -S . -B build/local -D Nuke_ROOT=/usr/local/Nuke17.0v3
+cmake --build build/local -j"$(nproc)"
+```
+
+Set `Nuke_ROOT` to any installed Nuke SDK (e.g., `/usr/local/Nuke16.0v9`, `/usr/local/Nuke16.1v3`, or `/usr/local/Nuke17.0v3`). This provides the fast iteration loop for day-to-day development. Note that `./docker-build.sh` remains the path for release packaging, Windows cross-compilation, and exact multi-Nuke-version toolchain parity, and requires a running Docker daemon. Where this project's planning docs refer to a "docker compile gate," use this local build day-to-day, and run `./docker-build.sh` as the pre-merge/release check wherever Docker is available.
 
 ## Examples
 We created a repository which includes some example deep render scenes to try/test/use this plugin.<br>

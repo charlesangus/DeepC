@@ -54,7 +54,7 @@ build
 # install
 install
 
-# ── GSD baseline (auto-generated) ──
+# ── general baseline ──
 .DS_Store
 Thumbs.db
 *.swp

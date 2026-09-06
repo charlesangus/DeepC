@@ -1,0 +1,112 @@
+version 17.0 v3
+Root {
+ inputs 0
+ name scene_b_holdout_in_focus.nk
+ last_frame 1
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ proxy_type scale
+ proxy_format "1024 778 0 0 1024 778 1 1K_Super_35(full-ap)"
+ colorManagement Nuke
+ workingSpaceLUT linear
+ monitorLut sRGB
+ monitorOutLUT rec709
+ int8Lut sRGB
+ int16Lut sRGB
+ logLut Cineon
+ floatLut linear
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant3
+}
+Rectangle {
+ area {48 48 208 208}
+ color {0 0 0 1}
+ name Rectangle1
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 10
+ name DeepFromImage3
+ label "holdout card"
+ xpos 200
+}
+set N191f2de0 [stack 0]
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant2
+}
+Expression {
+ expr0 (0.5+0.5*sin(x*0.031+8.500000))*(0.050000+0.900000*(0.5+0.5*sin(x*0.013+y*0.021+15.500000)))
+ expr1 (0.5+0.5*sin(y*0.027+11.500000))*(0.050000+0.900000*(0.5+0.5*sin(x*0.013+y*0.021+15.500000)))
+ expr2 (0.5+0.5*sin((x+y)*0.019+4.500000))*(0.050000+0.900000*(0.5+0.5*sin(x*0.013+y*0.021+15.500000)))
+ expr3 (0.050000+0.900000*(0.5+0.5*sin(x*0.013+y*0.021+15.500000)))
+ name Expression2
+}
+DeepFromImage {
+ set_z true
+ z 16
+ name DeepFromImage2
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant1
+}
+Expression {
+ expr0 (0.5+0.5*sin(x*0.031+6.800000))*(0.050000+0.900000*(0.5+0.5*sin(x*0.013+y*0.021+12.400000)))
+ expr1 (0.5+0.5*sin(y*0.027+9.200000))*(0.050000+0.900000*(0.5+0.5*sin(x*0.013+y*0.021+12.400000)))
+ expr2 (0.5+0.5*sin((x+y)*0.019+3.600000))*(0.050000+0.900000*(0.5+0.5*sin(x*0.013+y*0.021+12.400000)))
+ expr3 (0.050000+0.900000*(0.5+0.5*sin(x*0.013+y*0.021+12.400000)))
+ name Expression1
+}
+DeepFromImage {
+ set_z true
+ z 5
+ name DeepFromImage1
+}
+DeepMerge2 {
+ inputs 2
+ name DeepMerge1
+ xpos 0
+}
+set N191abde0 [stack 0]
+DeepCDefocus {
+ inputs 2
+ coc_mode Manual
+ size 0
+ name DeepCDefocus1
+ label "measured: DeepCDefocus\nsize=0, holdout wired"
+ xpos 120
+ ypos 140
+}
+push $N191f2de0
+push $N191abde0
+DeepHoldout2 {
+ inputs 2
+ name DeepHoldout1
+ label "reference: DeepHoldout2\n(already flat -- no DeepToImage after it)"
+ xpos -120
+ ypos 140
+}
+Merge2 {
+ inputs 2
+ operation difference
+ name Merge1
+ label "reference vs measured"
+ xpos 0
+ ypos 260
+}
+StickyNote {
+ inputs 0
+ name StickyNote1
+ label "Scene (b) -- holdout with everything in focus\n\nCheck: with a holdout connected and size=0, the node must match DeepHoldout2 (which flattens internally -- do not chain a DeepToImage after it, that reads back a uniform black frame).\n\nPinned here: an opaque full-alpha card holdout (b1). The harness also runs a partial-alpha holdout (b2) and a second reference built from DeepMerge2's own holdout operation, neither reproduced here."
+ note_font_size 14
+ xpos 340
+}

@@ -1,0 +1,52 @@
+version 17.0 v3
+Root {
+ inputs 0
+ name scene_j_anamorphic.nk
+ last_frame 1
+ format "256 256 0 0 256 256 2 deepc_val_256_pa2"
+ proxy_type scale
+ proxy_format "1024 778 0 0 1024 778 1 1K_Super_35(full-ap)"
+ colorManagement Nuke
+ workingSpaceLUT linear
+ monitorLut sRGB
+ monitorOutLUT rec709
+ int8Lut sRGB
+ int16Lut sRGB
+ logLut Cineon
+ floatLut linear
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 2 deepc_val_256_pa2"
+ name Constant1
+}
+Rectangle {
+ area {128 128 129 129}
+ color {1 1 1 1}
+ name Rectangle1
+ xpos 0
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 10
+ name DeepFromImage1
+ xpos 0
+ ypos 60
+}
+DeepCDefocus {
+ coc_mode Manual
+ focus_distance 30
+ name DeepCDefocus1
+ label "expect: bokeh stretched 2x vertically"
+ xpos 0
+ ypos 180
+}
+StickyNote {
+ inputs 0
+ name StickyNote1
+ label "Scene (j) -- anamorphic pixel aspect\n\nCheck: at pixel aspect 2, the bokeh must be elliptical by exactly that aspect, and the output bbox pad must scale correspondingly in Y.\n\nThe source is a single pixel, so the rendered support IS the kernel. This script's format is pinned at pixel aspect 2.0; the harness compares this render against an equivalent pixel-aspect-1.0 run, not reproduced here."
+ note_font_size 14
+ xpos 220
+}

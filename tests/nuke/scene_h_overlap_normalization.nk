@@ -1,0 +1,76 @@
+version 17.0 v3
+Root {
+ inputs 0
+ name scene_h_overlap_normalization.nk
+ last_frame 1
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ proxy_type scale
+ proxy_format "1024 778 0 0 1024 778 1 1K_Super_35(full-ap)"
+ colorManagement Nuke
+ workingSpaceLUT linear
+ monitorLut sRGB
+ monitorOutLUT rec709
+ int8Lut sRGB
+ int16Lut sRGB
+ logLut Cineon
+ floatLut linear
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant2
+}
+Rectangle {
+ area {88 64 216 192}
+ color {0.6 0.6 0.6 1}
+ name Rectangle2
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 20
+ name DeepFromImage2
+ label "card B, z=20 (different kernel bin than A)"
+ xpos 140
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant1
+}
+Rectangle {
+ area {40 64 168 192}
+ color {0.6 0.6 0.6 1}
+ name Rectangle1
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 6
+ name DeepFromImage1
+ label "card A, z=6"
+ xpos -140
+}
+DeepMerge2 {
+ inputs 2
+ name DeepMerge1
+ xpos 0
+ ypos 120
+}
+DeepCDefocus {
+ coc_mode Manual
+ size 18
+ name DeepCDefocus1
+ label "expect: max alpha <= 1, no brightened seam"
+ xpos 0
+ ypos 240
+}
+StickyNote {
+ inputs 0
+ name StickyNote1
+ label "Scene (h) -- overlap normalization\n\nCheck: two opaque, same-colour cards overlapping in screen space must not read alpha > 1 or show a brightened seam in the overlap band.\n\nThe design's literal 'same-depth' framing collapses to a single layer before the scatter ever runs (the per-pixel tidy pass over-composites coincident-depth samples first), so this script pins the harness's actual discriminating case instead: two cards at DIFFERENT depths (z=6 and z=20) that land in different kernel bins, which is what reaches the bucket saturation rule."
+ note_font_size 14
+ xpos 320
+}

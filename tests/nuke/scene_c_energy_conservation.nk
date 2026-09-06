@@ -1,0 +1,44 @@
+version 17.0 v3
+Root {
+ inputs 0
+ name scene_c_energy_conservation.nk
+ last_frame 1
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ proxy_type scale
+ proxy_format "1024 778 0 0 1024 778 1 1K_Super_35(full-ap)"
+ colorManagement Nuke
+ workingSpaceLUT linear
+ monitorLut sRGB
+ monitorOutLUT rec709
+ int8Lut sRGB
+ int16Lut sRGB
+ logLut Cineon
+ floatLut linear
+}
+DeepCConstant {
+ inputs 0
+ color_front {0.4 0.55 0.7 1}
+ color_back {0.4 0.55 0.7 1}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ alpha_mode uniform
+ front 9
+ back 9.5
+ name DeepCConstant1
+ xpos 0
+}
+DeepCDefocus {
+ coc_mode Manual
+ focus_distance 30
+ size 12
+ name DeepCDefocus1
+ label "expect: flat alpha==1, flat colour==input"
+ xpos 0
+ ypos 120
+}
+StickyNote {
+ inputs 0
+ name StickyNote1
+ label "Scene (c) -- energy conservation\n\nCheck: a constant-colour, constant-depth DeepCConstant field must stay a flat field at any CoC, in the bbox interior, alpha == 1 exactly.\n\nPinned here: an opaque slab at size=12, focus_distance=30 (c1/c2). The harness also reads total scattered alpha on a bounded card (c3) and a semi-transparent fog slab (c4) at the same size/focus, neither reproduced here."
+ note_font_size 14
+ xpos 220
+}

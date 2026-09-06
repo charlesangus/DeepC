@@ -1,0 +1,85 @@
+version 17.0 v3
+Root {
+ inputs 0
+ name scene_e_occlusion.nk
+ last_frame 1
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ proxy_type scale
+ proxy_format "1024 778 0 0 1024 778 1 1K_Super_35(full-ap)"
+ colorManagement Nuke
+ workingSpaceLUT linear
+ monitorLut sRGB
+ monitorOutLUT rec709
+ int8Lut sRGB
+ int16Lut sRGB
+ logLut Cineon
+ floatLut linear
+}
+DeepCConstant {
+ inputs 0
+ color_front {0 0 1 1}
+ color_back {0 0 1 1}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ alpha_mode uniform
+ front 20
+ back 20.05
+ name DeepCConstant3
+ label "BG (blue), full frame"
+ xpos 160
+}
+DeepCConstant {
+ inputs 0
+ color_front {0 1 0 1}
+ color_back {0 1 0 1}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ alpha_mode uniform
+ front 10
+ back 10.05
+ name DeepCConstant2
+}
+DeepCrop {
+ use_znear false
+ use_zfar false
+ bbox {90 60 200 200}
+ name DeepCrop2
+ label "mid card (green), in focus"
+ xpos 0
+}
+DeepCConstant {
+ inputs 0
+ color_front {1 0 0 1}
+ color_back {1 0 0 1}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ alpha_mode uniform
+ front 4
+ back 4.05
+ name DeepCConstant1
+}
+DeepCrop {
+ use_znear false
+ use_zfar false
+ bbox {30 30 120 220}
+ name DeepCrop1
+ label "FG card (red)"
+ xpos -160
+}
+DeepMerge2 {
+ inputs 3
+ name DeepMerge1
+ xpos 0
+ ypos 120
+}
+DeepCDefocus {
+ coc_mode Manual
+ size 8
+ name DeepCDefocus1
+ xpos 0
+ ypos 240
+}
+StickyNote {
+ inputs 0
+ name StickyNote1
+ label "Scene (e) -- occlusion\n\nCheck: three depth-separated DeepCConstant cards merged with DeepMerge2 -- the defocused FG card must bloom outward over the sharp mid card, and the BG must not bleed through the opaque FG.\n\n(The Escape mid-cook-cancel clause in this scene's harness check is not exercisable headless and is reported SKIP there.)"
+ note_font_size 14
+ xpos 280
+}

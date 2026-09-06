@@ -1,0 +1,68 @@
+version 17.0 v3
+Root {
+ inputs 0
+ name scene_l_small_coc_transition.nk
+ last_frame 1
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ proxy_type scale
+ proxy_format "1024 778 0 0 1024 778 1 1K_Super_35(full-ap)"
+ colorManagement Nuke
+ workingSpaceLUT linear
+ monitorLut sRGB
+ monitorOutLUT rec709
+ int8Lut sRGB
+ int16Lut sRGB
+ logLut Cineon
+ floatLut linear
+}
+Constant {
+ inputs 0
+ color {0.4 0.55 0.7 1}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant1
+}
+Expression {
+ channel0 depth
+ expr0 1.0/(1720.000000/(300.0-y))
+ name Expression1
+}
+DeepFromImage {
+ name DeepFromImage1
+ xpos 0
+}
+set N198c9db0 [stack 0]
+DeepCDefocus {
+ coc_mode Manual
+ size 3.36
+ depth_layers 8
+ name DeepCDefocus1
+ label K=8
+ xpos -220
+ ypos 140
+}
+push $N198c9db0
+DeepCDefocus {
+ coc_mode Manual
+ size 3.36
+ name DeepCDefocus2
+ label K=16
+ xpos 0
+ ypos 140
+}
+push $N198c9db0
+DeepCDefocus {
+ coc_mode Manual
+ size 3.36
+ depth_layers 64
+ name DeepCDefocus3
+ label K=64
+ xpos 220
+ ypos 140
+}
+StickyNote {
+ inputs 0
+ name StickyNote1
+ label "Scene (l) -- small-CoC transition\n\nCheck: a shallow depth ramp crossing 0-2.5px CoC must show no chatter or banding at the sharp-path / kernel-LUT-step transitions.\n\nSame ground plane as scene (g), at a 40x shallower slope. Three DeepCDefocus branches, depth_layers=8/16/64 (16 is the shipping default) -- a bucket-composite artefact moves with K, a sharp-path/LUT artefact does not. The radial/diagonal ramp variants and the CoC-field-extremum check are not reproduced here."
+ note_font_size 14
+ xpos 300
+}
