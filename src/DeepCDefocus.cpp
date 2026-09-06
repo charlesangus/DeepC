@@ -4,12 +4,11 @@
 //
 //  DeepCDefocus — Deep-input, flat-output defocus/DOF node
 //
-//  State: M1.P4.T1 — the node defocuses CONCURRENTLY.  The frame is computed
-//  lazily, one horizontal band at a time, by whichever of Nuke's render
-//  threads asks for a row in that band first, coordinated by a per-band
-//  Dirty -> InProgress -> Done state machine (deepc::BandLedger, POD and
-//  unit-tested with std::thread; instantiated here over DD::Image::
-//  SignalLock).  Per band:
+//  The frame is computed lazily, one horizontal band at a time, by whichever
+//  of Nuke's render threads asks for a row in that band first, coordinated by
+//  a per-band Dirty -> InProgress -> Done state machine (deepc::BandLedger,
+//  POD and unit-tested with std::thread; instantiated here over
+//  DD::Image::SignalLock).  Per band:
 //
 //    frameSetup()  ONCE per Op::hash(), claimed like a band ("band -1"):
 //         computeDepthRange()  alpha-weighted DeepFront/DeepBack/Alpha pass
@@ -30,19 +29,16 @@
 //  blocks on the ledger when there is none: Nuke hands its render threads
 //  consecutive rows, so all of them land in one band and three of four
 //  otherwise wait out its compute.  An aborted band goes back to Dirty
-//  (never Done), wakes its waiters, and leaves erased/black rows.  _validate marks all bands
-//  Dirty on an Op::hash() change.  The serial phase's shared_ptr<const
-//  FrameCache> publish-by-copy and its per-row frame-wide lock acquisition
-//  are GONE — both were correct for the serial phase and both are wrong for
-//  per-band claiming (M1.P4.T1's brief).
+//  (never Done), wakes its waiters, and leaves erased/black rows.  _validate
+//  marks all bands Dirty on an Op::hash() change.
 //
-//  Two standing invariants that predate this task and outlive it:
+//  Two standing invariants:
 //  _validate()/_request() must NEVER fall through to Iop's (they reach
 //  inputs through a bare static_cast<Iop*> and this node's inputs are
 //  DeepOps — a verified Nuke core dump), and row.erase(channels) is
 //  engine()'s first statement.
 //
-//  Node shape (PLAN/MILESTONES/M1-deepcdefocus-v1.md, "Node shape"):
+//  Node shape:
 //    - Iop subclass (not DeepFilterOp — this is the first in-repo node that
 //      consumes a deep input and produces flat 2D output), inputs(2).
 //    - Input 0: deep source, required. test_input() -> dynamic_cast<DeepOp*>.
@@ -53,11 +49,6 @@
 //    - Modelled on Foundry's "Deep to 2D Ops" pattern; the in-tree precedent
 //      is the NDK's own DeepToImage.cpp example (single deep-in Iop), not
 //      any node in this repo's src/ (all of which are DeepFilterOp).
-//
-//  Knob set: full inventory from the milestone's "Knob list (grouped)"
-//  table. Every default/range below matches that table exactly; the values
-//  are unused by any behaviour until M1.P2.T2 (_validate/_request/engine)
-//  and later phases (scatter, holdout, concurrency) wire them up.
 //
 // ============================================================================
 
@@ -93,10 +84,10 @@ using namespace DD::Image;
 // The knob IRanges are deliberately *soft* (IRange::force defaults to false),
 // so a user can type max_radius = 5000 into the panel. Every consumer of a
 // knob value therefore clamps it here rather than trusting the slider bound —
-// the design's memory formulas (K*W*B*(C+3)*4 per band, LUT ~2*pi*R^3/3) are
-// only bounded if the use sites do the clamping. These caps are shared by
-// every phase of this node so the bbox pad, the LUT extent and the scatter
-// loop can never disagree about how big "big" is.
+// the memory formulas (K*W*B*(C+3)*4 per band, LUT ~2*pi*R^3/3) are only
+// bounded if the use sites do the clamping. These caps are shared node-wide
+// so the bbox pad, the LUT extent and the scatter loop can never disagree
+// about how big "big" is.
 // ---------------------------------------------------------------------------
 static const int   kMaxRadiusCap    = 2000;   // px
 static const float kEdgeSoftnessCap = 64.0f;  // px
@@ -274,21 +265,6 @@ static const char* const worldUnitsNames[] = {
     "mm", "cm", "dm", "m", "in", "ft", nullptr
 };
 
-// --- BAKE-OFF KNOBS: ALL DECIDED, ALL DELETED -------------------------------
-//
-// The milestone carried two undecided candidates that had to be judged from
-// rendered pixels rather than derived: the bucket composite and the holdout
-// interpolant's opaque-step behaviour (M1.P3.T11).  Each was a runtime enum
-// in the scatter core precisely so ONE build could render every candidate
-// through a temporary knob here.  **M1.P3.T17 decided the bucket composite
-// from pixels and deleted the loser** (`bucket_combine` and its enum are
-// gone); **M1.P3.T18 did the same for the holdout interpolant**
-// (`holdout_interp`, `HoldoutInterp` and the two losing variants are gone —
-// the log chord won; see "THE HOLDOUT INTERPOLANT — DECIDED" in
-// DeepCDefocusMath.h for the rendered numbers).  There is one composite and
-// one interpolant now, and nothing to select.  The harness still sets
-// `pre_merge` and `merge_tolerance` explicitly on every render.
-
 // ---------------------------------------------------------------------------
 class DeepCDefocus : public DD::Image::Iop
 {
@@ -330,10 +306,6 @@ class DeepCDefocus : public DD::Image::Iop
     float _mergeTolerance;       // Float, default 0.25px, 0-2px
     float _memoryLimit;          // Float GB, default 4.0, 1-64
 
-    // (The two temporary bake-off knobs are gone: `bucket_combine` at
-    // M1.P3.T17, `holdout_interp` at M1.P3.T18 — both decided from rendered
-    // pixels, losers deleted.)
-
     // ----------------------------------------------------------------------
     // Derived state — rebuilt by _validate(), read by _request()/engine().
     // ----------------------------------------------------------------------
@@ -343,7 +315,7 @@ class DeepCDefocus : public DD::Image::Iop
                                     // _validate deliberately does NOT build the
                                     // kernel LUT — that waits until
                                     // frameSetup() knows the frame's measured
-                                    // CoC range, see the milestone Decisions
+                                    // CoC range
     float _proxyScale;              // current format width / full-size width
     float _formatHeightPx;          // current (proxy) format height, for the
                                     // ray-distance correction's filmback offset
@@ -354,11 +326,11 @@ class DeepCDefocus : public DD::Image::Iop
     // The shared flat frame.
     //
     // Plane-major layout, planes.size() * box.h() * box.w() floats, through
-    // PodBuffer (the M3 allocation seam; base 64-byte aligned, individual
+    // PodBuffer (the allocation seam; base 64-byte aligned, individual
     // plane starts are not).
     //
-    // M1.P4.T1: this is a MUTABLE SHARED frame, not a published-by-copy
-    // snapshot.  Each claiming render thread writes exactly its own band's
+    // This is a MUTABLE SHARED frame, not a published-by-copy snapshot.
+    // Each claiming render thread writes exactly its own band's
     // DISJOINT row range of every plane; nothing else writes it.  Readers
     // (the engine() row copy) never touch a band that is not Done, and the
     // ledger's release/acquire pair on the band state is what publishes the
@@ -366,11 +338,10 @@ class DeepCDefocus : public DD::Image::Iop
     // frameSetup(), which the ledger admits only after every in-flight band
     // has completed and every reader has drained (BandLedger::beginFrame).
     //
-    // The serial phase's shared_ptr<const FrameCache> is deliberately gone:
-    // publish-by-copy is the wrong primitive for per-band claims (they need
-    // a mutable shared frame plus per-band atomics), and snapshotting the
-    // pointer cost a frame-wide lock acquisition on every row (~2160 per
-    // thread per 4K frame).  Both deletions are M1.P4.T1's brief.
+    // Publish-by-copy (a shared_ptr<const FrameCache> snapshot) is the wrong
+    // primitive here: per-band claims need a mutable shared frame plus
+    // per-band atomics, and snapshotting the pointer costs a frame-wide lock
+    // acquisition on every row (~2160 per thread per 4K frame).
     // ----------------------------------------------------------------------
     struct FrameCache {
         DD::Image::Box        box;
@@ -407,8 +378,8 @@ class DeepCDefocus : public DD::Image::Iop
     struct BandJob;   // per-thread band scratch, defined below
 
     // ----------------------------------------------------------------------
-    // Frame-global cook state (M1.P4.T1), rebuilt by frameSetup() once per
-    // Op::hash() under the ledger's setup claim.  Everything here is written
+    // Frame-global cook state, rebuilt by frameSetup() once per Op::hash()
+    // under the ledger's setup claim.  Everything here is written
     // by exactly one thread (the setup owner, while nothing else runs) and
     // read by many (band computes + row copies) — the ledger's key handshake
     // is what makes that safe.
@@ -486,7 +457,7 @@ public:
     {
         inputs(2);  // input 0 = deep source (required), input 1 = deep holdout (optional)
 
-        // Concurrency instrumentation (M1.P4.T1): when set, every completed
+        // Concurrency instrumentation: when set, every completed
         // band claim logs its band index, row range and pthread id to stderr,
         // so a headless render demonstrates (or refutes) that distinct render
         // threads claim distinct bands.  Off by default; costs one getenv per
@@ -558,8 +529,8 @@ public:
     // only an assert in debug builds). This node's inputs are DeepOps, which
     // are NOT Iops, so any use of the inherited accessors is undefined
     // behaviour and crashes in a release Nuke. Every input access in this
-    // file — now and in M1.P2.T2 and beyond — must go through Op::input(n)
-    // and a dynamic_cast, i.e. through these two helpers.
+    // file must go through Op::input(n) and a dynamic_cast, i.e. through
+    // these two helpers.
     DeepOp* input0() const { return dynamic_cast<DeepOp*>(Op::input(0)); }
     DeepOp* input1() const { return dynamic_cast<DeepOp*>(Op::input(1)); }
 
@@ -576,11 +547,6 @@ public:
     // should read as a deep node in the DAG, like stock DeepToImage.
     const char* node_shape() const override { return DeepOp::DeepNodeShape(); }
 
-    // ------------------------------------------------------------------
-    // Knobs — full set from the milestone's "Knob list (grouped)" table.
-    // Values are unused until _validate/_request/engine (M1.P2.T2) and the
-    // scatter/holdout phases wire them up.
-    // ------------------------------------------------------------------
     void knobs(Knob_Callback f) override
     {
         // --- Focus -------------------------------------------------------
@@ -701,9 +667,7 @@ public:
     // Clamped knob accessors.
     //
     // Every knob range in this node is soft, so nothing downstream of a knob
-    // may use its raw value (milestone Decisions, 2026-07-26). These are the
-    // use-site clamps for the values M1.P2.T2 actually consumes; the scatter
-    // and concurrency phases add their own for K, memory_limit and friends.
+    // may use its raw value. These are the use-site clamps.
     // ------------------------------------------------------------------
     int clampedMaxRadius() const
     {
@@ -726,8 +690,7 @@ public:
                         std::min(_depthLayers, deepc::DepthBuckets::kMaxBuckets));
     }
 
-    // Pre-merge tolerance, in CoC-RADIUS pixels (milestone Decisions). It is a
-    // radius, so it is proxy-scaled exactly like the radii it is compared
+    // Pre-merge tolerance, in CoC-RADIUS pixels. It is a radius, so it is proxy-scaled exactly like the radii it is compared
     // against — applyProxyScale() cannot do it, because CocParams does not
     // carry the tolerance (same reason edge_softness is scaled at the LUT
     // build rather than in the params).
@@ -739,7 +702,7 @@ public:
 
     // memory_limit, in bytes. Soft range 1-64 GB; the floor is deliberately
     // well below the documented minimum so a user who types 0 gets the
-    // smallest band this phase can compute rather than a division by zero.
+    // smallest computable band rather than a division by zero.
     double memoryLimitBytes() const
     {
         const double gb = (_memoryLimit > 0.0625f) ? static_cast<double>(_memoryLimit) : 0.0625;
@@ -749,7 +712,7 @@ public:
     // Output bbox pad, X. The anti-aliased disc edge is *centred* on the rim,
     // so the kernel's true nonzero extent runs half a softness beyond
     // max_radius; padding by max_radius alone would clip that outermost
-    // scattered energy at the frame edge (milestone Decisions).
+    // scattered energy at the frame edge.
     int bboxPadX() const
     {
         return static_cast<int>(std::ceil(static_cast<float>(clampedMaxRadius())
@@ -778,8 +741,8 @@ public:
     //
     // Both _request() and every precompute fetch MUST call this and nothing
     // else. Request/engine channel divergence is a known failure class in
-    // this node's design (risk register), and the mitigation is precisely
-    // that there is exactly one function that answers the question.
+    // this node, and the mitigation is precisely that there is exactly one
+    // function that answers the question.
     // ------------------------------------------------------------------
     ChannelSet neededDeepChannels() const
     {
@@ -791,7 +754,7 @@ public:
 
     // Holdout pulls depth + alpha only — it contributes visibility, never
     // colour, so requesting its colour channels would be wasted bandwidth.
-    // Mirrored identically in _request() and (from M1.P3.T3) the fetch.
+    // Mirrored identically in _request() and in the fetch.
     static ChannelSet neededHoldoutChannels()
     {
         ChannelSet chans = Mask_Deep;
@@ -802,7 +765,7 @@ public:
     // ------------------------------------------------------------------
     // _validate()
     //
-    // DANGER (milestone Decisions, verified core dump): this must never fall
+    // DANGER (verified core dump): this must never fall
     // through to Iop::_validate(). Iop::_validate() merges info from all
     // inputs via Iop::asIop(), which is a bare static_cast<Iop*> — this
     // node's inputs are DeepOps, which are not Iops, and the cast crashes
@@ -811,8 +774,8 @@ public:
     //
     // Note what is deliberately absent: the kernel LUT is NOT built here.
     // It is built once the frame's measured CoC range is known, immediately
-    // after computeDepthRange() at M1.P3.T5 — building it eagerly over
-    // [0, max_radius] costs ~1.0GB at max_radius=500 (milestone Decisions).
+    // after computeDepthRange() — building it eagerly over [0, max_radius]
+    // costs ~1.0GB at max_radius=500.
     // _validate() cannot know that range: it is measured per cook, so the LUT
     // belongs to frameSetup() and nothing here may depend on it.
     // ------------------------------------------------------------------
@@ -908,13 +871,12 @@ public:
         // Mirror DeepToImage: propagate our caching state to the deep source.
         src->op()->cached(cached());
 
-        // M1.P4.T1: mark all bands Dirty on an Op::hash() change — cheap, no
-        // compute, and NOT a _computed flag cleared unconditionally (that
-        // would throw away a good frame on every viewer interaction; see the
-        // design reference's Node shape paragraph).  The ledger's key check
-        // in engine() is the authoritative gate — this is the design's
-        // stated _validate half, and it also catches a hash change that
-        // never reaches engine() (e.g. a knob wiggled back and forth).
+        // Mark all bands Dirty on an Op::hash() change — cheap, no compute,
+        // and NOT a _computed flag cleared unconditionally (that would throw
+        // away a good frame on every viewer interaction).  The ledger's key
+        // check in engine() is the authoritative gate; this half also catches
+        // a hash change that never reaches engine() (e.g. a knob wiggled back
+        // and forth).
         if (hash() != _validatedHash) {
             _validatedHash = hash();
             _ledger.invalidate();
@@ -948,7 +910,7 @@ public:
     }
 
     // ------------------------------------------------------------------
-    // engine() — the per-band lazy-claim loop (M1.P4.T1)
+    // engine() — the per-band lazy-claim loop
     //
     // row.erase(channels) is the literal first statement: sparse deep pixels
     // otherwise emit whatever was left in the row buffer. Everything after
@@ -957,9 +919,8 @@ public:
     // The loop has exactly three outcomes per pass:
     //   * the row's band is Done for the current hash -> copy rows, return.
     //     THE COMMON CASE TAKES NO LOCK AT ALL: BandLedger::beginRead()'s
-    //     fast path is two atomic ops, and bandDone() is an acquire load —
-    //     this is what replaced the serial phase's per-row frame-wide lock
-    //     acquisition (~2160 per thread per 4K frame).
+    //     fast path is two atomic ops, and bandDone() is an acquire load, so
+    //     no frame-wide lock is taken per row.
     //   * the band is not Done -> claim a Dirty band, PREFERRING the row's
     //     own but taking any other rather than queueing behind it, compute it
     //     into a pooled BandJob's private planes, write its disjoint region of
@@ -1179,7 +1140,7 @@ private:
 
     // ==================================================================
     //
-    //  THE COOK (M1.P3.T5 serial; M1.P4.T1 per-band lazy-claim)
+    //  THE COOK — frame setup once, then per-band lazy claim
     //
     //  frameSetup() — ONCE per Op::hash(), under the ledger's setup claim
     //  (nothing else runs while it does; see BandLedger::beginFrame):
@@ -1195,7 +1156,7 @@ private:
     //                            boundary — measured vis 0.0448 vs 1.0000 for
     //                            one fragment either side of one)
     //       DiscKernelLUT        over the frame's MEASURED radius range, with
-    //                            rMin = 0 (milestone Decisions, both halves)
+    //                            rMin = 0
     //    3. deepc::planBands()   band height + the memory-limit cap on
     //                            CONCURRENT in-flight bands, from the
     //                            COMBINED bucket-plane + holdout-LUT +
@@ -1212,9 +1173,8 @@ private:
     // ==================================================================
 
     // Everything one band needs, plus the scratch that is reused across
-    // bands and cooks.  M1.P4.T1: one instance per CONCURRENT band, pooled
-    // (_jobPool) — these are the "private bucket planes" of the design's
-    // claiming-thread contract.
+    // bands and cooks.  One instance per CONCURRENT band, pooled (_jobPool):
+    // these are the claiming thread's private bucket planes.
     struct BandJob {
         DeepOp* src     = nullptr;
         DeepOp* holdout = nullptr;
@@ -1234,8 +1194,7 @@ private:
         int padY       = 0;
 
         // bandY / bandHeight are filled per band; everything else (origin,
-        // width, sharp threshold, and BOTH bake-off selections) is set once,
-        // explicitly, from the knobs.
+        // width, sharp threshold) is set once, explicitly, from the knobs.
         deepc::ScatterParams sp;
 
         deepc::SampleSoA        soa;
@@ -1382,15 +1341,15 @@ private:
 
         // edge_softness is proxy-scaled HERE. applyProxyScale() deliberately
         // does not touch it — CocParams does not carry it — so the LUT build
-        // is where it lands (milestone brief, M1.P3.T5).
+        // is where it lands.
         const float softness    = clampedEdgeSoftness() * _proxyScale;
         const float pixelAspect = fp.coc._pixelAspect;
 
-        // rMin = 0, NOT the measured minimum (milestone Decisions,
-        // 2026-07-26): a query below rMin is clamped UP to the rMin kernel, so
-        // a measured rMin would visibly over-blur every radius between the
-        // sharp-path threshold and it. The range parameter exists to bound
-        // rMax, which is where the ~1.0GB worst case lives.
+        // rMin = 0, NOT the measured minimum: a query below rMin is clamped
+        // UP to the rMin kernel, so a measured rMin would visibly over-blur
+        // every radius between the sharp-path threshold and it. The range
+        // parameter exists to bound rMax, which is where the ~1.0GB worst
+        // case lives.
         _shared.kernel.reset(
             new deepc::DiscKernelLUT(0.0f, rMax, softness, pixelAspect));
 
@@ -1411,7 +1370,7 @@ private:
                                    && holdoutBox.w() > 0 && holdoutBox.h() > 0;
         _shared.holdoutConnected = holdoutConnected;
 
-        // The flatten needs to know too (M1.P3.T13): with a holdout connected
+        // The flatten needs to know too: with a holdout connected
         // its same-pixel deposit-collision merge may not carry a fragment
         // across a HoldoutBoundaries bracket, because the merged fragment is
         // sampled against the transmittance LUT at ONE depth. Measured on two
@@ -1430,7 +1389,7 @@ private:
                       * ((pixelAspect > 0.0f && std::isfinite(pixelAspect)) ? pixelAspect : 1.0f)));
         _shared.padY = padY;
 
-        // --- 4. band height + the concurrent-band cap (M1.P4.T1) -----------
+        // --- 4. band height + the concurrent-band cap ----------------------
         //
         // B = clamp(2*maxRadius, 32, 256), then deepc::planBands() shrinks it
         // (never below 1 row) until ONE band's scratch fits the memory limit,
@@ -1438,13 +1397,11 @@ private:
         // 0, so the ledger cannot deadlock).  Every term is evaluated on
         // CLAMPED values, never raw knob values.
         //
-        // The budget is the COMBINED figure the milestone requires — bucket
-        // planes K*W*B*(C+3)*4, PLUS the holdout LUT (K+1)*W*B*4 the serial
-        // phase's formula already carried (T3 left it out of bytesForBand();
-        // measured 17.0 MB per 4096x64 band at K=16), PLUS the SoA fragment
-        // stream at ~100 B/fragment RESIDENT (61 B logical; milestone
-        // Decisions 2026-07-27), which is the DOMINANT term at 4K (~1.49GB
-        // against ~117MB of planes).  The fragment count is estimated per
+        // The budget is a COMBINED figure: bucket planes K*W*B*(C+3)*4, PLUS
+        // the holdout LUT (K+1)*W*B*4 (measured 17.0 MB per 4096x64 band at
+        // K=16), PLUS the SoA fragment stream at ~100 B/fragment RESIDENT
+        // (61 B logical), which is the DOMINANT term at 4K (~1.49GB against
+        // ~117MB of planes).  The fragment count is estimated per
         // band as the deep-sample count over its FETCH window (band +/- padY
         // rows), from the per-row counts the depth-range pass just gathered;
         // the cap uses the WORST band's figure, since it is one number for
@@ -1502,8 +1459,8 @@ private:
         _shared.spBase.bandWidth     = W;
         _shared.spBase.sharpRadiusPx = deepc::kSharpRadiusPx;
 
-        // NO BAND LOOP HERE ANY MORE (M1.P4.T1): bands are computed lazily,
-        // per claim, on Nuke's own render threads — see engine().
+        // No band loop here: bands are computed lazily, per claim, on Nuke's
+        // own render threads — see engine().
         return true;
     }
 
@@ -1538,7 +1495,7 @@ private:
     // Returns false only on abort / upstream failure. `anyAlpha` false means
     // the frame carries no contributing sample at all.
     //
-    // M1.P4.T1: also fills `rowSamples` — deep samples per source row (index
+    // Also fills `rowSamples` — deep samples per source row (index
     // y - srcBox.y()) — for the memory budget's per-band SoA estimate.  It
     // counts every sample of every depth-and-alpha-bearing pixel, INCLUDING
     // alpha<=0 samples the flatten later drops: over-counting is the safe
@@ -1776,7 +1733,7 @@ private:
         // on exactly the same disabled view, so the per-pixel loop is skipped
         // ENTIRELY when there is no holdout or the band misses its bbox —
         // discovering emptiness by running it costs ~1.98 ms/band, ~67 ms per
-        // 4K frame of pure bookkeeping (M1.P3.T3's review).
+        // 4K frame of pure bookkeeping.
         job.holdoutSamples.begin(px);
         if (job.mattePlane >= 0)
             job.bandMatte.assign(static_cast<size_t>(px), 0.0f);
@@ -1842,8 +1799,8 @@ private:
                     // NaN depths in place). It is 1 - vis(infinity), and it is
                     // NOT computed as 1 - boundaryT: that subtraction's
                     // relative error is 100% at alpha 1e-7 and 19.2% over 200
-                    // compounded samples of it (milestone Decisions). The
-                    // log1p/expm1 form is exact in the same limit —
+                    // compounded samples of it. The log1p/expm1 form is
+                    // exact in the same limit —
                     // 1 - prod(1-a) == -expm1(sum log1p(-a)).
                     if (job.mattePlane >= 0) {
                         double logT = 0.0;
@@ -1879,13 +1836,12 @@ private:
 
         job.planes.allocate(K, C, W, h);   // sizes AND zeroes; keeps capacity
 
-        // CALLER-SIDE GEOMETRY ASSERT (M1.P4.T1 brief): scatterBandCPU()
-        // SILENTLY RETURNS when the planes' geometry disagrees with
-        // params.bandWidth/bandHeight (found at M1.P3.T2's review — the
-        // planes own the memory, so the disagreement must not be resolved in
-        // favour of the side that doesn't).  Under per-band claiming that
-        // silent return would surface as a BLACK BAND published as Done, so
-        // the mismatch is surfaced as a loud error here instead.
+        // CALLER-SIDE GEOMETRY ASSERT: scatterBandCPU() SILENTLY RETURNS
+        // when the planes' geometry disagrees with params.bandWidth/
+        // bandHeight (the planes own the memory, so the disagreement must not
+        // be resolved in favour of the side that doesn't).  Under per-band
+        // claiming that silent return would surface as a BLACK BAND published
+        // as Done, so the mismatch is surfaced as a loud error here instead.
         {
             const deepc::BucketPlaneView v = job.planes.view();
             if (!v.valid()
@@ -1951,20 +1907,16 @@ private:
     // ------------------------------------------------------------------
     // flattenPixel() — one deep pixel to one flat pixel.
     //
-    // *** NO LONGER ON THE COOK PATH (M1.P3.T5) ***  the cook now
-    // scatters (frameSetup()/computeBand()); this is M1.P2.T2's plain
-    // flatten, kept deliberately for two
-    // reasons the milestone names explicitly:
-    //   * it is the REFERENCE the DeepToImage parity gate was established
+    // *** NOT ON THE COOK PATH ***  the cook scatters
+    // (frameSetup()/computeBand()).  This plain flatten is kept for two
+    // reasons:
+    //   * it is the REFERENCE the DeepToImage parity gate is established
     //     against, and the parity numbers below are the record of it;
     //   * it carries one of the TWO independent layers of the FMA /
-    //     fp-contract parity guard (milestone Decisions, 2026-07-26: "the
-    //     CMake-level omission is the belt; the pragma is the braces"), and
-    //     M1.P5.T1 adds -mavx2 -mfma to this target.
-    // M1.P3.T12 / M1.P5.T1 should decide whether it is retired — deleting it
-    // here would silently drop a documented guard mid-phase.  NOTE for
-    // M1.P5.T1: the arithmetic that now produces the shipped pixels lives in
-    // DeepCDefocusScatter.{h,cpp} (the pre-merge `over` and both bucket
+    //     fp-contract parity guard — the CMake-level omission of -mfma is
+    //     the belt, the pragma below is the braces.
+    // The arithmetic that produces the shipped pixels lives in
+    // DeepCDefocusScatter.{h,cpp} (the pre-merge `over` and the bucket
     // composites), and that TU has NO such pragma.
     //
     // Tidy pre-pass first (deepc::tidyOverlapping(), reused rather than
@@ -2002,20 +1954,17 @@ private:
     //       2 coincident -> 1 ULP        8  coincident -> 4 ULP
     //       3 coincident -> 2 ULP        12 coincident -> 5 ULP
     //       5 coincident -> 3 ULP        20+ coincident -> 6 ULP (1.79e-07)
-    //   The tidy pass is correctness-required for the scatter phases
+    //   The tidy pass is correctness-required for the scatter
     //   (coincident samples must not be *added*), so the re-association is
     //   deliberate — but any "<= N ULP" acceptance threshold has to be stated
     //   against a named scene, not as a universal bound.
     //
     //   VOLUMETRIC SPANS THAT OVERLAP OR COINCIDE — parity to float
-    //   precision, and NOT the 1e-02 mismatch this comment used to report.
-    //   M1.P3.T0 adjudicated the old disagreement and found the tidy pass, not
-    //   Nuke, was wrong: it merged spans sharing an interval with `over`, but
-    //   two samples on one interval are co-located media, so their optical
-    //   depths and emission ADD rather than one occluding the other.
-    //   deepc::tidyOverlapping() now merges them by the OpenEXR "Interpreting
-    //   Deep Pixels" volume-mixture rule, which is what Nuke's own
-    //   CombineOverlappingSamples computes. Re-measured (Nuke 17.0v3,
+    //   precision.  Two samples sharing an interval are co-located media, so
+    //   their optical depths and emission ADD rather than one occluding the
+    //   other: deepc::tidyOverlapping() merges them by the OpenEXR
+    //   "Interpreting Deep Pixels" volume-mixture rule, which is what Nuke's
+    //   own CombineOverlappingSamples computes. Measured (Nuke 17.0v3,
     //   headless, all four rgba channels over every pixel of a 64x48 frame,
     //   -O3 -mavx2 -mfma), against DeepToImage with volumetric_composition ON
     //   — its default:
@@ -2023,19 +1972,19 @@ private:
     //     - two perfectly coincident spans .................... 6.0e-08
     //     - three-way overlap ................................. 2.4e-07
     //   i.e. the same ~1-2 ULP re-association noise as the coincident
-    //   point-sample case above, so a DeepToImage-parity gate no longer has
+    //   point-sample case above, so a DeepToImage-parity gate does not have
     //   to be scoped to point samples.
     //
     //   Against DeepToImage with volumetric_composition OFF the same scenes
-    //   now differ by 1.5e-02 to 4.7e-02, and that is deliberate: that
-    //   setting selects Nuke's plain `over` of overlapping spans, which is
-    //   the behaviour the tidy pass was changed away from. Do not use it as
-    //   the parity reference for volumetric input.
+    //   differ by 1.5e-02 to 4.7e-02, and that is deliberate: that setting
+    //   selects Nuke's plain `over` of overlapping spans, not the mixture
+    //   rule the tidy pass applies. Do not use it as the parity reference
+    //   for volumetric input.
     // ------------------------------------------------------------------
 #if defined(__GNUC__) && !defined(__clang__)
     // See the composite loop below: fusing its multiply and add into an FMA
     // changes the rounding and costs bit-exact parity with DeepToImage
-    // (measured: 1.2e-07 divergence under -O3 -mavx2 -mfma). M1.P4.T2/P5.T1
+    // (measured: 1.2e-07 divergence under -O3 -mavx2 -mfma). The build may
     // add -mavx2 -mfma to this target for the scatter loop's sake, so the
     // guard lives here rather than in the build files, where it could be
     // dropped without anything failing loudly.
@@ -2120,9 +2069,9 @@ private:
         // non-zero colour contributes nothing there, and adding its colour
         // here would be a visible, not just an ULP-level, divergence.
         //
-        // NOTE for M1.P5.T1: this loop must NOT be compiled with FMA
-        // contraction enabled (`-ffp-contract=fast` plus `-mfma`), which
-        // would fuse the multiply and add and cost the bit-exactness.
+        // This loop must NOT be compiled with FMA contraction enabled
+        // (`-ffp-contract=fast` plus `-mfma`), which would fuse the multiply
+        // and add and cost the bit-exactness.
         for (size_t i = samples.size(); i-- > 0; ) {
             const deepc::SampleRecord& rec = samples[i];
             if (rec.alpha == 0.0f)

@@ -4,13 +4,21 @@
 //
 //  DeepSampleOptimizer — Header-only deep sample merge & cap utility
 //
-//  Provides reusable per-pixel deep sample optimization: merges nearby-depth
-//  samples via front-to-back over-compositing and caps total sample count.
-//  Extracted from DeepThinner v2.0 Pass 6 (Smart Merge) and Pass 7 (Max
-//  Samples) and generalized to arbitrary channel sets.
+//  Two reusable per-pixel utilities over arbitrary channel sets:
 //
-//  Zero Nuke SDK dependencies — only standard library headers. Designed to be
-//  testable in isolation with a trivial harness.
+//    tidyOverlapping() splits overlapping depth intervals until every
+//      interval is disjoint from or identical to every other, then merges the
+//      coincident ones. The merge rule depends on the interval: VOLUMETRIC
+//      spans (zBack > zFront) sharing an interval are co-located media, so
+//      they combine by the OpenEXR mixture model — optical depths
+//      u = -ln(1-alpha) add, alpha = 1 - e^-u — which is order-independent.
+//      POINT samples (zBack == zFront) are coincident surfaces with a real
+//      ordering and combine by front-to-back `over`, which is not.
+//
+//    optimizeSamples() groups samples within a Z and colour tolerance, merges
+//      each group by front-to-back `over`, and caps the total sample count.
+//
+//  Zero Nuke SDK dependencies — only standard library headers.
 //
 // ============================================================================
 
@@ -176,11 +184,10 @@ inline void tidyOverlapping(std::vector<SampleRecord>& samples)
 
     // --- Split pass: one front-to-back sweep ---
     //
-    // The previous form split ONE overlapping pair, then re-sorted and
-    // restarted the whole scan; that measured at ~O(n^3.7) — 9.96ms for a
-    // single pixel of 32 mutually overlapping spans, which puts a frame of fog
-    // out of reach entirely.  This sweep does the identical cutting in one
-    // pass over the depth axis.
+    // All the cutting happens in one pass over the depth axis.  Splitting one
+    // overlapping pair at a time, re-sorting and restarting the scan measures
+    // at ~O(n^3.7) — 9.96ms for a single pixel of 32 mutually overlapping
+    // spans, which puts a frame of fog out of reach entirely.
     //
     // The sweep keeps a *group*: every record whose front is the current depth
     // f (the smallest front still unemitted).  The far pieces earlier cuts
@@ -195,13 +202,12 @@ inline void tidyOverlapping(std::vector<SampleRecord>& samples)
     //             at `fnext` and nothing else in the list starts before that.
     //
     // The group is then final — no endpoint anywhere in the list lies strictly
-    // inside it — and is emitted.  Reproducing the old pair-at-a-time order
-    // exactly is what the two rounds are for: the old scan always resolved the
-    // LEFTMOST conflicting adjacent pair, and a shared-front conflict (the
-    // `bmin` cut, at index i-1) always outranks a crossing-front one (the
-    // `fnext` cut, at index i) for the same record.  So a span reaching past
-    // both is cut at `bmin` FIRST even when `fnext` is nearer, and the cut
-    // chain — and therefore the float rounding of every piece — matches.
+    // inside it — and is emitted.  The two rounds are ORDERED, not
+    // interchangeable: a shared-front conflict (the `bmin` cut, at index i-1)
+    // outranks a crossing-front one (the `fnext` cut, at index i) for the same
+    // record, so a span reaching past both is cut at `bmin` FIRST even when
+    // `fnext` is nearer.  That fixes the cut chain, and with it the float
+    // rounding of every piece.
     //
     // Termination is structural rather than incidental: every cut point is the
     // front or back of a record that already exists, so the set of distinct
@@ -315,44 +321,24 @@ inline void tidyOverlapping(std::vector<SampleRecord>& samples)
     // The sweep already leaves `samples` in (zFront, zBack) order — groups come
     // out in increasing depth, and within a group inverted spans precede points
     // precede the equal-length pieces — so this sort is a no-op on the ordering
-    // the merge below actually reads. It is kept because it is not a no-op on
-    // the ordering of COINCIDENT samples: `std::sort` is unstable above 16
-    // elements, the point-sample merge below is `over`, and `over` is
-    // order-dependent. The pass that fed this one used to sort too, so keeping
-    // the second sort here is what makes this rewrite bit-exact against the
-    // previous implementation on every pixel that needs no splitting at all —
-    // point-only, disjoint and touching input, i.e. everything a released
-    // DeepCBlur/DeepCBlur2 build was able to render (verified: 252k randomised
-    // point-only pixels at 2..64 samples, 0 differences on any float field).
+    // the merge below actually reads. It is NOT a no-op on the ordering of
+    // COINCIDENT samples, which is why it is here: `std::sort` is unstable
+    // above 16 elements, and the point-sample merge below is `over`, which is
+    // order-dependent.
     //
-    // Where the two DO still diverge, and by how much — this is the whole of
-    // it, so read it here rather than chasing a commit message:
-    //
-    //   * Geometry and sample count: NEVER. Every measured corpus agrees on
-    //     the emitted [zFront,zBack] set exactly.
-    //   * The volumetric mixture merge: NEVER (0 of 743k volumetric records).
-    //     It is order-independent, so the sort cannot reach it.
-    //   * The `over` branch below — coincident POINT samples and INVERTED
-    //     spans: differs whenever splitting elsewhere in the pixel grows the
-    //     array past `std::sort`'s 16-element insertion-sort threshold and the
-    //     unstable permutation lands differently.  Note that depends on the
-    //     SPLIT count, not the input count, so it is reachable from inputs of
-    //     any size, not just >16.  When the coincident samples share an
-    //     unpremultiplied colour — the blur's own gather, where one source
-    //     sample arrives from several neighbours at different kernel weights —
-    //     `over` is order-independent and the difference stays at 1 ulp
-    //     (measured <= 3e-07).  When they are genuinely different surfaces at
-    //     one depth, `over` is not order-independent and the difference is
-    //     unbounded: measured up to 0.89 absolute in a colour channel.  Alpha
-    //     is unaffected either way (<= 1.2e-07), since `over`'s alpha is
-    //     1 - prod(1 - a_s) whatever the order.
-    //
-    // The previous implementation's answer in that last class was itself
-    // whichever permutation this libstdc++ happened to produce, so "differs"
-    // there is not "regresses" — but it is a visible render change, and it is
-    // equally a warning that neither answer is reproducible across toolchains.
-    // Making BOTH sorts `std::stable_sort` would pin it down; that is a
-    // deliberate behaviour change and has not been taken here.
+    // GOTCHA, because it is a real reproducibility limit: for coincident POINT
+    // samples and INVERTED spans, which permutation the unstable sort lands on
+    // depends on the SPLIT count, not the input count, so it is reachable from
+    // inputs of any size.  When those samples share an unpremultiplied colour
+    // the difference stays at 1 ulp (measured <= 3e-07); when they are
+    // genuinely different surfaces at one depth, `over` is not
+    // order-independent and the difference is unbounded (measured up to 0.89
+    // absolute in a colour channel).  Alpha is unaffected either way
+    // (<= 1.2e-07), since `over`'s alpha is 1 - prod(1 - a_s) whatever the
+    // order.  The volumetric mixture merge is order-independent, so the sort
+    // cannot reach it at all.  Making BOTH sorts `std::stable_sort` would pin
+    // the point case down; that is a deliberate behaviour change and has not
+    // been taken here.
     std::sort(samples.begin(), samples.end(),
         [](const SampleRecord& a, const SampleRecord& b) {
             return (a.zFront != b.zFront) ? a.zFront < b.zFront
@@ -481,8 +467,8 @@ inline void tidyOverlapping(std::vector<SampleRecord>& samples)
                 // DeepToImage composites these one at a time with `over`
                 // (measured: Nuke gives the same, order-dependent, answer
                 // with volumetric_composition on OR off), and DeepCDefocus'
-                // bit-exact point-sample parity gate depends on matching it,
-                // so this path stays exactly as it was.
+                // bit-exact point-sample parity gate depends on matching
+                // it.
                 float alphaAcc = 0.0f;
                 for (size_t s = i; s < j; ++s) {
                     float w = 1.0f - alphaAcc;

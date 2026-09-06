@@ -4,16 +4,15 @@
 //
 //  test_defocus_math — unit tests for DeepCDefocusMath.h / DeepCDefocusKernel.h
 //
-//  Pure-math test suite for M1.P1.T4. No NDK/DDImage dependency anywhere in
-//  this file or the headers it tests, so it builds and runs with a plain
+//  Pure-math test suite. No NDK/DDImage dependency anywhere in this file or
+//  the headers it tests, so it builds and runs with a plain
 //  `g++ -std=c++17 test_defocus_math.cpp -o test && ./test` as well as through
 //  the DEEPC_BUILD_TESTS CMake option.
 //
 //  Deterministic: no randomness anywhere, so every run is bit-reproducible.
 //  Every floating-point comparison carries an epsilon with a comment saying
-//  where the number came from (either a hand derivation shown in-line, or a
-//  measured tolerance recorded in PLAN/MILESTONES/M1-deepcdefocus-v1.md's
-//  Decisions log, cited by date/topic).
+//  where the number came from -- either a hand derivation shown in-line, or a
+//  measured worst case.
 //
 // ============================================================================
 
@@ -37,13 +36,10 @@ namespace {
 
 // Front-to-back `over` of a pixel's K bucket alphas, i.e. 1 - prod(1 - a_k).
 //
-// This is a TEST-LOCAL ORACLE, not a production path: it used to be
-// compositePixelFrontToBack(), which M1.P3.T17 deleted with the bucket-
-// composite candidate that called it.  The identity it is used for below
-// belongs to the FRAGMENT SPLIT, not to the composite — partitionAlpha()'s
-// whole contract is that the two deposits reconstruct the parent under `over`
-// (`1 - (1-a0)(1-a1) == alpha`), and that contract survived the deletion.  So
-// the tests keep their oracle and lose their dependency on the dead code.
+// This is a TEST-LOCAL ORACLE, not a production path.  The identity it is
+// used for below belongs to the FRAGMENT SPLIT, not to the bucket composite:
+// partitionAlpha()'s whole contract is that its two deposits reconstruct the
+// parent under `over` (`1 - (1-a0)(1-a1) == alpha`).
 inline float overCompositeAlpha(const float* bucketAlpha, int bucketCount)
 {
     float transmittance = 1.0f;
@@ -77,9 +73,9 @@ CocParams makeNoSaturationPhysicalParams()
 // The SAME lens, but with max_radius = 5px, which makes the near field of a
 // [1m, 100m] range saturate against the clamp (the CoC radius reaches 5px at
 // d = 3.2367m and keeps growing to 21.5px at d = 1m). This is the rig that
-// exercises the milestone Decisions log's 2026-07-26 "ΔCoC bucket spacing is
-// uniform in the CLAMPED CoC (min(coc, max_radius))" decision -- the
-// saturated-plateau case the no-saturation rig above deliberately avoids.
+// exercises the rule that ΔCoC bucket spacing is uniform in the CLAMPED CoC
+// (min(coc, max_radius)) -- the saturated-plateau case the no-saturation rig
+// above deliberately avoids.
 // Without it, spacing on the raw (unclamped) CoC passes every other test in
 // this file, so this fixture is load-bearing, not a variation.
 CocParams makeSaturatingPhysicalParams()
@@ -94,9 +90,8 @@ CocParams makeSaturatingPhysicalParams()
 //
 // `radii` are radiusPixels() evaluated at that side's boundaries, in boundary
 // order. radiusPixels() is already clamped to max_radius, so this quantity IS
-// the clamped CoC that the Decisions log names as the spacing coordinate --
-// which is why the saturating rig can be fed through this same assertion
-// rather than a weakened one.
+// the clamped CoC the spacing is defined in -- which is why the saturating rig
+// can be fed through this same assertion rather than a weakened one.
 //
 // The 1e-4 relative band is not fitted to what the implementation emits: the
 // measured worst relative step deviation is 3.6e-06 (front side, no-saturation
@@ -148,7 +143,7 @@ TEST_CASE("cocMillimeters matches a hand-derived lens table value (50mm f/2.8, S
     //            = 0.45787545787545787
     //   coc_mm(d) = cocScale * |1 - S_mm/d_mm| = 0.45787545787545787 * |1 - 0.5|
     //             = 0.45787545787545787 * 0.5 = 0.22893772893772894 mm
-    // which is the milestone brief's quoted "0.2289mm" to 4 decimal places.
+    // i.e. 0.2289mm to 4 decimal places.
     //
     // The literal below is that closed-form value, NOT a re-derivation through
     // the code under test -- it is reachable with a pocket calculator from the
@@ -273,9 +268,9 @@ TEST_CASE("signedCocPixels magnitude matches the cocMillimeters relation (physic
 
 TEST_CASE("Manual mode: `size` is the blur radius at d=infinity, not a diameter (no halving)")
 {
-    // Milestone Decisions (2026-07-26, "Manual-mode size..."): the knob table
-    // calls `size` a radius, so Manual mode must NOT apply the /2 the
-    // Physical branch uses (that branch genuinely computes a CoC diameter).
+    // The knob table calls `size` a radius, so Manual mode must NOT apply the
+    // /2 the Physical branch uses (that branch genuinely computes a CoC
+    // diameter).
     CocParams p = makeCocParams(CocMode::Manual, 50.0f, 2.8f, 36.0f,
                                  10.0f, unitScale(WorldUnits::Meters),
                                  1920.0f, 1.0f, 1.0f, 1.0f, 100.0f,
@@ -306,11 +301,11 @@ TEST_CASE("rayDistanceToZ matches the pinhole projection formula")
 
 TEST_CASE("DiscKernelLUT: every entry normalizes to sum(weights) == 1 within 1e-6")
 {
-    // Decisions (2026-07-26, normalizeEntry): "measured over every entry of a
-    // [0,100] LUT at 0.5px steps the worst |sum - 1| is ~5e-8" and the M1.P1.T4
-    // brief pins the worst measured case at 5.1e-08. Assert the documented
-    // 1e-6 bound (NOT float equality) -- more than an order of magnitude of
-    // headroom above the measured worst case.
+    // normalizeEntry() rounds each scaled weight back to float, so an entry's
+    // weights do not re-sum to a bit-exact 1.0: measured over every entry of a
+    // [0,100] LUT the worst |sum - 1| is ~5e-8. Assert the 1e-6 bound (NOT
+    // float equality) -- more than an order of magnitude of headroom above
+    // that worst case.
     DiscKernelLUT lut(0.0f, 40.0f, 1.0f, 1.0f);
 
     double worstAbsErr = 0.0;
@@ -437,7 +432,7 @@ TEST_CASE("HoldoutVisibility::build matches evalBoundaries for sorted input and 
 TEST_CASE("HoldoutVisibility boundary-LUT interpolation is exact for a single full-range sample, "
           "and a BOUNDARY locator (not bucketOf) is the correct feed for interpAtBucket")
 {
-    // NOTE (M1.P3.T10): in production the locator is HoldoutBoundaries::locate()
+    // NOTE: in production the locator is HoldoutBoundaries::locate()
     // over the holdout LUT's OWN boundary set, not DepthBuckets::locateBoundary()
     // over the ΔCoC bucket set -- the two sets are decoupled and a pair from one
     // must never index the other.  What this case pins is the property the two
@@ -465,10 +460,10 @@ TEST_CASE("HoldoutVisibility boundary-LUT interpolation is exact for a single fu
 
     // Build a DepthBuckets whose _boundaries match the array above exactly and
     // whose _centres are deliberately NOT the boundary midpoints -- exactly
-    // the scenario the milestone's Decisions log (2026-07-26, "bucketOf()
-    // measures position between bucket centres...") warns about: bucketOf()'s
-    // fraction is a different number from locateBoundary()'s and feeding the
-    // wrong one into interpAtBucket() silently reads back the wrong value.
+    // the case that goes wrong: bucketOf() measures position between bucket
+    // CENTRES, so its fraction is a different number from locateBoundary()'s,
+    // and feeding the wrong one into interpAtBucket() silently reads back the
+    // wrong value.
     DepthBuckets buckets;
     buckets._bucketCount = 4;
     for (int i = 0; i < 5; ++i)
@@ -496,13 +491,11 @@ TEST_CASE("HoldoutVisibility boundary-LUT interpolation is exact for a single fu
 }
 
 // ---------------------------------------------------------------------------
-// HoldoutBoundaries (M1.P3.T10) -- the holdout LUT's own boundary set.
+// HoldoutBoundaries -- the holdout LUT's own boundary set.
 //
-// The header states these post-conditions and defers them to M1.P3.T4; T10
-// shipped the struct before T4 exists, so they are pinned here.  T4 may move
-// them into the scatter-core suite, but must not drop them: locate() is on the
-// per-fragment path and its exactness AT the boundaries is what makes
-// "LUT == exact at the boundaries" a hard identity rather than a tolerance.
+// These post-conditions must not be dropped: locate() is on the per-fragment
+// path, and its exactness AT the boundaries is what makes "LUT == exact at the
+// boundaries" a hard identity rather than a tolerance.
 // ---------------------------------------------------------------------------
 TEST_CASE("HoldoutBoundaries::buildUniformZ post-conditions and locate() are exact "
           "at every boundary, across the whole K range")
@@ -623,9 +616,9 @@ TEST_CASE("HoldoutBoundaries::buildUniformZ post-conditions and locate() are exa
 TEST_CASE("HoldoutBoundaries::locate + interpAtBucket reproduces HoldoutVisibility::interp, "
           "and is BIT-EXACT against evalExact at the boundaries")
 {
-    // The identity M1.P3.T10 must not have regressed: the O(1) closed-form pair
-    // and the O(log n) searching entry point are the same number, and AT a
-    // boundary the LUT is not an approximation of anything.
+    // The identity: the O(1) closed-form pair and the O(log n) searching entry
+    // point are the same number, and AT a boundary the LUT is not an
+    // approximation of anything.
     HoldoutBoundaries h;
     h.buildUniformZ(1.0f, 100.0f, 17);
 
@@ -658,14 +651,10 @@ TEST_CASE("HoldoutBoundaries::locate + interpAtBucket reproduces HoldoutVisibili
 }
 
 // ---------------------------------------------------------------------------
-// interpAtBucket() -- the M1.P3.T3/T10 identities, plus the underflowed-
-// bracket behaviour M1.P3.T18's bake-off decided on.  Three opaque-step
-// interpolant variants existed behind a runtime flag from M1.P3.T11 until
-// M1.P3.T18 judged them from rendered pixels and deleted the losing two and
-// the flag (see "THE HOLDOUT INTERPOLANT -- DECIDED" in DeepCDefocusMath.h);
-// the identity cases below survive that deletion unchanged in substance, and
-// the last case re-pins the winner's floored-chord decay on an underflowed
-// bracket, which used to be pinned only via the deleted variants' divergence.
+// interpAtBucket() -- the LUT-vs-exact identities, plus the interpolant's
+// behaviour on an underflowed bracket (see the holdout-interpolant block in
+// DeepCDefocusMath.h).  The last case pins the floored log chord's decay
+// across such a bracket.
 // ---------------------------------------------------------------------------
 
 TEST_CASE("interpAtBucket identities: LUT vs exact at boundaries, all-ones, "
@@ -742,7 +731,7 @@ TEST_CASE("interpAtBucket identities: LUT vs exact at boundaries, all-ones, "
 
         const BoundarySpan s = h.locate(50.0f);
         const float v = HoldoutVisibility::interpAtBucket(boundaryT, h.count(), s.index, s.frac);
-        CHECK(v == doctest::Approx(1.0f).epsilon(1e-4));   // ~1 ulp-scale of 1.0, same as pre-T11
+        CHECK(v == doctest::Approx(1.0f).epsilon(1e-4));   // ~1 ulp-scale of 1.0
     }
 
     SUBCASE("the spatial hard silhouette edge stays exactly one pixel wide: "
@@ -774,16 +763,14 @@ TEST_CASE("interpAtBucket identities: LUT vs exact at boundaries, all-ones, "
 TEST_CASE("underflowed brackets: T1==0 is NOT exclusive to alpha==1 content, and the "
           "floored log chord decays as 10^(-30*frac) across such a bracket")
 {
-    // M1.P3.T11's review finding, re-pinned on the surviving interpolant after
-    // M1.P3.T18 deleted the variants: a dense alpha<1 stack underflows the
-    // stored far-boundary transmittance to bitwise 0.0f, and the chord then
-    // reads kMinTransmittance = 1e-30 as its far endpoint -- the erase-toward-
-    // camera residual harness check f2 pins in rendered pixels.  Both the
-    // small-n safe regime and the dense divergent one are pinned so neither
-    // regresses silently.
+    // A dense alpha<1 stack underflows the stored far-boundary transmittance
+    // to bitwise 0.0f, and the chord then reads kMinTransmittance = 1e-30 as
+    // its far endpoint -- the erase-toward-camera residual that harness check
+    // f2 pins in rendered pixels.  Both the small-n safe regime and the dense
+    // divergent one are pinned so neither regresses silently.
 
     SUBCASE("small-n regime (<=4 samples), even at very high alpha, stays well clear of "
-            "underflow -- consistent with the milestone's original verification")
+            "underflow")
     {
         // Four samples at alpha=0.999999 (as close to 1 as is meaningfully
         // distinct from it): (1-alpha)^4 = (1e-6)^4 = 1e-24, nowhere near
@@ -828,10 +815,9 @@ TEST_CASE("underflowed brackets: T1==0 is NOT exclusive to alpha==1 content, and
         const float v = HoldoutVisibility::interpAtBucket(boundaryT, h.count(), s.index, s.frac);
 
         // TWO-SIDED band around the floored chord's closed form
-        // 10^(-30*frac) at z=48, frac ~0.59596 -> 1.32e-18 (the value the
-        // deleted-variant divergence used to pin from the other side; the
-        // rendered T18 rig reads the same decay at 0.2512 = 10^(-30*0.02) two
-        // percent into a bracket).  A regression that erases outright (0.0)
+        // 10^(-30*frac) at z=48, frac ~0.59596 -> 1.32e-18 (the rendered rig
+        // reads the same decay at 0.2512 = 10^(-30*0.02) two percent into a
+        // bracket).  A regression that erases outright (0.0)
         // fails the lower bound; one that leaks (a raised floor, or losing
         // the floor entirely) fails the upper bound.
         CHECK(v > 1.0e-18f);
@@ -845,8 +831,8 @@ TEST_CASE("underflowed brackets: T1==0 is NOT exclusive to alpha==1 content, and
 TEST_CASE("makeUniformHoldoutBoundaries takes its count and range from the buckets, "
           "and is NOT the ΔCoC boundary set")
 {
-    // The whole point of M1.P3.T10: same K+1 entries (so per-band LUT memory is
-    // unchanged at (K+1)*W*B*4), same measured range, deliberately different
+    // The holdout set's whole point: same K+1 entries (so per-band LUT memory
+    // is (K+1)*W*B*4), same measured range, deliberately different
     // placement.  On the node's defaults the ΔCoC set spends 15 of 16 buckets
     // inside [1,10]; the holdout set must not.
     const CocParams p = makeCocParams(CocMode::Physical, 50.0f, 2.8f, 36.0f,
@@ -866,7 +852,7 @@ TEST_CASE("makeUniformHoldoutBoundaries takes its count and range from the bucke
     CHECK(h.boundary(h.count() - 2) > 90.0f);
 
     // An opaque card at z=50 must land in a bracket that CONTAINS it, not in one
-    // starting at 10 -- the exact regression T10 fixed.
+    // starting at 10.
     const BoundarySpan hs = h.locate(50.0f);
     CHECK(h.boundary(hs.index) > 40.0f);
     CHECK(h.boundary(hs.index + 1) < 55.0f);
@@ -911,12 +897,11 @@ TEST_CASE("DepthBuckets: ΔCoC boundary spacing is uniform per side of focus and
     SUBCASE("SATURATED near field: spacing is uniform in the CLAMPED CoC and the "
             "plateau costs exactly one bucket")
     {
-        // Decisions (2026-07-26, "ΔCoC bucket spacing is uniform in the CLAMPED
-        // CoC"): near-field CoC is unbounded as d -> 0, so spacing on the RAW
-        // value would let the saturated plateau consume the whole bucket
-        // budget; spacing on min(coc, max_radius) spends exactly one bucket
-        // there. Every other test in this file uses a rig where the clamp never
-        // engages, so without this subcase that decision is unverified --
+        // Near-field CoC is unbounded as d -> 0, so spacing on the RAW value
+        // would let the saturated plateau consume the whole bucket budget;
+        // spacing on min(coc, max_radius) spends exactly one bucket there.
+        // Every other test in this file uses a rig where the clamp never
+        // engages, so without this subcase that rule is unverified --
         // mutating the builder to space on the unclamped CoC passes everything
         // else (confirmed by mutation testing).
         CocParams p = makeSaturatingPhysicalParams();   // max_radius = 5px
@@ -950,11 +935,11 @@ TEST_CASE("DepthBuckets: ΔCoC boundary spacing is uniform per side of focus and
     }
 
     SUBCASE("documented asymmetric split: a side that gets 1 bucket still has a "
-            "bounded step (Decisions: 15/1 at S=10, range [1,100], K=16)")
+            "bounded step (15/1 at S=10, range [1,100], K=16)")
     {
-        // The Decisions log records this exact configuration as the case where
-        // integer bucket allocation leaves the front and back steps 1.5x apart.
-        // Pinned here so a change in the budget-split rule is visible.
+        // This configuration is the case where integer bucket allocation
+        // leaves the front and back steps 1.5x apart.  Pinned here so a change
+        // in the budget-split rule is visible.
         CocParams p = makeNoSaturationPhysicalParams();
         DepthBuckets buckets = makeBoundedDeltaCocBuckets(p, 1.0f, 100.0f, 16);
 
@@ -1017,8 +1002,8 @@ TEST_CASE("partitionAlpha/partitionColorScale reconstruct exactly at the alpha=0
         }
     }
 
-    SUBCASE("alpha == 1 (fully opaque): every part with t>0 is fully opaque -- the degenerate no-op "
-            "the milestone Decisions log documents (2026-07-26, 'Known cost of this form')")
+    SUBCASE("alpha == 1 (fully opaque): every part with t>0 is fully opaque -- the degenerate "
+            "no-op that is the known cost of this form")
     {
         for (float t = 0.01f; t <= 1.0f; t += 0.11f) {
             CHECK(partitionAlpha(1.0f, t) == 1.0f);
@@ -1045,17 +1030,17 @@ TEST_CASE("partitionAlpha/partitionColorScale reconstruct exactly at the alpha=0
     SUBCASE("reconstruction identity: two complementary parts recombine to the parent "
             "under `over`, in ALPHA and in PREMULTIPLIED COLOUR")
     {
-        // The milestone brief asks for reconstruction of BOTH quantities; the
-        // colour half is the one that pins partitionColorScale()'s value away
+        // BOTH quantities must reconstruct; the colour half is the one that
+        // pins partitionColorScale()'s value away
         // from the endpoints (a 2% error in the interior passes every
         // alpha-only assertion -- confirmed by mutation testing).
         //
         //   A_out = 1 - (1-a_0)(1-a_1)                       == alpha
         //   C_out = C*cs_0 + C*cs_1*(1-a_0)                  == C
         //
-        // Tolerances are ABSOLUTE and tied to the Decisions log's measured
-        // worst case for this form ("worst error 8.3e-08 across the alpha x f
-        // grid"). Re-measured over this test's own grid: 4.6e-08 for alpha and
+        // Tolerances are ABSOLUTE and tied to this form's measured worst case
+        // (8.3e-08 across the alpha x f grid). Measured over this test's own
+        // grid: 4.6e-08 for alpha and
         // 1.3e-08 for premultiplied colour, so 1e-6 is ~22x headroom rather
         // than a tolerance fitted to the output.
         const float premultColor = 0.37f;
@@ -1131,9 +1116,9 @@ TEST_CASE("saturateBucketPixel: alpha>1 saturates to exactly 1 with colour/alpha
         // an extra (1 + 1e-5) survives it. This case uses alphas and channel
         // values with no exact binary representation, and asserts the
         // unpremultiplied colour (= the colour:alpha ratio, which is what
-        // "ratio preserved" means) to a tolerance derived from the Decisions
-        // log's measured 7.45e-08 drift: re-measured worst RELATIVE drift over
-        // alpha in (1, 6] here is 1.39e-07, so 1e-6 is ~7x headroom.
+        // "ratio preserved" means) to a tolerance derived from this form's
+        // measured 7.45e-08 drift: worst RELATIVE drift over alpha in (1, 6]
+        // here is 1.39e-07, so 1e-6 is ~7x headroom.
         const float unpremult[3] = {0.3f, 0.77f, 0.999f};
         for (float a : {1.0000001f, 1.3f, 1.7f, 2.9f, 5.5f}) {
             float color[3] = {a * unpremult[0], a * unpremult[1], a * unpremult[2]};
@@ -1283,8 +1268,8 @@ TEST_CASE("splitSpanAtBoundaries: parts recombine via `over` to reproduce the pa
         // Absolute tolerances tied to measurement, not to what the code emits:
         // swept over alpha in (0,1) x 200 span placements the worst |sum t - 1|
         // is 3.0e-08 and the worst |reconstructed - parent| is 1.2e-07
-        // (consistent with the Decisions log's ~8.3e-08 for this form), so 1e-6
-        // is ~8x headroom.
+        // (consistent with the ~8.3e-08 measured for this form), so 1e-6 is
+        // ~8x headroom.
         CHECK(std::fabs(tSum - 1.0f) < 1e-6f);
         const float reconstructedAlpha = 1.0f - transmittance;
         CHECK(std::fabs(reconstructedAlpha - parentAlpha) < 1e-6f);
@@ -1354,12 +1339,11 @@ TEST_CASE("splitPartCount is a safe upper bound, and bucketOfContaining's contra
 TEST_CASE("Composition contract: bucketOfContaining (correct) exactly reconstructs a split span; "
           "bucketOf (contract violation) double-counts")
 {
-    // Milestone Decisions (2026-07-26, "Volumetric span splitting and
-    // fractional bucket assignment are mutually exclusive"): a piece from
-    // splitSpanAtBoundaries() MUST be deposited via bucketOfContaining(), not
-    // bucketOf() -- using bucketOf() re-splits an already-split piece and
-    // over-counts alpha/colour (measured +8.3% at parent alpha 0.9 on a
-    // 16-bucket frame).
+    // Volumetric span splitting and fractional bucket assignment are mutually
+    // exclusive: a piece from splitSpanAtBoundaries() MUST be deposited via
+    // bucketOfContaining(), not bucketOf() -- using bucketOf() re-splits an
+    // already-split piece and over-counts alpha/colour (measured +8.3% at
+    // parent alpha 0.9 on a 16-bucket frame).
     //
     // Hand-verifiable deterministic scenario (bucketCount=4, evenly spaced so
     // the numbers can be checked by hand):
@@ -1380,8 +1364,8 @@ TEST_CASE("Composition contract: bucketOfContaining (correct) exactly reconstruc
     // the same bucket pair and accumulate ADDITIVELY there (as the scatter's
     // per-bucket accumulation does), then get `over`-composited on top of
     // that -- double-counting. Hand computation gives ~0.9825, i.e. ~9.2%
-    // high, consistent with the Decisions log's measured ballpark for a
-    // similar (not identical) geometry.
+    // high, consistent with the measured ballpark for a similar (not
+    // identical) geometry.
     DepthBuckets buckets;
     buckets._bucketCount = 4;
     buckets._boundaries[0] = 0.0f;
@@ -1436,7 +1420,7 @@ TEST_CASE("Composition contract: bucketOfContaining (correct) exactly reconstruc
     //   each bucket = 0.4988127663727278 + 0.3690426555198068
     //               = 0.8678554218925346    (both parts land in the SAME pair)
     //   composite   = 1 - (1 - 0.8678554218925346)^2 = 0.9825378043...
-    // i.e. +9.171% over the parent 0.9. The Decisions log's +8.29% is a
+    // i.e. +9.171% over the parent 0.9. The +8.29% measured elsewhere is a
     // DIFFERENT scenario (a 16-bucket ΔCoC frame with non-uniform spacing, so
     // the two parts' centre-fractions are not the symmetric 0.4/0.6 this
     // hand-checkable 4-bucket uniform rig produces); the two numbers are
@@ -1447,8 +1431,8 @@ TEST_CASE("Composition contract: bucketOfContaining (correct) exactly reconstruc
 TEST_CASE("Composition contract: bucketOfContaining reconstruction stays continuous as a "
           "volumetric slab slides across a bucket boundary")
 {
-    // Decisions (2026-07-26): "the result stays continuous (max alpha step
-    // 6e-08) as a slab slides across a boundary" under the correct contract.
+    // Under the correct contract the result stays continuous (max alpha step
+    // 6e-08) as a slab slides across a boundary.
     // Sweep a fixed-thickness span's front edge across boundary[1]=10 and
     // check the compliant reconstruction stays pinned to the parent alpha at
     // every step (which is itself the continuity guarantee: if it always
@@ -1488,12 +1472,12 @@ TEST_CASE("Composition contract: bucketOfContaining reconstruction stays continu
         const float outAlpha = overCompositeAlpha(bucketAlpha.data(),
                                                   buckets.bucketCount());
 
-        // Absolute bounds tied to the Decisions log's measured "max alpha step
-        // 6e-08": re-measured over a 5x finer sweep of this rig the worst
-        // deviation from the parent is 1.19e-07 and the worst consecutive step
-        // is 1.19e-07, so 1e-6 is ~8x headroom. The previous 1e-4 / 1e-3 bounds
-        // were three to four orders of magnitude looser than the measurement
-        // they cited and would have passed a visible discontinuity.
+        // Absolute bounds tied to the measured "max alpha step 6e-08": over a
+        // 5x finer sweep of this rig the worst deviation from the parent is
+        // 1.19e-07 and the worst consecutive step is 1.19e-07, so 1e-6 is ~8x
+        // headroom. A 1e-4 / 1e-3 bound would be three to four orders of
+        // magnitude looser than that measurement and would pass a visible
+        // discontinuity.
         CHECK(std::fabs(outAlpha - parentAlpha) < 1e-6f);
         if (havePrev)
             CHECK(std::fabs(outAlpha - prev) < 1e-6f); // no discontinuity crossing the boundary

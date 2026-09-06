@@ -2,14 +2,12 @@
 //
 // ============================================================================
 //
-//  test_defocus_scatter — unit tests for the POD scatter core (M1.P3.T4)
+//  test_defocus_scatter — unit tests for the POD scatter core
 //
-//  Covers DeepCDefocusScatter.h / .cpp: the SoA flatten (M1.P3.T1), the band
-//  scatter and both bucket-composite candidates (M1.P3.T2, T8, T9), and the
-//  holdout SoA / boundary LUT (M1.P3.T3, T10, T11).  POD level only: no NDK,
-//  no DDImage type, no live Nuke session.  scatterBandCPU() is driven through
-//  a plain std::thread, which is the property the design reference asks for
-//  ("thread-agnostic so unit tests can drive it directly with std::thread").
+//  Covers DeepCDefocusScatter.h / .cpp: the SoA flatten, the band scatter and
+//  the bucket composite, and the holdout SoA / boundary LUT.  POD level only:
+//  no NDK, no DDImage type, no live Nuke session.  scatterBandCPU() is
+//  thread-agnostic, so it is driven here through a plain std::thread.
 //
 //  DETERMINISTIC.  The suite has no RNG: the fuzz/corpus cases use the
 //  fixed-seed 64-bit LCG below, so every run — and every mutation-test run —
@@ -21,8 +19,8 @@
 //  REFERENCE VALUES ARE DERIVED INDEPENDENTLY, never by calling the function
 //  under test to produce its own expectation:
 //    * refRadiusPx()/refPartitionAlpha()/refBucketOf()/refSplitSpan()/
-//      refFlatten() re-derive the flatten from the design reference's formulae
-//      in double precision (std::pow, not the shipped expm1/log1p chain), so a
+//      refFlatten() re-derive the flatten from the documented formulae in
+//      double precision (std::pow, not the shipped expm1/log1p chain), so a
 //      change to the shipped expression is a difference, not a shared error;
 //    * refRasterize() re-derives the whole deposit — which plane, which bucket,
 //      which pixel — from the documented layout, independently of
@@ -33,8 +31,7 @@
 //
 //  Every tolerance is either exact (`==`) or carries a comment naming the
 //  MEASURED error it was set from, at ~10x headroom.  Numbers marked PINNED
-//  are documentation-with-teeth from PLAN/MILESTONES/M1-deepcdefocus-v1.md's
-//  Decisions log, re-measured at this task; a change to them is meant to fail.
+//  are documentation-with-teeth: a change to them is meant to fail.
 //
 //  Like test_defocus_math.cpp this builds standalone with plain
 //  `g++ -std=c++17 tests/test_defocus_scatter.cpp src/DeepCDefocusScatter.cpp`
@@ -98,11 +95,11 @@ private:
 // Rigs
 // ===========================================================================
 
-// THE STANDARD RIG, and it is the one every pinned number in the milestone's
-// Decisions log was measured on: Physical, f=50, N=2.8, filmback 36mm at
-// 1920px, metres, over a measured depth range of [1, 100] at K=16.  Focused at
-// 10m it splits 15 front / 1 back (the split the milestone records); focused at
-// 1m the whole range is behind focus, which is the behind-focus rig.
+// THE STANDARD RIG, the one every pinned number in this file was measured on:
+// Physical, f=50, N=2.8, filmback 36mm at 1920px, metres, over a measured
+// depth range of [1, 100] at K=16.  Focused at 10m it splits 15 front /
+// 1 back; focused at 1m the whole range is behind focus, which is the
+// behind-focus rig.
 CocParams makeStandardRig(float focusDistance, float maxRadiusPx = 100.0f)
 {
     return makeCocParams(CocMode::Physical,
@@ -127,7 +124,7 @@ DepthBuckets makeStandardBuckets(const CocParams& p, int k = 16)
 // ===========================================================================
 // Independent reference implementations
 //
-// Written from the design reference / header documentation, in double, with
+// Written from the header documentation, in double, with
 // std::pow rather than the shipped expm1/log1p forms.  Nothing here calls the
 // function it is the reference for.
 // ===========================================================================
@@ -296,7 +293,7 @@ std::vector<RefPart> refSplitSpan(const DepthBuckets& b, double zFront, double z
 // rule rather than from the shipped predicate: below the sharp threshold every
 // fragment is one weight of 1.0 at its own pixel (bin -1), and above it
 // DiscKernelLUT rounds onto the NEAREST NODE, IN RADIUS, of the global
-// kernel-radius grid (M1.P3.T19).
+// kernel-radius grid.
 //
 // Deliberately derived by SEARCHING the grid's node radii (kernelGridRadius(),
 // which is the grid's definition) instead of by inverting them: the closed
@@ -353,7 +350,7 @@ struct RefFragment {
     double colorScale1 = 0.0;
     bool   volumetric  = false;
     bool   coverageHead = true;
-    bool   depositArea0 = true;   // M1.P3.T15: does deposit 0 write area?
+    bool   depositArea0 = true;   // does deposit 0 write area?
     bool   depositArea1 = true;
     std::vector<double> channels;
 };
@@ -557,7 +554,7 @@ std::vector<RefFragment> refFlatten(const CocParams& p,
         i = j;
     }
 
-    // --- 6. THE DEPOSIT-COLLISION PASS (M1.P3.T13) -------------------------
+    // --- 6. THE DEPOSIT-COLLISION PASS -------------------------------------
     // Re-derived from the contract, not from the shipped loop: within one
     // source pixel, candidates that land in a shared bucket AND rasterise one
     // kernel are `over`-composited into the FRONT-MOST of them (whose depth,
@@ -593,7 +590,7 @@ std::vector<RefFragment> refFlatten(const CocParams& p,
     }
 
     // --- 7. THE MONOTONE FRONTIER, THE PER-BUCKET ATTENUATION AND THE AREA
-    //        CLAIM (M1.P3.T15, M1.P3.T13), then the deposit.
+    //        CLAIM, then the deposit.
     //
     // Re-derived from the two contracts, not from the shipped loop:
     //
@@ -713,8 +710,8 @@ struct Band {
     { return planes.alpha[static_cast<std::size_t>(k) * pixels() + static_cast<std::size_t>(y) * W + x]; }
 };
 
-// scatterBandCPU() ON A std::thread — the design reference's "thread-agnostic
-// so unit tests can drive it directly with std::thread", exercised literally.
+// scatterBandCPU() ON A std::thread — its thread-agnostic contract, exercised
+// literally.
 void scatterOnThread(const ScatterParams& sp, const SampleSoA& soa,
                      const HoldoutSoA& holdout, const KernelSampler& kernel,
                      BucketPlanes& planes)
@@ -809,11 +806,6 @@ ScatterParams makeScatterParams(int w, int h)
     sp.bandWidth = w;
     sp.bandHeight = h;
     sp.sharpRadiusPx = kSharpRadiusPx;
-    // `combine` and `holdoutInterp` used to be set here, EXPLICITLY in every
-    // case, because a bake-off candidate's default was non-authoritative
-    // while two candidates existed.  M1.P3.T17 (bucket composite) and
-    // M1.P3.T18 (holdout interpolant) decided both from rendered pixels and
-    // deleted the losers, so there is nothing left to select.
     return sp;
 }
 
@@ -1007,7 +999,7 @@ SampleRecord makeSample(float zFront, float zBack, float alpha,
 } // namespace
 
 // ===========================================================================
-// SoA flatten (M1.P3.T1)
+// SoA flatten
 // ===========================================================================
 
 TEST_CASE("flattenPixelToSoA reproduces an independent tidy + split + merge reference")
@@ -1056,10 +1048,10 @@ TEST_CASE("flattenPixelToSoA reproduces an independent tidy + split + merge refe
         {makeSample(9.0f, 9.0f, 0.2f, {0.02f, 0.04f, 0.06f}),
          makeSample(9.001f, 9.001f, 0.3f, {0.03f, 0.06f, 0.09f}),
          makeSample(9.002f, 9.002f, 0.25f, {0.025f, 0.05f, 0.075f})}});
-    // M1.P3.T13's AREA CLAIM, both limbs.  Without these two the reference's
-    // step 7 was never reached by any fixture at all -- deleting it outright
-    // left the whole suite green (measured at T13's review), so it certified
-    // nothing.  Both pairs sit in the rig's single [10, 100] bucket.
+    // THE AREA CLAIM, both limbs.  Without these two fixtures the reference's
+    // step 7 is never reached at all -- deleting it outright leaves the whole
+    // suite green, so it would certify nothing.  Both pairs sit in the rig's
+    // single [10, 100] bucket.
     //
     // (a) DIFFERENT kernels: z=15 is 0.80px (LUT entry 2) and z=50 is 1.91px
     //     (entry 4), while both sit at bucketOf() index 14 -- so the merge may
@@ -1138,8 +1130,8 @@ TEST_CASE("flattenPixelToSoA reproduces an independent tidy + split + merge refe
 TEST_CASE("the tidy pre-pass is correctness-required: coincident samples over-composite, "
           "and the sharp path reproduces a sequential `over` exactly")
 {
-    // "tidy + sharp-path = sequential over", carried from M1.P1.T4.  Two
-    // coincident point samples at alpha 0.3 and 0.4 are ONE surface pair, so
+    // "tidy + sharp-path = sequential over".  Two coincident point samples at
+    // alpha 0.3 and 0.4 are ONE surface pair, so
     // the answer is the sequential over 0.3 + 0.4*0.7 = 0.58 -- not the 0.7
     // the scatter's additive within-bucket accumulation would give.
     const CocParams    p  = makeStandardRig(10.0f);
@@ -1161,10 +1153,8 @@ TEST_CASE("the tidy pre-pass is correctness-required: coincident samples over-co
 
     const int W = 32, H = 32;
     DiscKernelLUT lut(0.0f, 4.0f, 1.0f, 1.0f);
-    // Ran under both bucket-composite candidates until M1.P3.T17 deleted one;
-    // this identity was never a discriminator (a sharp fragment's whole weight
-    // lands in one pixel), which is exactly why it survives the deletion
-    // unchanged.
+    // This identity does not discriminate between bucket composites at all: a
+    // sharp fragment's whole weight lands in one pixel.
     Band band;
     band.K = bk.bucketCount(); band.C = 1; band.W = W; band.H = H;
     HoldoutSoA noHoldout;
@@ -1235,11 +1225,11 @@ TEST_CASE("flatten sanitisation: non-finite depths, inverted spans and zero-alph
 
 TEST_CASE("depthIsRayDistance applies the per-pixel ray-distance -> Z correction")
 {
-    // The correction M1.P3.T5's computeDepthRange() has to apply IDENTICALLY
-    // (see the milestone: the two passes disagreeing puts every corner-pixel
-    // sample below depthMin).  It is per PIXEL, always shrinks the depth, and
-    // is the identity on the optical axis -- none of which was pinned before,
-    // so dropping it entirely was invisible.
+    // The node's depth-range pass has to apply this correction IDENTICALLY:
+    // the two passes disagreeing puts every corner-pixel sample below
+    // depthMin.  It is per PIXEL, always shrinks the depth, and is the
+    // identity on the optical axis; unpinned, dropping it entirely is
+    // invisible.
     const CocParams    p  = makeStandardRig(10.0f);
     const DepthBuckets bk = makeStandardBuckets(p);
 
@@ -1247,8 +1237,8 @@ TEST_CASE("depthIsRayDistance applies the per-pixel ray-distance -> Z correction
     fp.depthIsRayDistance = true;
     fp.formatHeightPx     = 1080.0f;
 
-    // Independent derivation, in double, from the design reference's geometry:
-    // the pixel's radial filmback offset r, then z = ray * f / sqrt(f^2 + r^2).
+    // Independent derivation, in double, from the geometry: the pixel's radial
+    // filmback offset r, then z = ray * f / sqrt(f^2 + r^2).
     auto refZ = [&](int x, int y, double ray) {
         const double mmPerPxX = 36.0 / 1920.0;
         const double mmPerPxY = mmPerPxX;                 // pixelAspect 1
@@ -1543,16 +1533,15 @@ TEST_CASE("coverage head: exactly one per POST-TIDY parent, fuzzed over single- 
                                             refKernelBin(soa.radius[i]));
                 }
 
-                // Never more than one head per parent -- an over-count here is
-                // the K-times coverage inflation M1.P3.T8 fixed.  It can be
+                // Never more than one head per parent -- an over-count here
+                // is a K-times coverage inflation.  It can be
                 // FEWER when pre-merge absorbs two heads into one deposit,
                 // which is loss-free (same bucket, same radius, same area).
                 REQUIRE(heads <= liveParents);
                 REQUIRE(heads >= 1);
 
-                // M1.P3.T13's invariant, and the reason the old
-                // `!preMerge => heads == liveParents` clause had to go: it is
-                // not the parent count that bounds the heads.  What claimNewArea
+                // The invariant is NOT `!preMerge => heads == liveParents`:
+                // it is not the parent count that bounds the heads.  What claimNewArea
                 // establishes instead is that within one bucket at one pixel,
                 // EVERY head belongs to the SAME kernel.  Two depth-disjoint
                 // parents at ONE pixel can land in one bucket at two different
@@ -1562,7 +1551,7 @@ TEST_CASE("coverage head: exactly one per POST-TIDY parent, fuzzed over single- 
                 // clamps into a fully opaque bucket (1.000 against a true
                 // 0.781).
                 //
-                // WHY IT IS NOT "ONE HEAD PER BUCKET" (M1.P3.T13's review).
+                // WHY IT IS NOT "ONE HEAD PER BUCKET".
                 // Two deposits sharing a bucket AND a kernel cover the IDENTICAL
                 // destination area, so calling one of them "co-located" is not a
                 // statement about geometry, and the composite's C_k : D_k split
@@ -1573,9 +1562,9 @@ TEST_CASE("coverage head: exactly one per POST-TIDY parent, fuzzed over single- 
                 // claim reads the exact 1.0).  Those collisions are the MERGE's
                 // to resolve, and where the merge may not reach them (across
                 // FragmentKind, or across a holdout bracket) both claims stand
-                // and the bucket degrades to the pre-T13 `over`, which the
-                // "coverage is clamped at USE, not in the plane" decision
-                // already provides for.  Knob on or off either way.
+                // and the bucket degrades to a plain `over`, which
+                // "coverage is clamped at USE, not in the plane" already
+                // provides for.  Knob on or off either way.
                 std::sort(headClaims.begin(), headClaims.end());
                 for (std::size_t h = 1; h < headClaims.size(); ++h) {
                     const bool twoKernelsInOneBucket =
@@ -1589,15 +1578,15 @@ TEST_CASE("coverage head: exactly one per POST-TIDY parent, fuzzed over single- 
 }
 
 // ===========================================================================
-// Same-pixel bucket collisions (M1.P3.T13)
+// Same-pixel bucket collisions
 //
 // THE INVARIANT: within one source pixel, deposits landing in one bucket are
 // `over`-composited rather than added, and the pixel's area is claimed at most
-// ONCE per bucket.  Until T13 both halves failed for two same-pixel fragments
-// whose bucketOf() assignments overlapped while their CONTAINING buckets
-// differed (so the pre-merge never grouped them): the alpha plane added them
-// and the new-area plane held 2.0, the composite clamped both into [0,1], and
-// the bucket read fully opaque.
+// ONCE per bucket.  Both halves are easy to break for two same-pixel fragments
+// whose bucketOf() assignments overlap while their CONTAINING buckets differ
+// (so the pre-merge never groups them): the alpha plane then adds them and the
+// new-area plane holds 2.0, the composite clamps both into [0,1], and the
+// bucket reads fully opaque.
 // ===========================================================================
 
 namespace {
@@ -1642,13 +1631,13 @@ CocParams makeManualRig(float sizePx, float focusDistance)
 } // namespace
 
 TEST_CASE("size-0 flatten is a DeepToImage `over` of the pixel, at every K and both pre_merge "
-          "states (M1.P3.T13)")
+          "states")
 {
-    // THE HEADLINE GATE.  Before T13 this corpus read a worst |d alpha| of
-    // 2.47e-01 with 5.7-11.8% of pixels wrong by more than 1e-3 (the milestone
-    // brief's measurement, reproduced by this suite's own driver); the defect is
-    // bimodal, so a spot check of a few pixels reads "3-5 ULP" and misses it
-    // entirely.  Hence a corpus, and hence both a TAIL and a rate assertion.
+    // THE HEADLINE GATE.  Without the collision pass this corpus reads a worst
+    // |d alpha| of 2.47e-01 with 5.7-11.8% of pixels wrong by more than 1e-3;
+    // the defect is bimodal, so a spot check of a few pixels reads "3-5 ULP"
+    // and misses it entirely.  Hence a corpus, and hence both a TAIL and a
+    // rate assertion.
     const int C = 3, W = 64, H = 64, N = 900;
 
     for (bool preMerge : {false, true}) {
@@ -1710,8 +1699,8 @@ TEST_CASE("size-0 flatten is a DeepToImage `over` of the pixel, at every K and b
                 // NOT A ULP BOUND, and deliberately not one: the residual is a
                 // float `over` chain against a double reference, so it grows
                 // with the sample count (measured 1.3e-07 at 2 samples,
-                // 2.5e-07 at 20 — the same growth the milestone's scene (a)
-                // clause already records for coincident samples).  4e-07 is
+                // 2.5e-07 at 20 — the same growth recorded for coincident
+                // samples elsewhere).  4e-07 is
                 // ~1.6x the worst measured over this corpus; the defect this
                 // pins is five orders of magnitude larger.
                 CHECK(worstAlpha <= 4e-07);
@@ -1723,13 +1712,12 @@ TEST_CASE("size-0 flatten is a DeepToImage `over` of the pixel, at every K and b
     }
 }
 
-TEST_CASE("scatterKernelBin mirrors the scatter's own two radius decisions, at the edges "
-          "(M1.P3.T13's review)")
+TEST_CASE("scatterKernelBin mirrors the scatter's own two radius decisions, at the edges")
 {
     // The merge is only lossless when the two members fetch LITERALLY the same
     // kernel, so this predicate has to agree with the scatter at both of the
-    // scatter's decision points and not merely near them.  Both edges survived
-    // the implementer's mutation set because no case exercised them.
+    // scatter's decision points and not merely near them.  Both edges survive
+    // a mutation set unless a case exercises them exactly.
     //
     // 1. THE SHARP THRESHOLD.  scatterBandCPU() takes the sharp path for
     //    `!(radius >= sharpRadiusPx)`, so radius == kSharpRadiusPx exactly is a
@@ -1742,11 +1730,10 @@ TEST_CASE("scatterKernelBin mirrors the scatter's own two radius decisions, at t
     CHECK(scatterKernelBin(0.0f) == -1);
     CHECK(sameScatterKernel(0.0f, std::nextafter(kSharpRadiusPx, 0.0f)));
     // ...and the exactly-0.5 fragment must merge with the one a hair above it,
-    // because DiscKernelLUT rounds both onto grid node 1.  M1.P3.T19 NOTE:
-    // this used to read 0.6f, which the old uniform 0.5px grid put on node 1
-    // too; on the refined grid node 1 is 0.5 and node 2 is 0.5004888, so 0.6
-    // is ~200 nodes away and must NOT merge.  That is the fix working, not a
-    // weakened assertion -- 0.5 and 0.6 rasterise measurably different discs.
+    // because DiscKernelLUT rounds both onto grid node 1.  NOTE:
+    // a uniform 0.5px grid would put 0.6f on node 1 too; on this grid node 1
+    // is 0.5 and node 2 is 0.5004888, so 0.6 is ~200 nodes away and must NOT
+    // merge -- 0.5 and 0.6 rasterise measurably different discs.
     CHECK(sameScatterKernel(kSharpRadiusPx, 0.50024f));
     CHECK_FALSE(sameScatterKernel(kSharpRadiusPx, 0.6f));
     CHECK_FALSE(sameScatterKernel(std::nextafter(kSharpRadiusPx, 0.0f), 0.50024f));
@@ -1764,7 +1751,7 @@ TEST_CASE("scatterKernelBin mirrors the scatter's own two radius decisions, at t
     CHECK(scatterKernelBin(-1.0f) == -1);
 
     // 3. The grid itself: same node merges, adjacent nodes do not -- in BOTH
-    //    of its regions, since M1.P3.T19 made it piecewise.
+    //    of its regions, since the grid is piecewise.
     //    Fine region (hyperbolic, node spacing ~r^2/512): nodes 926/927 are
     //    5.171717/5.224490 px, so 5.16 and 5.19 share node 926 while 5.20
     //    rounds to 927.
@@ -1783,8 +1770,8 @@ TEST_CASE("scatterKernelBin mirrors the scatter's own two radius decisions, at t
 // Centre-ROW weight sum of one LUT entry, S_r(0).  This is the quantity the
 // adjacent-bin trough is made of: two vertically adjacent source scanlines
 // that fall in different kernel bins leave their shared destination row short
-// by exactly (S_r(0) - S_r'(0))/2, which M1.P3.T16's review derived from the
-// LUT alone and then matched in Nuke to six decimals at four crossings.
+// by exactly (S_r(0) - S_r'(0))/2, derivable from the LUT alone and matched in
+// Nuke to six decimals at four crossings.
 double centreRowSum(const DiscKernelLUT& lut, float radiusPx)
 {
     const KernelView v = lut.kernel(radiusPx, 0, 0, 0.0f, 0);
@@ -1798,16 +1785,15 @@ double centreRowSum(const DiscKernelLUT& lut, float radiusPx)
     return sum;
 }
 
-TEST_CASE("adjacent kernel bins never lose a visible amount of alpha "
-          "(M1.P3.T19's trough, pinned at the POD level)")
+TEST_CASE("adjacent kernel bins never lose a visible amount of alpha, pinned at the POD "
+          "level")
 {
     // THE DEFECT, and the guard against its silent return.  Quantising kernel
     // radius costs a flat opaque surface (S_r(0) - S_r'(0))/2 of its alpha on
     // every scanline where the CoC ramp crosses from bin r to bin r'.  On the
-    // uniform 0.5px grid this node shipped with until M1.P3.T19 that was a
-    // ONE-SCANLINE 20% DARK LINE, and colour tracked alpha exactly, so it read
-    // as a visible dark line across an opaque surface (validation scene (l),
-    // checks l1/l2/l5).
+    // uniform 0.5px grid that is a ONE-SCANLINE 20% DARK LINE, with colour
+    // tracking alpha exactly, so it reads as a visible dark line across an
+    // opaque surface (validation scene (l), checks l1/l2/l5).
     //
     // Nothing in this test knows about Nuke, ramps or scenes: it is the same
     // arithmetic, straight off the LUT, so it fails the instant the grid is
@@ -1816,9 +1802,9 @@ TEST_CASE("adjacent kernel bins never lose a visible amount of alpha "
     DiscKernelLUT lut(0.0f, 20.0f, 1.0f, 1.0f);
 
     // --- 1. THE INSTRUMENT REPRODUCES THE DEFECT -------------------------
-    // 0.5 and 1.0 are both nodes of the shipped grid, so this is the OLD
-    // grid's step measured through the NEW LUT: 0.200881, i.e. the 0.799119
-    // that M1.P3.T16 measured in Nuke at the 0.5->1.0 crossing.  A test that
+    // 0.5 and 1.0 are both nodes of this grid, so this measures a uniform
+    // 0.5px step through it: 0.200881, i.e. the 0.799119 measured in Nuke at
+    // the 0.5->1.0 crossing.  A test that
     // has never been made to fail proves nothing; this clause is the one that
     // makes the measurement demonstrably able to see the trough.
     CHECK(centreRowSum(lut, 0.5f) - centreRowSum(lut, 1.0f)
@@ -1906,7 +1892,7 @@ TEST_CASE("adjacent kernel bins never lose a visible amount of alpha "
     // --- 4. THE COST -----------------------------------------------------
     // The refinement lives entirely below kKernelCoarseFromPx, so it adds a
     // FIXED amount no matter how large max_radius is -- measured 197KB at both
-    // [0,40] and [0,100], where the old grid cost 0.584MB and 8.414MB.  Pinned
+    // [0,40] and [0,100], on 0.584MB and 8.414MB LUTs.  Pinned
     // so a future widening of the fine region cannot go unnoticed.
     const DiscKernelLUT big(0.0f, 100.0f, 1.0f, 1.0f);
     const DiscKernelLUT mid(0.0f, 40.0f, 1.0f, 1.0f);
@@ -1915,8 +1901,7 @@ TEST_CASE("adjacent kernel bins never lose a visible amount of alpha "
     CHECK(big.entryCount() < 1200);
 }
 
-TEST_CASE("the area claim is per PIXEL and survives a degenerate bucket set "
-          "(M1.P3.T13's review)")
+TEST_CASE("the area claim is per PIXEL and survives a degenerate bucket set")
 {
     SUBCASE("the front-most fragment at every source pixel always claims its area")
     {
@@ -1971,8 +1956,8 @@ TEST_CASE("the area claim is per PIXEL and survives a degenerate bucket set "
         // three numbers it is derived from (range min, range max, boundary
         // count).  A scratch is reused across cooks and across bucket sets, so a
         // cache that only ever builds once would keep indexing the FIRST set --
-        // exactly the "a build and a lookup drift onto different arrays" failure
-        // M1.P3.T10 restructured HoldoutSoA to make impossible.  Driven by
+        // exactly the "a build and a lookup drift onto different arrays"
+        // failure HoldoutSoA's structure exists to make impossible.  Driven by
         // reusing one scratch across two genuinely different bucket sets and
         // comparing against a fresh one.
         const CocParams    p  = makeManualRig(0.0f, 4.0f);
@@ -2032,9 +2017,9 @@ TEST_CASE("the area claim is per PIXEL and survives a degenerate bucket set "
         soa.begin(1, fp.groups);
         FlattenScratch scratch;
         scratch.claimEpoch = 0xFFFFFFFFu;
-        // M1.P3.T15 keeps a SECOND stamped record beside the claim -- the
-        // per-bucket touch/running-alpha the attenuation reads -- and the wrap
-        // must retire BOTH.
+        // There is a SECOND stamped record beside the claim -- the per-bucket
+        // touch/running-alpha the attenuation reads -- and the wrap must
+        // retire BOTH.
         //
         // The marks are poisoned with the epoch the counter will hold AFTER the
         // wrap (1, since 0 is skipped), which is what a mark left behind four
@@ -2090,15 +2075,15 @@ TEST_CASE("the area claim is per PIXEL and survives a degenerate bucket set "
 }
 
 // ===========================================================================
-// Per-bucket transmittance attenuation at the flatten (M1.P3.T15)
+// Per-bucket transmittance attenuation at the flatten
 //
 // THE INVARIANT: within one source pixel, deposits of the SAME kernel landing
 // in one bucket are `over`-composited rather than added, they claim that
 // bucket's area exactly once, and no deposit ever lands in FRONT of a bucket an
 // earlier (nearer) same-kernel deposit already reached.  Together those make
 // the bucket composite reproduce the pixel's flatten for ANY mixture of point
-// and volumetric content, with or without a holdout connected — the three
-// holes M1.P3.T13's merge could not close (it may not merge across
+// and volumetric content, with or without a holdout connected — including the
+// three holes the collision merge alone cannot close (it may not merge across
 // FragmentKind, may not merge across a holdout bracket, and cannot take a
 // same-kernel collision it is not adjacent to).
 // ===========================================================================
@@ -2107,8 +2092,9 @@ namespace {
 
 // An "occludes nothing" holdout: one opaque sample far behind every fixture in
 // this file.  The TRUTH is therefore unchanged by connecting it, which is
-// exactly what makes it a parity gate — before M1.P3.T15 connecting input 1
-// switched T13's collision merge off and the same corpus read 2.30e-01.
+// exactly what makes it a parity gate — connecting input 1 switches the
+// collision merge off across holdout brackets, and without the attenuation the
+// same corpus reads 2.30e-01.
 void buildFarHoldout(const DepthBuckets& bk, std::ptrdiff_t pixelCount,
                      float depth, HoldoutSampleSoA& hs, HoldoutLut& lut)
 {
@@ -2123,10 +2109,10 @@ void buildFarHoldout(const DepthBuckets& bk, std::ptrdiff_t pixelCount,
 } // namespace
 
 TEST_CASE("size-0 flatten is a DeepToImage `over` for MIXED point+volumetric content, with a "
-          "holdout connected and without (M1.P3.T15)")
+          "holdout connected and without")
 {
-    // THE HEADLINE GATE for this task, and the two rows M1.P3.T13 could not
-    // reach.  Measured on this corpus before T15 (shipped T13 code):
+    // THE HEADLINE GATE, including the two rows the collision merge alone
+    // cannot reach.  Measured on this corpus without the attenuation:
     //   mixed,  holdout off : worst |d alpha| 2.61e-01, |d colour| 8.30e-01,
     //                         99.8% of a row's pixels beyond 1e-3
     //   mixed,  holdout on  : 2.64e-01 / 8.84e-01 / 99.9%
@@ -2206,8 +2192,8 @@ TEST_CASE("size-0 flatten is a DeepToImage `over` for MIXED point+volumetric con
                 ++bad;
         }
 
-        // NOT a ULP bound, and it GROWS WITH SAMPLE COUNT (milestone scene (a):
-        // a float `over` chain against a double reference).  Measured worst over
+        // NOT a ULP bound, and it GROWS WITH SAMPLE COUNT (a float `over`
+        // chain against a double reference).  Measured worst over
         // this corpus is 5.74e-07 at 20 spp / K=128 on the volumetric rows and
         // 2.4e-07 at 5 spp; 1e-06 is ~2x that.  The defect these rows pin is
         // five orders of magnitude larger.
@@ -2217,15 +2203,14 @@ TEST_CASE("size-0 flatten is a DeepToImage `over` for MIXED point+volumetric con
     }
 }
 
-TEST_CASE("with a holdout connected, two sharp samples IN FRONT of a card read the flatten "
-          "(M1.P3.T15, the Decisions case)")
+TEST_CASE("with a holdout connected, two sharp samples IN FRONT of a card read the flatten")
 {
-    // Milestone Decisions, 2026-07-27: "two sharp samples at z=20/40 behind a
-    // card at z=95 read 0.816118 against a true 0.750000".  Connecting the
-    // holdout switched T13's collision merge off (the two sit in different
-    // HoldoutBoundaries brackets), the two deposits were ADDED, and validation
-    // scene (b) failed the way scene (a) did.  Nothing occludes them — the card
-    // is 55 units behind the farther sample — so the truth is the plain flatten.
+    // Two sharp samples at z=20/40 behind a card at z=95 read 0.816118 against
+    // a true 0.750000 when this goes wrong: connecting the holdout switches the
+    // collision merge off (the two sit in different HoldoutBoundaries
+    // brackets), the two deposits are ADDED, and validation scene (b) fails the
+    // way scene (a) does.  Nothing occludes them — the card is 55 units behind
+    // the farther sample — so the truth is the plain flatten.
     const int W = 8, H = 8, K = 16;
     const CocParams    p  = makeManualRig(0.0f, 10.0f);
     const DepthBuckets bk = makeBoundedDeltaCocBuckets(p, 1.0f, 100.0f, K);
@@ -2262,7 +2247,7 @@ TEST_CASE("with a holdout connected, two sharp samples IN FRONT of a card read t
 }
 
 TEST_CASE("the per-bucket attenuation needs no holdout gate: each fragment keeps its own depth "
-          "and its own vis (M1.P3.T15)")
+          "and its own vis")
 {
     // The property that makes a holdout gate unnecessary here where the
     // collision MERGE needs one: the merge emits ONE fragment at ONE depth, so
@@ -2310,7 +2295,7 @@ TEST_CASE("the per-bucket attenuation needs no holdout gate: each fragment keeps
 }
 
 TEST_CASE("two opaque layers at one pixel read exactly 1.000000 at any alpha pair and any "
-          "kernel (M1.P3.T15)")
+          "kernel")
 {
     // An opaque layer behind anything is still opaque, and an opaque layer in
     // FRONT of anything hides it: both readings are 1.0 with no coverage
@@ -2318,8 +2303,8 @@ TEST_CASE("two opaque layers at one pixel read exactly 1.000000 at any alpha pai
     // pre_merge states, and alpha pairs that put the opaque layer first, last
     // and both.  Read as a FLAT FIELD (every pixel carries the pair), which is
     // the reading that is 1.0 for a blurred pair as well — an ISOLATED pair of
-    // different-sized discs band-sums to 2.0 by the milestone's recorded
-    // occlusion-before-blur loss, which is not this task's to fix.
+    // different-sized discs band-sums to 2.0 by the recorded
+    // occlusion-before-blur loss, which is a separate limitation.
     const int C = 1, W = 40, H = 40, K = 16;
 
     for (float sizePx : {0.0f, 0.4f, 3.0f, 8.0f})
@@ -2363,16 +2348,16 @@ TEST_CASE("two opaque layers at one pixel read exactly 1.000000 at any alpha pai
     }
 }
 
-TEST_CASE("the bucket alphas MULTIPLY to the pixel's flatten: 1 - prod(1 - A_k) (M1.P3.T15)")
+TEST_CASE("the bucket alphas MULTIPLY to the pixel's flatten: 1 - prod(1 - A_k)")
 {
     // The identity the attenuation is built on, checked in the PLANES rather
-    // than after the composite, so it holds independently of which bucket
-    // composite M1.P3.T12 picks:
+    // than after the composite, so it holds independently of the bucket
+    // composite:
     //     1 - prod_k (1 - A_k) = 1 - prod_k prod_i (1 - a_{i,k})
     //                          = 1 - prod_i (1 - a_i)
     // Sharp path at one pixel, so every deposit lands with weight 1 and A_k is
-    // read straight off the plane.  Before T15 the planes ADDED, so this read
-    // above the truth on every colliding pixel.
+    // read straight off the plane.  Without the attenuation the planes ADD, so
+    // this reads above the truth on every colliding pixel.
     const int W = 4, H = 4, C = 1;
     Lcg rng(0xB105u);
 
@@ -2426,7 +2411,7 @@ TEST_CASE("the bucket alphas MULTIPLY to the pixel's flatten: 1 - prod(1 - A_k) 
 }
 
 TEST_CASE("the monotone bucket frontier: a trailing deposit never lands in FRONT of an earlier "
-          "one, and moves by at most ONE bucket (M1.P3.T15)")
+          "one, and moves by at most ONE bucket")
 {
     // The rule that keeps the front-to-back bucket composite honest: bucket k+1
     // is attenuated by the WHOLE of bucket k, so a fragment depositing into a
@@ -2500,7 +2485,7 @@ TEST_CASE("the monotone bucket frontier: a trailing deposit never lands in FRONT
     // frontier is not in front of anything -- the two share one bucket, which
     // the running alpha resolves exactly -- so it must keep its fractional
     // two-bucket split.  Collapsing it as well is the whole-weight assignment
-    // that defeats the K knob (Decisions, 2026-07-27), and it is one character
+    // that defeats the K knob, and it is one character
     // away (`<` vs `<=`), so it gets a direct differential: the same sample
     // flattened ALONE and flattened behind a leading fragment that pushes the
     // frontier exactly onto its front bucket must produce the same assignment.
@@ -2511,8 +2496,8 @@ TEST_CASE("the monotone bucket frontier: a trailing deposit never lands in FRONT
 
         // The pair has to be CROSS-KIND: two same-kernel POINT samples whose
         // deposits touch are collapsed by the collision merge before this rule
-        // is reached, so the case only exists across the composition contract —
-        // which is the case M1.P3.T15 exists for anyway.  A span piece wholly
+        // is reached, so the case only exists across the composition contract.
+        // A span piece wholly
         // inside bucket k takes whole weight there and puts the frontier at k;
         // a point sample just behind bucket k's centre has bucketOf() index k
         // with a fraction, i.e. it sits EXACTLY at the frontier.
@@ -2543,15 +2528,13 @@ TEST_CASE("the monotone bucket frontier: a trailing deposit never lands in FRONT
 }
 
 TEST_CASE("the `no area at all` deposit is REACHABLE through the flatten on BOTH deposits, and "
-          "the scatter honours both bits (M1.P3.T15's review)")
+          "the scatter honours both bits")
 {
-    // M1.P3.T15 shipped claiming `depositArea1` was "a GUARD rather than a live
-    // case ... unreachable through flattenPixelToSoA() today", and rested two
-    // surviving mutants on that argument.  IT IS NOT UNREACHABLE, and three
-    // independent mutants that disable the bit — clearing it in the flatten,
-    // dropping the guard in scatterSpanBothBuckets(), and making
-    // fragmentDepositsArea1Of() return true — ALL survived the suite as it
-    // stood.  This case exists to kill them.
+    // `depositArea1` is a LIVE case, not a guard: it IS reachable through
+    // flattenPixelToSoA().  Three independent mutants that disable the bit —
+    // clearing it in the flatten, dropping the guard in
+    // scatterSpanBothBuckets(), and making fragmentDepositsArea1Of() return
+    // true — all pass without this case.
     //
     // WHY IT IS REACHABLE.  The frontier clamp is gated on the kernel bin, and
     // `frontierBin` is a single slot holding whichever deposit last reached the
@@ -2564,10 +2547,9 @@ TEST_CASE("the `no area at all` deposit is REACHABLE through the flatten on BOTH
     // fragments at K=4 and 2 at K=16 (0 at size 0, where every radius is 0 and
     // there is only one bin).
     //
-    // That residual is REAL but bounded and is NOT this task's to close: on the
-    // fixture below the pixel reads 1.26e-02 against the flatten where the
-    // shipped pre-T15 code read 2.23e-01, an 18x improvement, and the milestone's
-    // size-0 gates cannot reach it at all (one bin).  See this file's Decisions.
+    // That residual is REAL but bounded: on the fixture below the pixel reads
+    // 1.26e-02 against the flatten, where without the attenuation it reads
+    // 2.23e-01 — and the size-0 gates cannot reach it at all (one bin).
     //
     // FIXTURE: Manual size 8, focus 10, so radius = 8*|1 - 10/z|; z = 8 / 10 /
     // 13.3333 give radii 2.0 / 0.0 / 2.0, i.e. bins 4 / -1 / 4.
@@ -2656,9 +2638,9 @@ TEST_CASE("the `no area at all` deposit is REACHABLE through the flatten on BOTH
 
     SUBCASE("packFragmentFlags DEFAULTS both area bits SET")
     {
-        // The header promises "Defaults SET, so a hand-built fragment behaves
-        // exactly as it did before T15".  Every shipping call site passes both
-        // explicitly, so only a direct assertion pins the documented default.
+        // The header promises both area bits default to SET.  Every shipping
+        // call site passes them explicitly, so only a direct assertion pins
+        // that documented default.
         const std::uint8_t f = packFragmentFlags(FragmentKind::Point, /*coverageHead*/ true);
         CHECK((f & kFragmentArea0Bit) != 0);
         CHECK((f & kFragmentArea1Bit) != 0);
@@ -2667,13 +2649,13 @@ TEST_CASE("the `no area at all` deposit is REACHABLE through the flatten on BOTH
     }
 }
 
-TEST_CASE("claimNewArea() RECORDS the claiming kernel, not just the stamp (M1.P3.T15's review)")
+TEST_CASE("claimNewArea() RECORDS the claiming kernel, not just the stamp")
 {
     // `claimBin` is read only when the stamp matches, so failing to WRITE it
     // leaves the different-kernel test reading a bin from an arbitrary earlier
-    // pixel — and the restriction it guards is the one M1.P3.T13's review found
-    // load-bearing (the unrestricted form punched a 25% hole in in-focus opaque
-    // geometry).  Deleting the write survived the suite as it stood.
+    // pixel — and the restriction it guards is load-bearing: the unrestricted
+    // form punches a 25% hole in in-focus opaque geometry.  Deleting the write
+    // otherwise passes the suite.
     //
     // Poisoned with the SECOND fragment's own bin, which is the direction that
     // bites: with the write in place the first fragment overwrites it with its
@@ -2713,13 +2695,12 @@ TEST_CASE("claimNewArea() RECORDS the claiming kernel, not just the stamp (M1.P3
           == scatterKernelBin(radiusPixels(p, zA)));
 }
 
-TEST_CASE("a NON-colliding fragment's own alpha is the untouched float, not a reconstruction "
-          "(M1.P3.T15's review)")
+TEST_CASE("a NON-colliding fragment's own alpha is the untouched float, not a reconstruction")
 {
     // emitPending() recomputes `f.alpha` from its two deposits ONLY when an
-    // attenuation actually happened, "so that every non-colliding fragment keeps
-    // the exact float it had before this task".  Making the recompute
-    // unconditional survived the suite as it stood, yet it is not a no-op:
+    // attenuation actually happened, so that a non-colliding fragment keeps
+    // the exact float it arrived with.  Making the recompute unconditional
+    // otherwise passes the suite, yet it is not a no-op:
     // 1 - (1-a0)*(1-a1) differs from `a` in the last ULPs for 46% of single
     // fragments over a 7761-point (alpha, depth) grid — e.g. alpha 0.005 reads
     // 0.00499999523 against the input's 0.00499999989.
@@ -2743,15 +2724,15 @@ TEST_CASE("a NON-colliding fragment's own alpha is the untouched float, not a re
     REQUIRE(checked > 100);
 }
 
-TEST_CASE("a pixel with ONE fragment per bucket pair is BIT-IDENTICAL to the pre-T15 flatten "
-          "(M1.P3.T15)")
+TEST_CASE("a pixel with ONE fragment per bucket pair is BIT-IDENTICAL to a flatten with no "
+          "collision merge at all")
 {
     // The whole mechanism is gated on a COLLISION, so a fragment that does not
-    // collide must come out of the flatten with the exact floats it had before
-    // this task: no attenuation, no clamped assignment, no lost area claim.
+    // collide must come out of the flatten with the exact floats it went in
+    // with: no attenuation, no clamped assignment, no lost area claim.
     // Checked as "the same fragment flattened alone == flattened alongside a
     // far-away one", bit for bit -- the strongest form available inside the
-    // suite, and the one that protects every identity the milestone pins.
+    // suite, and the one that protects every identity this file pins.
     const CocParams    p  = makeStandardRig(10.0f);
     const DepthBuckets bk = makeStandardBuckets(p, 32);
     const FlattenParams fp = makeFlattenParams(p, 1, /*preMerge*/ false);
@@ -2781,15 +2762,15 @@ TEST_CASE("a pixel with ONE fragment per bucket pair is BIT-IDENTICAL to the pre
     CHECK(fragmentCoverageHeadOf(pair.flags[1]));
 }
 
-TEST_CASE("the collision case from the brief resolves to the flatten, not to a fully opaque "
-          "bucket (M1.P3.T13)")
+TEST_CASE("the two-sample collision case resolves to the flatten, not to a fully opaque "
+          "bucket")
 {
-    // The exact two-sample case the milestone's plane dump was taken from:
-    // z = 9.063 alpha 0.4667 and z = 11.039 alpha 0.5899 at K = 8, whose
-    // bucketOf() assignments overlap while their CONTAINING buckets differ.
-    // Before T13: bucket[6] alpha 1.0127, newArea 2.0, colocated 0.0, so
-    // cov clamped 2.0 -> 1.0, a clamped 1.0127 -> 1.0, local = a/cov = 1.0 and
-    // the pixel came out at 1.000.
+    // The two-sample case a plane dump exposes it with: z = 9.063 alpha 0.4667
+    // and z = 11.039 alpha 0.5899 at K = 8, whose bucketOf() assignments
+    // overlap while their CONTAINING buckets differ.  Without the collision
+    // pass: bucket[6] alpha 1.0127, newArea 2.0, colocated 0.0, so cov clamps
+    // 2.0 -> 1.0, a clamps 1.0127 -> 1.0, local = a/cov = 1.0 and the pixel
+    // comes out at 1.000.
     const CocParams    p  = makeStandardRig(10.0f);
     const DepthBuckets bk = makeBoundedDeltaCocBuckets(p, 1.0f, 100.0f, 8);
     const int W = 8, H = 8;
@@ -2831,8 +2812,7 @@ TEST_CASE("the collision case from the brief resolves to the flatten, not to a f
     }
 }
 
-TEST_CASE("within one bucket at one pixel, every area claim belongs to ONE kernel "
-          "(M1.P3.T13)")
+TEST_CASE("within one bucket at one pixel, every area claim belongs to ONE kernel")
 {
     // The structural half of the invariant, fuzzed on the real path across a
     // sharp rig and a defocused one.  The area planes describe a bucket as
@@ -2846,9 +2826,9 @@ TEST_CASE("within one bucket at one pixel, every area claim belongs to ONE kerne
     // cannot describe at all -- the composite then reads `a - a^2/4` against a
     // true `a1 + a2 - a1*a2`, short by ((a1-a2)/2)^2 and by a flat 0.25 once the
     // additive alpha saturates.  Those are the merge's to resolve; where it may
-    // not reach them both claims stand and the bucket degrades to the pre-T13
-    // `over`.  Measured at M1.P3.T13's review: bounding by the bucket alone
-    // instead moved a 2000-pixel mixed point+volumetric size-0 corpus from mean
+    // not reach them both claims stand and the bucket degrades to a plain
+    // `over`.  Measured: bounding by the bucket alone
+    // instead moves a 2000-pixel mixed point+volumetric size-0 corpus from mean
     // |d alpha| 2.27e-02 to 6.00e-02 at 20 spp / K=16 (rate beyond 1e-3 from
     // 38.9% to 98.0%), and turned an exact opaque reading into a 25% hole.
     const int W = 24, H = 24;
@@ -2910,7 +2890,7 @@ TEST_CASE("within one bucket at one pixel, every area claim belongs to ONE kerne
 }
 
 TEST_CASE("the collision merge is bounded: different kernels are not collapsed, and a "
-          "focus-straddling group keeps its radius (M1.P3.T13)")
+          "focus-straddling group keeps its radius")
 {
     const CocParams    p  = makeManualRig(10.0f, 10.0f);
     const DepthBuckets bk = makeBoundedDeltaCocBuckets(p, 1.0f, 100.0f, 4);
@@ -2936,9 +2916,8 @@ TEST_CASE("the collision merge is bounded: different kernels are not collapsed, 
         // AND THE PIXELS: two opaque surfaces at one source pixel flatten to
         // ONE opaque surface, so the band's alpha must integrate to exactly 1
         // (every disc's weights sum to 1).  With both of them claiming new area
-        // it read 2.000000 — the milestone's recorded occlusion-before-blur
-        // number, which turns out to be the double claim wherever the two land
-        // in one bucket.  The composite's C_k : D_k area split then hands the
+        // it reads 2.000000 — the recorded occlusion-before-blur number, which
+        // is the double claim wherever the two land in one bucket.  The composite's C_k : D_k area split then hands the
         // whole of the alpha to the nearer, larger disc, which is exact.
         const int W2 = 160, H2 = 160;
         Band band;
@@ -2953,8 +2932,8 @@ TEST_CASE("the collision merge is bounded: different kernels are not collapsed, 
     SUBCASE("a collision group that mixes a NON-head with a following head keeps the coverage "
             "(the survival rule is an OR here too, and it fires with pre_merge OFF)")
     {
-        // M1.P3.T8's OR, reached through the collision pass instead of through
-        // the knob.  Parent A is cut at boundary(10), so its second part is a
+        // The coverage-survival OR, reached through the collision pass instead
+        // of through the knob.  Parent A is cut at boundary(10), so its second part is a
         // NON-head sitting in bucket 10; parent B lies wholly inside bucket 10
         // immediately behind it, is a head, and is close enough in depth to
         // share A1's kernel.  They collide, so they merge — and taking the
@@ -2962,11 +2941,10 @@ TEST_CASE("the collision merge is bounded: different kernels are not collapsed, 
         // entirely, leaving one claimed bucket where there are two.
         //
         // "Close enough" is a MEASURED distance, not a guess: at these depths
-        // the radii are ~7.14px and ~7.08px and M1.P3.T19's kernel-radius grid
-        // is 0.103px wide there, so both land on grid node 953. B's span was
-        // [b10+0.02, b10+0.05] until that task refined the grid, which put the
-        // two on adjacent nodes and silently turned this subcase into a
-        // three-fragment no-merge case.
+        // the radii are ~7.14px and ~7.08px and the kernel-radius grid is
+        // 0.103px wide there, so both land on grid node 953.  A span of
+        // [b10+0.02, b10+0.05] puts the two on ADJACENT nodes instead, which
+        // silently turns this subcase into a three-fragment no-merge case.
         const CocParams    q  = makeStandardRig(10.0f);
         const DepthBuckets qb = makeStandardBuckets(q);
         const float b10 = qb.boundary(10);
@@ -3030,14 +3008,14 @@ TEST_CASE("the collision merge is bounded: different kernels are not collapsed, 
         // fractional split on top of the boundary split it already received —
         // the +8.3% double-count shape — and as Volumetric it would strip a
         // point sample of the fractional assignment the design calls mandatory
-        // for layer-transition banding.  Neither is this task's decision to
-        // make, so the two stay separate and the collision remains.
+        // for layer-transition banding.  Neither is acceptable, so the two stay
+        // separate and the collision remains.
         //
-        // KNOWN RESIDUAL, measured at M1.P3.T13 over 2000 random size-0 pixels
-        // of mixed point + volumetric content: worst |d alpha| 2.4e-01 with
-        // 34-61% of pixels beyond 1e-3, essentially unchanged from before the
-        // task (2.3e-01, 47-67%) — pure-point and pure-span content are both
-        // at 2e-07.  Recorded here so the hole has a test that names it.
+        // KNOWN RESIDUAL, measured over 2000 random size-0 pixels of mixed
+        // point + volumetric content: worst |d alpha| 2.4e-01 with 34-61% of
+        // pixels beyond 1e-3, which the collision pass does not improve on
+        // (2.3e-01, 47-67% without it) — pure-point and pure-span content are
+        // both at 2e-07.  Recorded here so the hole has a test that names it.
         const CocParams    q  = makeStandardRig(10.0f);
         const DepthBuckets qb = makeStandardBuckets(q);
         const float b10 = qb.boundary(10);
@@ -3051,31 +3029,31 @@ TEST_CASE("the collision merge is bounded: different kernels are not collapsed, 
         CHECK(fragmentKindOf(soa.flags[1]) == FragmentKind::Volumetric);
         // They really do collide (the point's rear bucket is the span's), and
         // they really are one kernel — kind is the only thing keeping them
-        // apart, so this case cannot pass for the wrong reason.  M1.P3.T19
-        // NOTE: the span was [b10+0.06, b10+0.10] until the kernel-radius grid
-        // was refined; at ~6.99px the node spacing is 0.096px and those two
-        // midpoints are 0.109px apart in radius, so they stopped sharing a
-        // kernel and the subcase would have passed for the wrong reason.
+        // apart, so this case cannot pass for the wrong reason.  NOTE: a span
+        // of [b10+0.06, b10+0.10] does NOT work here — at ~6.99px the
+        // kernel-radius grid's node spacing is 0.096px and those two midpoints
+        // are 0.109px apart in radius, so they do not share a kernel and the
+        // subcase passes for the wrong reason.
         CHECK(soa.bucketIndex1[0] == soa.bucketIndex0[1]);
         CHECK(sameScatterKernel(soa.radius[0], soa.radius[1]));
     }
 
     SUBCASE("an UNMERGEABLE same-kernel collision is `over`-composited PER BUCKET and claims "
-            "its area once (M1.P3.T15, replacing T13's review's both-claims rule)")
+            "its area ONCE, not once per colliding deposit")
     {
         // A span piece and a point sample inside ONE bucket at ONE pixel, both
         // opaque, both on the sharp path — i.e. an in-focus card behind fog.
         // The merge may not take them (FragmentKind differs, and merging would
         // have to mislabel one of them against the COMPOSITION CONTRACT), so
-        // this is the CROSS-KIND collision M1.P3.T15 exists for.
+        // this is a CROSS-KIND collision.
         //
-        // THE RULE THIS PINS, and why it replaces T13's review's:
+        // THE RULE THIS PINS:
         //   * the trailing deposit is scaled by `1 - running_k` — here the
         //     leading piece is opaque, so the point contributes NOTHING;
         //   * it therefore claims no area either, because the area is already
         //     in the plane and the two deposits cover the IDENTICAL region.
-        // T13's review left BOTH claims standing instead, because the alpha was
-        // ADDED there and the C_k : D_k split then read `a - a^2/4` (0.750000
+        // Leaving BOTH claims standing instead only makes sense when the alpha
+        // is ADDED, where the C_k : D_k split reads `a - a^2/4` (0.750000
         // against a true 1.0 at a = 1).  With the alpha composited that trade is
         // gone: `cov` clamps to 1, `aCov = min(a, cov) = a` and `local` is the
         // true composited alpha, so the bucket reads the flatten exactly.
@@ -3141,13 +3119,12 @@ TEST_CASE("the collision merge is bounded: different kernels are not collapsed, 
     }
 }
 
-TEST_CASE("no step at the sharp threshold: a 0-2px ramp over a two-layer flat field "
-          "(M1.P3.T13)")
+TEST_CASE("no step at the sharp threshold: a 0-2px ramp over a two-layer flat field")
 {
-    // Validation scene (l).  Before T13 this ramp wandered 0.779-0.880 against
-    // a truth of 0.700 with a worst step of 1.01e-01, and a fix confined to the
-    // sharp path would have added a 1.80e-01 jump AT the threshold — the
-    // failure that disqualified whole-weight assignment.  The gate is
+    // Validation scene (l).  Without the collision pass this ramp wanders
+    // 0.779-0.880 against a truth of 0.700 with a worst step of 1.01e-01, and a
+    // fix confined to the sharp path adds a 1.80e-01 jump AT the threshold —
+    // which is what disqualifies whole-weight assignment.  The gate is
     // comparative, not absolute: the step across a crossing must not exceed the
     // largest step anywhere else on the ramp.
     const int C = 1, W = 28, H = 28, K = 16;
@@ -3212,8 +3189,7 @@ TEST_CASE("no step at the sharp threshold: a 0-2px ramp over a two-layer flat fi
     CHECK(worstElsewhere <= 2e-02);
 }
 
-TEST_CASE("the collision merge does not carry a fragment across a holdout bracket "
-          "(M1.P3.T13)")
+TEST_CASE("the collision merge does not carry a fragment across a holdout bracket")
 {
     // The merge emits ONE fragment at ONE depth and the holdout is sampled per
     // fragment, so with a holdout connected it must not join two samples the
@@ -3269,8 +3245,7 @@ TEST_CASE("the collision merge does not carry a fragment across a holdout bracke
     }
 }
 
-TEST_CASE("pre_merge does not carry a fragment across a holdout bracket either "
-          "(M1.P3.T13's review)")
+TEST_CASE("pre_merge does not carry a fragment across a holdout bracket either")
 {
     // The SAME hazard through the OTHER merge, at the DEFAULT knob settings.
     // The pre-merge groups by containing ΔCoC bucket, and that bucket is the
@@ -3328,7 +3303,7 @@ TEST_CASE("pre_merge does not carry a fragment across a holdout bracket either "
 }
 
 // ===========================================================================
-// The scatter core (M1.P3.T2 / T8 / T9)
+// The scatter core
 // ===========================================================================
 
 TEST_CASE("scatterBandCPU's deposits match an independent rasterisation, plane for plane")
@@ -3473,7 +3448,7 @@ TEST_CASE("the deposit invariant: new area + co-located area == the fragments' o
 {
     // Every deposit that carries alpha writes its w*vis into EXACTLY ONE of the
     // two area planes.  Summed over both planes the total is therefore the
-    // plain "deposit every part" coverage the node used to keep -- and that sum
+    // plain "deposit every part" coverage -- and that sum
     // is a closed form here: kernel weights are normalised to 1, so a fragment
     // whose disc lies wholly inside the band contributes 1 per deposit.
     const CocParams    p  = makeStandardRig(10.0f);
@@ -3586,18 +3561,16 @@ TEST_CASE("single-fragment energy identity over 3000 random (alpha, split fracti
     });
     worker.join();
 
-    // MEASURED at this task: 2.18e-07 alpha / 2.67e-07 colour over this corpus
-    // (Decisions log records 1.37e-07 / 1.24e-07 on the reviewer's own corpus).
-    // 3e-06 is ~13x headroom and still two orders of magnitude below any
-    // structural error -- the smallest one this file pins is +1.9% (M1.P3.T8's
-    // mislabel at alpha 0.1).
+    // MEASURED: 2.18e-07 alpha / 2.67e-07 colour over this corpus (1.37e-07 /
+    // 1.24e-07 over an independently generated one).  3e-06 is ~13x headroom
+    // and still two orders of magnitude below any structural error -- the
+    // smallest one this file pins is the +1.9% mislabel at alpha 0.1.
     CHECK(worstPartitionAlpha <= 3e-06);
     CHECK(worstPartitionColor <= 3e-06);
-    // The other bucket-composite candidate INFLATED this same corpus by up to
-    // +91.55% (Decisions: +93.8% on the reviewer's) -- an isolated opaque bokeh
-    // at double energy -- which is one of the four readings M1.P3.T17 deleted
-    // it on.  That half of this case went with it; the surviving half is the
-    // identity itself, which is what the shipped composite has to hold.
+    // What this pins is the identity itself, which is what the composite has
+    // to hold: a composite that adds the two deposits instead inflates this
+    // same corpus by up to +91.55% -- an isolated opaque bokeh at double
+    // energy.
 }
 
 TEST_CASE("flat field identities: opaque field is alpha 1 to 1e-6 (NOT exactly 1), "
@@ -3605,11 +3578,9 @@ TEST_CASE("flat field identities: opaque field is alpha 1 to 1e-6 (NOT exactly 1
 {
     // Validation scene (c) at POD level.  |alpha - 1| <= ~1e-6, NOT equality:
     // the disc LUT's per-entry normalisation residual is ~5e-8 over ~113
-    // contributing fragments (Decisions, 2026-07-26 -- the earlier "exactly 1"
-    // reading was an artifact of an over-count being clamped).  The assertion
-    // below is 2e-06, which is the milestone's stated bound; it was 1e-05 as
-    // written, i.e. 12x above the measured 8e-07, and tightening it costs
-    // nothing (M1.P3.T4 review).
+    // contributing fragments (an "exactly 1" reading here means an over-count
+    // is being clamped).  The assertion below is 2e-06, against a measured
+    // 8e-07.
     const CocParams    p  = makeStandardRig(10.0f);
     const DepthBuckets bk = makeStandardBuckets(p);
     const int W = 48, H = 48, C = 3;
@@ -3646,8 +3617,7 @@ TEST_CASE("flat field identities: opaque field is alpha 1 to 1e-6 (NOT exactly 1
                 CHECK(std::fabs(a - alpha) <= 2e-06);
                 CHECK(a != doctest::Approx(0.0));
 
-                // THE STANDING INVARIANT (Decisions, 2026-07-27, third
-                // occurrence): premultiplied colour and alpha must move
+                // THE STANDING INVARIANT: premultiplied colour and alpha must move
                 // together.  Unpremultiplying the output must give the input's
                 // own colour, to the same 1e-5 the alpha holds to.
                 for (int c = 0; c < C; ++c)
@@ -3660,14 +3630,13 @@ TEST_CASE("flat field identities: opaque field is alpha 1 to 1e-6 (NOT exactly 1
 
 TEST_CASE("flat opaque field ACROSS buckets: the bucket composite holds alpha 1")
 {
-    // The flat-opaque-across-buckets identity carried from M1.P1.T4, on the
-    // configuration that discriminated the two bucket-composite candidates at
-    // M1.P3.T17: a checkerboard of two depths sitting EXACTLY on two bucket
-    // centres, so every fragment's assignment is whole-weight (frac == 0) into
-    // one bucket and each bucket receives half the disc weight.  Plain
-    // front-to-back `over` gave 1 - (1-0.5)^2 = 0.75 here -- the documented
-    // 25.0%-across-2-buckets alpha deficit that got it deleted -- while the
-    // shipped composite adds the two disjoint half-coverages back to 1.
+    // The flat-opaque-across-buckets identity, on the configuration that
+    // discriminates bucket composites hardest: a checkerboard of two depths
+    // sitting EXACTLY on two bucket centres, so every fragment's assignment is
+    // whole-weight (frac == 0) into one bucket and each bucket receives half
+    // the disc weight.  Plain front-to-back `over` gives 1 - (1-0.5)^2 = 0.75
+    // here -- a 25.0%-across-2-buckets alpha deficit -- while the coverage
+    // partition adds the two disjoint half-coverages back to 1.
     const CocParams    p  = makeStandardRig(10.0f);
     const DepthBuckets bk = makeStandardBuckets(p);
     const int W = 48, H = 48;
@@ -3708,22 +3677,22 @@ TEST_CASE("flat opaque field ACROSS buckets: the bucket composite holds alpha 1"
     // The composite holds the identity to 5e-3 (measured 0.995718 at the worst
     // interior pixel: the two checkerboard depths rasterise DIFFERENT radii,
     // 7.85px and 6.40px, so the two half-coverages do not tile the pixel
-    // perfectly).  BANDED, not floored: a floor at 0.9956 also accepts the OLD
-    // (pre-M1.P3.T19) kernel grid's 0.99927, so it would not notice the grid
-    // being coarsened back.
+    // perfectly).  BANDED, not floored: a floor at 0.9956 also accepts a
+    // uniform 0.5px kernel grid's 0.99927, so it would not notice the grid
+    // being coarsened.
     //
     // WHY THE BAND SITS WHERE IT DOES.  A checkerboard is the Nyquist pattern,
     // so what it really measures is the kernels' response at (pi, pi):
-    // alpha == 1 + (C_A - C_B)/2 with C_r = sum (-1)^(dx+dy) w_r.  On the old
-    // uniform grid the two radii were SNAPPED to 8.00 and 6.50 and
-    // (C_8.00 - C_6.50)/2 = -7.30e-04 -- a number that belonged to the
-    // snapping.  On the refined grid they snap to 7.876923 and 6.400000,
-    // giving -4.28e-03 against the UNQUANTISED -4.00e-03, i.e. within 2.8e-04
-    // of the exact answer instead of 3.3e-03 away from it.
+    // alpha == 1 + (C_A - C_B)/2 with C_r = sum (-1)^(dx+dy) w_r.  A uniform
+    // 0.5px grid would SNAP the two radii to 8.00 and 6.50, and
+    // (C_8.00 - C_6.50)/2 = -7.30e-04 is a number that belongs to the snapping.
+    // This grid snaps them to 7.876923 and 6.400000, giving -4.28e-03 against
+    // the UNQUANTISED -4.00e-03, i.e. within 2.8e-04 of the exact answer
+    // instead of 3.3e-03 away from it.
     //
-    // The deleted candidate read 0.7479..0.7521 on this same fixture -- the
-    // documented 25.0%-across-2-buckets deficit -- which is why this
-    // configuration was the bake-off's cleanest discriminator (M1.P3.T17).
+    // A plain `over` of the buckets reads 0.7479..0.7521 on this same fixture
+    // -- the 25.0%-across-2-buckets deficit -- which is what makes this
+    // configuration the cleanest discriminator available.
     CHECK(minAlpha > 0.9954);
     CHECK(minAlpha < 0.9960);
     CHECK(maxAlpha <= 1.0);
@@ -3832,7 +3801,7 @@ TEST_CASE("saturation is down-only and preserves the colour:alpha ratio, on the 
 
 TEST_CASE("BucketPlanes::zero() clears ALL FOUR planes, so a band loop may reuse the allocation")
 {
-    // The band loop the design reference specifies allocates once and calls
+    // The band loop allocates once and calls
     // zero() per band (see scatterBandCPU's header: "ACCUMULATED INTO, never
     // cleared here").  Every case in this file allocates fresh planes, and
     // allocate() zero-fills, so a zero() that missed a plane was invisible --
@@ -3953,8 +3922,8 @@ TEST_CASE("an ALPHA-ZERO fragment still deposits its colour: the cull is on alph
 
 TEST_CASE("ScatterStats accounts for every fragment exactly once")
 {
-    // The stats block feeds M1.P4.T2's perf gate and the node's own reporting,
-    // and nothing exercised it.  Counts are hand-derived from the fixture.
+    // The stats block feeds the perf gate and the node's own reporting.
+    // Counts are hand-derived from the fixture.
     const int K = 4, W = 20, H = 20;
     DiscKernelLUT lut(0.0f, 10.0f, 1.0f, 1.0f);
 
@@ -4009,8 +3978,8 @@ TEST_CASE("ScatterStats accounts for every fragment exactly once")
 
 TEST_CASE("parent reconstruction catches a MISLABEL that checkCompositionContract accepts")
 {
-    // M1.P3.T1's review: the branch and the audit read the same `flags` field,
-    // so a span-split part labelled Point is internally consistent and passes
+    // The branch and the audit read the same `flags` field, so a span-split
+    // part labelled Point is internally consistent and passes
     // the audit while double-counting.  Parent reconstruction is the only check
     // that sees it -- this case proves BOTH halves of that claim.
     const CocParams    p  = makeStandardRig(10.0f);
@@ -4020,20 +3989,20 @@ TEST_CASE("parent reconstruction catches a MISLABEL that checkCompositionContrac
     const float alpha = 0.9f, unpremult = 0.5f;
 
     struct Case { int buckets; double misAlphaPct; };
-    // M1.P3.T19 re-measured: 40.09 -> 45.30 and 70.70 -> 76.70, and the new
-    // numbers ARE the truth: driven through a grid-free kernel sampler (one
-    // exact disc per radius, no quantisation at all) this reads 45.30 / 76.70
-    // to two decimals, against the old grid's 40.09 / 70.70.
+    // These figures ARE the truth: driven through a grid-free kernel sampler
+    // (one exact disc per radius, no quantisation at all) this reads 45.30 /
+    // 76.70 to two decimals, i.e. what the shipped grid gives.  A uniform 0.5px
+    // grid reads 40.09 / 70.70 instead.
     //
-    // WHY IT MOVED -- the mechanism, measured, not assumed.  It is NOT the
-    // same-kernel collision rule: this case builds its SoA by hand and never
-    // goes through flattenPixelToSoA(), and in any case the four parts sit at
-    // radius 4.95565 / 3.50323 / 2.04028 / 0.55221 px, which the OLD 0.5px
-    // grid already put in four different bins (10 / 7 / 4 / 1).  What changed
-    // is the DISC EACH PART RASTERISES.  The old grid snapped those radii to
+    // WHY THE GRID MOVES IT -- the mechanism, measured, not assumed.  It is NOT
+    // the same-kernel collision rule: this case builds its SoA by hand and
+    // never goes through flattenPixelToSoA(), and in any case the four parts
+    // sit at radius 4.95565 / 3.50323 / 2.04028 / 0.55221 px, which even a
+    // 0.5px grid puts in four different bins (10 / 7 / 4 / 1).  What differs is
+    // the DISC EACH PART RASTERISES.  A 0.5px grid snaps those radii to
     // 5.0 / 3.5 / 2.0 / 0.5, and 0.5 with edgeSoftness 1.0 IS the single-pixel
-    // delta -- so the smallest part deposited its whole alpha on one pixel
-    // instead of spreading it over a 0.55px disc, and the over-count was
+    // delta -- so the smallest part deposits its whole alpha on one pixel
+    // instead of spreading it over a 0.55px disc, and the over-count is
     // measured against a footprint the content does not have.  The refined
     // grid puts them on 4.97087 / 3.50685 / 2.03984 / 0.55232 and the mislabel
     // costs what it actually costs.
@@ -4109,7 +4078,7 @@ TEST_CASE("parent reconstruction catches a MISLABEL that checkCompositionContrac
 
 TEST_CASE("volumetric parent reconstruction is EXACT in front of focus, at any part count")
 {
-    // M1.P3.T9's headline: with the fourth (co-located area) plane the
+    // With the fourth (co-located area) plane the
     // coverage-partition composite reconstructs a split parent exactly wherever
     // its part radii do not increase front to back -- i.e. every parent lying
     // wholly in front of focus, including one spanning that whole side.
@@ -4150,11 +4119,10 @@ TEST_CASE("volumetric parent reconstruction is EXACT in front of focus, at any p
 TEST_CASE("behind focus the residue is structural: "
           "PINNED at +36.9 / +50.2 / +56.3 / +61.0%")
 {
-    // Decisions, 2026-07-27: "Behind focus the residue is structurally
-    // irreducible by any per-bucket plane.  This is settled, not open."  Pinned
-    // so it is documentation-with-teeth rather than something that drifts
-    // silently -- a change here means the composite changed, and must be
-    // adjudicated, not re-fitted.
+    // Behind focus the residue is structurally irreducible by any per-bucket
+    // plane.  Pinned so it is documentation-with-teeth rather than something
+    // that drifts silently -- a change here means the composite changed, and
+    // must be adjudicated, not re-fitted.
     const CocParams    p  = makeStandardRig(1.0f);      // focus at the near end
     const DepthBuckets bk = makeStandardBuckets(p);
     REQUIRE(bk.focusBoundary() == 0);                   // the whole range is behind focus
@@ -4163,36 +4131,33 @@ TEST_CASE("behind focus the residue is structural: "
     DiscKernelLUT lut(0.0f, 60.0f, 1.0f, 1.0f);
     const float alpha = 0.9f, unpremult = 0.5f;
 
-    // M1.P3.T19 MOVED THE PARTITION COLUMN AND MUST BE READ WITH IT:
-    // 28.22 -> 36.86, 45.21 -> 50.25, 51.23 -> 56.31, 59.05 -> 61.00, while
-    // `over` barely moved (49.13 -> 48.77, 75.30 -> 75.03, 91.13 -> 90.96,
-    // 117.12 unchanged inside this pin's own 0.1 band).
+    // THE KERNEL-RADIUS GRID MOVES THE PARTITION COLUMN AND IT MUST BE READ
+    // WITH IT: a uniform 0.5px grid reads 28.22 / 45.21 / 51.23 / 59.05 where
+    // this grid reads 36.86 / 50.25 / 56.31 / 61.00, while `over` barely moves
+    // (49.13 / 75.30 / 91.13 / 117.12 against 48.77 / 75.03 / 90.96 /
+    // 117.12).
     //
     // THE NEW COLUMN IS THE TRUTH, and that is measured, not argued: driven
     // through a grid-free kernel sampler (one exact disc per radius, no
     // quantisation at all) the same cases read 36.91 / 50.25 / 56.40 / 61.02
     // under partition and 48.78 / 75.04 / 90.97 / 117.10 under `over`.  The
-    // shipped grid is within 0.1 of that everywhere; the OLD grid was 8.6 /
-    // 5.0 / 5.2 / 2.0 points BELOW it in the partition column.
+    // shipped grid is within 0.1 of that everywhere; a uniform 0.5px grid sits
+    // 8.6 / 5.0 / 5.2 / 2.0 points BELOW it in the partition column.
     //
-    // WHY IT MOVED -- the mechanism, measured, not assumed.  It is NOT the
-    // same-kernel collision rule: the parts here sit at radius 0.80013 /
-    // 2.35257 / 3.90526 / 5.45825 / ... px, which the OLD 0.5px grid already
-    // put in different bins (2 / 5 / 8 / 11 / ...), so nothing was ever
-    // absorbed.  What changed is the DISC EACH PART RASTERISES.  The old grid
-    // snapped those radii to 1.0 / 2.5 / 4.0 / 5.5, i.e. it inflated the front
-    // part -- the one carrying the most alpha -- by 25% in radius and 56% in
-    // area, spreading its coverage over pixels the content never covered and
-    // flattering the residue downward.  The refined grid puts them on
-    // 0.80000 / 2.34862 / 3.90840 / 5.44681 and the structural residue shows
-    // its true size.  The composite did not get worse; the measurement stopped
-    // being flattered by kernel quantisation.  M1.P3.T17 inherits THESE
-    // numbers, not the old ones -- the gap between the two candidates at 2
-    // buckets narrows from 20.9 to 11.9 points (11.87 grid-free).
-    // M1.P3.T17 re-rendered this comparison and deleted the other candidate;
-    // its column (48.77 / 75.03 / 90.96 / 117.12) is recorded in the milestone
-    // Decisions rather than pinned here, since there is nothing left to run it
-    // through.  These are the SHIPPED composite's numbers.
+    // WHY THE GRID MOVES IT -- the mechanism, measured, not assumed.  It is NOT
+    // the same-kernel collision rule: the parts here sit at radius 0.80013 /
+    // 2.35257 / 3.90526 / 5.45825 / ... px, which even a 0.5px grid puts in
+    // different bins (2 / 5 / 8 / 11 / ...), so nothing is ever absorbed.  What
+    // differs is the DISC EACH PART RASTERISES.  A 0.5px grid snaps those radii
+    // to 1.0 / 2.5 / 4.0 / 5.5, i.e. it inflates the front part -- the one
+    // carrying the most alpha -- by 25% in radius and 56% in area, spreading
+    // its coverage over pixels the content never covered and flattering the
+    // residue downward.  This grid puts them on 0.80000 / 2.34862 / 3.90840 /
+    // 5.44681 and the structural residue shows its true size: the composite is
+    // not worse, the measurement is simply no longer flattered by kernel
+    // quantisation.  A plain `over` of the buckets reads 48.77 / 75.03 / 90.96
+    // / 117.12 on the same cases, i.e. far worse.  These are the SHIPPED
+    // composite's numbers.
     struct Case { int buckets; double partitionPct; };
     const Case cases[] = {{2, 36.86}, {3, 50.25}, {4, 56.31}, {8, 61.00}};
 
@@ -4258,9 +4223,8 @@ TEST_CASE("the four hand-built composite identities, with the fourth plane both 
                   &c, &a);
         CHECK(a == doctest::Approx(1.0f).epsilon(1e-6));
         CHECK(c == doctest::Approx(unpremult).epsilon(1e-6));
-        // Plain front-to-back `over` gave 1 - 0.75^4 = 0.68359375 here, the
-        // 31.6%-over-4-buckets deficit M1.P3.T17 deleted it on.  There is no
-        // second composite left to run the contrast through.
+        // Plain front-to-back `over` gives 1 - 0.75^4 = 0.68359375 here, a
+        // 31.6%-over-4-buckets deficit.
     }
 
     SUBCASE("validation scene (i): an honest 60% coverage hole stays 0.6, never scaled up")
@@ -4311,7 +4275,7 @@ TEST_CASE("the four hand-built composite identities, with the fourth plane both 
 
     SUBCASE("a bucket carrying BOTH new area and co-located area splits its alpha BY AREA")
     {
-        // The configuration M1.P3.T9's area split exists for: one bucket holds
+        // The configuration the area split exists for: one bucket holds
         // a head from one parent AND a co-located part of another.  Hand
         // derivation for cov 0.4 / colocated 0.6 / alpha 0.5, unpremult 0.8:
         //
@@ -4322,9 +4286,9 @@ TEST_CASE("the four hand-built composite identities, with the fourth plane both 
         //   residual: accAlpha += aRes * tClaimed = 0.30 * 0.5 = 0.15
         //     TOTAL = 0.35
         //
-        // The pre-T9 `aCov = min(A_k, C_k)` split instead gives aCov = 0.4,
-        // local = 1, accAlpha = 0.4, tClaimed = 0 and a starved residual, i.e.
-        // 0.40 -- so this one number separates the two forms.
+        // An `aCov = min(A_k, C_k)` split instead gives aCov = 0.4, local = 1,
+        // accAlpha = 0.4, tClaimed = 0 and a starved residual, i.e. 0.40 -- so
+        // this one number separates the two forms.
         composite({0.4f}, {0.5f}, {0.6f}, {0.5f * unpremult}, &c, &a);
         CHECK(a == doctest::Approx(0.35f).epsilon(1e-6));
         CHECK(c == doctest::Approx(0.35f * unpremult).epsilon(1e-6));
@@ -4372,23 +4336,22 @@ TEST_CASE("the four hand-built composite identities, with the fourth plane both 
 }
 
 // ---------------------------------------------------------------------------
-// M1.P3.T20 — the DEPTH-RAMP MOSAIC.  The residual T17's bake-off found and
-// this task ruled on.
+// THE DEPTH-RAMP MOSAIC.
 //
 // A destination pixel fed by a receding surface receives many fragments at
 // DIFFERENT depths, each fractionally split across its own bucket pair.  Their
 // kernel weights sum to 1, so the composite must return the surface's own
-// alpha -- and until T20 it did not: the single scalar `tClaimed` attenuated
-// every fragment's co-located rear deposit by a pooled mean over the whole
-// claimed area, so each fragment's rear was occluded by every OTHER fragment's
-// head and rear.  Measured on this very rig before the fix: -17.44% at
+// alpha.  A single scalar `tClaimed` cannot: it attenuates every fragment's
+// co-located rear deposit by a pooled mean over the whole claimed area, so each
+// fragment's rear is occluded by every OTHER fragment's head and rear.
+// Measured on this very rig in that form: -17.44% at
 // alpha 0.90 / N=16 / frac 0.50, -22.39% at alpha 0.50, -38.9% at frac 0.25,
 // diverging in N.  Truth is the surface's alpha and is hand-derived, not
 // re-run: the fragments' weights sum to 1 and each claims its own tile, so the
 // area model's answer is sum_j w_j * alpha == alpha exactly.
 // ---------------------------------------------------------------------------
 TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, alpha and "
-          "split fraction (M1.P3.T20)")
+          "split fraction")
 {
     auto composite = [](std::vector<float> cov, std::vector<float> alpha,
                         std::vector<float> colocated, std::vector<float> color,
@@ -4428,9 +4391,10 @@ TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, a
     {
         // The pure form of the mechanism: every bucket holds either one head or
         // one rear, so nothing is pooled and the ONLY thing that can go wrong is
-        // which transmittance the rear is attenuated by.  Before T20 this read
-        // -4.11 / -17.44 / -21.63% at N=2/16/64 for alpha 0.90 (T17's review
-        // table); it is now exact at every N, alpha and split fraction.
+        // which transmittance the rear is attenuated by.  With a single pooled
+        // head tile this reads -4.11 / -17.44 / -21.63% at N=2/16/64 for alpha
+        // 0.90; with the tile stack it is exact at every N, alpha and split
+        // fraction.
         for (int N : {2, 16, 64}) {
             for (float alphaIn : {0.99f, 0.90f, 0.50f, 0.10f}) {
                 for (float frac : {0.50f, 0.25f, 0.75f}) {
@@ -4456,8 +4420,8 @@ TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, a
         // that both claims new area and continues a chain.  Exact at split
         // fraction 0.5, where the composite's C_k : D_k area split of the
         // bucket's pooled alpha coincides with the true head:rear split
-        // (a0 == a1).  Before T20: -11.75 / -18.24 / -21.84% at N=4/16/64 for
-        // alpha 0.90.
+        // (a0 == a1).  With a single pooled head tile: -11.75 / -18.24 /
+        // -21.84% at N=4/16/64 for alpha 0.90.
         for (int N : {2, 4, 16, 64}) {
             for (float alphaIn : {0.99f, 0.90f, 0.50f, 0.10f}) {
                 CAPTURE(N); CAPTURE(alphaIn);
@@ -4476,8 +4440,8 @@ TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, a
     SUBCASE("a mosaic of VOLUMETRIC parents, each cut into P parts, reconstructs too")
     {
         // Same mechanism one level up: a split parent's non-head parts are the
-        // same co-located deposits, so the same pooling destroyed them.  Before
-        // T20 this read -24.5% at N=8 / alpha 0.90.
+        // same co-located deposits, so the same pooling destroys them: -24.5%
+        // at N=8 / alpha 0.90 with a single pooled head tile.
         for (int N : {2, 8}) {
             for (int P : {2, 3, 4}) {
                 for (float alphaIn : {0.90f, 0.50f}) {
@@ -4503,13 +4467,12 @@ TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, a
         }
     }
 
-    SUBCASE("the two PRE-EXISTING upward errors, bounded here for the first time "
-            "(M1.P3.T20 review)")
+    SUBCASE("the two upward errors the head-tile stack does NOT cause, bounded here")
     {
-        // NEITHER IS T20's REGRESSION -- both read bit-identically under the
-        // pre-T20 composite -- but nothing bounded them, and both err in the
-        // honest-alpha contract's FORBIDDEN direction, so they are pinned here
-        // rather than left as prose.  Truth is the area model, hand-derived.
+        // NEITHER IS CAUSED BY THE HEAD-TILE STACK -- both read bit-identically
+        // with a single pooled tile -- but nothing else bounds them, and both
+        // err in the honest-alpha contract's FORBIDDEN direction, so they are
+        // pinned here rather than left as prose.  Truth is the area model, hand-derived.
 
         // (1) THE EXCESS REGIME REGISTERS NO TILE.  A fragment whose head lands
         // entirely on already-claimed area registers no head sub-area, so its
@@ -4554,21 +4517,20 @@ TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, a
         }
     }
 
-    SUBCASE("staggered multi-part parents at OVERLAPPING depths reconstruct EXACTLY "
-            "(M1.P3.T21)")
+    SUBCASE("staggered multi-part parents at OVERLAPPING depths reconstruct EXACTLY")
     {
-        // THE REGRESSION M1.P3.T20's REVIEW FOUND, AND M1.P3.T21's FIX.  The
-        // subcase above is a mosaic of volumetric parents whose bucket runs do
-        // NOT overlap, and it was exact under T20 as well -- which is exactly
-        // why T20's own check could not see this.  Give two multi-part parents
+        // WHY ONE HEAD TILE IS NOT ENOUGH.  The subcase above is a mosaic of
+        // volumetric parents whose bucket runs do NOT overlap, and a single
+        // head tile is exact there too -- which is exactly why a
+        // non-overlapping check cannot see this.  Give two multi-part parents
         // OVERLAPPING depth ranges -- two fog slabs at different depths, or a
         // fog slab and a point fragment, whose kernel weights tile one
         // destination pixel -- and BOTH have co-located deposits still to come
         // when a single bucket carries one parent's fit share AND the other's
-        // residual chain.  T20 carried one (tHead, headArea) pair, so the merge
-        // rule had to DISCARD one of the two tiles and the dropped parent's
-        // later parts were attenuated by a tile that is not in front of them:
-        // the `pre` column below, up to +11.1% HIGH and saturating alpha to 1.
+        // residual chain.  With only ONE (tHead, headArea) pair the merge rule
+        // has to DISCARD one of the two tiles, and the dropped parent's later
+        // parts are then attenuated by a tile that is not in front of them:
+        // the `t20` column below, up to +11.1% HIGH and saturating alpha to 1.
         //
         // TRUTH IS ALPHA AND NEEDS NO ORDERING ASSUMPTION: the two parents'
         // coverages sum to 1 and both fit in free area, so they tile the pixel
@@ -4577,9 +4539,10 @@ TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, a
         // independent oracle these cells are re-pinned against -- a hand
         // derivation, not a re-run of the composite.
         //
-        // THE THREE COLUMNS ARE THE HISTORY, AND ARE HERE SO A REGRESSION IN
-        // EITHER DIRECTION IS RECOGNISABLE: pre-T20 read 4-16% LOW, T20 read up
-        // to +11.1% HIGH, and the head-tile stack reads the truth.
+        // THE THREE COLUMNS ARE HERE SO A REGRESSION IN EITHER DIRECTION IS
+        // RECOGNISABLE: a pooled-mean attenuation (the `pre` column) reads
+        // 4-16% LOW, a single head tile (the `t20` column) reads up to +11.1%
+        // HIGH, and the head-tile stack reads the truth.
         auto addVol = [&](std::vector<float>& cov, std::vector<float>& alpha,
                           std::vector<float>& colo, std::vector<float>& color,
                           int m, int parts, float w, float a) {
@@ -4594,7 +4557,7 @@ TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, a
 
         struct Cell { int parts; int off; float wA; float alphaIn; double t20; double pre; };
         const Cell cells[] = {
-            // parts, offset, wA,   alpha,   T20,    pre-T20 (both for the record)
+            // parts, offset, wA,   alpha,   t20,    pre  (both for the record)
             {  2, 1, 0.50f, 0.90f,   0.000, -8.214 },   // 2 parts leave no chain
             {  2, 2, 0.50f, 0.90f,   0.000, -4.107 },
             {  3, 1, 0.50f, 0.90f,  +7.404, -10.841 },
@@ -4621,13 +4584,14 @@ TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, a
         // ... and the same shape with a POINT fragment instead of the second
         // slab, which is the commoner form: a defocused fog slab and a
         // defocused surface reaching one pixel with complementary weights.
-        // NOT exact, and the reason is a DIFFERENT mechanism that this task
-        // does not claim to fix: the point fragment's rear (per-unit opacity
+        // NOT exact, and the reason is a DIFFERENT mechanism the head-tile
+        // stack does not address: the point fragment's rear (per-unit opacity
         // partitionAlpha(0.90, 0.5) = 0.6838) lands in the same bucket as the
         // slab's second part (partitionAlpha(0.90, 1/3) = 0.5358), so ONE
         // bucket pools TWO per-unit opacities and the C_k : D_k area split
         // hands both the mean -- harness f3c/f3d's term, information lost at
-        // accumulation.  Banded, and the band is BELOW zero: T20 read +4.557%.
+        // accumulation.  Banded, and the band is BELOW zero: a single pooled
+        // head tile reads +4.557% here.
         {
             std::vector<float> cov(9, 0.0f), al(9, 0.0f), co(9, 0.0f), col(9, 0.0f);
             addVol(cov, al, co, col, 0, 3, 0.5f, 0.90f);
@@ -4636,14 +4600,14 @@ TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, a
             co[2]  += 0.5f;  al[2] += 0.5f * a0;  col[2] += 0.5f * a0 * unpremult;
             composite(cov, al, co, col, &c, &a);
             const double pct = (a / 0.90 - 1.0) * 100.0;
-            CAPTURE(pct);                       // -1.273% now, +4.557% at T20
+            CAPTURE(pct);                       // -1.273%; +4.557% pooled
             CHECK(pct > -1.273 - 0.75);
             CHECK(pct < -1.273 + 0.75);
         }
     }
 
     SUBCASE("the head-tile stack holds at every depth the arrangement needs, and degrades "
-            "by pooling the OLDEST chains when it runs out (M1.P3.T21)")
+            "by pooling the OLDEST chains when it runs out")
     {
         // HOW MANY TILES THE MOSAIC NEEDS: one per parent whose residual chain
         // is open at the same time.  N equal-weight, equal-alpha parents each
@@ -4651,21 +4615,19 @@ TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, a
         // chains open at once; truth is alpha by the same disjoint-tiling
         // argument as the subcase above (the weights sum to 1).
         //
-        // THE GRID BELOW DOES NOT REACH THE CAP -- corrected at M1.P3.T21's
-        // review, which found a stale comment here claiming
-        // "kCompositeHeadTiles is 8, so the first two rows fit and the last
-        // does not".  The constant is 16 and the grid's open-chain count is
-        // min(nPar, parts) <= 6, so the `<= kCompositeHeadTiles` guard below is
-        // ALWAYS TRUE and every cell is asserted exact.  That is a fine check
-        // -- it is the exactness claim -- but it is not a cap check, and the
-        // separate overflow row further down is what reaches the cap.
+        // THE GRID BELOW DOES NOT REACH THE CAP.  kCompositeHeadTiles is 16
+        // and the grid's open-chain count is min(nPar, parts) <= 6, so the
+        // `<= kCompositeHeadTiles` guard below is ALWAYS TRUE and every cell is
+        // asserted exact.  That is a fine check -- it is the exactness claim --
+        // but it is not a cap check, and the separate overflow row further down
+        // is what reaches the cap.
         //
         // ALSO NOTE THE GRID'S BLIND SPOT: every parent shares one `alphaIn`.
         // That is the constraint under which the composite CAN be exact.  Give
-        // two parents DIFFERENT alphas and the upward error returns -- M1.P3.
-        // T21's review measures +64.6% here (parts 5/1, alphas 0.99/0.10,
-        // offset 2) against T20's +83.5%, i.e. improved but not closed.  See
-        // the subcase below and the milestone Decisions entry.
+        // two parents DIFFERENT alphas and the upward error returns: +64.6%
+        // here (parts 5/1, alphas 0.99/0.10, offset 2), against +83.5% with a
+        // single head tile -- improved but not closed.  See the subcase
+        // below.
         auto addVol = [&](std::vector<float>& cov, std::vector<float>& alpha,
                           std::vector<float>& colo, std::vector<float>& color,
                           int m, int parts, float w, float a) {
@@ -4726,8 +4688,7 @@ TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, a
         }
     }
 
-    SUBCASE("THE UNEQUAL-DENSITY OVER-READ, pinned in both directions "
-            "(M1.P3.T22)")
+    SUBCASE("THE UNEQUAL-DENSITY OVER-READ, pinned in both directions")
     {
         // THE BLIND SPOT THE SUBCASE ABOVE NAMES, TURNED INTO A GATE.  Every
         // cell in that grid shares one `alphaIn`, which is the constraint
@@ -4736,10 +4697,9 @@ TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, a
         // bucket runs -- a dense fog card beside a thin one, ordinary comp
         // content -- and the composite INVENTS alpha, by up to +127.5% here
         // and +83.6% rendered (harness f3e/f3f).  That is the direction the
-        // Design reference's coverage-deficit spec forbids ("the saturation
-        // rule never scales alpha up to hide this"), and it is M1.P3.T23's
-        // target.  This subcase is the POD-level twin of f3e/f3f: same
-        // arrangement, same oracle, no Nuke.
+        // coverage-deficit rule forbids: the saturation rule never scales
+        // alpha up to hide a deficit.  This subcase is the POD-level twin of
+        // f3e/f3f: same arrangement, same oracle, no Nuke.
         //
         // TRUTH IS HAND-DERIVED AND NEEDS NO ORDERING ASSUMPTION, exactly as
         // in the staggered subcase above: the two parents' kernel weights sum
@@ -4755,7 +4715,7 @@ TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, a
         // behaviour, so they are documentation-with-teeth: a mutation that
         // pushed the error DOWNWARD -- trading the over-read for a deficit of
         // the same size, which is not a fix -- has to fail them too.  Both
-        // mutation directions were run at M1.P3.T22 and both do.
+        // mutation directions have been run and both do.
         auto addVol = [&](std::vector<float>& cov, std::vector<float>& alpha,
                           std::vector<float>& colo, std::vector<float>& color,
                           int m, int parts, float w, float a) {
@@ -4786,14 +4746,14 @@ TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, a
             return (*outAlpha / truth - 1.0) * 100.0;
         };
 
-        // THE NAMED CELLS.  The first is the one M1.P3.T21's review recorded
-        // (+64.6% -- reproduced here exactly), and the rest walk the axes the
-        // rendered sweep walks: density ratio, depth overlap (`off`), part
-        // counts and the weight split.
+        // THE NAMED CELLS.  The first is the base +64.6% cell; the rest walk
+        // the axes the rendered sweep walks:
+        // density ratio, depth overlap (`off`), part counts and the weight
+        // split.
         struct Named { int partsA, partsB, off; float wA, alphaA, alphaB;
                        double pct; const char* what; };
         const Named named[] = {
-            {5, 1, 2, 0.50f, 0.99f, 0.10f,  +64.611, "T21's review cell"},
+            {5, 1, 2, 0.50f, 0.99f, 0.10f,  +64.611, "the base cell, equal weights"},
             {5, 1, 2, 0.25f, 0.99f, 0.10f,  +70.964, "same, weighted to the thin card"},
             {5, 1, 2, 0.75f, 0.99f, 0.10f,  +24.030, "same, weighted to the dense card"},
             {3, 1, 1, 0.50f, 0.99f, 0.10f,  +61.439, "3 parts, adjacent"},
@@ -4817,8 +4777,8 @@ TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, a
             // reading room to drift.
             CHECK(pct > n.pct - 0.5);
             CHECK(pct < n.pct + 0.5);
-            // The standing invariant (Decisions, 2026-07-27): whatever the
-            // alpha does, colour must follow it.
+            // The standing invariant: whatever the alpha does, colour must
+            // follow it.
             CHECK(std::fabs(cc / aa - unpremult) <= 1e-05);
         }
 
@@ -4834,7 +4794,7 @@ TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, a
         // residual chain landing in another parent's bucket.  Control (2) is
         // exactly harness f3g.
         //
-        // WHERE THIS MODEL STOPS SHORT OF A RENDER (this task's review).
+        // WHERE THIS MODEL STOPS SHORT OF A RENDER.
         // `addVol` gives every part of a parent the SAME weight `w`, i.e. it
         // assumes a parent's parts rasterise the same disc.  They do not: a
         // volumetric parent's parts sit at different depths and so at
@@ -4852,15 +4812,13 @@ TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, a
         // "EXACT" controls as statements about THIS model, not about the node.
         //
         // WHAT MAKES THIS SUBCASE FAIL, MEASURED RATHER THAN ASSERTED.  Seven
-        // perturbations of the composite were built at M1.P3.T22 (each in its
-        // own tree; src/ was never modified) and every one of them fails this
-        // subcase, in both directions:
+        // perturbations of the composite (each built in its own tree; src/ was
+        // never modified) all fail this subcase, in both directions:
         //   tHeadIn = 1 (never occlude)      worstHigh 232.6, disjoint 195.5
         //   residual carries 30% of alpha    worstHigh  52.8, worstLow -57.1
         //   tiles allocated OLDEST-first     worstHigh 152.2, worstLow -19.1
         //   the DENSEST tile occludes every
-        //     residual (the conservative rule
-        //     M1.P3.T23 is likeliest to try)  worstLow -37.6, over 844
+        //     residual (the conservative rule)  worstLow -37.6, over 844
         // `worstDisjoint` is a DETECTOR as well as a control (1.5e-05% here,
         // 195%/48%/113%/37.6% under those four).  `worstSinglePart` is NOT,
         // and structurally cannot be: two single-part parents have no
@@ -4928,17 +4886,18 @@ TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, a
         //       accAlpha  = 0.5*a0                       = 0.1464466
         //       tClaimed  = 1 - a0 = 0.7071068, claimed 0.5, tHead = 1 - a0
         //   b1: colo 0.5, aRes = 0.5*a1
-        //       T20:  accAlpha += 0.5*a1*(1 - a0)         = 0.1035534
+        //       stack:  accAlpha += 0.5*a1*(1 - a0)       = 0.1035534
         //             -> 0.25 exactly, i.e. w * alpha for fragment 0
-        //       pre-T20 used the same value here (nothing else has claimed).
+        //       a pooled tile uses the same value here (nothing else has
+        //       claimed).
         //       tClaimed = 0.7071068 - 0.1035534/0.5 = 0.5, tHead = 0.5
         //   b2: cov 0.5, fit 0.5 -> accAlpha += 0.1464466 -> 0.3964466
         //       tClaimed = (0.5*0.5 + 0.5*0.7071068)/1 = 0.6035534
         //       tHead = 1 - a0 = 0.7071068   <-- the fragment's OWN head
         //   b3: colo 0.5, aRes = 0.5*a1
-        //       T20:     accAlpha += 0.5*a1*0.7071068 = 0.1035534 -> 0.50 EXACT
-        //       pre-T20: accAlpha += 0.5*a1*0.6035534 = 0.0883883 -> 0.4848349
-        //                i.e. -3.03%, which is the N=2 row of T17's table.
+        //       stack:  accAlpha += 0.5*a1*0.7071068 = 0.1035534 -> 0.50 EXACT
+        //       pooled: accAlpha += 0.5*a1*0.6035534 = 0.0883883 -> 0.4848349
+        //               i.e. -3.03%, the N=2 row of the pooled column above.
         const float a0 = partitionAlpha(0.5f, 0.5f);
         std::vector<float> cov{0.5f, 0.0f, 0.5f, 0.0f};
         std::vector<float> al{0.5f * a0, 0.5f * a0, 0.5f * a0, 0.5f * a0};
@@ -4981,7 +4940,7 @@ TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, a
     }
 
     SUBCASE("a residual co-located on the SAME bucket's head is still occluded by it "
-            "(the M1.P3.T13/T15 collision shape)")
+            "(the same-pixel collision shape)")
     {
         // The counter-case that decides how the head transmittance is carried:
         // here the co-located deposit's head is in the bucket it landed in, not
@@ -5001,14 +4960,15 @@ TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, a
         CHECK(c == doctest::Approx(0.6f * unpremult).epsilon(1e-6));
     }
 
-    SUBCASE("WHAT T20 DOES NOT FIX: a bucket pooling two DIFFERENT per-unit opacities")
+    SUBCASE("WHAT THE HEAD-TILE STACK DOES NOT FIX: a bucket pooling two DIFFERENT "
+            "per-unit opacities")
     {
-        // THE RESIDUAL THAT SURVIVES M1.P3.T20, ISOLATED.  Both fragments
+        // THE RESIDUAL THE HEAD-TILE STACK DOES NOT FIX, ISOLATED.  Both fragments
         // occupy the SAME bucket pair but at different split fractions, so the
         // bucket's pooled alpha carries two different per-unit opacities and the
         // composite's C_k : D_k area split cannot recover them -- it hands both
         // sub-layers the same a/(C_k + D_k), which is the only split that does
-        // not invent a difference (M1.P3.T9) and is right only when the two
+        // not invent a difference, and is right only when the two
         // really are equal.  This is harness f3c/f3d's mechanism, NOT the mosaic
         // one above, and no per-bucket rule can undo it: the information is gone
         // at accumulation, not at composition.
@@ -5022,9 +4982,9 @@ TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, a
             deposit(cov, al, co, col, 0, 0.10f, w, alphaIn);
             deposit(cov, al, co, col, 0, 0.90f, w, alphaIn);
             composite(cov, al, co, col, &c, &a);
-            // BANDED, not a ceiling: measured -12.41% at this task, and a
-            // one-sided bound would be met by a mutation that removed the
-            // residual term altogether.
+            // BANDED, not a ceiling: measured -12.41%, and a one-sided bound
+            // would be met by a mutation that removed the residual term
+            // altogether.
             CHECK(a > 0.9f * (1.0f - 0.140f));
             CHECK(a < 0.9f * (1.0f - 0.108f));
             CHECK(std::fabs(c / a - unpremult) <= 1e-05);
@@ -5042,13 +5002,12 @@ TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, a
     {
         // The rendered form of the above: fragment j at bucket pair (j, j+1) at
         // split fraction 0.25 or 0.75 rather than 0.5.  These are the numbers
-        // harness g4's remaining deficit is made of, and since M1.P3.T21 they
-        // have a CLOSED FORM that is derived here rather than re-measured --
-        // which is what re-pins them independently of the code.
+        // harness g4's remaining deficit is made of, and they have a CLOSED
+        // FORM that is derived here rather than re-measured -- which is what
+        // pins them independently of the code.
         //
-        // NOTE THE TRIGGER, corrected at T20's review: EVERY fragment below
-        // carries the SAME split fraction, so this is NOT "fragments at
-        // different split fractions" (which is how T20 first described it).
+        // NOTE THE TRIGGER: EVERY fragment below carries the SAME split
+        // fraction, so this is NOT "fragments at different split fractions".
         // On a dense ramp bucket k carries fragment k's head at per-unit
         // opacity a0 = partitionAlpha(alpha, 1-frac) and fragment k-1's rear at
         // a1 = partitionAlpha(alpha, frac); those differ for every frac != 0.5,
@@ -5061,12 +5020,12 @@ TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, a
         // and since (1-m) is the arithmetic mean of (1-a0) and (1-a1), AM-GM
         // makes (1-m)^2 >= (1-a0)(1-a1): the error is a DEFICIT for every
         // fraction but 0.5, where it vanishes.  It is also independent of N,
-        // and that is the check: M1.P3.T20's own readings here were
-        // -2.42/-3.69/-4.00% (frac 0.25) and -5.79/-4.53/-4.21% (frac 0.75) at
-        // N=4/16/64, i.e. N-dependent and asymmetric in the fraction, because
-        // the single carried tile mixed this pooling term with the mosaic error
-        // M1.P3.T21 removed.  With the mosaic term gone the reading is the
-        // closed form to five decimals at every N and both fractions.
+        // and that is the check.  With a SINGLE carried tile the readings here
+        // are -2.42/-3.69/-4.00% (frac 0.25) and -5.79/-4.53/-4.21% (frac 0.75)
+        // at N=4/16/64, i.e. N-dependent and asymmetric in the fraction,
+        // because that tile mixes this pooling term with the mosaic error.
+        // With the head-tile stack the mosaic term is gone and the reading is
+        // the closed form to five decimals at every N and both fractions.
         for (float frac : {0.25f, 0.75f}) {
             const double a0    = 1.0 - std::pow(1.0 - 0.90, 1.0 - frac);
             const double a1    = 1.0 - std::pow(1.0 - 0.90, frac);
@@ -5095,7 +5054,7 @@ TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, a
 
 
 TEST_CASE("the g4 rig's low-alpha over-read is the SCATTER's weight over-delivery, "
-          "not the composite's (M1.P3.T24)")
+          "not the composite's")
 {
     // THE MECHANISM BEHIND HARNESS g5, pinned at POD level on a faithful
     // 1-column model of scene (g)'s ground ramp (THE ISOLATED UNIT RIG -- the
@@ -5108,9 +5067,8 @@ TEST_CASE("the g4 rig's low-alpha over-read is the SCATTER's weight over-deliver
     // at offset y'-y0, all at depth z(y'), through the REAL DepthBuckets,
     // fragmentDeposit() and compositePixelCoveragePartition().
     //
-    // THE FINDING, which corrects two recorded attributions (M1.P3.T21's
-    // "f3c/f3d's pooling seen from its positive side" and the covariance /
-    // second-moment direction M1.P3.T23's review handed this task): each
+    // THE FINDING, which is neither f3c/f3d's pooling seen from its positive
+    // side nor a covariance / second-moment effect: each
     // disc is normalised over its OWN kernel, and on a steep CoC gradient
     // the adjoint sum at a destination pixel is NOT 1 -- nearer-focus rows
     // arrive with denser discs than farther rows lose, and the deposited
@@ -5122,8 +5080,8 @@ TEST_CASE("the g4 rig's low-alpha over-read is the SCATTER's weight over-deliver
     // is a legitimate lone fragment), for which the over-composited truth
     // is HIGHER than alpha -- one plane set, two truths.  And the scatter-
     // side fix, per-destination-pixel renormalisation, breaks genuine
-    // overlap (two full-coverage 0.5 fog layers: 0.75 exact today, 0.50
-    // renormalised) -- it is the design's deferred v2 alpha-renormalize.
+    // overlap (two full-coverage 0.5 fog layers: 0.75 exact as it stands, 0.50
+    // renormalised).
     const float slope = 86.0f * 10.0f / 1720.0f;            // 0.5 px per row
     const float zMin  = 1720.0f / 300.0f;                   // row 0
     const float zMax  = 1720.0f / 45.0f;                    // row 255
@@ -5257,9 +5215,9 @@ TEST_CASE("the g4 rig's low-alpha over-read is the SCATTER's weight over-deliver
 
 TEST_CASE("colour:alpha ratio is a standing invariant of the composite over randomised planes")
 {
-    // One invariant instead of three cases (Decisions, 2026-07-27): clamping
-    // one of a premultiplied pair and not the other has been the defect in the
-    // residual term, in the area split and in the saturation pass.
+    // One invariant instead of three cases: clamping one of a premultiplied
+    // pair and not the other is a defect the residual term, the area split and
+    // the saturation pass are all capable of.
     Lcg rng(0xA11CEu);
     const int K = 6, C = 3;
     const float unpremult[3] = {0.35f, 0.7f, 0.95f};
@@ -5285,15 +5243,14 @@ TEST_CASE("colour:alpha ratio is a standing invariant of the composite over rand
         CHECK(outAlpha >= 0.0f);
         CHECK(outAlpha <= 1.0f);
 
-        // NOT SCOPED TO THE UNCLAMPED RESULT (M1.P3.T4 review).  An earlier
-        // draft of this case excluded `outAlpha == 1`, which is exactly where
-        // the invariant was broken: the composite's last statement clamped the
-        // alpha and left the colour beside it alone, so a pixel whose
-        // accumulated alpha exceeded 1 shipped a premultiplied colour:alpha
-        // ratio above the input's -- the FOURTH appearance of "clamp one of a
-        // premultiplied pair and not the other" (Decisions, 2026-07-27), and
-        // one that the production path reaches (see the fog case below).  The
-        // clamp now rescales both, so the invariant holds everywhere.
+        // DELIBERATELY NOT SCOPED TO THE UNCLAMPED RESULT.  Excluding
+        // `outAlpha == 1` would exclude exactly where the invariant breaks: a
+        // final clamp that touches the alpha and leaves the colour beside it
+        // alone ships, for a pixel whose accumulated alpha exceeded 1, a
+        // premultiplied colour:alpha ratio above the input's -- "clamp one of a
+        // premultiplied pair and not the other", and the production path
+        // reaches it (see the fog case below).  The clamp rescales both, so the
+        // invariant holds everywhere.
         if (outAlpha > 1e-04f) {
             for (int c = 0; c < C; ++c) {
                 CAPTURE(trial);
@@ -5311,13 +5268,13 @@ TEST_CASE("colour:alpha ratio is a standing invariant of the composite over rand
 TEST_CASE("volumetric fog through the REAL path: a pixel whose alpha clamps keeps its "
           "colour:alpha ratio")
 {
-    // THE REGRESSION GATE for the clamp asymmetry (M1.P3.T4 review).  Ordinary
+    // THE REGRESSION GATE for the clamp asymmetry.  Ordinary
     // overlapping volumetric fog drives compositePixelCoveragePartition's
     // accAlpha above 1 -- several co-located residuals attenuate by
     // aRes/D_k, which is weaker than the alpha each of them adds whenever
     // D_k > aRes, so the sum over buckets is not bounded the way the
     // per-bucket terms are.  On THIS fixture 19 of 576 pixels clamp, and
-    // before the colour was rescaled with the alpha the worst of them shipped
+    // without the colour rescaled alongside the alpha the worst of them ships
     // premultiplied colour 0.9959 against an honest 0.5975: +59.5% too bright.
     // (Over 300 randomised fields the worst was +66.0%, at accAlpha 1.6598.)
     const CocParams    p  = makeStandardRig(30.0f);
@@ -5380,8 +5337,8 @@ TEST_CASE("volumetric fog through the REAL path: a pixel whose alpha clamps keep
 
 TEST_CASE("pre_merge moves neither alpha nor coverage for a SINGLE parent")
 {
-    // M1.P3.T8: a group can never contain two parts of the same parent (they
-    // are cut AT the boundaries, so they sit in distinct buckets), which is
+    // A group can never contain two parts of the same parent (they are cut AT
+    // the boundaries, so they sit in distinct buckets), which is
     // what makes the single-parent reconstruction knob-independent.  The knob
     // DOES move multi-parent pixels, which the next subcase pins.
     const CocParams    p  = makeStandardRig(10.0f);
@@ -5422,20 +5379,19 @@ TEST_CASE("pre_merge moves neither alpha nor coverage for a SINGLE parent")
         }
     }
 
-    SUBCASE("two distinct co-located point parents: the knob no longer moves them (RE-PINNED, "
-            "M1.P3.T13)")
+    SUBCASE("two distinct co-located point parents: the knob does not move them")
     {
-        // WHAT THIS USED TO PIN, AND WHY IT WAS WRONG.  Until M1.P3.T13 this
-        // case read alpha 0.694518 with a new-area plane of 2.0 at pre_merge
-        // OFF, against 0.580000 / 1.0 at ON, and the milestone's Decisions
-        // recorded that as "ON is the accurate branch".  Both readings were of
-        // the SAME defect: two depth-disjoint parents at one pixel deposited
-        // into one bucket ADDITIVELY and both claimed the pixel's area, so the
-        // composite clamped `cov` 2.0 -> 1.0 and `a` alongside it.  pre_merge ON
-        // happened to group these two (same containing bucket, radii 0.0006px
-        // apart) and so accidentally produced the right answer; the knob was
-        // never the difference between "accurate" and "not", it was the
-        // difference between "the collision was resolved" and "it was not".
+        // WHY THE KNOB IS NOT THE VARIABLE HERE.  Without the collision pass
+        // this case reads alpha 0.694518 with a new-area plane of 2.0 at
+        // pre_merge OFF, against 0.580000 / 1.0 at ON -- which invites reading
+        // ON as "the accurate branch".  Both readings are of the SAME defect:
+        // two depth-disjoint parents at one pixel deposit into one bucket
+        // ADDITIVELY and both claim the pixel's area, so the composite clamps
+        // `cov` 2.0 -> 1.0 and `a` alongside it.  pre_merge ON happens to group
+        // these two (same containing bucket, radii 0.0006px apart) and so
+        // accidentally produces the right answer.  The knob is the difference
+        // between "the collision was resolved" and "it was not", never between
+        // accurate and inaccurate.
         //
         // THE TRUE VALUE IS DERIVED, NOT MEASURED: two point samples at one
         // pixel flatten to a sequential `over`, which is what a DeepToImage
@@ -5477,7 +5433,7 @@ TEST_CASE("pre_merge moves neither alpha nor coverage for a SINGLE parent")
     SUBCASE("a group that mixes a NON-head part with a following head keeps BOTH coverages "
             "(the survival rule is an OR, not the group head's flag)")
     {
-        // The configuration the OR exists for (M1.P3.T8): parent A is cut at
+        // The configuration the OR exists for: parent A is cut at
         // boundary(10), so its second part is a NON-head sitting in bucket 10;
         // parent B lies wholly inside bucket 10 immediately behind it and IS a
         // head.  They are adjacent in the staged list, same kind, same bucket,
@@ -5603,8 +5559,8 @@ TEST_CASE("SampleSoA lifecycle: clear() keeps the allocation, release() drops it
 
 TEST_CASE("BucketPlanes::bytesForBand is the (C+3) formula and matches a live sizeBytes()")
 {
-    // The memory-limit knob and the code must not drift apart, and the formula
-    // moved from (C+2) to (C+3) at M1.P3.T9.
+    // The memory-limit knob and the code must not drift apart.  The formula is
+    // (C+3), not (C+2): colour + alpha + new area + co-located area.
     CHECK(BucketPlanes::bytesForBand(16, 4, 4096, 64)
           == static_cast<std::size_t>(16) * 4096 * 64 * (4 + 3) * sizeof(float));
     CHECK(BucketPlanes::bytesForBand(16, 4, 4096, 64) == 117440512u);
@@ -5618,7 +5574,7 @@ TEST_CASE("BucketPlanes::bytesForBand is the (C+3) formula and matches a live si
 }
 
 // ===========================================================================
-// Holdout (M1.P3.T3 / T10 / T11)
+// Holdout
 // ===========================================================================
 
 TEST_CASE("HoldoutLut::build folds the in-span exponential in exactly at the boundaries, "
@@ -5686,10 +5642,11 @@ TEST_CASE("HoldoutLut::build folds the in-span exponential in exactly at the bou
 TEST_CASE("opaque POINT-sample holdout accuracy on the default rig (the shape that exposed "
           "the decoupled boundary set)")
 {
-    // The commonest holdout there is: a solid card.  Before M1.P3.T10 this card
-    // at z=50 started occluding at z=10.9 and erased a fragment at z=15 by 98%.
-    // Against the decoupled uniform-in-z set it must be essentially
-    // unattenuated in front of the card and fully attenuated behind it.
+    // The commonest holdout there is: a solid card.  Read against the ΔCoC
+    // bucket boundaries this card at z=50 starts occluding at z=10.9 and erases
+    // a fragment at z=15 by 98%.  Against the decoupled uniform-in-z set it
+    // must be essentially unattenuated in front of the card and fully
+    // attenuated behind it.
     const CocParams    p  = makeStandardRig(10.0f);
     const DepthBuckets bk = makeStandardBuckets(p);
     const HoldoutBoundaries hb = makeUniformHoldoutBoundaries(bk);
@@ -5717,7 +5674,7 @@ TEST_CASE("opaque POINT-sample holdout accuracy on the default rig (the shape th
 
     // The PINNED bite depth: the first depth reading below half visibility.
     // 44.37 against a true 50, i.e. inside the card's own 6.19-unit bracket
-    // [44.3125, 50.5] -- Decisions records 44.4 against the pre-T10 10.9.
+    // [44.3125, 50.5].  Read against the ΔCoC bucket set instead it is 10.9.
     float bite = 0.0f;
     for (int i = 0; i < 100000; ++i) {
         const float z = 1.0f + (99.0f * i) / 100000.0f;
@@ -5776,7 +5733,7 @@ TEST_CASE("holdout SoA hygiene: NaN depths dropped, +/-inf kept, depthScale roun
         // spans that walk is order-dependent by far more than rounding --
         // measured 2.7e-02 ABSOLUTE (0.1117 against 0.0851) between an
         // ascending and a descending presentation of the same six spans over a
-        // 200k-trial corpus at this task's review.  The existing
+        // 200k-trial corpus.  The existing
         // build()-vs-evalBoundaries() fuzz cannot see that: both sides consume
         // the same order, so it pins their agreement, not the order.  So the
         // sort in appendPixel() is what makes a pixel's LUT a function of its
@@ -6104,14 +6061,11 @@ TEST_CASE("the holdout multiplies into the scatter's deposits, per DESTINATION p
 TEST_CASE("the dense alpha<1 holdout underflow reaches DEPOSITED PIXELS on both scatter "
           "paths, and the floored chord's reading there is banded two-sided")
 {
-    // M1.P3.T11's review: an underflowed bracket is NOT confined to
-    // fully-opaque content.  46 point samples at alpha=0.9 packed inside one
-    // K=16 bracket underflow the stored far-boundary transmittance to bitwise
-    // 0.  This used to pin the divergence of three interpolant variants;
-    // M1.P3.T18 rendered that divergence end to end (dense-volumetric rig),
-    // decided for the log chord and deleted the other two, so what is pinned
-    // now is the WINNER's floored-chord deposit -- in deposited pixels, not
-    // just in the LUT math, and on both the sharp and the disc path.
+    // An underflowed bracket is NOT confined to fully-opaque content: 46 point
+    // samples at alpha=0.9 packed inside one K=16 bracket underflow the stored
+    // far-boundary transmittance to bitwise 0.  What is pinned is the log
+    // chord's floored deposit -- in deposited pixels, not just in the LUT math,
+    // and on both the sharp and the disc path.
     const CocParams    p  = makeStandardRig(10.0f);
     const DepthBuckets bk = makeStandardBuckets(p);
     const HoldoutBoundaries hb = makeUniformHoldoutBoundaries(bk);
@@ -6166,13 +6120,12 @@ TEST_CASE("the dense alpha<1 holdout underflow reaches DEPOSITED PIXELS on both 
         runBand(band, makeScatterParams(W, H), soa, view, lut);
         const double got = bandAlphaSum(band);
 
-        // TWO-SIDED band (re-pinned at M1.P3.T18 after the losing variants
-        // went; the old one-sided `< 1e-12` could not tell the floored chord
-        // from an outright 0).  The fragment's whole kernel weight (sums to 1
+        // TWO-SIDED band: a one-sided `< 1e-12` cannot tell the floored chord
+        // from an outright 0.  The fragment's whole kernel weight (sums to 1
         // on both paths) is scaled by the floored chord's 10^(-30*frac) at
         // z=48, frac ~0.59596 -> ~1.32e-18.  A regression to hard erasure
         // (0.0) fails the lower bound; a raised/lost floor leaks and fails
-        // the upper bound.  Mutation-tested in both directions at T18.
+        // the upper bound.  Mutation-tested in both directions.
         CHECK(got > 1.0e-18);
         CHECK(got < 1.7e-18);
     }
@@ -6184,10 +6137,10 @@ TEST_CASE("the dense alpha<1 holdout underflow reaches DEPOSITED PIXELS on both 
 
 TEST_CASE("tidyOverlapping terminates and stays bounded on tie-heavy randomised input")
 {
-    // The non-termination bug (fixed during M1.P2.T2) hung Nuke UNKILLABLY on
-    // ordinary volumetric input: the split loop always cut samples[i] at
-    // samples[i+1].zFront, which made no progress when the two shared a front
-    // -- and the loop created that configuration itself.  Depths are drawn from
+    // Non-termination here hangs Nuke UNKILLABLY on ordinary volumetric input.
+    // The failure mode to guard: a split loop that always cuts samples[i] at
+    // samples[i+1].zFront makes no progress when the two share a front -- and
+    // creates that configuration itself.  Depths are drawn from
     // a SMALL DISCRETE SET here so exact ties (shared fronts, shared backs,
     // fully coincident spans) are the common case rather than a corner.
     //
@@ -6236,7 +6189,7 @@ TEST_CASE("tidyOverlapping terminates and stays bounded on tie-heavy randomised 
 
 // ===========================================================================
 //
-//  M1.P4.T1 — per-band lazy-claim concurrency
+//  Per-band lazy-claim concurrency
 //
 //  BandLedger is the SAME template the node instantiates over DD::Image::
 //  SignalLock; here it runs over a std::mutex/std::condition_variable
@@ -6281,26 +6234,23 @@ bool neverAborted() { return false; }
 TEST_CASE("bandBudgetBytes: bucket planes + holdout LUT + resident SoA, "
           "against hand-derived byte counts")
 {
-    // The design reference's 4K default band: K=16, C=4, 4096x64.
+    // The 4K default band: K=16, C=4, 4096x64.
     // Planes: K*W*B*(C+3)*4 = 16*4096*64*7*4 = 117,440,512 (~117MB).
     CHECK(bandBudgetBytes(16, 4, 4096, 64, false, 0.0)
           == doctest::Approx(117440512.0));
 
-    // The holdout term M1.P3.T3 left out of bytesForBand(): (K+1)*W*B*4 =
-    // 17*4096*64*4 = 17,825,792 — the 17.0 MB per 4096x64 band at K=16 the
-    // milestone measured at T3's review.
+    // The holdout term, which bytesForBand() does NOT carry: (K+1)*W*B*4 =
+    // 17*4096*64*4 = 17,825,792, i.e. 17.0 MB per 4096x64 band at K=16.
     CHECK(bandBudgetBytes(16, 4, 4096, 64, true, 0.0)
           - bandBudgetBytes(16, 4, 4096, 64, false, 0.0)
           == doctest::Approx(17825792.0));
 
-    // The SoA term, at the revised ~100 B/fragment RESIDENT figure
-    // (61 B logical; milestone Decisions 2026-07-27).
+    // The SoA term, at the ~100 B/fragment RESIDENT figure (61 B logical).
     CHECK(kSoAResidentBytesPerFragment == doctest::Approx(100.0));
     CHECK(bandBudgetBytes(16, 4, 4096, 64, false, 1.0e6)
           == doctest::Approx(117440512.0 + 1.0e8));
 
-    // K=128 planes: 128*4096*64*7*4 = 939,524,096 (~940MB, the design
-    // reference's K=128 figure).
+    // K=128 planes: 128*4096*64*7*4 = 939,524,096 (~940MB).
     CHECK(bandBudgetBytes(128, 4, 4096, 64, false, 0.0)
           == doctest::Approx(939524096.0));
 

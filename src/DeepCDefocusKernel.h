@@ -4,37 +4,35 @@
 //
 //  DeepCDefocusKernel — Header-only disc-bokeh kernel LUT for DeepCDefocus
 //
-//  Provides the v2-ready kernel seam described in the M1 DeepCDefocus design
-//  doc ("Kernel seam for v2"):
-//
 //    - KernelView    : a non-owning view of one radius's precomputed disc
 //                      kernel, laid out as contiguous per-row weight spans so
 //                      the scatter inner loop is a flat, auto-vectorizable
 //                      `dst[i] += w[i]*c` over one row with no per-pixel disc
 //                      test.
-//    - KernelSampler : the abstract v2 seam. `destX/destY/depth/channelGroup`
-//                      are deliberately unused in v1 -- a future milestone
-//                      fills them in for spatially-varying / chromatic
-//                      kernels. That unused-ness IS the seam.
-//    - DiscKernelLUT : the v1 implementation. Radius-indexed on the global
-//                      kernel-radius grid (M1.P3.T19: hyperbolic below 16px,
-//                      uniform 0.5px above -- see the grid comment for why)
-//                      over a measured radius RANGE [minRadius, maxRadius]
-//                      (see the constructor comment for why it is a range and
-//                      not [0, max_radius]), anti-aliased edge (edgeSoftness
+//    - KernelSampler : the abstract sampler seam. `destX/destY/depth/
+//                      channelGroup` are unused by the disc implementation
+//                      but stay in the signature, so a spatially-varying or
+//                      chromatic kernel can be dropped in without touching
+//                      any call site.
+//    - DiscKernelLUT : the disc implementation. Radius-indexed on the global
+//                      kernel-radius grid (hyperbolic below 16px, uniform
+//                      0.5px above -- see the grid comment for why) over a
+//                      measured radius RANGE [minRadius, maxRadius] (see the
+//                      constructor comment for why it is a range and not
+//                      [0, max_radius]), anti-aliased edge (edgeSoftness
 //                      knob), per-entry exact normalization (sum(w) == 1),
 //                      precomputed row spans, Y extent pre-scaled by pixel
 //                      aspect (anamorphic -> ellipse).
 //
 //  Zero NDK/DDImage dependencies -- standard library only. Compiles with
-//  plain `g++ -std=c++17`. Per the CUDA seam (M3), hot per-span accessors are
-//  marked DEEPC_HD so the same source can later compile under nvcc without
-//  change; only the loop driver + allocator get swapped in that milestone.
+//  plain `g++ -std=c++17`. Hot per-span accessors are marked DEEPC_HD so the
+//  same source compiles under nvcc unchanged; only the loop driver and the
+//  allocator would need swapping for a device build.
 //
-//  DEEPC_HD itself is owned by DeepCDefocusMath.h (milestone Decisions log,
-//  2026-07-26), which is why that header is included below: defining the
-//  macro independently here would make its expansion depend on include order
-//  in a .cu translation unit. No other symbol from the math header is used.
+//  DEEPC_HD itself is owned by DeepCDefocusMath.h, which is why that header
+//  is included below: defining the macro independently here would make its
+//  expansion depend on include order in a .cu translation unit. No other
+//  symbol from the math header is used.
 //
 // ============================================================================
 
@@ -89,7 +87,8 @@ struct RowSpan {
 // nonzero footprint must read the row spans. Note in particular that the
 // extents cover `radius + edgeSoftness/2`, which is up to edgeSoftness/2 px
 // WIDER than the node-level bbox pad of ceil(max_radius) / ceil(max_radius *
-// aspect) -- see the milestone's bbox-pad task before relying on either.
+// aspect); check which of the two a caller actually needs before relying on
+// either.
 //
 // LIFETIME: purely non-owning. The pointers alias the sampler's internal
 // storage and stay valid only while that sampler is alive and unmodified;
@@ -123,7 +122,7 @@ struct KernelView {
     }
 
     // Hot per-span accessors -- called once per row inside the scatter inner
-    // loop, so they are DEEPC_HD inline for the M3 CUDA seam.
+    // loop, so they are DEEPC_HD inline for the CUDA seam.
     DEEPC_HD inline int rowY(int rowIndex) const { return rowIndex - radiusY; }
     DEEPC_HD inline const RowSpan& row(int rowIndex) const { return rowSpans[rowIndex]; }
     DEEPC_HD inline const float* rowWeights(int rowIndex) const
@@ -133,12 +132,13 @@ struct KernelView {
 };
 
 // ---------------------------------------------------------------------------
-// KernelSampler -- abstract v2 seam.
+// KernelSampler -- the abstract sampler seam.
 //
-// `destX`, `destY`, `depth`, `channelGroup` are deliberately unused in v1;
-// a future milestone fills them in for spatially-varying / chromatic
-// kernels. They are kept as real named parameters in the interface -- do not
-// drop them from the signature. Implementations that ignore them should
+// `destX`, `destY`, `depth`, `channelGroup` are unused by the disc
+// implementation; they exist so a spatially-varying or chromatic kernel can
+// be dropped in without touching any call site. They are kept as real named
+// parameters in the interface -- do not drop them from the signature.
+// Implementations that ignore them should
 // suppress the unused-parameter warning at the definition site (e.g.
 // `(void)destX;`), never by removing the parameter from the interface.
 // ---------------------------------------------------------------------------
@@ -185,19 +185,19 @@ DEEPC_HD inline float discEdgeWeight(float r, float radius, float edgeSoftness)
 }
 
 // ---------------------------------------------------------------------------
-// THE GLOBAL KERNEL-RADIUS GRID (M1.P3.T19)
+// THE GLOBAL KERNEL-RADIUS GRID
 //
 // Every kernel entry sits on one global, frame-independent grid of radii, and
 // both the LUT (radiusToIndex()) and the scatter's "would these two radii
 // rasterise the same disc?" predicate (scatterKernelBin(), in
 // DeepCDefocusScatter.h) read it from HERE so they cannot drift apart.
 //
-// WHY IT IS NOT A UNIFORM 0.5px GRID.  It was, until M1.P3.T19. Quantising
-// radius onto a uniform step h makes two adjacent scanlines that straddle a
-// bin edge rasterise DIFFERENT discs, and a flat opaque surface then loses
-// exactly `(S_r(0) - S_{r+h}(0))/2` of its alpha on the crossing row, where
-// S_r(0) is the entry's centre-ROW weight sum. On the uniform 0.5px grid that
-// is 2.0088e-01 at r=0.5 -- a one-scanline 20% dark line across an opaque
+// WHY IT IS NOT A UNIFORM 0.5px GRID.  Quantising radius onto a uniform step
+// h makes two adjacent scanlines that straddle a bin edge rasterise DIFFERENT
+// discs, and a flat opaque surface then loses exactly
+// `(S_r(0) - S_{r+h}(0))/2` of its alpha on the crossing row, where S_r(0) is
+// the entry's centre-ROW weight sum. On a uniform 0.5px grid that is
+// 2.0088e-01 at r=0.5 -- a one-scanline 20% dark line across an opaque
 // surface, 51x the 1/255 visibility gate, measured in Nuke (validation scene
 // (l)) and predicted from the LUT alone to six decimals.
 //
@@ -209,18 +209,18 @@ DEEPC_HD inline float discEdgeWeight(float r, float radius, float edgeSoftness)
 //
 // Integrating dr/di = c*r^2 gives r(i) = 1/(A - c*i) -- a hyperbolic grid,
 // closed-form in both directions, so the lookup stays O(1) with no search and
-// no per-fragment cost. With c chosen so the step reaches the old 0.5px at
+// no per-fragment cost. With c chosen so the step reaches 0.5px at
 // r = 16, every constant below falls out EXACTLY in binary (c = 1/512):
 //
 //   index 0          -> radius 0                     (the delta entry)
 //   index 1..993     -> radius 512 / (1025 - index)  (0.5 .. 16, hyperbolic)
-//   index >993       -> radius 16 + (index-993)*0.5  (the old uniform grid)
+//   index >993       -> radius 16 + (index-993)*0.5  (uniform)
 //
 // Properties, all measured (see tests/test_defocus_scatter.cpp's
 // "adjacent kernel bins never lose a visible amount of alpha"):
 //   - worst adjacent-bin deficit over r in [0.5, 20]: 1.2566e-03 (at
-//     r = 1.7415), against 2.0088e-01 on the old grid -- a 160x reduction,
-//     and 3.1x inside the 1/255 gate;
+//     r = 1.7415), against 2.0088e-01 on a uniform 0.5px grid -- a 160x
+//     reduction, and 3.1x inside the 1/255 gate;
 //   - r < 0.5 costs nothing to leave coarse: with edgeSoftness 1.0 every disc
 //     of radius <= 0.5 IS the single-pixel delta (the nearest neighbours sit
 //     at r = 1.0 >= radius + softness/2), so entry 0 and entry 1 are the same
@@ -228,31 +228,24 @@ DEEPC_HD inline float discEdgeWeight(float r, float radius, float edgeSoftness)
 //     it takes the sharp path there -- but nothing depends on that here;
 //   - the refinement is BOUNDED: it only exists below 16px, so it adds a
 //     FIXED 197KB (993 small entries) no matter how large max_radius is.
-//     Measured: at the [0, 40] LUT a frame typically measures, 0.776MB
-//     against 0.584MB before (1042 entries against 81); at [0, 100],
-//     8.606MB against 8.414MB, i.e. +2.3%. Build time 0.891ms against
-//     0.850ms at [0, 40] and 10.37ms against 10.24ms at [0, 100], once per
-//     cook.
+//     Measured: 0.776MB at the [0, 40] range a frame typically measures,
+//     8.606MB at [0, 100]; build time 0.891ms and 10.37ms respectively, once
+//     per cook.
 //
-// THE ALTERNATIVE M1.P3.T19 WEIGHED was interpolating between two adjacent
-// 0.5px entries. It was prototyped and measured, not argued away, and it lost
-// on both axes at once. Flat-field |a-1| on validation scene (l)'s three
-// ramps (y / diagonal / radial), against a model validated to six decimals
-// against the rendered frames: interpolation 3.354e-03 / 3.041e-03 /
+// The alternative -- interpolating between two adjacent 0.5px entries --
+// loses on both accuracy and cost. Flat-field |a-1| on validation scene (l)'s
+// three ramps (y / diagonal / radial): interpolation 3.354e-03 / 3.041e-03 /
 // 1.087e-02, this grid 2.084e-03 / 1.819e-03 / 9.937e-03 -- and BOTH converge
 // on the same floor, which is not the grid at all but the disc family's own C1
-// kink at r=0.5 plus the CoC field's extremum. Cost: interpolation needs an
-// O(kernel area) blend into per-thread scratch on EVERY fragment, measured at
-// +18.5% / +34.9% / +68.2% on the scatter's own inner loop at r = 2 / 8 / 24px
-// (7 planes), and it would have to hand back a view of that scratch, breaking
-// KernelView's "safe to hold and share across render threads" contract. This
-// grid costs 197KB and 0.04ms of extra LUT build, once per cook, plus the
-// lookup itself: kernelGridIndex() is a division and a floor where
-// `lround(r/0.5)` was a multiply, measured at 8.1ns against 3.3ns per call in
-// a tight loop, i.e. +4.8ns per fragment against the O(pi*r^2 * (C+3)) FMAs
-// that fragment then costs. It is under 1% of a fragment at r >= 4px and is
-// not visible end to end: the full validation harness renders in the same
-// time to within noise (92.5s over 84 renders, against 91.8s over 81 before).
+// kink at r=0.5 plus the CoC field's extremum. Interpolation also needs an
+// O(kernel area) blend into per-thread scratch on EVERY fragment (+18.5% /
+// +34.9% / +68.2% on the scatter's inner loop at r = 2 / 8 / 24px, 7 planes),
+// and it would have to hand back a view of that scratch, breaking
+// KernelView's "safe to hold and share across render threads" contract. The
+// grid's own lookup costs 8.1ns per call against 3.3ns for a plain
+// `lround(r/0.5)`, i.e. +4.8ns per fragment against the O(pi*r^2 * (C+3))
+// FMAs that fragment then costs -- under 1% of a fragment at r >= 4px, and
+// not visible end to end.
 // ---------------------------------------------------------------------------
 
 // Radius, in X pixels, at and above which the grid reverts to uniform 0.5px
@@ -279,9 +272,9 @@ DEEPC_HD inline float kernelGridRadius(int index)
          + static_cast<float>(index - kKernelFineLastIndex) * 0.5f;
 }
 
-// Nearest grid node to `radiusPx`, nearest IN RADIUS (the same rule the old
-// uniform grid's `lround(radius / 0.5)` implemented, so nothing downstream has
-// to learn a new convention). Written so NaN takes the first branch (-> node
+// Nearest grid node to `radiusPx`, nearest IN RADIUS (the same rule a plain
+// `lround(radius / 0.5)` on a uniform grid implements, so nothing downstream
+// has to learn a new convention). Written so NaN takes the first branch (-> node
 // 0) and +inf the +inf branch; the arithmetic below is therefore only ever
 // reached with a finite, bounded value.
 //
@@ -321,7 +314,7 @@ DEEPC_HD inline int kernelGridIndex(float radiusPx)
 }
 
 // ---------------------------------------------------------------------------
-// DiscKernelLUT -- v1 KernelSampler implementation.
+// DiscKernelLUT -- the disc KernelSampler implementation.
 //
 // Radius-indexed on the global kernel-radius grid above across
 // [minRadius, maxRadius] (nearest-entry lookup, clamped at both ends -- see
@@ -343,8 +336,8 @@ DEEPC_HD inline int kernelGridIndex(float radiusPx)
 // exactly normalized so sum(weights) == 1, with row spans computed against
 // the elliptical (pixel-aspect-scaled) boundary. All entries share one flat
 // std::vector<float> weight buffer and one flat std::vector<RowSpan> span
-// buffer (per-entry offsets into each) so a later CUDA milestone can upload
-// the whole LUT as a single contiguous device buffer.
+// buffer (per-entry offsets into each) so the whole LUT can be uploaded as a
+// single contiguous device buffer.
 //
 // Pixel-aspect convention: Nuke's pixel aspect ratio (PAR) is pixel WIDTH /
 // pixel HEIGHT. `radiusPx` (the argument to kernel()) is defined in X-pixel
@@ -363,8 +356,8 @@ DEEPC_HD inline int kernelGridIndex(float radiusPx)
 // grows with PAR.
 //
 // Two independent cross-checks on that direction:
-//   - the milestone's node bbox pad is `ceil(max_radius)` in X and
-//     `ceil(max_radius * aspect)` in Y (M1.P2.T2) -- same factor, same way up;
+//   - the node's output bbox pad is `ceil(max_radius)` in X and
+//     `ceil(max_radius * aspect)` in Y -- same factor, same way up;
 //   - DeepCDefocusMath.h's filmbackRadiusMm() uses
 //     `mmPerPxY = mmPerPxX / pixelAspect`, i.e. it assumes exactly the same
 //     pixel geometry (pixelHeight = pixelWidth / PAR). The two headers must
@@ -402,12 +395,11 @@ public:
     // pay a gigabyte. The
     // caller instead sizes the LUT from the frame's measured CoC range, which
     // the alpha-weighted depth-range pass already discovers once per cook
-    // before any scatter runs (milestone Decisions, 2026-07-26), so only the
-    // radii the frame actually contains get built. A realistic measured range
-    // such as [2, 40] costs 0.68MB (measured). Building stays eager and
-    // lock-free. The grid's own refinement below 16px (M1.P3.T19) is bounded
-    // and independent of this range: it adds a fixed ~200KB, so the cubic term
-    // this decision is about is still entirely the measured range's.
+    // before any scatter runs, so only the radii the frame actually contains
+    // get built. A realistic measured range such as [2, 40] costs 0.68MB
+    // (measured). Building stays eager and lock-free. The grid's own
+    // refinement below 16px is bounded and independent of this range: it adds
+    // a fixed ~200KB, so the cubic term is entirely the measured range's.
     DiscKernelLUT(float minRadius, float maxRadius, float edgeSoftness, float pixelAspect)
         : _minRadius(sanitizeMinRadius(minRadius, maxRadius))
         , _maxRadius(sanitizeRadius(maxRadius))
@@ -431,8 +423,8 @@ public:
                        float depth,
                        int channelGroup) const override
     {
-        // v1: destX/destY/depth/channelGroup are unused -- see KernelSampler
-        // doc. Kept as real parameters for the M2 seam.
+        // destX/destY/depth/channelGroup are unused here -- see the
+        // KernelSampler doc; they are kept as real parameters for the seam.
         (void)destX;
         (void)destY;
         (void)depth;
@@ -609,10 +601,9 @@ private:
 
         // Sizing pass. Growing the flat buffers with bare push_back costs a
         // transient 2-3x the final footprint (old + new buffer live at once
-        // during each reallocation) -- on the multi-hundred-megabyte LUTs this
-        // class exists to keep honest, that transient peak is exactly the cost
-        // the measured-range decision was taken to avoid, so it is not enough
-        // to shrink afterwards. The counting loop reuses geometryFor() /
+        // during each reallocation) -- on a multi-hundred-megabyte LUT that
+        // peak is the very cost the measured range exists to avoid, so
+        // shrinking afterwards is not enough. The counting loop reuses geometryFor() /
         // rowExtent(), so the reserve is exact; were it ever not, the vectors
         // would still grow correctly and only the peak would regress.
         std::size_t totalWeights = 0;

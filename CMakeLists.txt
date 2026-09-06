@@ -1,12 +1,9 @@
 cmake_minimum_required(VERSION 3.15 FATAL_ERROR)
 project(DeepC)
 
-# Default to a Release build (M1.P3.T14): CMAKE_BUILD_TYPE is otherwise unset,
-# so this project has never passed an -O flag at all. Only apply the default
-# for single-config generators (multi-config generators ignore
-# CMAKE_BUILD_TYPE and use CMAKE_CONFIGURATION_TYPES instead), and only when
-# the user hasn't made an explicit choice -- an explicit
-# -DCMAKE_BUILD_TYPE=... must still win.
+# Default to Release for single-config generators only (multi-config ones
+# ignore CMAKE_BUILD_TYPE), and only when the user has not chosen explicitly.
+# Without this the project passes no -O flag at all.
 if (NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Choose the type of build." FORCE)
     set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "RelWithDebInfo" "MinSizeRel")
@@ -47,27 +44,10 @@ endif()
 # add sub directory
 add_subdirectory(src)
 
-# ---------------------------------------------------------------------------
-# Unit tests for the header-only math/kernel foundation (M1.P1.T4) and for the
-# POD scatter core (M1.P3.T4).
-#
-# Off by default so the normal plugin build is completely unaffected. Both
-# test targets are deliberately independent of Nuke/DDImage:
-#
-#   test_defocus_math    — doctest + src/DeepCDefocusMath.h +
-#                          src/DeepCDefocusKernel.h, both header-only.
-#   test_defocus_scatter — the same, plus src/DeepCDefocusScatter.cpp, which is
-#                          the M3 CUDA seam and by contract carries no NDK type
-#                          either (it is compiled into this target directly
-#                          rather than linked from the plugin, so the tests do
-#                          not depend on DeepCDefocus.so having been built).
-#
-# Configuring this whole top-level CMakeLists.txt still requires Nuke_ROOT
-# (find_package(Nuke REQUIRED) above is unconditional for the rest of the
-# project), but neither target includes an NDK header or links DDImage -- both
-# test files also build standalone with plain `g++ -std=c++17`, no cmake and no
-# Nuke at all, as the no-NDK proof.
-# ---------------------------------------------------------------------------
+# Off by default, so the normal plugin build is unaffected. Neither target
+# includes an NDK header or links DDImage: the scatter core is compiled in
+# directly rather than linked from the plugin, so the tests do not require
+# DeepCDefocus.so.
 option(DEEPC_BUILD_TESTS "Build the doctest unit tests for the math/kernel foundation and the scatter core" OFF)
 if (DEEPC_BUILD_TESTS)
     enable_testing()

@@ -14,7 +14,7 @@
 //
 //  Per-fragment / per-sample scalar entry points are marked DEEPC_HD: they
 //  take raw pointers and scalars only, allocate nothing, and throw nothing,
-//  so a later CUDA milestone can compile this same header under nvcc with
+//  so a CUDA build can compile this same header under nvcc with
 //  DEEPC_HD pre-defined as `__host__ __device__`.  Functions that walk whole
 //  sample lists to fill a caller-owned buffer are host-side builders and are
 //  deliberately NOT marked.
@@ -282,11 +282,9 @@ DEEPC_HD inline float signedCocPixels(const CocParams& p, float depth)
 
     if (p._mode == CocMode::Manual) {
         // Unitless ratio — scene units cancel, no mm conversion needed, and
-        // NO halving: `size` is the blur *radius* in pixels at d = infinity
-        // (resolved convention, see the milestone's Decisions log — the knob
-        // table's "radius at infinity" is the user-facing contract and the CoC
-        // model block was amended to match).  The physical branch below keeps
-        // its /2 because it genuinely computes a CoC *diameter*.
+        // NO halving: `size` is the blur *radius* in pixels at d = infinity,
+        // which is the knob's user-facing contract.  The physical branch below
+        // keeps its /2 because it genuinely computes a CoC *diameter*.
         if (depth == p._focusDistance)
             return 0.0f;
         const float invD = std::isfinite(depth) ? (1.0f / depth) : 0.0f;
@@ -391,11 +389,10 @@ DEEPC_HD inline float filmbackRadiusMm(float x, float y,
 // monotone) chord — the one bracket-wide approximation the design accepts in
 // exchange for O(1) per fragment.
 //
-// THOSE BOUNDARIES ARE **HoldoutBoundaries**, NOT DepthBuckets' (M1.P3.T10).
-// The design reference's "at the K+1 bucket boundaries" is wrong and was
-// replaced: the ΔCoC bucket spacing bounds banding, not occlusion, and sampling
-// this LUT at it made an opaque card at z=50 start occluding at z=10.9.  See
-// HoldoutBoundaries for the measurement and for why uniform-in-z won.  The
+// THOSE BOUNDARIES ARE **HoldoutBoundaries**, NOT DepthBuckets'.  The ΔCoC
+// bucket spacing bounds banding, not occlusion: sampling this LUT at it makes
+// an opaque card at z=50 start occluding at z=10.9.  See HoldoutBoundaries for
+// the measurement and for why the set is uniform in z.  The
 // chord's accepted worst case, (T0-T1)/2, is only meaningful once the
 // boundaries are placed by an occlusion criterion; nothing in this struct
 // depends on WHICH ascending boundary array it is handed.
@@ -406,37 +403,28 @@ DEEPC_HD inline float filmbackRadiusMm(float x, float y,
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// THE HOLDOUT INTERPOLANT — DECIDED (M1.P3.T18).  The log chord is the only
-// interpolant; the `HoldoutInterp` enum, its two opaque-step alternates
-// (`MidpointStep`, `LinearInT`) and the selection flag were shipped at
-// M1.P3.T11 for a rendered bake-off and DELETED at M1.P3.T18, which judged
-// them from rendered pixels (same discipline as M1.P3.T17's bucket-composite
-// decision).  Why the alternates lost, in rendered numbers:
+// THE HOLDOUT INTERPOLANT IS THE LOG CHORD, and there is nothing to select.
+// Any interpolant that special-cases a bitwise-zero far boundary
+// transmittance (T1 == 0) LEAKS, because T1 == 0 is not exclusive to
+// fully-opaque content: a dense run of alpha<1 samples underflows the stored
+// product to bitwise 0.0f (n=46 at alpha=0.9, n=23 at alpha=0.99 — ordinary
+// counts for a volumetric holdout column).  On that content — 46 samples at
+// alpha=0.9 packed in one K=16 bracket — a source strip 45% into the bracket,
+// behind ~21 fog samples (true visibility 5.3e-22), reads 3.2e-14 under the
+// log chord against 1.000 under a midpoint step and 0.550 under a linear-in-T
+// interpolant.  Inventing visibility through a holdout is the forbidden error
+// direction.
 //
-// The alternates fired on a bitwise-zero far boundary transmittance
-// (T1 == 0), which is NOT exclusive to fully-opaque content: a dense run of
-// alpha<1 samples underflows the stored product to bitwise 0.0f (measured
-// n=46 at alpha=0.9, n=23 at alpha=0.99 — ordinary counts for a volumetric
-// holdout column, validation scene (f)'s content class).  On that content —
-// 46 samples at alpha=0.9 packed in one K=16 bracket, rendered end to end —
-// the alternates LEAK: a source strip 45% into the bracket, behind ~21 fog
-// samples (true visibility 5.3e-22), reads 1.000 under the midpoint step and
-// 0.550 under linear-in-T, against 3.2e-14 under the log chord (worst leak
-// over the bracket: midpoint +1.000, linear-in-T +0.840, log chord +1.0e-09;
-// in-bracket mean |err| 0.493 / 0.435 / 0.179).  Inventing visibility
-// through a holdout is the forbidden error direction; the log chord's own
-// residual — erasing up to one bracket (∝ depthRange/K) IN FRONT of an
-// opaque step, toward camera, harness check f2 — is one-sided, bounded, and
-// shrinks with K, and the log chord leaks NOTHING through an opaque holdout
-// at any card position, while the deleted alternates leaked up to half a
-// bracket (midpoint) / a full bracket ramp (linear-in-T) behind one.
+// The log chord's own residual is the opposite sign and bounded: it erases up
+// to one bracket (proportional to depthRange/K) IN FRONT of an opaque step,
+// toward camera (harness check f2), and shrinks with K.  It leaks NOTHING
+// through an opaque holdout at any card position.
 //
-// The in-front erasure decays as 10^(-30·frac) across the bracket — that is
+// That in-front erasure decays as 10^(-30·frac) across the bracket, which is
 // kMinTransmittance = 1e-30 flooring log T (rendered: vis 0.2512 at +2% of a
-// bracket), a floor, not a chord-accuracy bound.  Raising the floor cannot
-// change this decision (it is internal to the winner) and trades that
-// erasure for leaking through dense/opaque holdouts — any retune must be
-// re-judged from rendered pixels.
+// bracket) — a floor, not a chord-accuracy bound.  Raising the floor trades
+// the erasure for leaking through dense/opaque holdouts, so any retune must
+// be judged from rendered pixels.
 // ---------------------------------------------------------------------------
 
 struct HoldoutVisibility {
@@ -503,7 +491,7 @@ struct HoldoutVisibility {
     //                        sorted front-to-back by zFront (ascending)
     //   boundaries         : HoldoutBoundaries::boundaries(), ascending
     //                        (K+1 of them — the COUNT is shared with
-    //                        DepthBuckets, the PLACEMENT is not; M1.P3.T10)
+    //                        DepthBuckets, the PLACEMENT is not)
     //   outT               : caller-owned, at least boundaryCount floats
     //
     // Host-side (loops the whole sample list); the in-span exponential is
@@ -603,11 +591,11 @@ struct HoldoutVisibility {
     // index and its fraction between boundary[index] and boundary[index+1] —
     // that pair is HoldoutBoundaries::locate(), which is O(1) and closed form.
     // It is NOT DepthBuckets::bucketOf() (whose fraction is measured between
-    // bucket *centres*, for the scatter's partition-of-unity split) and, since
-    // M1.P3.T10, it is no longer DepthBuckets::locateBoundary() either: that
-    // one locates between the ΔCoC BUCKET boundaries, which is a different
-    // boundary set from the one this LUT is sampled at.  All three are
-    // different numbers for the same depth.
+    // bucket *centres*, for the scatter's partition-of-unity split) and it is
+    // not DepthBuckets::locateBoundary() either: that one locates between the
+    // ΔCoC BUCKET boundaries, which is a different boundary set from the one
+    // this LUT is sampled at.  All three are different numbers for the same
+    // depth.
     //
     // Interpolating log T is exact for the exponential in-span model.  A zero
     // boundary transmittance would give log(0) = -inf, so values are floored
@@ -615,9 +603,8 @@ struct HoldoutVisibility {
     // On a bracket whose far transmittance is bitwise zero (an opaque step,
     // or a dense alpha<1 stack whose product underflowed) the floored chord
     // therefore decays as 10^(-30·frac) — the erase-toward-camera residual
-    // harness check f2 pins.  Two opaque-step alternates were rendered
-    // against this and deleted at M1.P3.T18 — see "THE HOLDOUT INTERPOLANT —
-    // DECIDED" above for the numbers.
+    // harness check f2 pins.  See the holdout-interpolant block above for why
+    // special-casing a zero far transmittance leaks instead.
     // -----------------------------------------------------------------------
     static DEEPC_HD inline float interpAtBucket(const float* boundaryT,
                                                 int boundaryCount,
@@ -736,10 +723,10 @@ DEEPC_HD inline float sampleMidDepth(float zFront, float zBack)
 // Splitting alpha LINEARLY (alpha_i = w_i*alpha) does not: an opaque fragment
 // split 50/50 composites to 1 - 0.5*0.5 = 0.75, i.e. a 25% alpha hole on a
 // flat opaque field, which would break validation scene (c) ("alpha == 1
-// exactly at any CoC").  See the milestone notes — the design reference's
-// "Sigma alpha*w*vis" accumulation is linear, and reconciling it with the
-// front-to-back composite and the flat-field identity is what forces this
-// form.  Note that the two readings agree to first order anyway: for small
+// exactly at any CoC").  The plane accumulation `Sigma alpha*w*vis` is linear,
+// and reconciling it with the front-to-back composite and the flat-field
+// identity is what forces this form.  The two readings agree to first order
+// anyway: for small
 // alpha, 1 - (1-alpha)^t -> t*alpha, so dense low-alpha fog is unaffected;
 // the forms only diverge as alpha approaches 1, which is exactly where the
 // linear reading is wrong.
@@ -763,12 +750,12 @@ DEEPC_HD inline float sampleMidDepth(float zFront, float zBack)
 // falls off with alpha; at fog alphas it vanishes entirely (see the
 // first-order note above).  The linear reading has the opposite trade: it
 // fades smoothly at every alpha but loses up to 25% of a flat opaque field's
-// coverage.  The design reference demands the exact flat-field identity
-// (validation scene (c), "alpha == 1 exactly"), which is why this form is the
-// one implemented; validation scene (g) (banding on a plane receding through
+// coverage.  The exact flat-field identity (validation scene (c), "alpha == 1
+// exactly") is the binding requirement, which is why this form is the one
+// implemented; validation scene (g) (banding on a plane receding through
 // focus) is the test that can still find the residual, and resolving it needs
-// a design-level decision about the per-bucket coverage/weight plane, not a
-// change to this primitive.
+// a decision about the per-bucket coverage/weight plane, not a change to this
+// primitive.
 //
 // Written with expm1/log1p rather than pow so that the small-alpha limit
 // keeps full relative precision (1 - (1-a)^t suffers catastrophic
@@ -889,8 +876,8 @@ struct BucketDeposit {
 // is fractional, and the error is largest when one side gets very few buckets
 // (measured: S=10 over a [1,100] range at K=16 splits 15/1 and leaves the
 // back step 1.5x the front one).  Within one side the step is uniform to
-// float rounding, which is the property the design reference actually
-// specifies and the one the unit tests assert.
+// float rounding, which is the property that is actually specified and the
+// one the unit tests assert.
 //
 // Both sides use the fact that CoC is AFFINE in inverse depth u = 1/d:
 //
@@ -1280,9 +1267,8 @@ struct DepthBuckets {
     // depth.  bucketOfContaining(), splitSpanAtBoundaries() and the flatten's
     // pre-merge grouping key are its callers.
     //
-    // IT NO LONGER FEEDS THE HOLDOUT LUT (M1.P3.T10).  That is
-    // HoldoutBoundaries::locate(), over a decoupled uniform-in-z boundary set;
-    // sampling the LUT at the ΔCoC boundaries is the defect that task fixed.
+    // IT DOES NOT FEED THE HOLDOUT LUT.  That is
+    // HoldoutBoundaries::locate(), over a decoupled uniform-in-z boundary set.
     // Passing this pair to HoldoutVisibility::interpAtBucket() would index a
     // different array than the one the LUT was built at.
     //
@@ -1390,25 +1376,24 @@ inline DepthBuckets makeBoundedDeltaCocBuckets(const CocParams& p,
 }
 
 // ---------------------------------------------------------------------------
-// HoldoutBoundaries — THE HOLDOUT LUT'S OWN BOUNDARY SET (M1.P3.T10)
+// HoldoutBoundaries — THE HOLDOUT LUT'S OWN BOUNDARY SET
 //
 // The holdout transmittance LUT is sampled at THESE depths, not at
 // DepthBuckets' ones.  The two sets share a COUNT (K+1, so per-band LUT memory
 // stays at the documented (K+1)*W*B*4 bytes) and nothing else.
 //
-// WHY THEY ARE DECOUPLED.  The design reference originally specified the LUT
-// "at the K+1 bucket boundaries".  That is wrong, and it inverted the node's
-// differentiator.  DepthBuckets' spacing is bounded-ΔCoC: it holds the CoC
-// step constant, which is the criterion that governs BANDING, and it therefore
-// spends its budget wherever the CoC changes fastest — on the node's own
-// defaults (K=16, focus 10, measured range [1,100]) that is 15 buckets inside
-// [1,10] and ONE covering [10,100].  Depth OCCLUSION has no such bias: an
-// opaque point-sample holdout (a solid card — the commonest holdout shape
-// there is) at z=50 landed in that single [10,100] bracket, and because
-// interpAtBucket() chords a step onto the bracket's NEAR boundary the card
-// started occluding at z=10.9.  A fragment at z=15, thirty-five units IN FRONT
-// of the card, came out 98% erased; fragments at z=30/40/49 vanished outright.
-// Mean |vis error| 0.391, max 1.000.
+// WHY THEY ARE DECOUPLED.  DepthBuckets' spacing is bounded-ΔCoC: it holds the
+// CoC step constant, which is the criterion that governs BANDING, and it
+// therefore spends its budget wherever the CoC changes fastest — on the node's
+// own defaults (K=16, focus 10, measured range [1,100]) that is 15 buckets
+// inside [1,10] and ONE covering [10,100].  Depth OCCLUSION has no such bias.
+// Sampling the LUT at the bucket boundaries puts an opaque point-sample
+// holdout (a solid card — the commonest holdout shape there is) at z=50 into
+// that single [10,100] bracket, and because interpAtBucket() chords a step
+// onto the bracket's NEAR boundary the card starts occluding at z=10.9: a
+// fragment at z=15, thirty-five units IN FRONT of the card, comes out 98%
+// erased, and fragments at z=30/40/49 vanish outright.  Mean |vis error|
+// 0.391, max 1.000.
 //
 // Neither K nor a better interpolant fixes THAT (the bite only moves to
 // 25.8/40.6/40.2 at K=32/64/128; linear-in-T moves the mean 0.476 -> 0.450),
@@ -1421,16 +1406,15 @@ inline DepthBuckets makeBoundedDeltaCocBuckets(const CocParams& p,
 // HoldoutLut.  Once the brackets are the right width, the log chord's own
 // collapse on an OPAQUE step (it floors log T at kMinTransmittance, so vis
 // hits ~0 across the whole bracket rather than the bound's half) is the
-// remaining reducible term, and it is one-sided toward camera.  M1.P3.T10's
-// review measured 5.07 of the 6.19-unit bracket fully erased at K=16.  Do not
-// read "(T0-T1)/2 is irreducible" as "what ships is irreducible".
+// remaining reducible term, and it is one-sided toward camera: 5.07 of a
+// 6.19-unit bracket is fully erased at K=16.  Do not read "(T0-T1)/2 is
+// irreducible" as "what ships is irreducible".
 //
-// WHY UNIFORM-IN-Z (measured at M1.P3.T10, same 17 entries/pixel, mean
-// |vis error| / bite depth against a true 50; full numbers in the milestone
-// Decisions):
+// WHY UNIFORM-IN-Z (measured at the same 17 entries/pixel; mean |vis error| /
+// bite depth against a true 50):
 //
 //   set                         headline card   opaque points   opaque spans
-//   dCoC buckets (was)          0.391 @ 10.9    0.115           0.110 / 0.113
+//   dCoC buckets                0.391 @ 10.9    0.115           0.110 / 0.113
 //   uniform-in-1/z              0.352 @ 14.8    0.116           0.111 / 0.114
 //   equal-occlusion-mass hist.  0.000 @ 50.0    0.004           0.270 / 0.318
 //   UNIFORM-IN-Z (this)         0.057 @ 44.4    0.014           0.014 / 0.013
@@ -1494,10 +1478,8 @@ struct HoldoutBoundaries {
     // Host-side builder, matching this header's convention for whole-list
     // builders; uses double for the step exactly as DepthBuckets does.
     //
-    // Post-conditions (asserted NOW, in tests/test_defocus_math.cpp's
-    // HoldoutBoundaries cases -- T10 shipped this struct before M1.P3.T4
-    // exists, so they are pinned there rather than promised; T4 may move them
-    // into the scatter-core suite but must not drop them):
+    // Post-conditions, asserted in tests/test_defocus_math.cpp's
+    // HoldoutBoundaries cases:
     //   * count() == clamp(count, 2, kMaxBoundaries)
     //   * boundary(0) == sanitised depthMin, boundary(count-1) == sanitised
     //     depthMax
@@ -1829,14 +1811,14 @@ DEEPC_HD inline int splitSpanAtBoundaries(const DepthBuckets& buckets,
 // with k the bucket (front to back, 0 = nearest), c the channel and i the
 // destination pixel within the band (pixelCount == bandWidth * bandHeight).
 // This is the colour+alpha half of the (C+3)-plane-per-bucket layout the
-// design reference's memory formula assumes (K*W*B*(C+3)*4 since M1.P3.T9);
-// the two `sum of w*vis` AREA planes the scatter also keeps — new area and
+// per-band memory formula assumes (K*W*B*(C+3)*4); the two `sum of w*vis`
+// AREA planes the scatter also keeps — new area and
 // co-located area — live alongside and are not touched by anything here.
 //
 // The per-pixel entry points below take pointers ALREADY OFFSET to their
 // pixel (`plane + i`) and derive everything else from `pixelCount`, which
 // keeps their signatures short enough to stay readable and makes them
-// directly usable as the body of a one-thread-per-pixel CUDA kernel in M3.
+// directly usable as the body of a one-thread-per-pixel CUDA kernel.
 // Pass pixelCount = 1 (and pointers to a single pixel's K*C values) to use
 // them standalone, e.g. from a unit test.
 // ---------------------------------------------------------------------------

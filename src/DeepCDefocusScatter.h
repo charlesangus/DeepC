@@ -4,56 +4,51 @@
 //
 //  DeepCDefocusScatter — POD scatter core for DeepCDefocus
 //
-//  This header (and its .cpp) is the M3 CUDA seam.  ABSOLUTELY NO DDImage/NDK
+//  This header (and its .cpp) is the CUDA seam.  ABSOLUTELY NO DDImage/NDK
 //  type may cross into it: it compiles, and is unit-testable, with a bare
 //  `g++ -std=c++17 -fsyntax-only`.  The node's NDK side fetches deep pixels and
 //  hands this file plain std::vector<deepc::SampleRecord> and POD parameter
 //  structs; everything from there to the flat band output is NDK-free.
 //
-//  Contents (M1.P3.T1):
+//  Contents:
 //
 //    - PodBuffer<T> : thin OWNING wrapper over a 64-byte-aligned host
 //                     allocation.  EVERY SoA / plane buffer in this node goes
-//                     through it from day 1, so M3 swaps only the two static
+//                     through it, so a device build swaps only the two static
 //                     allocate/deallocate functions (-> cudaMalloc /
 //                     cudaFree) and the loop drivers, never the kernel source.
 //    - ChannelGroups: the SoA channel-group layout, carrying the
-//                     channelRadiusScale[] hook required by the design
-//                     reference (all 1.0 in v1; M2's chromatic aberration
-//                     fills it in).
+//                     channelRadiusScale[] hook (all 1.0 for the single disc
+//                     kernel; a chromatic kernel fills it in).
 //    - SampleSoA   : the flattened, bucket-assigned fragment stream the
-//                     scatter (M1.P3.T2) consumes.
+//                     scatter consumes.
 //    - flattenPixelToSoA() : tidy -> volumetric bucket split -> CoC -> bucket
 //                     assignment -> pre-merge -> SoA append, for one deep
 //                     pixel.
-//
-//  Contents (M1.P3.T2):
-//
 //    - BucketPlanes  : the band's K x (C + 3) accumulation planes (colour,
 //                      alpha, and the two `sum of w*vis` AREA planes — new
-//                      area and, since M1.P3.T9, co-located area).
-//    - HoldoutSoA    : non-owning view of M1.P3.T3's per-dest-pixel boundary
-//                      transmittance LUT, plus (M1.P3.T10) the HoldoutBoundaries
-//                      set it was built at — which is NOT DepthBuckets'.
+//                      area and co-located area).
+//    - HoldoutSoA    : non-owning view of the per-dest-pixel boundary
+//                      transmittance LUT, plus the HoldoutBoundaries set it
+//                      was built at — which is NOT DepthBuckets'.
 //                      Absent/unconnected holdout is an empty view and costs
 //                      nothing.
 //    - scatterBandCPU() : the scatter core proper — fragments -> planes.
 //    - resolveBandCPU() : saturate-down, then combine the planes into the
-//                      band's flat output by the bucket composite decided
-//                      from pixels at M1.P3.T17.
+//                      band's flat output by the bucket composite.
 //
 //  The per-fragment / per-span / per-pixel BODIES of all of the above live in
 //  this header marked DEEPC_HD; only the loop drivers and the allocations are
-//  in the .cpp.  That split IS the M3 CUDA seam: a .cu translation unit
+//  in the .cpp.  That split IS the CUDA seam: a .cu translation unit
 //  includes this header unchanged and replaces the drivers.
 //
-//  DEEPC_HD is NOT defined here.  It is owned by DeepCDefocusMath.h (milestone
-//  Decisions, 2026-07-26) and inherited by including that header, so a .cu
-//  translation unit that pre-defines the macro gets one consistent expansion
-//  no matter which of these headers it includes first.
+//  DEEPC_HD is NOT defined here.  It is owned by DeepCDefocusMath.h and
+//  inherited by including that header, so a .cu translation unit that
+//  pre-defines the macro gets one consistent expansion no matter which of
+//  these headers it includes first.
 //
 //  Style: scalar, __restrict__-annotated, auto-vectorization-friendly; no
-//  intrinsics, no SIMD library, no OpenMP (board-level Context).
+//  intrinsics, no SIMD library, no OpenMP.
 //
 // ============================================================================
 
@@ -78,7 +73,7 @@
 #include "DeepCDefocusMath.h"
 
 // deepc::SampleRecord, deepc::tidyOverlapping(), deepc::optimizeSamples().
-// Reused rather than reimplemented, per the milestone's Context.
+// Reused rather than reimplemented.
 #include "DeepSampleOptimizer.h"
 
 // KernelSampler / KernelView / RowSpan — the scatter consumes the kernel seam's
@@ -91,8 +86,8 @@ namespace deepc {
 // PodBuffer<T> — owning, aligned, trivially-copyable-only host buffer
 //
 // WHY THIS EXISTS.  It is not a std::vector replacement for its own sake: it
-// is the allocation seam for the CUDA milestone.  Every SoA array, bucket
-// plane and holdout LUT this node allocates goes through PodBuffer, so M3
+// is the allocation seam for a device build.  Every SoA array, bucket plane
+// and holdout LUT this node allocates goes through PodBuffer, so a CUDA build
 // replaces exactly two functions — allocateBytes()/deallocateBytes() below —
 // with cudaMalloc/cudaFree (or a managed/pinned variant) and the kernel source
 // that indexes .data() is untouched.  std::vector cannot play that role: its
@@ -126,7 +121,7 @@ class PodBuffer {
 public:
     static_assert(std::is_trivially_copyable<T>::value,
                   "PodBuffer<T> requires a trivially copyable T: growth is a memcpy "
-                  "and the M3 device allocator never runs constructors.");
+                  "and a device allocator never runs constructors.");
     static_assert(std::is_trivially_destructible<T>::value,
                   "PodBuffer<T> requires a trivially destructible T: it never runs "
                   "destructors.");
@@ -260,7 +255,7 @@ public:
     }
 
 private:
-    // ----- THE M3 SEAM ------------------------------------------------------
+    // ----- THE ALLOCATION SEAM ----------------------------------------------
     // These two functions, and nothing else in this class, know where the
     // memory comes from.  A CUDA build replaces their bodies (cudaMalloc /
     // cudaMallocManaged / cudaFree); everything above is allocator-agnostic.
@@ -294,8 +289,8 @@ private:
         deallocateBytes(static_cast<void*>(p), count * sizeof(T));
     }
 
-    // Behind one function so M3 can turn it into a cudaMemcpy without touching
-    // any call site.
+    // Behind one function so a device build can turn it into a cudaMemcpy
+    // without touching any call site.
     static void copyBytes(void* dst, const void* src, std::size_t bytes) noexcept
     {
         std::memcpy(dst, src, bytes);
@@ -305,8 +300,8 @@ private:
     // for the same reason copyBytes() is: it DEREFERENCES the buffer from the
     // host.  Swapping allocateBytes() alone to a plain cudaMalloc would leave
     // this (and every caller of operator[]/begin()/end()) writing to device
-    // memory from host code, so M3 either uses managed/pinned memory or
-    // replaces this with a cudaMemset/fill kernel.  "Two functions know where
+    // memory from host code, so a device build either uses managed/pinned
+    // memory or replaces this with a cudaMemset/fill kernel.  "Two functions know where
     // the memory comes from" is true of PROVENANCE; ADDRESSABILITY is assumed
     // by this function, copyBytes(), and the element accessors.
     static void fillElements(T* p, std::size_t count, T value) noexcept
@@ -321,18 +316,18 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// ChannelGroups — the SoA channel-group layout + the M2 radius-scale hook
+// ChannelGroups — the SoA channel-group layout + the radius-scale hook
 //
-// Channels are partitioned into groups that share a kernel.  v1 has exactly
-// one group covering every channel with radiusScale 1.0 (makeSingleChannelGroup);
-// the array exists because the design reference requires the hook to be present
-// from v1 so M2's chromatic aberration is a data change, not a structural one.
+// Channels are partitioned into groups that share a kernel.  The disc kernel
+// uses exactly one group covering every channel with radiusScale 1.0
+// (makeSingleChannelGroup); the array exists so that a chromatic kernel is a
+// data change, not a structural one.
 //
 // The hook is consumed via groupRadius(): the SoA stores ONE base radius per
 // fragment and the scatter multiplies it by the group's scale when it asks the
 // KernelSampler for a kernel.  Storing per-group radii per fragment instead
-// would multiply the SoA's per-fragment cost by the group count for no v1
-// benefit.
+// would multiply the SoA's per-fragment cost by the group count for no
+// benefit while there is one group.
 // ---------------------------------------------------------------------------
 struct ChannelGroups {
     static constexpr int kMaxGroups = 8;
@@ -392,7 +387,7 @@ DEEPC_HD inline float groupRadius(const ChannelGroups& g, int group, float baseR
 // the split the sample received".  The test that catches a mislabel is the
 // parent-reconstruction identity — accumulate the fragments into bucket planes
 // additively, composite front-to-back, and compare against the parent sample's
-// own alpha and premultiplied colour — which M1.P3.T4 must carry.
+// own alpha and premultiplied colour.
 // ---------------------------------------------------------------------------
 enum class FragmentKind : std::uint8_t {
     Point      = 0,     // zBack <= zFront: bucketOf() + fragmentDeposit()
@@ -400,7 +395,7 @@ enum class FragmentKind : std::uint8_t {
 };
 
 // ---------------------------------------------------------------------------
-// Per-fragment FLAG BYTE — FragmentKind plus the coverage-head bit (M1.P3.T8)
+// Per-fragment FLAG BYTE — FragmentKind plus the coverage-head bit
 //
 // THE COVERAGE HEAD BIT.  The coverage plane is `sum of w*vis`, pure kernel
 // AREA, and a surface covers its kernel's area ONCE no matter how many depth
@@ -409,12 +404,12 @@ enum class FragmentKind : std::uint8_t {
 //
 //   * the fractional two-bucket assignment — handled inside
 //     scatterSpanBothBuckets(), which deposits coverage into the NEARER bucket
-//     only (M1.P3.T2's review; depositing into both was a measured 2x energy
-//     error on every partially covered region);
+//     only (depositing into both is a measured 2x energy error on every
+//     partially covered region);
 //   * the VOLUMETRIC SPAN SPLIT — one parent sample cut at the bucket
-//     boundaries into P independent fragments.  Each of those used to deposit
-//     its own `w*vis`, so one slab claimed the same pixel area once per bucket
-//     it spanned: a 4-part alpha-0.9 slab measured a band alpha sum of 1.7506
+//     boundaries into P independent fragments.  If each of those deposited its
+//     own `w*vis`, one slab would claim the same pixel area once per bucket it
+//     spans: a 4-part alpha-0.9 slab measures a band alpha sum of 1.7506
 //     against an honest 0.9000, growing toward K x as alpha -> 1, and exact
 //     ONLY at full kernel coverage — i.e. wrong for every bokeh, every edge and
 //     every isolated fog element.
@@ -425,23 +420,21 @@ enum class FragmentKind : std::uint8_t {
 // plane.  "Parent" here means a POST-TIDY sample: tidyOverlapping() runs first
 // and cuts overlapping spans at one pixel into disjoint depth segments, each
 // of which is its own parent with its own head.  One source pixel carrying N
-// depth-disjoint samples therefore still deposits N coverages — that is the
-// pre-existing same-pixel behaviour recorded in the milestone Decisions, not
-// something this bit addresses.  The remaining parts arrive as alpha and colour with no coverage of
-// their own, which is precisely the shape compositePixelCoveragePartition()'s
-// residual term already handles (it was added for the fractional split's rear
-// deposit): a co-located layer claiming no new area, `over`-attenuated by
-// tClaimed.  See that function for the derivation showing this reconstructs the
+// depth-disjoint samples therefore still deposits N coverages — that is
+// same-pixel behaviour, not something this bit addresses.  The remaining parts
+// arrive as alpha and colour with no coverage of their own, which is exactly
+// the shape compositePixelCoveragePartition()'s residual term handles (the
+// same shape the fractional split's rear deposit has): a co-located layer
+// claiming no new area, `over`-attenuated by tClaimed.  See that function for the derivation showing this reconstructs the
 // parent EXACTLY at any kernel coverage, not merely at full coverage.
 //
 // A point sample is its own parent and is always a head.
 //
 // STORED AS A BIT IN THE EXISTING `kind` BYTE, not as a sixteenth SoA array.
-// M1.P3.T15 added two more bits to the same byte on the same argument (bits 2
-// and 3, "does this deposit write area at all?"), so the flag byte now carries
-// four pieces of per-fragment state and the SoA is still 61 B/fragment.
-// The SoA is already ~100 B/fragment resident at C=4 (61 logical; milestone
-// Decisions 2026-07-27) and
+// Bits 2 and 3 ("does this deposit write area at all?") sit in the same byte
+// on the same argument, so the flag byte carries four pieces of per-fragment
+// state and the SoA is still 61 B/fragment.
+// The SoA is already ~100 B/fragment resident at C=4 (61 logical) and
 // dominates the memory-limit budget, so a new PodBuffer would add its own
 // geometric capacity slack for one bool; bit 1 of a byte that only ever used
 // bit 0 costs nothing.  SampleSoA's array is named `flags` rather than `kind`
@@ -451,11 +444,10 @@ enum class FragmentKind : std::uint8_t {
 // ---------------------------------------------------------------------------
 constexpr std::uint8_t kFragmentKindMask    = 0x01;
 constexpr std::uint8_t kFragmentHeadBit     = 0x02;
-// M1.P3.T15: "does this deposit write its w*vis into an AREA plane at all?"
-// Set for every deposit that covers area no earlier same-pixel deposit of the
-// same kernel already covered; clear for the ones that do not (see
-// visitBucket() in the .cpp).  Defaults SET, so a hand-built fragment
-// behaves exactly as it did before T15.
+// "Does this deposit write its w*vis into an AREA plane at all?"  Set for
+// every deposit that covers area no earlier same-pixel deposit of the same
+// kernel already covered; clear for the ones that do not (see visitBucket() in
+// the .cpp).  Defaults SET, so a hand-built fragment always claims its area.
 constexpr std::uint8_t kFragmentArea0Bit    = 0x04;
 constexpr std::uint8_t kFragmentArea1Bit    = 0x08;
 
@@ -501,7 +493,7 @@ DEEPC_HD inline bool fragmentDepositsArea1Of(std::uint8_t flags)
 
 // Stack budget for splitSpanAtBoundaries(): K+2 parts at the knob's K maximum.
 // 130 * sizeof(SpanSplitPart) == 2600 bytes — a per-sample stack array, never a
-// heap allocation (milestone brief).
+// heap allocation.
 constexpr int kMaxSpanSplitParts = DepthBuckets::kMaxBoundaries + 1;
 
 // Radius below which the scatter takes the sharp fast path (fragment
@@ -513,10 +505,10 @@ constexpr float kSharpRadiusPx = 0.5f;
 // ---------------------------------------------------------------------------
 // scatterKernelBin — "would the scatter rasterise these two radii identically?"
 //
-// M1.P3.T13 needs a predicate that is TRUE only when two fragments deposit the
-// same weights into the same pixels, because that is exactly the condition
-// under which over-compositing them at the flatten is lossless.  It mirrors
-// the only two decisions the scatter makes about a radius, and nothing else:
+// TRUE only when two fragments deposit the same weights into the same pixels,
+// which is exactly the condition under which over-compositing them at the
+// flatten is lossless.  It mirrors the only two decisions the scatter makes
+// about a radius, and nothing else:
 //
 //   * scatterBandCPU() takes the SHARP path for `!(radius >= sharpRadiusPx)`,
 //     where the "kernel" is a single weight of 1.0 at the fragment's own pixel
@@ -527,32 +519,29 @@ constexpr float kSharpRadiusPx = 0.5f;
 //     cannot drift), so two radii on the same grid node return the SAME
 //     KernelView — identical weights, identical row spans, identical support.
 //
-// M1.P3.T19 NOTE: that grid is no longer a uniform 0.5px one — below 16px it
-// refines as `c*r^2` — so this predicate is now much STRICTER at small radii
-// than it was (at r = 1px two radii must agree to ~0.002px to share a node,
-// against 0.5px before). That is the conservative direction: the absorb below
-// exists so a group never rasterises a disc none of its members has, and it
-// now fires only when the members genuinely rasterise the same one.
+// NOTE the grid is not uniform — below 16px it refines as `c*r^2` — so this
+// predicate is STRICT at small radii (at r = 1px two radii must agree to
+// ~0.002px to share a node). That is the conservative direction: the absorb
+// below exists so a group never rasterises a disc none of its members has, and
+// it fires only when the members genuinely rasterise the same one.
 //
 // IT DOES NOT TOUCH `pre_merge`. The two are different mechanisms: `pre_merge`
 // groups same-pixel fragments whose radii are within `merge_tolerance` and
-// this predicate is not consulted, so the milestone Decisions' finding —
-// `pre_merge` is reachable AND lossy at its 0.25px shipping default, because a
-// pair 0.20px apart is grouped and then rasterised at the front member's
-// radius — stands unchanged. Harness check `i7` (CoC radius 1.2 and 1.4 px)
-// still reads the same 9.0000e-02 on 100% of pixels after this task as before
-// it. M1.P4.T2's review of `merge_tolerance`'s default is NOT discharged here.
+// this predicate is not consulted. `pre_merge` is therefore reachable AND
+// lossy at its 0.25px default — a pair 0.20px apart is grouped and then
+// rasterised at the front member's radius (harness check `i7`, CoC radius 1.2
+// and 1.4 px, reads 9.0000e-02 on 100% of pixels).
 //
 // The LUT additionally CLAMPS the index into its built [rMin, rMax] range, so
 // two different bins can still resolve to one entry.  This function does not
 // model that, which makes it conservative in the safe direction: it can answer
 // "different kernels" for a pair the LUT would have merged, never the reverse.
 //
-// M2 NOTE: with several channel groups a group's radius is
+// NOTE: with several channel groups a group's radius is
 // `groupRadius(groups, g, baseRadius)`, and equal BASE bins do not imply equal
-// bins after a per-group `channelRadiusScale != 1`.  In v1 every scale is 1.0,
-// so the base bin IS every group's bin; M2 must revisit this alongside the
-// "which group owns alpha" decision.
+// bins after a per-group `channelRadiusScale != 1`.  Every scale is currently
+// 1.0, so the base bin IS every group's bin; adding groups means revisiting
+// this alongside the "which group owns alpha" question.
 // ---------------------------------------------------------------------------
 DEEPC_HD inline int scatterKernelBin(float radiusPx)
 {
@@ -580,29 +569,28 @@ struct FragmentRecord {
     float         radius   = 0.0f;      // clamped CoC radius, X pixels, base group
     float         depth    = 0.0f;      // midpoint depth used for CoC + bucketing
     float         alpha    = 0.0f;      // this fragment's own alpha AS DEPOSITED
-                                        // (M1.P3.T15 scales a colliding
-                                        // deposit by 1 - running_k, and this
-                                        // follows, so the two deposits always
-                                        // reconstruct it under `over`)
+                                        // (a colliding deposit is scaled by
+                                        // 1 - running_k and this follows, so
+                                        // the two deposits always reconstruct
+                                        // it under `over`)
     BucketDeposit deposit  = {};        // the two bucket deposits (see contract)
     FragmentKind  kind     = FragmentKind::Point;
 
-    // NOTE (M1.P3.T10): there is deliberately NO precomputed holdout boundary
-    // pair here any more.  It used to be DepthBuckets::locateBoundary(depth),
-    // which indexed the ΔCoC bucket boundaries; the holdout LUT now has its own
-    // boundary set and the scatter derives the pair from `depth` in O(1) closed
-    // form (HoldoutSoA::locate).  Storing it would re-create the possibility of
-    // an index built against one boundary array being used against another.
+    // NOTE: there is deliberately NO precomputed holdout boundary pair here.
+    // The holdout LUT has its OWN boundary set, not the ΔCoC bucket
+    // boundaries, and the scatter derives the pair from `depth` in O(1) closed
+    // form (HoldoutSoA::locate).  Storing it would admit an index built
+    // against one boundary array being used against another.
 
     // Does this fragment carry its parent sample's kernel COVERAGE?  True for
     // every point sample (each is its own parent) and for the front-most
     // emitted part of a split volumetric sample; false for that parent's
-    // remaining parts.  Defaults TRUE so a hand-built single fragment behaves
-    // exactly as it did before M1.P3.T8.  See the flag-byte block above.
+    // remaining parts.  Defaults TRUE so a hand-built single fragment always
+    // carries its own coverage.  See the flag-byte block above.
     bool          coverageHead = true;
 
-    // M1.P3.T15.  Does this fragment's first / second deposit write its w*vis
-    // into an area plane?  False for a deposit landing on area an earlier
+    // Does this fragment's first / second deposit write its w*vis into an area
+    // plane?  False for a deposit landing on area an earlier
     // same-pixel, same-kernel deposit already covered — its alpha is already
     // `over`-composited into that bucket, and counting the area twice is what
     // makes the composite read `a - a^2/4` instead of `a`.
@@ -614,8 +602,8 @@ struct FragmentRecord {
 // SampleSoA — the flattened fragment stream
 //
 // Per-fragment ATTRIBUTES are stored one array each (structure of arrays), so
-// the scatter's outer loop streams exactly the arrays it needs and M3 can
-// upload them independently.
+// the scatter's outer loop streams exactly the arrays it needs and a device
+// build can upload them independently.
 //
 // Per-fragment CHANNEL VALUES are stored INTERLEAVED (`color[i*channelCount + c]`),
 // which is deliberate and is the one departure from strict SoA: a channel value
@@ -629,7 +617,7 @@ struct FragmentRecord {
 // COORDINATES: x/y are absolute image pixel coordinates, not band-relative.
 // The scatter subtracts the band origin.  Keeping them absolute means the SoA
 // is independent of the band decomposition, which is what makes it directly
-// testable and directly reusable by M1.P4.T1's re-banding.
+// testable and reusable across any re-banding.
 //
 // Both deposits are always present.  For a Volumetric fragment (and for a Point
 // fragment sitting exactly on a bucket centre) the second deposit is
@@ -640,18 +628,14 @@ struct FragmentRecord {
 // ASSIGNMENT: bucketIndex0/1 + the deposit alphas, from bucketOf() /
 // bucketOfContaining(), which measure position between bucket CENTRES.
 //
-// THE HOLDOUT PAIR IS GONE FROM HERE (M1.P3.T10).  It used to be
-// boundaryIndex/boundaryFrac from DepthBuckets::locateBoundary() — position
-// between ΔCoC BUCKET boundaries — because the holdout LUT was sampled at
-// those same boundaries.  It no longer is: the LUT has its own uniform-in-z
-// boundary set (HoldoutBoundaries), so a pair precomputed against the bucket
-// boundaries would index the wrong array.  scatterBandCPU() now derives the
-// right pair from `depth` via HoldoutSoA::locate(), which is O(1) closed form
-// — cheaper than the O(log K) search this used to precompute, and 8 bytes per
-// fragment lighter (69 -> 61 B/fragment; ~173 MB off a 4K/20spp band).
-//
-// The plan budgeted "two binary searches per fragment (assignment + holdout
-// vis)".  It is now ONE: bucketOf()'s O(log K), plus an O(1) locate.
+// NO HOLDOUT BOUNDARY PAIR LIVES HERE.  The holdout LUT has its own
+// uniform-in-z boundary set (HoldoutBoundaries), not the ΔCoC bucket
+// boundaries, so a pair precomputed against the bucket boundaries would index
+// the wrong array.  scatterBandCPU() derives the right pair from `depth` via
+// HoldoutSoA::locate(), which is O(1) closed form — cheaper than an O(log K)
+// search, and 8 bytes per fragment lighter (69 -> 61 B/fragment; ~173 MB off a
+// 4K/20spp band).  That leaves ONE search per fragment: bucketOf()'s
+// O(log K), plus the O(1) locate.
 // ---------------------------------------------------------------------------
 struct SampleSoA {
     PodBuffer<std::int32_t> x;
@@ -668,7 +652,7 @@ struct SampleSoA {
     PodBuffer<float>        colorScale1;
 
     // Packed per-fragment flag byte: bit 0 = FragmentKind, bit 1 = coverage
-    // head, bits 2/3 = "deposit 0 / deposit 1 writes area" (M1.P3.T15).  Read
+    // head, bits 2/3 = "deposit 0 / deposit 1 writes area".  Read
     // it through fragmentKindOf() / fragmentCoverageHeadOf() /
     // fragmentDepositsArea0Of() / fragmentDepositsArea1Of(); never cast it
     // straight to FragmentKind.
@@ -690,8 +674,7 @@ struct SampleSoA {
         return color.data() + i * static_cast<std::size_t>(channelCount);
     }
 
-    // Total owned bytes — for the memory-limit knob's per-band budget, which
-    // the design reference currently sizes from the bucket planes alone.
+    // Total owned bytes — for the memory-limit knob's per-band budget.
     std::size_t sizeBytes() const;
 
     // Size 0, capacity kept (band-to-band reuse).
@@ -736,7 +719,7 @@ struct FlattenParams {
     // already knows when it builds these params.
     //
     // It gates ONE thing: how far the same-pixel deposit-collision merge
-    // (M1.P3.T13, see the .cpp) may reach in depth.  That merge is exact for
+    // (see the .cpp) may reach in depth.  That merge is exact for
     // the scatter — its members rasterise the identical kernel, so
     // over-compositing them is what a `DeepToImage` flatten does — but it emits
     // ONE fragment at ONE depth, and the holdout is sampled per fragment.  With
@@ -749,8 +732,8 @@ struct FlattenParams {
     // DEFAULTS FALSE, i.e. "merge freely", because that is the branch the
     // `DeepToImage` parity gate lives on and because it is what every
     // holdout-free caller wants.  A caller that connects a holdout and forgets
-    // this gets the pre-T13 holdout behaviour of a `pre_merge` group, not a
-    // crash or an out-of-range read.
+    // this gets an unrestricted merge — a holdout sampled at one depth for the
+    // whole group — not a crash or an out-of-range read.
     bool  holdoutConnected   = false;
 
     int           channelCount = 0;
@@ -761,10 +744,10 @@ struct FlattenParams {
 // sanitizeFragmentDepth — THE depth sanitiser the flatten applies, exported
 //
 // It lives here rather than in flattenPixelToSoA()'s translation unit because
-// THREE passes have to agree about what a depth means, and the milestone has
-// already been bitten twice by two of them disagreeing (the holdout's missing
-// ray-distance factor, and computeDepthRange() measuring a range the flatten
-// then falls below).  The node's depth-range pass calls this; so does the
+// THREE passes have to agree about what a depth means, and two of them
+// disagreeing is a live failure class (the holdout's missing ray-distance
+// factor, and computeDepthRange() measuring a range the flatten then falls
+// below).  The node's depth-range pass calls this; so does the
 // flatten; the holdout's appendPixel() calls it too and then applies its own
 // extra NaN rule on top (see there — NaN is DROPPED on the holdout side, not
 // mapped to 0).
@@ -793,7 +776,7 @@ DEEPC_HD inline float sanitizeFragmentDepth(float v)
 //
 //   * flattenPixelToSoA() (below) — the source fragments;
 //   * HoldoutSampleSoA::appendPixel(`depthScale`) — the holdout, which the
-//     milestone measured sitting 47.3% too far back in Z at the corner of a
+//     measured sitting 47.3% too far back in Z at the corner of a
 //     20mm / 36x24 frame when this was omitted;
 //   * the node's computeDepthRange() — the frame's measured range, which the
 //     buckets and the holdout boundary set are both built from.  The
@@ -819,7 +802,7 @@ DEEPC_HD inline float rayDepthScaleAt(const FlattenParams& params, int x, int y)
 }
 
 // ---------------------------------------------------------------------------
-// FlattenStats — optional instrumentation, for the perf gate at M1.P4.T2
+// FlattenStats — optional instrumentation
 //
 // Pass nullptr to skip.  All counters are cumulative across pixels so a band
 // or a whole frame can share one instance.
@@ -841,7 +824,7 @@ struct FlattenStats {
 // band: the staging vectors keep their capacity (and their per-fragment channel
 // vectors keep theirs), so nothing in THIS file allocates per pixel once warmed
 // up.  The span-split part array is NOT here — it is a stack array in the
-// per-sample path (kMaxSpanSplitParts, ~2.6KB at K=128), per the brief.
+// per-sample path (kMaxSpanSplitParts, ~2.6KB at K=128).
 //
 // The whole per-pixel path is not allocation-free, though, and the difference
 // matters at 4K: deepc::tidyOverlapping() builds a fresh
@@ -849,9 +832,8 @@ struct FlattenStats {
 // with 2+ samples costs exactly one malloc/free pair (measured: 0.00
 // allocations/pixel at one sample, 1.00 at two and at twenty, and the same 1.00
 // for tidyOverlapping() called alone).  That is one allocation PER PIXEL, not
-// per sample, and it lives in shared code the milestone requires reusing — but
-// it is ~12.7M malloc/free pairs per 4K frame and belongs on M1.P4.T2's perf
-// list, not in a claim that the path allocates nothing.
+// per sample, but it is ~12.7M malloc/free pairs per 4K frame — so this path
+// is not allocation-free, whatever the scratch below achieves.
 // ---------------------------------------------------------------------------
 struct FlattenScratch {
     // One staged fragment: a SampleRecord-shaped piece plus the grouping keys
@@ -876,7 +858,7 @@ struct FlattenScratch {
     std::size_t         stagedCount = 0;
     std::vector<float>  mergeAccum;          // over-composite accumulator
 
-    // The deposit-collision pass (M1.P3.T13) holds ONE group back while it
+    // The deposit-collision pass holds ONE group back while it
     // decides whether the next one lands in a bucket it already occupies, so it
     // needs a second accumulator; it is never live at the same time as
     // mergeAccum's group is being built.
@@ -895,23 +877,23 @@ struct FlattenScratch {
     int                 holdoutRangeCount = 0;
 
     // "Has a new-area claim already been made in this bucket, at this pixel,
-    // and by WHICH KERNEL?" — the second half of M1.P3.T13, for the collisions
-    // the merge above cannot take (fragments at one pixel whose kernels
-    // genuinely differ).  Stamped rather than cleared: `claimStamp[k] ==
+    // and by WHICH KERNEL?" — for the collisions the merge above cannot take
+    // (fragments at one pixel whose kernels genuinely differ).  Stamped
+    // rather than cleared: `claimStamp[k] ==
     // claimEpoch` means "claimed during the current pixel", so a pixel costs no
     // reset at all.  The epoch is incremented per pixel and both arrays are
     // sized to the bucket count on first use, so this is O(1) per fragment.
     // 8 B/bucket — 1KB per thread at K=128.  `claimBin` holds the claimer's
     // scatterKernelBin(): a later deposit yields the claim only to a DIFFERENT
     // kernel — see visitBucket() in the .cpp for the measurement that makes
-    // that restriction load-bearing, and for the per-bucket running alpha
-    // (M1.P3.T15) that `runAlpha` holds beside them.
+    // that restriction load-bearing, and for the per-bucket running alpha that
+    // `runAlpha` holds beside them.
     std::vector<std::uint32_t> claimStamp;
     std::vector<int>           claimBin;
     std::uint32_t              claimEpoch = 0;
 
-    // M1.P3.T15's per-bucket TOUCH record, beside the claim above: which kernel
-    // last deposited into this bucket at this pixel, and how much alpha it has
+    // Per-bucket TOUCH record, beside the claim above: which kernel last
+    // deposited into this bucket at this pixel, and how much alpha it has
     // accumulated there ("how much of THIS bucket, at THIS pixel, has already
     // been written by fragments rasterising THIS kernel?").  Distinct from the
     // claim, which records only NEW-AREA claims — a fragment's rear deposit
@@ -919,16 +901,16 @@ struct FlattenScratch {
     // same per-pixel epoch, so a pixel still costs no reset.  Folding the two
     // into one stamp is a measured regression; see claimNewArea() in the .cpp.
     //
-    // COST, because M1.P4.T1 budgets on it: THREE arrays, not one float —
-    // 12 B/bucket, i.e. 1.5KB per thread at K=128, NOT the 512 B the milestone
-    // brief provisionally budgeted.  With the claim pair above the flatten's
-    // per-bucket scratch is 20 B/bucket, 2.5KB per thread at K=128.
+    // COST, because the band budget counts it: THREE arrays, not one float —
+    // 12 B/bucket, i.e. 1.5KB per thread at K=128.  With the claim pair above
+    // the flatten's per-bucket scratch is 20 B/bucket, 2.5KB per thread at
+    // K=128.
     std::vector<std::uint32_t> runStamp;
     std::vector<int>           runBin;
     std::vector<float>         runAlpha;
 
-    // M1.P3.T15: the highest bucket any deposit at the CURRENT source pixel has
-    // touched, and the kernel bin of the deposit that reached it.  A later
+    // The highest bucket any deposit at the CURRENT source pixel has touched,
+    // and the kernel bin of the deposit that reached it.  A later
     // (further) fragment rasterising THAT SAME kernel may not deposit in front
     // of it -- see emitPending() in the .cpp.
     int                        frontierBucket = 0;
@@ -942,9 +924,9 @@ struct FlattenScratch {
 // because CocParams::_formatWidthPx is Nuke's CURRENT (proxy) format width, so
 // coc_px already comes out in proxy pixels.  The PIXEL-unit knobs do not:
 //
-//   * max_radius — the radius CLAMP.  M1.P2.T2 used it only for the bbox pad,
-//     where over-padding is harmless, so it was left unscaled there.  Here it
-//     bounds the actual blur: leaving it at full-res value makes a proxy-0.5
+//   * max_radius — the radius CLAMP.  The bbox pad may use it unscaled (over-
+//     padding is harmless), but here it bounds the actual blur: leaving it at
+//     the full-res value makes a proxy-0.5
 //     render clamp at twice the radius the full-res render clamps at, so proxy
 //     and full res disagree exactly where the clamp bites (the near field).
 //   * size (Manual mode) — a blur radius in pixels at d = infinity.  Unscaled,
@@ -1028,7 +1010,7 @@ bool checkCompositionContract(const SampleSoA& soa,
 
 // ===========================================================================
 //
-//  THE SCATTER CORE (M1.P3.T2)
+//  THE SCATTER CORE
 //
 //  Pipeline for one band, in order:
 //
@@ -1040,27 +1022,20 @@ bool checkCompositionContract(const SampleSoA& soa,
 //  SoA chunks (the design fetches source rows band +/- ceil(maxRadius*aspect)
 //  and may flatten them in pieces).  resolveBandCPU() is what must run exactly
 //  once at the end, and it ALWAYS runs the saturate-down pass — that pass is
-//  load-bearing for ordinary fog, not a safety net (milestone Decisions,
-//  2026-07-26: within-bucket additive accumulation over-counts same-pixel
-//  fragments by +33.3% / +71.4% / +113.3% of alpha at 2 / 3 / 4 disjoint fog
-//  spans sharing a bucket, and `pre_merge` does not mitigate it), so it is
-//  deliberately NOT behind a flag.
+//  load-bearing for ordinary fog, not a safety net (within-bucket additive
+//  accumulation over-counts same-pixel fragments by +33.3% / +71.4% / +113.3%
+//  of alpha at 2 / 3 / 4 disjoint fog spans sharing a bucket, and `pre_merge`
+//  does not mitigate it), so it is deliberately NOT behind a flag.
 //
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
-// THE BUCKET COMPOSITE — DECIDED (M1.P3.T17, 2026-08-16)
+// THE BUCKET COMPOSITE
 //
-// Two candidate rules were built and carried behind a runtime enum so the
-// choice could be made from RENDERED PIXELS rather than from identities
-// (milestone Decisions, 2026-07-26, "Bucket-composite alpha deficit").  The
-// bake-off ran at M1.P3.T17 on validation scenes (c), (f), (g) and (i) at
-// K=8/16/64, plus scene (l), and `compositePixelCoveragePartition()` below WON.
-// There is no enum, no flag and no switch any more: it is the only rule.
-//
-// WHAT WAS DELETED, and why it is not worth resurrecting — plain front-to-back
-// `over` of the K planes, ignoring both area planes (the design reference's
-// original sketch, and what classical layered DOF does).  It failed on:
+// The K bucket planes are combined by compositePixelCoveragePartition() below,
+// which reads both area planes.  It is NOT a plain front-to-back `over` of the
+// K planes ignoring them, which is the obvious rule and what classical layered
+// DOF does.  `over` fails on:
 //
 //   * THE HOLDOUT LAW.  An opaque fragment's transmittance split is a no-op
 //     (a0 == a1 == alpha == 1), so both bucket deposits carry the full
@@ -1069,14 +1044,14 @@ bool checkCompositionContract(const SampleSoA& soa,
 //     0.25 at vis == 0.5, i.e. +50% RELATIVE on the node's differentiating
 //     feature, at size 0, K-independent.  Confirmed to four decimals at every
 //     probe depth of harness check `f1` (0.5012 -> 0.7512, 0.3758 -> 0.6104,
-//     0.1585 -> 0.2919), against 4.367e-08 for the surviving rule.
+//     0.1585 -> 0.2919), against 4.367e-08 for the coverage partition.
 //   * FLAT OPAQUE ACROSS BUCKETS.  Distinct opaque fragments whose disc
 //     weights sum to exactly 1 at a destination pixel but land in DIFFERENT
 //     buckets composite to 1 - prod(1 - W_k) < 1 — 25.0% alpha deficit across
 //     2 buckets, 31.6% / 4, 34.4% / 8, 35.6% / 16.  It WORSENS with K, so the
-//     design's own K knob is an anti-mitigation for it: scene (g)'s opaque
-//     receding plane read -0.28% / -2.15% / -7.79% at K=8/16/64 where the
-//     surviving rule read -1.05% / -0.44% / -2.8e-05%.
+//     `depth_layers` knob is an anti-mitigation for it: scene (g)'s opaque
+//     receding plane reads -0.28% / -2.15% / -7.79% at K=8/16/64 under `over`
+//     where the coverage partition reads -1.05% / -0.44% / -2.8e-05%.
 //   * THE OPPOSITE FAILURE, WHICH IT CANNOT AVOID EITHER.  Pixel-integrated
 //     alpha is linear in kernel weight while `over` is not, so one fragment
 //     split across two buckets over-composites to more than it deposited
@@ -1086,11 +1061,10 @@ bool checkCompositionContract(const SampleSoA& soa,
 //     inflated from 0.437 to 0.683.  Erring HIGH is what the node's
 //     honest-alpha contract forbids outright.
 //
-// It had NO plane to correct any of that with, which is the structural reason
-// the decision was not close: this rule reads the coverage and co-located area
-// planes and has been corrected against measurement twice (M1.P3.T8, T9).
+// `over` has no plane to correct any of that with, which is the structural
+// reason: the coverage partition reads the coverage and co-located area planes.
 //
-// WHAT `over` WON, recorded so it is not rediscovered as a surprise: small-CoC
+// WHERE `over` IS BETTER, so it is not rediscovered as a surprise: small-CoC
 // content (harness l1/l2/l3/l5 all favour it, by 2-13x but never by more than
 // ~1 8-bit code value), because BOTH its failure modes are quenched below
 // ~2.5 px — its across-bucket deficit needs coverage spread over many buckets,
@@ -1102,7 +1076,7 @@ bool checkCompositionContract(const SampleSoA& soa,
 // BucketPlaneView — POD, non-owning view of one band's accumulation planes
 //
 // The layout is DeepCDefocusMath.h's ("Bucket plane layout"), extended with
-// the third plane the design reference requires and the fourth M1.P3.T9 adds:
+// the two area planes:
 //
 //   colour   : color    [(k * channelCount + c) * pixelCount + i]
 //   alpha    : alpha    [k * pixelCount + i]
@@ -1114,13 +1088,12 @@ bool checkCompositionContract(const SampleSoA& soa,
 // destination pixel within the band (i = y * width + x, band-relative).
 //
 // THE THIRD PLANE IS `sum of w*vis`, PURE KERNEL COVERAGE, INDEPENDENT OF
-// ALPHA (milestone Decisions, 2026-07-26 — the design reference's original
-// `sum of w*alpha*vis` was character-for-character the alpha plane and is a
-// typo).  It is what distinguishes bucketing-induced alpha loss from the
-// honest coverage deficit of validation scene (i), and it is what
-// CoveragePartition composites against.
+// ALPHA — NOT `sum of w*alpha*vis`, which is character-for-character the alpha
+// plane.  It is what distinguishes bucketing-induced alpha loss from the
+// honest coverage deficit of validation scene (i), and it is what the
+// coverage partition composites against.
 //
-// THE FOURTH PLANE (M1.P3.T9) IS THE SAME QUANTITY FOR THE OTHER HALF OF THE
+// THE FOURTH PLANE IS THE SAME QUANTITY FOR THE OTHER HALF OF THE
 // DEPOSIT: `sum of w*vis` over exactly the deposits that carry alpha but claim
 // NO NEW AREA — a fractionally split fragment's rear (farther-bucket) deposit,
 // and every non-head part of a split volumetric parent.  The third plane is
@@ -1131,8 +1104,9 @@ bool checkCompositionContract(const SampleSoA& soa,
 // recover that alpha's own per-unit-area opacity.  Before it existed the
 // composite substituted the running claimed area, which is only the same
 // number when every co-located layer rasterises the SAME kernel as the head
-// that claimed the area; see that function for the derivation and for the
-// measured error when they do not.
+// that claimed the area — substituting the running claimed area instead is
+// wrong whenever they differ; see that function for the derivation and the
+// measured error.
 //
 // Both area planes are ALPHA-INDEPENDENT and are never touched by the
 // saturation pass, exactly like the third.
@@ -1144,7 +1118,7 @@ struct BucketPlaneView {
     float*         color       = nullptr;
     float*         alpha       = nullptr;
     float*         weight      = nullptr;   // new area
-    float*         colocated   = nullptr;   // co-located area (M1.P3.T9)
+    float*         colocated   = nullptr;   // co-located area
     int            bucketCount = 0;
     int            channelCount = 0;
     int            width       = 0;
@@ -1164,8 +1138,8 @@ struct BucketPlaneView {
 // BucketPlanes — the owning form: one band's K x (C + 3) planes
 //
 // One instance per band-computing thread, reused across bands (allocate()
-// once, zero() per band) — the design's memory-limit knob caps how many of
-// these can be in flight at a time, which is why bytesForBand() lives here.
+// once, zero() per band) — the memory-limit knob caps how many of these can
+// be in flight at a time, which is why bytesForBand() lives here.
 // ---------------------------------------------------------------------------
 struct BucketPlanes {
     PodBuffer<float> color;     // bucketCount * channelCount * pixelCount
@@ -1193,27 +1167,24 @@ struct BucketPlanes {
 
     BucketPlaneView view();
 
-    // The design reference's per-band scratch formula, K*W*B*(C+3)*4 bytes,
-    // in one place so the memory-limit knob and the code cannot drift apart.
+    // The per-band scratch formula, K*W*B*(C+3)*4 bytes, in one place so the
+    // memory-limit knob and the code cannot drift apart.
     //
-    // (C+3), not (C+2), since M1.P3.T9: colour + alpha + new area + co-located
-    // area.  ~+17% of the bucket planes (~+17MB at 4K defaults) against a
-    // ~2.4GB SoA, bought to make the coverage-partition composite exact at any
-    // within-parent radius spread — see BucketPlaneView and
+    // (C+3), not (C+2): colour + alpha + new area + co-located area.  The
+    // fourth plane is ~+17% of the bucket planes (~+17MB at 4K defaults)
+    // against a ~2.4GB SoA, and is what makes the coverage-partition composite
+    // exact at any within-parent radius spread — see BucketPlaneView and
     // compositePixelCoveragePartition().
     //
-    // CLAMP AT THE CALL SITE.  Knob ranges are soft (milestone Decisions,
-    // 2026-07-26), so `depth_layers` must be clamped to [4, 128] and the band
-    // height derived from a CLAMPED `max_radius` before this is evaluated —
-    // otherwise the budget is computed from a number the user typed rather
-    // than from the one the node will use.  This function clamps nothing: it
-    // is the formula, not the policy.
+    // CLAMP AT THE CALL SITE.  Knob ranges are soft, so `depth_layers` must be
+    // clamped to [4, 128] and the band height derived from a CLAMPED
+    // `max_radius` before this is evaluated — otherwise the budget is computed
+    // from a number the user typed rather than from the one the node will use.
+    // This function clamps nothing: it is the formula, not the policy.
     //
-    // NOTE this counts ONLY the planes.  M1.P3.T1 measured the SoA fragment
-    // buffers at 113 B/fragment resident, ~2.4GB for a 4K band at 20spp
-    // (61 logical / ~100 resident, ~2.1GB, since M1.P3.T10 dropped the
-    // per-fragment holdout boundary pair),
-    // which dwarfs them; budget on the combined total (milestone Decisions).
+    // NOTE this counts ONLY the planes.  The SoA fragment buffers measure
+    // ~100 B/fragment resident (61 logical), ~2.1GB for a 4K band at 20spp,
+    // which dwarfs them; budget on the combined total.
     static std::size_t bytesForBand(int bucketCount, int channelCount,
                                     int width, int height)
     {
@@ -1226,48 +1197,46 @@ struct BucketPlanes {
 };
 
 // ---------------------------------------------------------------------------
-// HoldoutSoA — THE M1.P3.T3 SEAM.  Per-dest-pixel boundary transmittance LUT.
+// HoldoutSoA — per-dest-pixel boundary transmittance LUT.
 //
-// WHAT T2 (this task) DOES: takes `vis` as an input and multiplies it into
-// every deposit, before the fragment enters any accumulation structure — which
-// is the whole reason the design does not need full fragment sorting.  An
-// absent holdout is an empty view: enabled() is false, the scatter takes a
-// separate loop with no per-pixel work at all, and vis is identically 1 at
-// ZERO cost (not "vis = 1.0f multiplied in").
+// The scatter takes `vis` from here and multiplies it into every deposit
+// before the fragment enters any accumulation structure — which is why this
+// node needs no full fragment sorting.  An absent holdout is an empty view:
+// enabled() is false, the scatter takes a separate loop with no per-pixel work
+// at all, and vis is identically 1 at ZERO cost (not "vis = 1.0f multiplied
+// in").
 //
-// WHAT T3 MUST DO: fill `boundaryT` per destination pixel with
-// HoldoutVisibility::build(), which writes exactly boundaryCount contiguous
-// floats — i.e. `build(..., holdout.pixelLut(i))` for pixel i, using
-// DepthBuckets::boundaries() and the holdout input's samples at that pixel.
-// The layout is therefore PIXEL-MAJOR:
+// `boundaryT` is filled per destination pixel by HoldoutVisibility::build(),
+// which writes exactly boundaryCount contiguous floats — i.e.
+// `build(..., holdout.pixelLut(i))` for pixel i.  The layout is therefore
+// PIXEL-MAJOR:
 //
 //     boundaryT[i * boundaryCount + b]
 //
 // which is what build() emits and what HoldoutVisibility::interpAtBucket()
-// consumes, so T3's build and this file's consumption need no re-striding and
-// no reimplementation of either.  (Boundary-major would let the scatter read
+// consumes, so the build and the consumption need no re-striding and no
+// reimplementation of either.  (Boundary-major would let the scatter read
 // two contiguous rows per span, but interpAtBucket() takes no stride and the
 // vis path is a log/exp per fragment-pixel anyway — it is not the loop that
 // vectorizes.)
 //
-// *** THE BOUNDARY SET IS THIS VIEW'S OWN, NOT DepthBuckets' (M1.P3.T10) ***
+// *** THE BOUNDARY SET IS THIS VIEW'S OWN, NOT DepthBuckets' ***
 //
 // `boundaries` is carried BY VALUE, alongside the LUT it was built at, and it
 // is the single source of truth for both halves of the seam: HoldoutLut::build()
 // fills `boundaryT` at exactly these depths and the scatter locates a fragment
 // in exactly these depths.  There is no second party to agree with and so no
-// way for a build and a lookup to drift onto different boundary arrays — which
-// is the whole failure class the original "the flatten precomputes the index"
-// arrangement was exposed to once the two sets stopped being the same set.
+// way for a build and a lookup to drift onto different boundary arrays.  A
+// precomputed index carried on the fragment would re-open exactly that,
+// because the two boundary sets are not the same set.
 //
 // The pair fed to interpAtBucket() is therefore HoldoutBoundaries::locate()'s,
 // computed by scatterBandCPU() from the fragment's own depth in O(1) closed
 // form.  It is NOT DepthBuckets::bucketOf()'s (position between bucket
-// CENTRES; milestone Decisions 2026-07-26 measured max |vis - exact| going
-// 0.680 -> 0.869 if it is used) and, since M1.P3.T10, no longer
+// CENTRES — max |vis - exact| measures 0.680 -> 0.869 if it is used) and not
 // DepthBuckets::locateBoundary()'s either (position between ΔCoC BUCKET
 // boundaries — a different array from the one the LUT is sampled at).
-// SampleSoA consequently no longer carries boundaryIndex/boundaryFrac at all.
+// SampleSoA consequently carries no boundaryIndex/boundaryFrac at all.
 //
 // `boundaries.count()` is DepthBuckets::boundaryCount() == K+1, so per-band LUT
 // memory is unchanged at (K+1)*W*B*4 bytes.  The two sets share that COUNT and
@@ -1294,9 +1263,9 @@ struct HoldoutSoA {
         return boundaryT + pixel * static_cast<std::ptrdiff_t>(boundaries.count());
     }
 
-    // The fragment's (index, frac) into the LUT.  O(1), closed form — this is
-    // what replaced the flatten's precomputed pair, and it is the ONLY locator
-    // that may feed HoldoutVisibility::interpAtBucket() on this LUT.
+    // The fragment's (index, frac) into the LUT.  O(1), closed form, and the
+    // ONLY locator that may feed HoldoutVisibility::interpAtBucket() on this
+    // LUT.
     DEEPC_HD inline BoundarySpan locate(float depth) const
     {
         return boundaries.locate(depth);
@@ -1304,8 +1273,7 @@ struct HoldoutSoA {
 };
 
 // The storage behind the view above is HoldoutLut, built from
-// HoldoutSampleSoA -- both immediately below.  See those for the M1.P3.T3
-// implementation this comment block specifies.
+// HoldoutSampleSoA -- both immediately below.
 
 // ---------------------------------------------------------------------------
 // HoldoutSampleSoA — one band's holdout input, DeepFront/DeepBack/Alpha ONLY
@@ -1314,8 +1282,8 @@ struct HoldoutSoA {
 // at each DESTINATION pixel from that SAME pixel's own holdout samples --
 // there is no scatter, no CoC, no bucket split and no pre-merge on this side.
 // That absence is deliberate and is exactly what makes the holdout edge
-// pixel-sharp (see the design reference's Holdout mechanics paragraph): a
-// source fragment's blur is a property of the SOURCE, but visibility is
+// pixel-sharp: a source fragment's blur is a property of the SOURCE, but
+// visibility is
 // looked up at each dest pixel independently from that pixel's own samples,
 // so no filtering of any kind can leak across pixels.
 //
@@ -1377,11 +1345,11 @@ struct HoldoutSampleSoA {
     // (rayDistanceToZ(1, focalLengthMm, filmbackRadiusMm(x, y, ...))), or 1
     // when `depth_is_ray_distance` is off.  IT MUST MATCH WHAT
     // flattenPixelToSoA() APPLIED AT THE SAME PIXEL: the LUT is evaluated at
-    // the HoldoutBoundaries depths (M1.P3.T10), which live in Z, so an
+    // the HoldoutBoundaries depths, which live in Z, so an
     // uncorrected holdout sits
     // systematically too far back off-axis (measured: 47% too far in Z at the
     // corner of a 20mm/36x24 frame).  This is the request/engine-style
-    // "two passes disagreeing about depth" failure the milestone already
+    // "two passes disagreeing about depth" failure this node has already
     // names for computeDepthRange(), reached through a different door.
     void appendPixel(std::vector<SampleRecord>& samples, float depthScale = 1.0f);
 
@@ -1395,7 +1363,7 @@ struct HoldoutSampleSoA {
 };
 
 // ---------------------------------------------------------------------------
-// HoldoutLut — THE OWNING STORAGE behind HoldoutSoA (M1.P3.T3)
+// HoldoutLut — THE OWNING STORAGE behind HoldoutSoA
 //
 // One instance per band-computing thread, reused band to band exactly like
 // BucketPlanes: build() sizes and refills it, view() hands the scatter its
@@ -1403,7 +1371,7 @@ struct HoldoutSampleSoA {
 // scatterBandCPU() must keep this alive until that call returns, and may
 // reuse (rebuild) it for the next band.
 //
-// WHAT build() DOES: for every band pixel, HoldoutVisibility::build() fills
+// build(): for every band pixel, HoldoutVisibility::build() fills
 // boundaryCount contiguous floats at the HoldoutBoundaries depths (K+1 of them,
 // uniform in Z -- NOT the ΔCoC bucket boundaries; see below and
 // HoldoutBoundaries), folding the in-span exponential attenuation in once per
@@ -1423,74 +1391,68 @@ struct HoldoutSampleSoA {
 // false for the whole band, and nothing in the per-fragment path so much as
 // dereferences the holdout -- see scatterFragmentSpans/scatterFragmentSharp,
 // which branch on holdout.enabled() before ever calling interpAtBucket().
-// That is the genuinely-free path the design reference requires, not a
-// multiply by 1.0 per fragment.
+// That is a genuinely free path, not a multiply by 1.0 per fragment.
 //
 // ZERO COST IS THE CALLER'S HALF TOO.  build() itself on an empty band is one
 // branch (measured 7.8 ns for a 4096x64 band), but running the appendPixel()
 // loop to DISCOVER that the band is empty is NOT free: 262144 calls with an
 // empty vector measured 1.98 ms/band, ~67 ms per 4K frame of pure
-// bookkeeping.  So M1.P3.T5 must SKIP the fetch/append loop entirely when
+// bookkeeping.  So the caller must SKIP the fetch/append loop entirely when
 // input(1) is unconnected or the band's box does not intersect the holdout's
 // -- begin(N) followed by no appendPixel() at all is well defined and lands
 // on exactly the same disabled view.  Only a band that genuinely straddles
 // the holdout bbox should walk its pixels.
 //
-// COST WHEN IT IS ON, for M1.P4.T1's budget and the Phase 1.4 perf gate
-// (4096x64 band, K=16, 2 holdout samples/pixel, measured at this review):
+// COST WHEN IT IS ON (4096x64 band, K=16, 2 holdout samples/pixel, measured):
 // appendPixel() 15.3 ms/band, build() 24.7 ms/band, 17.0 MB/band.  Roughly
 // 1.4 s and 578 MB across a 4K frame's 34 bands, and both scale with K.  None
-// of that is in BucketPlanes::bytesForBand() -- see M1.P4.T1.
+// of that is in BucketPlanes::bytesForBand(), so a memory budget must add it
+// separately.
 //
-// ***  THE BOUNDARY SET IS DECOUPLED FROM THE ΔCoC BUCKETS (M1.P3.T10)  *****
+// ***  THE BOUNDARY SET IS DECOUPLED FROM THE ΔCoC BUCKETS  ******************
 //
-// This class used to sample transmittance at the SCATTER's ΔCoC bucket
-// boundaries, as the design reference originally specified, and
-// interpAtBucket() chorded between two of them in log space.  That is exact
-// only while no holdout span edge falls strictly inside the bracket.  For the
-// commonest holdout of all -- one opaque card, i.e. a POINT sample -- the true
-// T is a step, and the log chord collapses it onto the bracket's NEAR
-// boundary, so the card behaved as if it sat up to a whole bucket closer to
-// camera.  Measured at M1.P3.T3's review, at the node's DEFAULTS
-// (K=16, focus 10, depth range [1,100] -- the 15/1 front/back bucket split the
-// milestone Decisions already record): an opaque holdout at z=50 landed in
-// bucket [10,100] and started occluding at z=10.9.  A source fragment at z=15,
-// 35 units IN FRONT of the holdout, came out 98% erased; mean |vis error|
-// over the depth range was 0.391, max 1.0.  K did not rescue it -- at K=128
-// the same card still bit at z=40.2.  The magnitude was also set by
-// kMinTransmittance (moving the floor 1e-30 -> 1e-3 moved the bite 10.9 ->
-// 19.0), which is the tell that it was not a principled approximation.
+// This LUT is NOT sampled at the scatter's ΔCoC bucket boundaries.  Chording
+// in log space between two boundary values is exact only while no holdout span
+// edge falls strictly inside the bracket, and for the commonest holdout of all
+// -- one opaque card, i.e. a POINT sample -- the true T is a step, which the
+// log chord collapses onto the bracket's NEAR boundary: the card then behaves
+// as if it sat up to a whole bucket closer to camera.  On the ΔCoC boundaries
+// at the node's DEFAULTS (K=16, focus 10, depth range [1,100], a 15/1
+// front/back bucket split) an opaque holdout at z=50 lands in bucket [10,100]
+// and starts occluding at z=10.9: a source fragment at z=15, 35 units IN FRONT
+// of the holdout, comes out 98% erased, mean |vis error| 0.391 over the depth
+// range, max 1.0.  K does not rescue it -- at K=128 the same card still bites
+// at z=40.2 -- and the magnitude is set by kMinTransmittance (moving the floor
+// 1e-30 -> 1e-3 moves the bite 10.9 -> 19.0), which is the tell that it is not
+// a principled approximation.
 //
-// The DOMINANT term was placement, and no interpolant could have recovered a
-// 90-unit-wide bracket: with only two boundary values a monotone T can be
-// anywhere between them, so no interpolant beats a worst case of (T0 - T1)/2.
-// The fix is therefore a DIFFERENT boundary set for this LUT than
-// for the scatter's buckets -- the ΔCoC spacing exists to bound BANDING (a CoC
-// criterion) and spends 15/16 of its budget in front of focus, which is the
-// wrong criterion for depth occlusion.  build() now takes HoldoutBoundaries
-// (uniform in Z over the frame's measured depth range, the SAME K+1 count):
-// mean |vis error| 0.057 against 0.391, biting at 44.4 against a true 50.  The
-// per-fragment index stays O(1) and closed form, and per-band memory is
-// unchanged.  See HoldoutBoundaries for the full bake-off, including why a
-// holdout-depth-histogram-derived set lost and why uniform-in-1/z is not it.
+// The DOMINANT term is placement, and no interpolant can recover a 90-unit
+// bracket: with only two boundary values a monotone T can be anywhere between
+// them, so no interpolant beats a worst case of (T0 - T1)/2.  Hence a
+// DIFFERENT boundary set for this LUT than for the scatter's buckets -- the
+// ΔCoC spacing exists to bound BANDING (a CoC criterion) and spends 15/16 of
+// its budget in front of focus, which is the wrong criterion for depth
+// occlusion.  build() takes HoldoutBoundaries (uniform in Z over the frame's
+// measured depth range, the SAME K+1 count): mean |vis error| 0.057 against
+// 0.391, biting at 44.4 against a true 50.  The per-fragment index stays O(1)
+// and closed form, and per-band memory is unchanged.  See HoldoutBoundaries
+// for why a holdout-depth-histogram-derived set and uniform-in-1/z are both
+// worse.
 //
-// WHAT IS LEFT (decided at M1.P3.T18).  Half a bracket of placement
-// uncertainty is irreducible with K+1 values; on top of it, for a bracket
-// whose far transmittance is bitwise zero (an opaque step, or a dense
-// alpha<1 stack whose product underflowed) the log chord floors log T at
-// kMinTransmittance and so collapses to ~0 across the whole bracket,
-// one-sided TOWARD CAMERA -- harness check f2 pins it at 78% of a
-// depthRange/K bracket erased in front, decaying as 10^(-30*frac).  Two
-// opaque-step alternates (midpoint step, linear-in-T) were shipped behind a
-// runtime flag at M1.P3.T11 and DELETED at M1.P3.T18 after a rendered
-// bake-off: they erased less in front of an opaque card (30% / ramp), but
-// on a dense volumetric holdout -- 46 samples at alpha=0.9 in one bracket,
-// scene (f)'s content class -- they LEAKED source through the fog at up to
-// full visibility (midpoint +1.000, linear-in-T +0.840, log chord +1e-09
-// worst leak, rendered end to end), and they leaked behind opaque cards at
-// other card positions.  Erase-toward-camera is bounded and K-reducible;
+// WHAT REMAINS.  Half a bracket of placement uncertainty is irreducible with
+// K+1 values; on top of it, for a bracket whose far transmittance is bitwise
+// zero (an opaque step, or a dense alpha<1 stack whose product underflowed)
+// the log chord floors log T at kMinTransmittance and so collapses to ~0
+// across the whole bracket, one-sided TOWARD CAMERA -- harness check f2 pins
+// it at 78% of a depthRange/K bracket erased in front, decaying as
+// 10^(-30*frac).  That is the deliberate trade: interpolants that erase less
+// in front of an opaque card (a midpoint step, or linear-in-T) LEAK source
+// through a dense volumetric holdout -- 46 samples at alpha=0.9 in one
+// bracket, scene (f)'s content class -- at up to full visibility (midpoint
+// +1.000, linear-in-T +0.840, against the log chord's +1e-09 worst leak,
+// rendered end to end).  Erase-toward-camera is bounded and K-reducible;
 // invented visibility through a holdout is neither.  See "THE HOLDOUT
-// INTERPOLANT -- DECIDED" in DeepCDefocusMath.h for the full numbers.
+// INTERPOLANT" in DeepCDefocusMath.h for the numbers.
 // ***************************************************************************
 // ---------------------------------------------------------------------------
 struct HoldoutLut {
@@ -1505,7 +1467,7 @@ struct HoldoutLut {
 
     // Builds (or, per the note above, clears) the LUT from one band's
     // flattened holdout samples and the frame's HOLDOUT boundary set -- NOT
-    // its DepthBuckets (M1.P3.T10).  Safe to call repeatedly with the same
+    // its DepthBuckets.  Safe to call repeatedly with the same
     // geometry (PodBuffer keeps its capacity), which is the band loop's normal
     // path.  If `samples` was not filled for the full `samples.pixelCount`
     // (a caller bug), the unfilled tail is treated as zero-sample rather than
@@ -1535,8 +1497,8 @@ struct HoldoutLut {
 // it is independent of the band decomposition), and the scatter subtracts the
 // origin.  Fragments outside the band are NOT an error and are not culled:
 // their discs are exactly how a band gets the energy scattered in from the
-// `band +/- ceil(maxRadius*aspect)` rows the design fetches around it.  Every
-// span is clipped to the band.
+// `band +/- ceil(maxRadius*aspect)` rows fetched around it.  Every span is
+// clipped to the band.
 // ---------------------------------------------------------------------------
 struct ScatterParams {
     int bandX      = 0;         // band origin, absolute image coordinates
@@ -1548,15 +1510,11 @@ struct ScatterParams {
     // weight 1 into its OWN pixel's bucket instead of rasterising a disc.
     // This is also what keeps DiscKernelLUT's documented caller contract
     // ("never reaches the sampler for radius < 0.5px") true from this side.
-    // (`holdoutInterp` sat below this until M1.P3.T18 decided the holdout
-    // interpolant from rendered pixels and deleted the losing variants and
-    // the flag, as M1.P3.T17 did for `combine` before it -- there is one
-    // interpolant now and nothing to select.)
     float sharpRadiusPx = kSharpRadiusPx;
 };
 
 // ---------------------------------------------------------------------------
-// ScatterStats — optional instrumentation (M1.P4.T2's perf gate).  Cumulative.
+// ScatterStats — optional instrumentation.  Cumulative.
 // ---------------------------------------------------------------------------
 struct ScatterStats {
     std::size_t fragments      = 0;   // fragments examined
@@ -1590,26 +1548,25 @@ struct ScatterScratch {
 // ScatterFragment — one fragment's deposit, as the per-span body sees it
 //
 // POD, by value, no SoA indexing: this is the argument bundle a CUDA thread
-// would build for itself in M3.  It is ONE CHANNEL GROUP's worth of one
+// would build for itself.  It is ONE CHANNEL GROUP's worth of one
 // fragment, which is why it carries a channel range rather than a count.
 //
 // bucket1 == bucket0 means "no second deposit" — the same convention
 // fragmentDeposit() produces for frac == 0 and for every bucketOfContaining()
 // (i.e. span-split) assignment, so the caller never has to branch on
 // FragmentKind here.  THE COMPOSITION CONTRACT IS NOT RE-DECIDED IN THE
-// SCATTER: the flatten (M1.P3.T1) already chose bucketOf() vs
-// bucketOfContaining() per fragment and this file honours the labels it is
-// given.  Doing both is a measured +8.29% double-count.
+// SCATTER: the flatten already chose bucketOf() vs bucketOfContaining() per
+// fragment and this file honours the labels it is given.  Doing both is a measured +8.29% double-count.
 //
 // depositCoverage exists because the alpha and coverage planes are per
-// fragment and NOT per channel group: with several channel groups (M2's
-// chromatic aberration) each group rasterises its own radius, but only one of
+// fragment and NOT per channel group: with several channel groups (a
+// chromatic kernel) each group rasterises its own radius, but only one of
 // them may write the alpha and coverage planes or they would be counted once
 // per group.
 //
 // coverageHead is the OTHER gate on the coverage plane, and it is per FRAGMENT
 // rather than per group: a split volumetric parent's non-head parts carry
-// alpha and colour but no coverage (M1.P3.T8).  The two are separate because
+// alpha and colour but no coverage.  The two are separate because
 // they answer different questions — "is this the group that owns the alpha and
 // coverage planes" versus "is this the fragment that owns its parent's area".
 // The coverage plane is written when BOTH hold, and then only by the
@@ -1628,7 +1585,7 @@ struct ScatterFragment {
     float colorScale1 = 0.0f;
 
     // HoldoutBoundaries::locate()'s pair — position between the HOLDOUT LUT's
-    // own boundaries (M1.P3.T10), NOT the bucketOf() pair above and NOT
+    // own boundaries, NOT the bucketOf() pair above and NOT
     // DepthBuckets::locateBoundary()'s.  Filled by scatterBandCPU() from the
     // fragment's depth in O(1); left at {0, 0} when there is no holdout, in
     // which case nothing reads it.
@@ -1641,25 +1598,20 @@ struct ScatterFragment {
 
     bool  depositCoverage = false;  // alpha + coverage planes: one group only
     bool  coverageHead    = true;   // coverage plane: one fragment per parent
-    bool  depositArea0    = true;   // M1.P3.T15: does deposit 0 write area?
-    // ...and deposit 1.  A LIVE CASE, not a guard.  M1.P3.T15 shipped calling
-    // it "unreachable through flattenPixelToSoA() today" and rested two
-    // surviving mutants on that; its review disproved it.  The frontier clamp
-    // is gated on the kernel bin and `frontierBin` is a single slot, while CoC
-    // radius is V-SHAPED about the focal plane — so three same-pixel samples
-    // straddling focus bin as A, B, A, the middle one leaves `frontierBin` on
-    // B, the third one's clamp does not fire, and BOTH of its deposits land on
-    // buckets the first already touched with kernel A.  Measured over a
-    // 900-pixel randomised corpus at Manual size 6, `pre_merge` off: 25 such
-    // fragments at K=4 and 2 at K=16 (0 at size 0 — one bin, so the milestone's
-    // size-0 parity gates cannot reach this at all).
+    bool  depositArea0    = true;   // does deposit 0 write area?
+    // ...and deposit 1.  BOTH FALSE IS A LIVE CASE, not a guard: the frontier
+    // clamp is gated on the kernel bin and `frontierBin` is a single slot,
+    // while CoC radius is V-SHAPED about the focal plane — so three same-pixel
+    // samples straddling focus bin as A, B, A, the middle one leaves
+    // `frontierBin` on B, the third one's clamp does not fire, and BOTH of its
+    // deposits land on buckets the first already touched with kernel A.
+    // Measured over a 900-pixel randomised corpus at Manual size 6,
+    // `pre_merge` off: 25 such fragments at K=4 and 2 at K=16 (0 at size 0 —
+    // one bin, so a size-0 parity gate cannot reach this at all).
     //
     // The invariant is "at most one area plane PER DEPOSIT", not "per
     // fragment", and it is pinned end to end by "the `no area at all` deposit
     // is REACHABLE ... and the scatter honours both bits" in the suite.
-    // (A per-fragment `holdoutInterp` copy of the M1.P3.T11 bake-off flag
-    // lived here until M1.P3.T18 decided the interpolant from rendered
-    // pixels and deleted the losing variants and the flag.)
     bool  depositArea1    = true;
 };
 
@@ -1669,10 +1621,8 @@ struct ScatterFragment {
 //
 // Every loop here is a flat `dst[i] += w[i] * scalar` over a contiguous span
 // with `__restrict__` on both pointers and no disc test, no branch and no
-// gather inside — which is the shape GCC auto-vectorizes at -O3 (the per-
-// target `-mavx2 -mfma` lands at M1.P5.T1; `-fopt-info-vec` verification is
-// part of the Phase 1.4 gate, not an assumption).  No intrinsics, no SIMD
-// library, no OpenMP, by the board-level Context.
+// gather inside — which is the shape GCC auto-vectorizes at -O3.  No
+// intrinsics, no SIMD library, no OpenMP.
 //
 // `w` is the EFFECTIVE weight — kernel weight already multiplied by holdout
 // visibility — so the holdout costs this function nothing.
@@ -1693,12 +1643,12 @@ struct ScatterFragment {
 // `depositWeight` and `depositColocated` are mutually exclusive per deposit
 // (one deposit's `w*vis` is either new area or co-located area, never both),
 // but that is the caller's invariant — scatterSpanBothBuckets() — not
-// something re-decided here.  Since M1.P3.T15 a deposit may write NEITHER: one
-// that was `over`-composited onto an identical earlier deposit of the same
-// kernel at the same source pixel covers area that is already in the plane, and
-// counting it again is what makes the composite read `a - a^2/4` in place of
-// `a`.  So the deposit invariant is now "at most one area plane per deposit",
-// not "exactly one".
+// something re-decided here.  A deposit may write NEITHER: one that was
+// `over`-composited onto an identical earlier deposit of the same kernel at
+// the same source pixel covers area that is already in the plane, and counting
+// it again is what makes the composite read `a - a^2/4` in place of `a`.  So
+// the deposit invariant is "at most one area plane per deposit", not "exactly
+// one".
 // ---------------------------------------------------------------------------
 DEEPC_HD inline void depositRowSpan(const BucketPlaneView& planes,
                                     int                    bucket,
@@ -1770,19 +1720,18 @@ DEEPC_HD inline void depositRowSpan(const BucketPlaneView& planes,
 // THE COVERAGE PLANE TAKES THE FRAGMENT'S `w*vis` EXACTLY ONCE, into the
 // NEARER of the two buckets, even though BOTH buckets receive alpha and
 // colour.  This is not a rounding choice, it is what the plane means
-// (milestone Decisions, 2026-07-26: the third plane is `sum of w*vis`, pure
-// kernel coverage).  A fractionally split fragment is ONE surface seen as two
+// (the third plane is `sum of w*vis`, pure kernel coverage).  A fractionally split fragment is ONE surface seen as two
 // co-located depth layers — the transmittance split exists precisely so that
 // `over`-compositing them reproduces the original — so it covers its kernel's
 // area once, not twice.  Depositing it into both planes makes a pixel with an
 // honest 60% coverage deficit (validation scene (i)) report 120% coverage,
 // which is exactly the distinction the plane exists to preserve, and
 // CoveragePartition then reads the rear deposit as landing on fresh, unclaimed
-// pixel area: measured by the M1.P3.T2 reviewer, an isolated opaque fragment's
-// bokeh came out at DOUBLE energy (band alpha sum 2.000 against an honest
-// 1.000) and a defocused opaque edge's alpha ramp was doubled and clipped
-// (0.437 -> 0.874, 0.563 -> 1.000) — i.e. the specified honest alpha dip was
-// filled in with fabricated colour.  With the single deposit the same cases
+// pixel area: measured, an isolated opaque fragment's bokeh then comes out at
+// DOUBLE energy (band alpha sum 2.000 against an honest 1.000) and a defocused
+// opaque edge's alpha ramp is doubled and clipped (0.437 -> 0.874, 0.563 ->
+// 1.000) — i.e. the honest alpha dip filled in with fabricated colour.  With
+// the single deposit the same cases
 // reconstruct the unbucketed additive scatter EXACTLY, at alpha 1 and at fog
 // alphas alike.
 //
@@ -1790,7 +1739,7 @@ DEEPC_HD inline void depositRowSpan(const BucketPlaneView& planes,
 // compositePixelCoveragePartition() recognises that (alpha in excess of a
 // bucket's own coverage is a co-located layer that claims no new area).
 //
-// AND THE DEPOSIT THAT WRITES NO AREA AT ALL (M1.P3.T15).  `depositArea0` /
+// AND THE DEPOSIT THAT WRITES NO AREA AT ALL.  `depositArea0` /
 // `depositArea1` are clear for a deposit whose area an earlier deposit of the
 // SAME kernel at the SAME source pixel already put in the plane.  The two cover
 // the identical destination pixels with the identical weights — the flatten has
@@ -1800,14 +1749,14 @@ DEEPC_HD inline void depositRowSpan(const BucketPlaneView& planes,
 // (a flat 0.25 short once the alpha saturates: two opaque layers at one pixel
 // read 0.750000 against a true 1.0).
 //
-// THE SAME RULE, ONE LEVEL UP (M1.P3.T8): a VOLUMETRIC parent cut at the
-// bucket boundaries becomes several independent fragments, and only the
-// front-most of them carries `coverageHead`.  A slab that spans four buckets
-// covers its kernel's area once, not four times; before the flag it measured a
-// band alpha sum of 1.7506 against an honest 0.9000.  The non-head parts take
-// the identical "alpha and colour with no coverage" path the rear deposit
-// takes, through the identical residual term — which is why this needed no
-// composite change at all.
+// THE SAME RULE, ONE LEVEL UP: a VOLUMETRIC parent cut at the bucket
+// boundaries becomes several independent fragments, and only the front-most of
+// them carries `coverageHead`.  A slab that spans four buckets covers its
+// kernel's area once, not four times; without the flag it measures a band alpha
+// sum of 1.7506 against an honest 0.9000.  The non-head parts take the
+// identical "alpha and colour with no coverage" path the rear deposit takes,
+// through the identical residual term, so the composite needs no special
+// case for them.
 // ---------------------------------------------------------------------------
 DEEPC_HD inline void scatterSpanBothBuckets(const BucketPlaneView& planes,
                                             const ScatterFragment& frag,
@@ -1845,9 +1794,10 @@ DEEPC_HD inline void scatterSpanBothBuckets(const BucketPlaneView& planes,
 // ---------------------------------------------------------------------------
 // scatterFragmentSpans — one fragment's whole disc.  THE PER-FRAGMENT BODY.
 //
-// This is the function a CUDA thread runs in M3 (one thread per fragment per
+// This is the function a CUDA thread runs (one thread per fragment per
 // channel group); the .cpp holds only the loop over fragments, the virtual
-// KernelSampler call and the allocations, all of which M3 replaces.
+// KernelSampler call and the allocations, all of which a device build
+// replaces.
 //
 //   rowScratch : at least (2*kv.radiusX + 1) floats, and REQUIRED only when
 //                holdout.enabled(); pass nullptr otherwise.  With no holdout
@@ -1969,10 +1919,9 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 // ---------------------------------------------------------------------------
 // compositePixelCoveragePartition — THE BUCKET COMPOSITE.  THE PER-PIXEL BODY.
 //
-// The rule M1.P3.T17 kept (see "THE BUCKET COMPOSITE — DECIDED" above).
+// See "THE BUCKET COMPOSITE" above for why this rule and not a plain `over`.
 // Pointers are pre-offset to their pixel and everything else is derived from
-// pixelCount, exactly as the deleted candidate's body was, so the M3 CUDA seam
-// is unchanged by the decision.
+// pixelCount, so the CUDA seam takes this body unchanged.
 //
 // THE MODEL.  Front-to-back over a pixel that is treated as a unit AREA, not
 // as a single point sample:
@@ -1996,7 +1945,7 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 //
 // PLUS ONE TERM THE AREA MODEL ALONE DOES NOT COVER — alpha in EXCESS of the
 // bucket's own coverage (A_k > C_k).  That is the rear half of a fractionally
-// split fragment, and (since M1.P3.T8) every non-head part of a split
+// split fragment, and every non-head part of a split
 // volumetric parent: scatterSpanBothBuckets() deposits the fragment's `w*vis`
 // into the NEARER bucket's coverage plane only, and only for the parent's
 // front-most part (see there for why, and for the measured energy errors of
@@ -2010,31 +1959,28 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 //   accAlpha += aRes * tHead;      tClaimed -= aRes * tHead / claimedArea
 //
 // where D_k IS THE FOURTH PLANE — the co-located AREA those same deposits
-// wrote (M1.P3.T9).  It replaces `claimedArea`, which is what the divisor used
-// to be; see "THE FOURTH PLANE" below for the derivation and for the measured
-// error the substitution cost.  `tHead` IS THE FIFTH SCALAR (M1.P3.T20) — the
-// transmittance of the SUB-AREA the residual actually sits on, rather than the
-// pooled mean over everything claimed; see "THE HEAD TRANSMITTANCE" below.
-// SINCE M1.P3.T21 IT IS A STACK OF SUCH SUB-AREAS, one per parent, and `aRes`
-// is allocated across them by area — read the two sections together: T20's
-// argument for WHICH transmittance a residual sees is unchanged, and T21 only
-// stops one parent's tile from being thrown away to make room for another's.
+// wrote.  It is the divisor, NOT `claimedArea`; see "THE FOURTH PLANE" below
+// for the derivation and for the measured error `claimedArea` costs.  `tHead`
+// is the transmittance of the SUB-AREA the residual actually sits on, rather
+// than the pooled mean over everything claimed — see "THE HEAD TRANSMITTANCE"
+// below.  It is a STACK of such sub-areas, one per parent, and `aRes` is
+// allocated across them by area; read the two sections together.
 //
-// THE RESIDUAL'S ALPHA IS NOT CLAMPED TO THE CLAIMED AREA (M1.P3.T8 review).
-// It was `min(aRes, claimedArea)` — "a layer cannot block more area than it
-// sits on" — which is unreachable for the fractional split that term was
+// THE RESIDUAL'S ALPHA IS NOT CLAMPED TO THE CLAIMED AREA.  The tempting
+// clamp is `min(aRes, claimedArea)` — "a layer cannot block more area than it
+// sits on" — which is unreachable for the fractional split that term is
 // written for (there aRes = w*a1 <= w = claimedArea, always) but is reached
 // constantly once a split volumetric parent's non-head parts arrive as pure
 // residual with a DIFFERENT kernel radius from their head: a rear part's disc
 // is denser than the head's wherever it is smaller, so aRes > claimedArea over
-// the whole inner disc and the clamp silently DESTROYED deposited alpha —
+// the whole inner disc and the clamp silently DESTROYS deposited alpha —
 // measured -45.5% of a slab's energy for a 4-part span reaching the focal
-// plane, against -4.6% without the clamp.  Worse, IT CLAMPED ONLY THE ALPHA:
-// the colour term next to it takes the resShare/tClaimed path with no clamp of
-// its own, so the same case came out with a premultiplied colour:alpha ratio
-// of 0.8748 against the input's true unpremultiplied 0.5 — a 75%-too-bright
-// pixel, not merely a dim one.  Without the clamp the ratio is 0.5000 on every
-// case measured.  Dropping real deposited alpha is
+// plane, against -4.6% without it.  Worse, IT CLAMPS ONLY THE ALPHA: the
+// colour term next to it takes the resShare/tClaimed path with no clamp of its
+// own, so the same case comes out with a premultiplied colour:alpha ratio of
+// 0.8748 against the input's true unpremultiplied 0.5 — a 75%-too-bright
+// pixel, not merely a dim one.  Unclamped the ratio is 0.5000 on every case
+// measured.  Dropping real deposited alpha is
 // the same class of error as fabricating it, and nothing in this node's
 // honest-alpha contract licenses it (that contract forbids scaling alpha UP,
 // not accounting for what was actually deposited).  Removing it cannot
@@ -2049,8 +1995,7 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 // Colour follows alpha: the residual takes the aRes/A_k share of Colour_k.
 //
 // WHY IT REDUCES CORRECTLY (all verified numerically, end to end through
-// scatterBandCPU(), by the M1.P3.T2 reviewer — see the driver figures quoted
-// in each bullet):
+// scatterBandCPU() — see the figures quoted in each bullet):
 //
 //   * receding opaque plane / flat opaque field — coverages sum to exactly 1
 //     with a_k == 1, so every bucket is pure `fit` and the alphas simply ADD
@@ -2075,11 +2020,11 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 //     summing to 1.  The answer is the surface's own alpha, exactly, at every
 //     fragment count, alpha and split fraction, because each fragment claims
 //     its own tile of the pixel and its rear deposit is attenuated by that
-//     tile alone.  This is what M1.P3.T20 fixed and what THE HEAD
-//     TRANSMITTANCE below derives; before it the same rig lost 17.4% of an
-//     alpha-0.90 surface at 16 fragments and diverged from there.
+//     tile alone — see THE HEAD TRANSMITTANCE below.  Attenuating by the
+//     pooled `tClaimed` instead loses 17.4% of an alpha-0.90 surface at 16
+//     fragments on the same rig, and diverges from there.
 //
-//   * A VOLUMETRIC parent split at the bucket boundaries (M1.P3.T8) — its
+//   * A VOLUMETRIC parent split at the bucket boundaries — its
 //     parts are one surface seen as P layers, so exactly the front-most part
 //     deposits coverage and the other P-1 arrive as pure residual.  Writing
 //     out the recursion: the head gives cov = w, alpha = w*a_0, so fit = w,
@@ -2095,23 +2040,22 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 //     for ANY w in (0, 1] — i.e. the parent is reconstructed exactly at every
 //     kernel coverage, not merely at full coverage, and the band sums come out
 //     at the parent's own alpha and premultiplied colour because the disc
-//     weights sum to 1.  Since M1.P3.T9 the recursion no longer needs `w` to be
-//     ONE number: with D_k the per-part weight cancels part by part, so the
-//     same result holds at any radius spread that does not increase front to
-//     back — see THE FOURTH PLANE below for the measured before/after and for
-//     the one direction it cannot reach.  Verified end to end at EQUAL part
-//     radii (the pre-T9 premise, which the radius clamp produces for a slab in
-//     the saturated near field): band alpha sum exact to <= 1.7e-07 across
+//     weights sum to 1.  The recursion does not need `w` to be ONE number:
+//     with D_k the per-part weight cancels part by part, so the same result
+//     holds at any radius spread that does not increase front to back — see
+//     THE FOURTH PLANE below for the figures and for the one direction it
+//     cannot reach.  Verified end to end at EQUAL part radii (which the radius
+//     clamp produces for a slab in the saturated near field): band alpha sum
+//     exact to <= 1.7e-07 across
 //     alpha 0.01..1, 2/4/8 parts and kernel radii 0.2/3/21px, where the
 //     depositing-every-part form read 2.00 / 4.00 / 8.00 for an opaque slab
 //     and 1.3675 / 1.7506 / 2.0008 at alpha 0.9.
 //
-// THE FOURTH PLANE — WHY `claimedArea` WAS THE WRONG DIVISOR (M1.P3.T9).
-// The residual's local opacity has to be `its own alpha / its own area`.  Until
-// T9 the only area the composite had was `claimedArea`, the running total of
-// what everything in front had claimed, and substituting it is correct exactly
-// when the co-located layer rasterises the SAME kernel as the head that claimed
-// that area.  For a fractionally split POINT fragment that always holds (one
+// THE FOURTH PLANE — WHY `claimedArea` IS THE WRONG DIVISOR.
+// The residual's local opacity has to be `its own alpha / its own area`.
+// `claimedArea`, the running total of what everything in front has claimed, is
+// the same number exactly when the co-located layer rasterises the SAME kernel
+// as the head that claimed that area.  For a fractionally split POINT fragment that always holds (one
 // kernel, one pixel: aRes = w*a1 and claimedArea = w).  For a VOLUMETRIC parent
 // cut at the bucket boundaries it does not: each part is CoC'd at its own
 // midpoint, so a slab spanning N buckets rasterises N different-sized discs and
@@ -2120,7 +2064,7 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 // in-focus part takes the sharp path (w == 1 into one pixel) while the head is
 // spread over a disc.
 //
-// With D_k the fourth plane, the derivation above closes for real.  Part p of a
+// With D_k the fourth plane, the derivation above closes.  Part p of a
 // split parent deposits alpha w_p*a_p and co-located area w_p into its own
 // bucket, so
 //
@@ -2133,7 +2077,8 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 // which integrates over the image to a_p's own `over` product, i.e. the parent's
 // alpha and premultiplied colour, because every disc's weights sum to 1.
 // Measured on the standard rig (Physical, f=50 N=2.8 filmback 36 at 1920px,
-// range [1,100], K=16), band-alpha error against the parent, before -> after:
+// range [1,100], K=16), band-alpha error against the parent, `claimedArea`
+// divisor -> D_k divisor:
 //
 //   in front of focus (focus 10), alpha 0.9:
 //     1-2 buckets  -0.00%  ->  -0.00%      4 buckets   -6.37% ->  +0.0000%
@@ -2149,7 +2094,7 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 // READ THE `-92.1% -> +6.65%` FULL-RANGE ROW BELOW WITH THAT QUALIFIER.  A span
 // from the near clip to the background CROSSES the focal plane, so its last
 // part sits BEHIND focus with a disc wider than the parts just in front of it;
-// that row is a mixed case and its post-T9 residue is entirely the behind-focus
+// that row is a mixed case and its residue is entirely the behind-focus
 // mechanism described next, not an in-front one.  Split the same span at focus
 // and each half is exact.
 //
@@ -2161,12 +2106,13 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 // tell the composite that a_0 occludes what follows.  Within-parent occlusion
 // happens along the ray BEFORE the blur; a rear part's disc reaching past its
 // own head's is precisely the information a per-pixel image-space composite has
-// lost.  What T9 does retire there is the `claimed == 0` branch's real defect:
-// it used to leave the transmittance at 1 forever, so EVERY later part of the
-// same parent also arrived unoccluded.  With D_k that branch claims its own area
-// and the telescope closes over the parts that do reach the pixel:
+// lost.  What D_k does fix there is the `claimed == 0` branch: without it that
+// branch leaves the transmittance at 1 forever, so EVERY later part of the same
+// parent also arrives unoccluded.  With D_k that branch claims its own area and
+// the telescope closes over the parts that do reach the pixel:
 //
-//   behind focus (focus 1, near end of range), alpha 0.9, before -> after:
+//   behind focus (focus 1, near end of range), alpha 0.9,
+//   `claimedArea` -> D_k:
 //     2 buckets  +28.22% -> +28.22%   3 buckets  +56.16% -> +45.21%
 //     4 buckets  +76.49% -> +51.23%   8 buckets +113.25% -> +59.05%
 //   full-range span:  alpha 0.9  +28.04% -> +7.69%,  alpha 0.1  +1.26% -> +0.36%
@@ -2174,11 +2120,10 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 //   +0.33%  (the residue is that span's behind-focus half)
 //
 // (2 buckets is unchanged by construction: with one residual there is no later
-// part for the corrected transmittance to occlude.)  The candidate M1.P3.T17
-// deleted read neither area plane and was untouched by all of this; on the same
-// rig it read +51.7 / +93.4 / +118.2 / +120.8% in front of focus and +49.1 /
-// +75.3 / +91.1 / +117.1% behind it, which is why the comparison at T17 was
-// made on scenes rather than on this one number.
+// part for the corrected transmittance to occlude.)  A plain `over` reads
+// neither area plane and is untouched by all of this; on the same rig it reads
+// +51.7 / +93.4 / +118.2 / +120.8% in front of focus and +49.1 / +75.3 /
+// +91.1 / +117.1% behind it.
 //
 // Net over 219 randomised single-parent cases spanning both sides of focus:
 // mean |band-alpha error| 20.51% -> 5.55%, worst 121.47% -> 62.76%.  Over 300
@@ -2187,79 +2132,75 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 // 1.8e-07 on alpha AND on premultiplied colour — i.e. exact.
 //
 // THE HEAD TRANSMITTANCE — WHY THE POOLED `tClaimed` WAS THE WRONG
-// ATTENUATION, AND WHY THE UPDATE HAD TO BECOME SUBTRACTIVE (M1.P3.T20).
+// ATTENUATION, AND WHY THE UPDATE IS SUBTRACTIVE.
 //
 // `tClaimed` is ONE number for the whole claimed share.  A depth ramp makes
 // that share a MOSAIC: each fragment reaching the destination pixel claims its
 // own tile at its own depth, and each tile has its own transmittance.  Two
-// consequences, both deficits, both fixed here:
+// consequences, both deficits, both avoided here:
 //
-//   1. A co-located deposit was attenuated by the pooled mean instead of by the
-//      tile its own head claimed.  Its head is the only thing in front of it at
-//      this pixel — by construction, since a fractional split's rear lands one
+//   1. Attenuating a co-located deposit by the pooled mean rather than by the
+//      tile its own head claimed lets every other fragment's head AND rear
+//      occlude it for free.  Its head is the only thing in front of it at this
+//      pixel — by construction, since a fractional split's rear lands one
 //      bucket behind its head and a split parent's parts land in consecutive
-//      buckets — so every other fragment's head AND rear were occluding it for
-//      free.  The head-tile stack carries the right tile forward; see the
+//      buckets.  The head-tile stack carries the right tile forward; see the
 //      allocation in the residual branch for how a bucket that leaves two (or
-//      sixteen) keeps all of them, which is M1.P3.T21.
-//   2. `tClaimed *= (1 - resLocal)` occluded the WHOLE claimed share with a
-//      layer that covered only `resArea` of it.  The area-weighted form is
-//      subtractive: the tile loses `resLocal` of its own `tHead`, so the mean
+//      sixteen) keeps all of them.
+//   2. `tClaimed *= (1 - resLocal)` would occlude the WHOLE claimed share with
+//      a layer that covers only `resArea` of it.  The area-weighted form used
+//      instead is subtractive: the tile loses `resLocal` of its own `tHead`,
+//      so the mean
 //      falls by `resArea * tHead * resLocal / claimedArea == aRes * tHead /
 //      claimedArea` — exactly the alpha the line above it added, which is what
 //      makes the two telescope to 1 behind an opaque backing.
 //
 // MEASURED, on hand-built planes with no kernel, no holdout, no flatten and no
 // depth quantisation (N equal-weight alpha-fragments, each split across its own
-// bucket pair; truth is alpha because the weights sum to 1), before -> after:
+// bucket pair; truth is alpha because the weights sum to 1), pooled `tClaimed`
+// -> head tile:
 //
 //   alpha 0.99   -2.05 / -7.02 / -8.36%  at N=2/16/64   ->  EXACT
 //   alpha 0.90   -4.11 / -17.44 / -21.63%               ->  EXACT
 //   alpha 0.50   -3.03 / -22.39 / -33.65%               ->  EXACT
 //
-// and at split fractions 0.25 and 0.75 rather than 0.50, where the old form
-// read -5.49% and -38.93% at N=16, likewise exact.  (M1.P3.T17 and the first
-// draft of this block both quoted the -38.9% figure against "split fraction
-// 0.25"; re-measured at T20's review it is the frac 0.75 cell under this
-// file's own convention, a1 = partitionAlpha(alpha, frac).)
-// End to end on validation scene (g)'s ramp
-// (harness g4, alpha 0.90, K=16): -16.07% -> -5.43%, and the K DIVERGENCE is
-// gone — at alpha 0.50 the sweep went +0.33 / +0.33 / -5.00 / -9.19 / -13.71 /
-// -19.65 / -26.62% at K=2/4/8/16/32/64/128 and now reads +1.37 / +1.37 / -0.09
-// / -0.13 / +0.10 / -0.02 / -1.01%.  The OPAQUE twin improved by five to six
-// decades on the same scene (g1 K=8 1.048e-02 -> 1.703e-08, g2 K=8 4.909e-02 ->
-// 1.848e-06, g3 K=8 3.191e-02 -> 1.907e-06): at alpha 1 the split itself is a
+// and at split fractions 0.25 and 0.75 rather than 0.50, where the pooled form
+// reads -5.49% and -38.93% at N=16, likewise exact.  (NOTE the -38.9% cell is
+// frac 0.75 under this file's own convention, a1 = partitionAlpha(alpha,
+// frac).)  End to end on validation scene (g)'s ramp
+// (harness g4, alpha 0.90, K=16): -16.07% -> -5.43%, and the K DIVERGENCE goes
+// with it — at alpha 0.50 the pooled sweep reads +0.33 / +0.33 / -5.00 / -9.19
+// / -13.71 / -19.65 / -26.62% at K=2/4/8/16/32/64/128 where this one reads
+// +1.37 / +1.37 / -0.09 / -0.13 / +0.10 / -0.02 / -1.01%.  The OPAQUE twin
+// improves by five to six decades on the same scene (g1 K=8 1.048e-02 ->
+// 1.703e-08, g2 K=8 4.909e-02 -> 1.848e-06, g3 K=8 3.191e-02 -> 1.907e-06): at
+// alpha 1 the split itself is a
 // no-op, but saturation still pushes part of a bucket's alpha into the residual
 // term, so the same pooling was costing the banding scene its own criterion.
 //
 // WHAT IT DOES NOT FIX, said plainly.  A bucket that pools deposits at
 // DIFFERENT per-unit opacities still loses them into one `A_k / C_k`.  That is
 // information gone at ACCUMULATION, not at composition, it is harness f3c/f3d's
-// mechanism, and no per-bucket rule can recover it.  ~~It is the whole of g4's
-// remaining 5.4%.~~
+// mechanism, and no per-bucket rule can recover it.
 //
-// THAT LAST SENTENCE IS WRONG, MEASURED AT M1.P3.T23.  A fifth plane carrying
+// IT IS NOT, HOWEVER, THE WHOLE OF g4's REMAINING 5.4%.  A fifth plane carrying
 // the co-located ALPHA -- so the C_k : D_k split is READ rather than guessed --
-// was built and rendered: it takes f3c from -0.113% to +0.000% and f3d from
-// -1.676% to -0.000%, i.e. it closes that mechanism EXACTLY, and it moves g4
-// only 0.0325 -> 0.0287.  So roughly 88% of g4's remainder is something ELSE,
-// and WHAT is unexplained -- stated as unexplained rather than re-attributed,
-// which is the sixth time in this milestone a correct number has carried a
-// fabricated mechanism.  REPRODUCED INDEPENDENTLY at T23's review, on its own
-// fifth-plane build: f3c 0.7500004, f3d 0.7499995, g4 0.874128 (0.0287), f3e
-// +77.411% -> +74.702%.  Two mechanisms were then EXCLUDED from that remaining
-// 88%, so "unexplained" is bounded rather than merely unexamined: it is NOT the
-// tile-stack cap (kCompositeHeadTiles 16 -> 64 leaves g4 bit-identical at
-// 0.874128) and it IS inside the residual-occlusion path (tHeadIn = 1 drives
-// g4 to 1.000000, i.e. +11.1%, so it is this function's term and not the
-// flatten's or the scatter's).  (The plane is NOT shipped: the user's ruling is that
-// f3c/f3d/g4 are precision, not correctness, and it costs (C+3) -> (C+4), +14%
-// of the bucket planes at C=4 and +25% at C=1.  See the milestone Decisions,
-// 2026-08-16, M1.P3.T23.)
+// takes f3c from -0.113% to +0.000% and f3d from -1.676% to -0.000%, i.e. it
+// closes that mechanism EXACTLY, and it moves g4 only 0.0325 -> 0.0287.  So
+// roughly 88% of g4's remainder is something ELSE, and WHAT is unexplained --
+// stated as unexplained rather than re-attributed.  Reproduced independently on
+// a second fifth-plane build: f3c 0.7500004, f3d 0.7499995, g4 0.874128
+// (0.0287), f3e +77.411% -> +74.702%.  Two mechanisms are EXCLUDED from that
+// remaining 88%, so "unexplained" is bounded rather than merely unexamined: it
+// is NOT the tile-stack cap (kCompositeHeadTiles 16 -> 64 leaves g4
+// bit-identical at 0.874128) and it IS inside the residual-occlusion path
+// (tHeadIn = 1 drives g4 to 1.000000, i.e. +11.1%, so it is this function's
+// term and not the flatten's or the scatter's).  (The fifth plane is NOT
+// shipped: f3c/f3d/g4 are precision, not correctness, and it costs (C+3) ->
+// (C+4), +14% of the bucket planes at C=4 and +25% at C=1.)
 //
-// THE TRIGGER, CORRECTED AT T20's REVIEW.  The first draft of this block said
-// the trigger was fragments carrying DIFFERENT split fractions from each other.
-// It is not, and the unit suite's own cells prove it: a dense ramp in which
+// THE TRIGGER IS NOT FRAGMENTS CARRYING DIFFERENT SPLIT FRACTIONS FROM EACH
+// OTHER.  The unit suite's own cells show it: a dense ramp in which
 // EVERY fragment carries the SAME split fraction reads -2.42 / -3.69 / -4.00%
 // at N=4/16/64 for frac 0.25 and -5.79 / -4.53 / -4.21% for frac 0.75, and is
 // exact ONLY at frac 0.50.  The reason is one bucket down: on a dense ramp
@@ -2272,23 +2213,22 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 //
 // AND ONE DETAIL NO UNIT TEST PINS: `claimA = fit` rather than `cov`.  It is
 // right by the same argument as `claimT` — the excess share is not a new tile.
-// It survives the whole unit suite; T20 recorded it as caught by harness g4
-// alone, and T20's review re-ran the mutation and found it is ALSO caught by
-// g1 (9.980e-03 against a 1.0e-03 gate), g2 (4.906e-02 against 3.9e-03) and
-// g3 (3.191e-02 against 3.9e-03), i.e. by four rendered checks, not one.
+// It survives the whole unit suite; mutating it is caught only by the rendered
+// checks — harness g4, g1 (9.980e-03 against a 1.0e-03 gate), g2 (4.906e-02
+// against 3.9e-03) and g3 (3.191e-02 against 3.9e-03).
 //
-// THE HEAD-TILE STACK — WHY ONE TILE WAS NOT ENOUGH (M1.P3.T21).
-// T20 carried ONE head tile, so a bucket that both claimed new area and
-// continued a residual chain had to DISCARD one of the two, and discarding is
-// free only while the discarded chain has no deposits left.  Two multi-part
-// parents at OVERLAPPING depth ranges — two fog slabs, or a fog slab and a
-// point fragment, whose kernel weights tile one destination pixel — both have
-// deposits left, and the dropped one was then attenuated by the survivor's
+// THE HEAD-TILE STACK — WHY ONE TILE IS NOT ENOUGH.
+// With ONE head tile, a bucket that both claims new area and continues a
+// residual chain has to DISCARD one of the two, and discarding is free only
+// while the discarded chain has no deposits left.  Two multi-part parents at
+// OVERLAPPING depth ranges — two fog slabs, or a fog slab and a point
+// fragment, whose kernel weights tile one destination pixel — both have
+// deposits left, and the dropped one is then attenuated by the survivor's
 // tile, which is not in front of it.  Swept over parts x offset x weight x
-// alpha that read up to +21.1% HIGH (the reviewer's own sweep found +18.3%),
-// saturating the output alpha to exactly 1 at alpha 0.90, where the pre-T20
-// composite read 4-16% LOW.  The sign is the honest-alpha contract's forbidden
-// one, and two fog slabs at overlapping depths is ordinary comp content.
+// alpha that reads up to +21.1% HIGH, saturating the output alpha to exactly 1
+// at alpha 0.90, where the pooled composite reads 4-16% LOW.  The sign is the
+// honest-alpha contract's forbidden one, and two fog slabs at overlapping
+// depths is ordinary comp content.
 //
 // THE FIX IS MORE STATE, and neither cheap alternative was a trade worth
 // making: `always carry the chain` reads -9.3% on the dense ramp and `merge the
@@ -2297,17 +2237,15 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 // tile does the NEXT deposit land on".  So the composite now carries a STACK of
 // tiles, newest last, and a residual is ALLOCATED across it by area from the
 // newest end (see the loop above), with only the overflow landing on the tile
-// this bucket itself just claimed.  Both of T20's branches survive as special
-// cases of that allocation: the dense depth ramp, where the residual is exactly
-// the newest tile's own rear (T20's `else`), and the M1.P3.T13/T15 same-pixel
-// collision, where it overflows onto this bucket's claim (T20's `>` branch).
-// Both read identically to T20 to within float reassociation, NOT bit for bit
-// (corrected at T21's review, which ran a 4 000-pixel single-open-chain corpus
-// -- spaced splits, one volumetric parent, same-pixel collisions, the excess
-// regime -- through T20's committed build and this one): 107 of 8 000 scalars
-// differ, worst 2 ULP / 1.6e-07 relative.  The allocation reaches the same
-// quantity by a different summation order, so the behaviour is preserved and
-// the arithmetic is not.  Nothing depends on the difference; the claim does.
+// this bucket itself just claimed.  A single tile's two branches survive as
+// special cases of that allocation: the dense depth ramp, where the residual is
+// exactly the newest tile's own rear, and the same-pixel collision, where it
+// overflows onto this bucket's claim.  Both read identically to the single-tile
+// form to within float reassociation, NOT bit for bit (over a 4 000-pixel
+// single-open-chain corpus -- spaced splits, one volumetric parent, same-pixel
+// collisions, the excess regime -- 107 of 8 000 scalars differ, worst 2 ULP /
+// 1.6e-07 relative): the allocation reaches the same quantity by a different
+// summation order, so the behaviour is preserved and the arithmetic is not.
 //
 // WHAT IT BOUGHT, on hand-built planes with no kernel, no holdout and no
 // flatten, against the disjoint-tiling oracle (the parents' weights sum to 1,
@@ -2318,16 +2256,16 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 //     +0.000%.  Widened to parts up to 8 and offsets to 7 (2268 cells) it goes
 //     from 1024 cells and +21.1% to zero.
 //   * 40 000 randomised pixels of 2-6 equal-alpha parents at random weights,
-//     part counts and overlapping start buckets: T20 read 18 580 of 20 000
-//     cells high at 5 parts, worst +28.8%; this reads ZERO high, worst
+//     part counts and overlapping start buckets: a single tile reads 18 580 of
+//     20 000 cells high at 5 parts, worst +28.8%; the stack reads ZERO high, worst
 //     +0.0000%, i.e. EXACT wherever the per-unit opacities agree.
 //   * end to end, harness g4 0.0543 -> 0.0325, g2/g3 at K=16 7.153e-07 ->
 //     1.192e-07 and 2.980e-07 -> 1.192e-07, f3b -0.001% -> -0.000%.  Every
 //     other check in the suite is bit-identical, INCLUDING scene (a)'s size-0
-//     parity (a3 1.192e-07 against its 2.4e-07 gate, unmoved) and T9's pinned
+//     parity (a3 1.192e-07 against its 2.4e-07 gate, unmoved) and the pinned
 //     behind-focus residue.
 //
-// READ THE THREE BULLETS ABOVE WITH THEIR SCOPE ATTACHED (T21's review).  Every
+// READ THE THREE BULLETS ABOVE WITH THEIR SCOPE ATTACHED.  Every
 // one of them holds the parents' alpha EQUAL — that is the sweep's only
 // unvaried axis, and it is exactly the constraint under which this composite
 // CAN be exact.  "Zero cells, worst +0.000%" is a true statement about the
@@ -2335,21 +2273,21 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 //
 // WHAT IS LEFT.  Over the same randomised corpus with the parents' alphas
 // allowed to DIFFER, 34% of pixels still read over +0.5% and the worst is
-// +83.8% (T21's review's own 320 000-pixel corpus reads +91.4% volumetric and
-// +99.2% deep-mixed, against +105.5% / +113.0% under T20 — so this is a large
-// improvement and no regression, but it is NOT closed).  Every one of them has
+// +83.8% (a 320 000-pixel corpus reads +91.4% volumetric and +99.2%
+// deep-mixed, against +105.5% / +113.0% with a single tile — a large
+// improvement, but NOT closed).  Every one of them has
 // two parents' deposits in ONE bucket: the corpus splits exactly, the pixels
 // with no shared bucket reading EXACT and every error living among those that
 // share one.  (That split is near-tautological — for consecutive-part parents,
 // "shares a bucket" and "has an overlapping range" are the same condition — so
 // it localises the error without identifying its mechanism.)
 //
-// AND THE MECHANISM IS NOT f3c/f3d's.  T21 recorded this residual as the
-// accumulation-time pooling of unequal per-unit opacities, i.e. the C_k : D_k
-// split guessing how a bucket's alpha divides between its new-area and
-// co-located deposits.  T21's review tested that directly by rebuilding this
-// function to take a FIFTH plane carrying the co-located alpha, so the split is
-// READ rather than guessed.  Result: the dense ramp's -4.107% below goes to
+// AND THE MECHANISM IS NOT f3c/f3d's.  It is tempting to read this residual as
+// the accumulation-time pooling of unequal per-unit opacities, i.e. the
+// C_k : D_k split guessing how a bucket's alpha divides between its new-area
+// and co-located deposits.  Rebuilding this function to take a FIFTH plane
+// carrying the co-located alpha, so the split is READ rather than guessed,
+// tests that directly.  Result: the dense ramp's -4.107% below goes to
 // +/-0.0001% at every N and both split fractions — that term really is the
 // C_k : D_k split and one more plane closes it — while the +64.6% two-parent
 // case is left BIT-UNCHANGED.  Two mechanisms, and the big one is the other:
@@ -2367,9 +2305,9 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 //   anything.  Unlike the C_k : D_k split, NO fixed number of planes recovers
 //   this — parent count per bucket is unbounded — so it is permanent.
 //
-// AND MOST OF THE RENDERED OVER-READ IS NOT EVEN THIS TERM (M1.P3.T23).  Five
-// candidate rules were built and the three that survived POD screening were
-// rendered through harness f3e/f3f; none beats the trade, and the reason is
+// AND MOST OF THE RENDERED OVER-READ IS NOT EVEN THIS TERM.  Of five candidate
+// rules, the three that survive POD screening were rendered through harness
+// f3e/f3f; none beats the trade, and the reason is
 // that the biggest cell in that family is not a tile-allocation term at all.
 // f3f's `overlap 100% (coincident spans)` reads +80.428% and is BIT-IDENTICAL
 // under a fifth plane, because when two parents' spans coincide both heads
@@ -2380,19 +2318,18 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 // exact only because a single-bucket pair leaves no residual to mis-attribute),
 // and it is why f3e's high arm cannot be closed from the four planes.
 //
-// SAY "THESE FOUR PLANES", NOT "ANY PLANE COUNT" (M1.P3.T23's REVIEW).  The
-// first draft of this block said no rule could reach that cell at ANY plane
-// count, and that is too strong -- a plane of a DIFFERENT KIND reaches it.  The
-// term the composite drops there is a COVARIANCE: it attenuates the pooled
+// SAY "THESE FOUR PLANES", NOT "ANY PLANE COUNT".  It is NOT true that no rule
+// reaches that cell at any plane count -- a plane of a DIFFERENT KIND reaches
+// it.  The term the composite drops there is a COVARIANCE: it attenuates the pooled
 // residual E[a_res] by the pooled head transmittance E[1-a_head], where the
 // truth wants E[a_res*(1-a_head)].  A plane carrying the second moment
 // sum_i w_i*a_i^2 gives the composite the within-bucket opacity SPREAD, and
 // replacing the residual's `r*T_t` by `r*T_t - s_res*s_head` (the plan's own
 // untried "split the tile stack by opacity band") is a STRICT no-op wherever
-// either spread is zero -- so T21's staggered exactness and the dense ramp stay
+// either spread is zero -- so the staggered exactness and the dense ramp stay
 // BIT-IDENTICAL -- while taking the coincident two-parent shape from +17.6 to
 // +86.3% down to -5.8 to +15.6%, and to EXACTLY 0.000% at two parts.  Measured
-// on hand-built planes at the review; NOT shipped, and not a fix either: it
+// on hand-built planes; NOT shipped, and not a fix either: it
 // leaves the staggered/offset cells untouched (+51.7% unmoved), it doubles
 // f3c/f3d's deficit (-0.753% -> -1.505%), and it costs one or two more planes
 // on top of the fifth.  What IS permanent is the weaker statement already made
@@ -2406,33 +2343,30 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 // DEFICIT arm from -3.278% to -38.636% and turns f3h, an arrangement this
 // composite is EXACT on, into a +6.510% FAIL, at +38-41% of the composite's
 // time and one more float per tile.  A trade, not a fix; measured and
-// rejected.  Every candidate, both axes, the K/alpha sweeps and the costs are
-// in the milestone Decisions, 2026-08-16, M1.P3.T23.  Do not re-run the naive
-// conservative rule, either tile ordering, opacity-matched tile SELECTION
-// (breaks M1.P3.T21's staggered exactness at -25%) or weighting the allocation
-// by each tile's own 1-T (takes the 32x32 overflow row from -5.13% to
-// -25.09%): all four are measured and spent.
-// AND ONE RESIDUAL THIS DID NOT TOUCH, PRE-DATING T20 AND STILL OPEN.  In the
+// rejected.  Do not re-run the naive conservative rule, either tile ordering,
+// opacity-matched tile SELECTION (breaks the staggered exactness at -25%) or
+// weighting the allocation by each tile's own 1-T (takes the 32x32 overflow row
+// from -5.13% to -25.09%): all four are measured and spent.
+//
+// AND ONE RESIDUAL THE TILE STACK DOES NOT TOUCH.  In the
 // `excess` regime a fragment's head registers NO tile (see the fit branch), so
 // its own co-located rear is attenuated by whatever tile the pixel happened to
 // be carrying.  Behind a full-coverage foreground of alpha aF, a defocused
 // fragment of coverage wB and alpha aB reads up to +94.8% HIGH (aF -> 0,
-// wB 0.05, aB 1: truth 0.0501, composite 0.0976) — bit-identical before and
-// after T20, so it is not this task's regression, but it means "+1.37% is the
-// worst positive excursion" describes the g4 K-sweep and NOT the composite.
+// wB 0.05, aB 1: truth 0.0501, composite 0.0976) — independent of the tile
+// stack, but it means "+1.37% is the worst positive excursion" describes the
+// g4 K-sweep and NOT the composite.
 // A fragment that STRADDLES the free/claimed boundary is the other one: its
 // excess is attenuated by the mean over the whole claimed area including the
 // tile the same fragment just claimed, which the excess does not overlap, for
 // up to +8.3% (wA 0.5 / aA 1 sharp, then wB 1.0 / aB 0.5 sharp: truth 0.75,
 // composite 0.8125).  Both are upward and both are unbounded by any check.
 //
-// AND THE g4 RIG'S LOW-ALPHA OVER-READ IS NOT THIS FUNCTION'S AT ALL
-// (M1.P3.T24), which corrects two recorded attributions: scene (g)'s ramp at
-// alpha <= 0.30 reads HIGH -- +6.5% at alpha 0.10 / K=4, +5.9% at the default
-// K=16, g4-RIG figures, rendered -- and both M1.P3.T21 ("f3c/f3d's pooling
-// seen from its positive side") and the covariance / second-moment direction
-// M1.P3.T23's review handed on attributed it to the composite.  It is the
-// SCATTER's: each disc is normalised over its OWN kernel, and on a steep CoC
+// AND THE g4 RIG'S LOW-ALPHA OVER-READ IS NOT THIS FUNCTION'S AT ALL.  Scene
+// (g)'s ramp at alpha <= 0.30 reads HIGH -- +6.5% at alpha 0.10 / K=4, +5.9%
+// at the default K=16, g4-RIG figures, rendered.  It is neither f3c/f3d's
+// pooling seen from its positive side nor the covariance term above: it is the
+// SCATTER's.  Each disc is normalised over its OWN kernel, and on a steep CoC
 // gradient the adjoint sum at a destination pixel is not 1 -- on that scene's
 // deliberately steep 0.5 CoC-px/scanline slope the deposited weight sums to
 // ~1.07, measured directly by the rendered alpha->0 limit (+7.124 / +7.063 /
@@ -2441,7 +2375,7 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 // `over`-attenuated by tClaimed ~ (1 - alpha), so the over-delivery shows
 // fully as alpha -> 0 and is absorbed entirely by the area clamp at alpha = 1
 // (same weights, g1 reads 1e-08).  Renormalise the deposited weights per
-// pixel on the faithful 1-column model of that rig (the M1.P3.T24 unit test)
+// pixel on the faithful 1-column model of that rig (see the unit suite)
 // and every low-alpha cell flips to a small DEFICIT (-0.25/-0.70/-0.87% at
 // K=4/16/64, alpha 0.10): what THIS function contributes at low alpha is in
 // the permitted direction.  No composite rule at any plane count can remove
@@ -2452,41 +2386,41 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 // the scatter-side fix, per-destination-pixel weight renormalisation, breaks
 // content this composite is exact on (two full-coverage 0.5 fog layers read
 // 0.75 today, 0.50 renormalised; a direction-gated version is the design's
-// own deferred v2 `alpha-renormalize` toggle).  ACCEPTED AND BOUNDED at
-// M1.P3.T24: harness g5 pins alpha 0.10/0.30 at K=16, the worst corner
+// own deferred `alpha-renormalize` toggle).  ACCEPTED AND BOUNDED: harness g5
+// pins alpha 0.10/0.30 at K=16, the worst corner
 // (alpha 0.10 / K=4, +6.5%), and the alpha-0.01 scatter control, each as a
 // two-sided band, mutation-tested in both directions.  It is content-driven,
 // scaling with the CoC gradient -- RENDERED at alpha 0.01 / K=16 on the same
 // ramp: +7.06% at this rig's slope 0.5, +1.54% at slope 0.25 (size 43),
 // +0.34% at slope 0.125 (size 21.5), tracking the real-LUT adjoint sums
-// +7.19 / +1.63 / +0.39% computed from DiscKernelLUT directly (T24 review;
-// the chord model's -0.6% at slope 0.125 had the WRONG SIGN -- the real
-// kernel's shallow-slope residue stays slightly high, it does not cross
-// zero) -- so ordinary content sits far inside those pins.
+// +7.19 / +1.63 / +0.39% computed from DiscKernelLUT directly (a chord model
+// of the same kernel gives -0.6% at slope 0.125, which has the WRONG SIGN --
+// the real kernel's shallow-slope residue stays slightly high, it does not
+// cross zero) -- so ordinary content sits far inside those pins.
 //
 // THE ALPHA SPLIT IS BY AREA, NOT BY min().  When one bucket carries a head from
-// one parent AND a co-located part of another, `aCov = min(A_k, C_k)` attributed
-// alpha to the new-area share until it was full — pushing `local` to 1 and
+// one parent AND a co-located part of another, `aCov = min(A_k, C_k)` attributes
+// alpha to the new-area share until it is full — pushing `local` to 1 and
 // starving the residual.  Splitting A_k in proportion to C_k : D_k gives both
 // sub-layers the same per-unit-area opacity, which is the only split that does
-// not invent a difference between them, and it is the pre-T9 expression to the
-// bit whenever one of the two areas is zero (every single-parent case, and every
-// case that predates the fourth plane).  Measured over 400 randomised
+// not invent a difference between them, and it is the min() form to the bit
+// whenever one of the two areas is zero (every single-parent case).  Measured
+// over 400 randomised
 // multi-sample point pixels: mean |band-alpha error| 41.13% -> 35.99%, worst
 // 223.06% -> 198.00%; on equal-radius co-located point pairs both forms are
 // bit-identical and exact to 1.2e-07.
 //
 // THOSE MULTI-SAMPLE ERRORS ARE NOT THIS FUNCTION'S TO FIX, AND THE ~36% THAT
-// REMAINS IS NOT A T9 RESIDUAL (reviewer, M1.P3.T9).  A deep pixel carrying
+// REMAINS IS NOT A FOURTH-PLANE RESIDUAL.  A deep pixel carrying
 // several INDEPENDENT samples loses their along-the-ray occlusion for exactly
 // the reason the behind-focus paragraph above gives — each parent rasterises
 // its own disc, and two discs of different size cannot occlude each other in a
 // per-bucket reduction.  Two opaque point samples at one pixel (radii 9.6 and
 // 5.6px on the rig above) band-sum to 2.0000 against the flattened truth of
 // 1.0000; four receding opaque samples to 4.0000; two 0.5 fog samples sharing
-// a bucket to 0.9734 against 0.7500 (that last one is the milestone's recorded
-// within-bucket additive over-count, +33.3% at 2 spans).  Every one of those is
-// bit-identical before and after T9, and plain `over` is worse on all of them
+// a bucket to 0.9734 against 0.7500 (that last one is the within-bucket
+// additive over-count, +33.3% at 2 spans).  Every one of those is independent
+// of the fourth plane, and plain `over` is worse on all of them
 // (3.97 / 6.66 / 0.9734).  The area split moves the mean because it un-starves
 // the residual where one bucket mixes a head with another parent's co-located
 // part; it does not, and cannot, address the ray-occlusion loss underneath.
@@ -2495,8 +2429,8 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 // but no alpha still contributes its colour and still claims area.
 // ---------------------------------------------------------------------------
 // mergeOldestHeadTiles — capacity relief for the mosaic below.  Folds the two
-// OLDEST tiles into one, which is the pooled behaviour M1.P3.T20 had for ALL of
-// them, applied to the chains least likely to still be open (a residual is
+// OLDEST tiles into one, which is the pooled behaviour a single tile has for
+// ALL of them, applied to the chains least likely to still be open (a residual is
 // allocated from the newest end).  Area is conserved, so the mosaic never gains
 // or loses any.
 //
@@ -2523,7 +2457,7 @@ DEEPC_HD inline void mergeOldestHeadTiles(float* __restrict__ tileT,
     --tileCount;
 }
 
-// THE DEPTH OF THE HEAD-TILE STACK (M1.P3.T21).  ONE TILE PER PARENT WHOSE
+// THE DEPTH OF THE HEAD-TILE STACK.  ONE TILE PER PARENT WHOSE
 // RESIDUAL CHAIN IS STILL OPEN, plus the tiles of parents whose chains have
 // closed — nothing here can tell those apart, since a chain's end is not
 // recorded in any plane, so a tile is retired only by capacity.  Measured over
@@ -2533,7 +2467,7 @@ DEEPC_HD inline void mergeOldestHeadTiles(float* __restrict__ tileT,
 // |error|:
 //
 //   parents          4               8              16              32
-//   M1.P3.T20  +21.86% / 2.32  +21.22% / 2.76  +22.75% / 3.10  +18.95% / 3.34
+//   1 tile     +21.86% / 2.32  +21.22% / 2.76  +22.75% / 3.10  +18.95% / 3.34
 //   depth 2     +0.000% / 2.28   +0.000% / 5.34   -0.357% / 9.18   -0.769% /11.83
 //   depth 4     +0.000% / 1.29   +0.000% / 2.27   -0.106% / 2.90   -0.160% / 3.00
 //   depth 8     +0.000% / 1.29   +0.000% / 2.25   -0.106% / 2.85   -0.149% / 2.96
@@ -2553,9 +2487,9 @@ DEEPC_HD inline void mergeOldestHeadTiles(float* __restrict__ tileT,
 // 128 bytes at depth 16, independent of K, of the band size, of the format and of
 // the thread count.  It adds NOTHING to the memory_limit formula
 // (`K*W*B*(C+3)*4`), which counts the bucket planes — no plane, and no
-// per-bucket state of any kind, is added by M1.P3.T21.  In time, on a
+// per-bucket state of any kind, is added by the stack.  In time, on a
 // worst-case synthetic where EVERY bucket carries both new and co-located area
-// (4 channels, 20 000 pixels, best of 7), against M1.P3.T20's single tile:
+// (4 channels, 20 000 pixels, best of 7), against a single tile:
 //
 //   K=16   319 -> 581 ns/pixel     K=64  1379 -> 2900     K=128  3009 -> 6901
 //
@@ -2569,9 +2503,9 @@ constexpr int kCompositeHeadTiles = 16;
 
 // Two is the floor, not a formality: mergeOldestHeadTiles() folds tiles 0 and 1
 // together, so a depth of 1 reads off the end of the array.  A mutation run that
-// set this to 1 to approximate M1.P3.T20's single tile SEGFAULTED the whole
-// harness rather than reporting a number; anyone re-running that comparison has
-// to revert the rule, not shrink the stack.
+// set this to 1 to approximate a single tile SEGFAULTS the whole harness
+// rather than reporting a number; anyone re-running that comparison has to
+// revert the rule, not shrink the stack.
 static_assert(kCompositeHeadTiles >= 2,
               "the head-tile merge needs at least two tiles");
 
@@ -2607,18 +2541,18 @@ DEEPC_HD inline void compositePixelCoveragePartition(
     float tClaimed   = 1.0f;
     float accAlpha   = 0.0f;
 
-    // THE HEAD-TILE MOSAIC (M1.P3.T20, made plural at M1.P3.T21).  The
+    // THE HEAD-TILE MOSAIC.  The
     // transmittance of the SUB-AREA a co-located deposit lands on, as opposed
     // to `tClaimed`, which is the mean over EVERYTHING claimed so far.  A
     // co-located deposit sits on area its own parent's head claimed — one
     // bucket in front of it for a fractional split, the run of buckets in front
     // of it for a volumetric parent's parts, and THIS SAME BUCKET for a
-    // same-pixel collision group (M1.P3.T13/T15, where a non-head fragment's
+    // same-pixel collision group (where a non-head fragment's
     // co-located area lands in the very bucket its group's head claimed).
     //
-    // T20 carried ONE such tile, so a bucket that both claimed area and
-    // continued a chain had to discard one of the two and the dropped parent's
-    // later parts were attenuated by an unrelated tile — up to +18.3% HIGH on
+    // With ONE such tile a bucket that both claimed area and continued a chain
+    // has to discard one of the two, and the dropped parent's later parts are
+    // then attenuated by an unrelated tile — up to +18.3% HIGH on
     // two fog slabs at overlapping depths.  The stack below carries the tiles
     // side by side instead, newest LAST, and a residual is ALLOCATED across
     // them by area from the newest end.  See "THE HEAD-TILE STACK" in the
@@ -2652,16 +2586,16 @@ DEEPC_HD inline void compositePixelCoveragePartition(
         // all follows the coverage — an emissive or holdout-zeroed fragment
         // must not have its colour dropped.
         // SPLIT BY AREA when both kinds of deposit landed in this bucket
-        // (M1.P3.T9).  The two sub-layers are then at the SAME per-unit-area
-        // opacity a/(C_k + D_k), which is the only split that does not invent
-        // a difference between them; `min(A_k, C_k)` instead attributed alpha
-        // to the new-area share until it was full, which pushed `local` to 1
-        // and understated the residual whenever one bucket carried a head from
-        // one parent and a co-located part of another.
+        // The two sub-layers are then at the SAME per-unit-area opacity
+        // a/(C_k + D_k), which is the only split that does not invent a
+        // difference between them; `min(A_k, C_k)` instead attributes alpha to
+        // the new-area share until it is full, which pushes `local` to 1 and
+        // understates the residual whenever one bucket carries a head from one
+        // parent and a co-located part of another.
         //
-        // With D_k == 0 this is the pre-T9 expression to the bit (min() and
-        // the ratio agree when one side is empty), and with C_k == 0 both give
-        // aRes == A_k exactly, so nothing that predates the fourth plane moves.
+        // With D_k == 0 this is the min() expression to the bit (min() and the
+        // ratio agree when one side is empty), and with C_k == 0 both give
+        // aRes == A_k exactly.
         float aCov;
         float aRes;
         if (colo > 0.0f) {
@@ -2669,13 +2603,13 @@ DEEPC_HD inline void compositePixelCoveragePartition(
             aCov = a - aRes;
 
             // aCov <= cov MUST hold, and it must hold in `aCov` itself rather
-            // than only in the `local` clamp below (reviewer, M1.P3.T9).  The
+            // than only in the `local` clamp below.  The
             // alpha the fit/excess branches emit is capped by `local`, but the
             // COLOUR beside it is scaled by covShare = aCov/a, which is not —
             // so a clamped `local` alone emits colour for alpha it did not
             // add, i.e. a premultiplied colour:alpha ratio above 1.  That is
-            // character-for-character the defect M1.P3.T8's review fixed on
-            // the residual term (0.8748 against a true 0.5), and re-clamping
+            // character-for-character the defect the residual term's own
+            // unclamped colour has (0.8748 against a true 0.5), and re-clamping
             // here keeps the two in lockstep by moving the excess into the
             // residual instead of dropping it.  Unreachable on the production
             // path — every deposit that writes alpha writes its `w*vis` into
@@ -2698,8 +2632,8 @@ DEEPC_HD inline void compositePixelCoveragePartition(
 
         // The tile this bucket leaves behind for the co-located deposits that
         // follow it: `claimT` over `claimA`, the area it covers itself.  A
-        // chain this bucket CONTINUES needs no such pair since M1.P3.T21 — its
-        // tile is already on the stack and is attenuated there in place.
+        // chain this bucket CONTINUES needs no such pair — its tile is
+        // already on the stack and is attenuated there in place.
         // Negative means "this bucket claims no area of its own", which is what
         // keeps a bucket that only carries colour from touching the mosaic.
         float claimT = -1.0f, claimA = 0.0f;
@@ -2729,8 +2663,8 @@ DEEPC_HD inline void compositePixelCoveragePartition(
                 freeArea   -= fit;
                 claimedArea = claimedNew;
 
-                // THE FIT SHARE — AND ONLY IT — REGISTERS A NEW HEAD SUB-AREA
-                // (M1.P3.T20).  `fit` is by definition area nothing in front of
+                // THE FIT SHARE — AND ONLY IT — REGISTERS A NEW HEAD SUB-AREA.
+                // `fit` is by definition area nothing in front of
                 // it covers, so its transmittance afterwards is exactly
                 // (1 - local): a genuinely new tile of the mosaic, and the one a
                 // co-located deposit of this same parent will land on.  The
@@ -2738,8 +2672,8 @@ DEEPC_HD inline void compositePixelCoveragePartition(
                 // mosaic already has — so it attenuates the existing head
                 // instead of registering one: registering it too double-counts
                 // one physical area as two tiles at two stages of the same
-                // composite.  RE-TESTED END TO END at T20's review, because the
-                // isolated arithmetic argues the other way — on hand-built
+                // composite.  TESTED END TO END, because the isolated
+                // arithmetic argues the other way — on hand-built
                 // planes, registering the excess as a tile of area `excess` at
                 // tClaimed*(1-local) makes a defocused fragment behind a
                 // full-coverage foreground EXACT where the shipped rule reads up
@@ -2784,18 +2718,18 @@ DEEPC_HD inline void compositePixelCoveragePartition(
             // p — at ANY radius, where aRes/claimedArea was only the same
             // number when the co-located layer rasterised the head's kernel.
             // claimedArea remains the fallback for planes built without a
-            // fourth (hand-built test planes, and any pre-T9 caller).
+            // fourth (hand-built test planes, and any caller that omits it).
             const float resArea = (colo > 0.0f) ? colo : claimedArea;
 
             // Attenuated by ITS OWN HEAD'S sub-area transmittance, not by the
-            // pooled mean over everything claimed (M1.P3.T20).  A co-located
-            // layer is BEHIND the head that claimed the area it sits on, and
-            // behind nothing else at this pixel by construction — the pooled
-            // mean folds in area belonging to OTHER parents, which is what made
-            // a depth ramp lose up to 38.9% of an alpha<1 surface.
+            // pooled mean over everything claimed.  A co-located layer is
+            // BEHIND the head that claimed the area it sits on, and behind
+            // nothing else at this pixel by construction — the pooled mean
+            // folds in area belonging to OTHER parents, which costs a depth
+            // ramp up to 38.9% of an alpha<1 surface.
             //
-            // ALLOCATED ACROSS THE MOSAIC BY AREA, NEWEST TILE FIRST
-            // (M1.P3.T21).  `resArea` of co-located area arrived; it lands on
+            // ALLOCATED ACROSS THE MOSAIC BY AREA, NEWEST TILE FIRST.
+            // `resArea` of co-located area arrived; it lands on
             // the tiles the chains in front of it left, and only what does not
             // fit on those lands on the tile THIS bucket just claimed.  Newest
             // first because the newest open chain is the one a bucket's own
@@ -2810,9 +2744,8 @@ DEEPC_HD inline void compositePixelCoveragePartition(
             // above), so `resArea` can exceed everything claimed, and dividing
             // by it would silently DROP the overhanging alpha rather than
             // attenuate it.  When nothing has claimed any area at all, nothing
-            // is allocated and `tHeadIn` is exactly 1, which is the same
-            // unoccluded deposit the pre-T9 `claimed == 0` branch made — bit
-            // for bit.
+            // is allocated and `tHeadIn` is exactly 1, i.e. an unoccluded
+            // deposit.
             float need = resArea;
             float tSum = 0.0f;
             float aSum = 0.0f;
@@ -2829,8 +2762,8 @@ DEEPC_HD inline void compositePixelCoveragePartition(
                 lastTake = s;
             }
             // The overflow — and, when no chain is open, the whole of it —
-            // lands on this bucket's own fit share.  That is the M1.P3.T13/T15
-            // same-pixel collision shape, where a group's non-head fragment
+            // lands on this bucket's own fit share.  That is the same-pixel
+            // collision shape, where a group's non-head fragment
             // deposits its co-located area into the very bucket the group's
             // head claimed.
             float claimTake = 0.0f;
@@ -2865,15 +2798,14 @@ DEEPC_HD inline void compositePixelCoveragePartition(
                 // smaller than its head's and every residual covers only a core
                 // of the tile in front of it.  Scaling `resLocal` by the covered
                 // share instead — treating the tile as one uniform area — is
-                // algebraically M1.P3.T9's rejected `claimedArea` divisor and
-                // moves that task's pinned behind-focus residue from 61.00% to
-                // 70.53% (measured here, matching what T9 and M1.P3.T17
-                // recorded).  Splitting keeps the covered core and the
-                // uncovered ring as separate tiles: the core carries the
-                // occlusion forward for the parts still to come — which is the
-                // number T9 pinned, bit for bit — while the ring keeps its own
-                // transmittance for anything wide enough to reach it, which is
-                // what the single carried tile used to throw away.
+                // algebraically the rejected `claimedArea` divisor, and moves
+                // the pinned behind-focus residue from 61.00% to 70.53%.
+                // Splitting keeps the covered core and the uncovered ring as
+                // separate tiles: the core carries the occlusion forward for
+                // the parts still to come — which is the pinned number, bit for
+                // bit — while the ring keeps its own transmittance for anything
+                // wide enough to reach it, which a single carried tile throws
+                // away.
                 if (lastTile < tileCount) {
                     const float ring = tileA[lastTile] - lastTake;
                     // The split needs a free slot and MUST NOT make one by
@@ -2912,7 +2844,7 @@ DEEPC_HD inline void compositePixelCoveragePartition(
                 // that clamp destroyed a split parent's rear parts.  resLocal
                 // stays clamped because it is a transmittance, not an alpha.
                 if (claimedArea > 0.0f) {
-                    // SUBTRACTIVE AND AREA-WEIGHTED (M1.P3.T20).  Only the
+                    // SUBTRACTIVE AND AREA-WEIGHTED.  Only the
                     // sub-area `resArea` loses transmittance, and it loses
                     // `resLocal` of its OWN `tHeadIn`, so the claimed mean drops
                     // by exactly (resArea * tHeadIn * resLocal) / claimedArea ==
@@ -2946,26 +2878,25 @@ DEEPC_HD inline void compositePixelCoveragePartition(
             }
         }
 
-        // PUSH THIS BUCKET'S OWN TILE, NEWEST LAST (M1.P3.T21).  T20 carried a
-        // single tile and had to CHOOSE here between the area this bucket
-        // claimed and the chain it continued, and discarding either is free
-        // only while that one has no deposits left.  Two multi-part parents at
-        // OVERLAPPING depth ranges both have deposits left, which is what read
-        // up to +18.3% HIGH.  Both survive now: the chain's tiles were
-        // attenuated in place above, and the claim goes on top of them.
+        // PUSH THIS BUCKET'S OWN TILE, NEWEST LAST.  A single tile would have
+        // to CHOOSE here between the area this bucket claimed and the chain it
+        // continued, and discarding either is free only while that one has no
+        // deposits left.  Two multi-part parents at OVERLAPPING depth ranges
+        // both have deposits left, which reads up to +18.3% HIGH.  Both survive
+        // here: the chain's tiles were attenuated in place above, and the claim
+        // goes on top of them.
         //
-        // NEWEST LAST is the whole of the ordering rule, and it is what the
-        // discarded T20 branch got right on a depth ramp: the residual arriving
-        // in the next bucket is the rear of the head THIS bucket just claimed,
-        // so it must be allocated from this end first.  T20's other branch --
-        // the residual sitting on the very tile this bucket claimed, i.e. the
-        // M1.P3.T13/T15 same-pixel collision shape -- is now the OVERFLOW case
-        // in the allocation above, and reads bit-identically.
+        // NEWEST LAST is the whole of the ordering rule, and it is what a depth
+        // ramp needs: the residual arriving in the next bucket is the rear of
+        // the head THIS bucket just claimed, so it must be allocated from this
+        // end first.  The other shape -- the residual sitting on the very tile
+        // this bucket claimed, i.e. the same-pixel collision -- is the OVERFLOW
+        // case in the allocation above.
         //
         // The stack is bounded, so a pixel deep enough to overflow it merges
-        // its two OLDEST tiles by area -- the pooled behaviour T20 had for all
-        // of them, applied to the chains least likely to still be open, since a
-        // residual is allocated from the newest end.  Area is conserved by the
+        // its two OLDEST tiles by area -- the pooled behaviour a single tile
+        // has for all of them, applied to the chains least likely to still be
+        // open, since a residual is allocated from the newest end.  Area is conserved by the
         // merge, so the mosaic never gains or loses any.
         if (claimRingT >= 0.0f && claimRingA > 0.0f) {
             if (tileCount == kCompositeHeadTiles)
@@ -2994,7 +2925,7 @@ DEEPC_HD inline void compositePixelCoveragePartition(
         }
     }
 
-    // THE COLOUR IS RESCALED WITH THE ALPHA, NOT LEFT BEHIND (M1.P3.T4 review).
+    // THE COLOUR IS RESCALED WITH THE ALPHA, NOT LEFT BEHIND.
     // accAlpha CAN exceed 1 on the production path: a pixel carrying several
     // co-located volumetric residuals attenuates by resLocal = aRes/D_k, which
     // is weaker than the alpha each of them adds whenever D_k > aRes, so the
@@ -3011,8 +2942,8 @@ DEEPC_HD inline void compositePixelCoveragePartition(
     // coverage and leaves the honest-alpha contract (and validation scene
     // (i)'s deficit) untouched.  It is a no-op wherever accAlpha <= 1, which
     // is every identity documented above -- all of them are bit-unchanged.
-    // FOURTH occurrence of "clamp one of a premultiplied pair and not the
-    // other" in this phase (Decisions, 2026-07-27).
+    // "Clamp one of a premultiplied pair and not the other" is a recurring
+    // defect in this node; this is the same guard against it.
     const float outA = clampf(accAlpha, 0.0f, 1.0f);
     if (accAlpha > outA && accAlpha > 0.0f) {
         const float s = outA / accAlpha;
@@ -3026,14 +2957,14 @@ DEEPC_HD inline void compositePixelCoveragePartition(
 // scatterBandCPU — THE SCATTER CORE.  Fragments -> bucket planes.
 //
 //   params  : band geometry + the sharp-path threshold (POD)
-//   samples : the flattened, bucket-assigned fragment stream (M1.P3.T1)
-//   holdout : M1.P3.T3's boundary transmittance LUT view; an empty view means
+//   samples : the flattened, bucket-assigned fragment stream
+//   holdout : the boundary transmittance LUT view; an empty view means
 //             vis == 1 at zero cost
-//   kernel  : the KernelSampler seam (v1: DiscKernelLUT).  This is the ONE
-//             non-POD argument, and it is the design's required seam, not a
-//             convenience — `destX/destY/depth/channelGroup` are passed
-//             through to it even though v1 ignores them, because that
-//             unused-ness IS the M2 seam.
+//   kernel  : the KernelSampler seam (DiscKernelLUT).  This is the ONE non-POD
+//             argument, and it is a seam, not a convenience —
+//             `destX/destY/depth/channelGroup` are passed through to it even
+//             though the disc kernel ignores them, so a spatially-varying
+//             sampler drops in here unchanged.
 //   planes  : ACCUMULATED INTO, never cleared here — a band may be scattered
 //             from several SoA chunks.  Call planes.zero() per band.
 //   scratch : per-thread; only touched when a holdout is connected
@@ -3041,13 +2972,13 @@ DEEPC_HD inline void compositePixelCoveragePartition(
 //
 // Thread-agnostic by construction: no locks, no globals, no statics, no NDK
 // type, and nothing shared between two calls except what the caller passes in.
-// Two threads may run it concurrently on disjoint `planes`; Phase 1.4 adds
-// concurrency AROUND it, never inside it.
+// Two threads may run it concurrently on disjoint `planes`; the concurrency
+// is AROUND it, never inside it.
 //
 // CHANNEL COUNT is min(planes.channelCount, samples.channelCount): reading or
 // writing the larger of the two would run off the end of the smaller (the same
-// trap M1.P3.T1 hit between FlattenParams and SampleSoA, where it was a heap
-// overflow under ASAN).  The two should of course be set from one place.
+// same trap that between FlattenParams and SampleSoA is a heap overflow under
+// ASAN).  The two should of course be set from one place.
 // ---------------------------------------------------------------------------
 void scatterBandCPU(const ScatterParams& params,
                     const SampleSoA&     samples,
@@ -3067,7 +2998,7 @@ void scatterBandCPU(const ScatterParams& params,
 //      section for the measured over-count it exists to correct.  Scaling up
 //      would fabricate coverage and hide validation scene (i)'s honest alpha
 //      dip, which is specified behaviour for this node.
-//   2. compositePixelCoveragePartition(), the bucket composite (M1.P3.T17).
+//   2. compositePixelCoveragePartition(), the bucket composite.
 //
 // outColor is `channelCount` planes of `pixelCount` floats
 // (outColor[c*pixelCount + i]); outAlpha is one.  Both are OVERWRITTEN.
@@ -3080,7 +3011,7 @@ void resolveBandCPU(const ScatterParams& params,
 
 // ===========================================================================
 //
-//  PER-BAND LAZY-CLAIM CONCURRENCY (M1.P4.T1)
+//  PER-BAND LAZY-CLAIM CONCURRENCY
 //
 //  The node's frame is computed lazily, one horizontal band at a time, by
 //  whichever of Nuke's render threads asks for a row in that band first.  The
@@ -3099,23 +3030,20 @@ void resolveBandCPU(const ScatterParams& params,
 // ---------------------------------------------------------------------------
 // bandBudgetBytes — the memory-limit knob's COMBINED per-band figure
 //
-// The design reference's bucket-plane formula alone under-budgets by an order
-// of magnitude (milestone Decisions, M1.P3.T1): the SoA fragment buffers are
-// the larger term at 4K.  The combined figure is
+// The bucket-plane formula ALONE under-budgets by an order of magnitude: the
+// SoA fragment buffers are the larger term at 4K.  The combined figure is
 //
 //   K*W*B*(C+3)*4                bucket planes: colour + alpha + the two area
-//                                planes (M1.P3.T9)
+//                                planes
 // + (K+1)*W*B*4                  the holdout transmittance LUT, when a holdout
-//                                is connected — the term M1.P3.T3 left out of
+//                                is connected — NOT counted by
 //                                bytesForBand(), measured 17.0 MB per 4096x64
 //                                band at K=16 (17*4096*64*4 = 17,825,792 B;
 //                                the LUT dominates the holdout side's cost and
 //                                its size is spp-independent)
 // + fragments * 100 B            the SoA fragment stream at its RESIDENT cost:
-//                                61 B/fragment logical since M1.P3.T10 dropped
-//                                the boundary pair, ~100 B resident with
+//                                61 B/fragment logical, ~100 B resident with
 //                                PodBuffer's geometric capacity slack
-//                                (milestone Decisions, 2026-07-27)
 //
 // `fragmentEstimate` is the caller's own forecast of the band's fragment
 // count.  The node derives it from the depth-range pass's per-row sample
@@ -3128,8 +3056,8 @@ void resolveBandCPU(const ScatterParams& params,
 // planes (W*B*(C+2)*4 — 2.95 MB against a 485 MB band at 4K/K=64) and the
 // flatten/scatter scratch, which is sized per PIXEL (one pixel's sample
 // count), not per band.  Measured against peak RSS, on the two configurations
-// where maxInFlight actually binds — it does not bind until per-band claims
-// let a frame keep several bands in flight at once:
+// where maxInFlight actually binds (it binds only once several bands are in
+// flight at once):
 //
 //   3840x2160, 20 spp, K=64, limit 1.5 GB: cap 3, promised 1.456 GiB,
 //     process peak +1.489 GiB, of which +0.270 GiB is the same scene with
@@ -3164,7 +3092,7 @@ inline double bandBudgetBytes(int bucketCount, int channelCount, int width,
 // ---------------------------------------------------------------------------
 // planBands — band height + concurrent-band cap from the memory limit
 //
-// The design reference's policy, in one testable place:
+// The policy, in one testable place:
 //   * start from B = clamp(2*maxRadius, 32, 256) (the caller passes that in,
 //     already clamped to the frame height);
 //   * if even ONE band busts the limit, SHRINK B (halve, floor 1 row) until it
