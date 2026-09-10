@@ -237,32 +237,28 @@ behaviour, with no legacy knob. The "honest dip" contract is retired; docs, vali
     clamp; two 0.5 fog layers still read 0.75.
   - size: M
 
-- [ ] M4.P1.T7 — Split the residual across each part's own radius
-  - files: `src/DeepCDefocusScatter.cpp` (`flattenPixelToSoA()`'s staging loop, the volumetric
-    split-part branch; `scatterBackgroundCPU()`), `src/DeepCDefocusScatter.h`
-    (`ResidualWindow`, `flattenPixelToSoA()`'s residual out-params),
-    `tests/test_defocus_scatter.cpp`
-  - approach: M4's original spec — "each pixel's residual scatters at its own **deepest** sample's
-    CoC" — is wrong for a volumetric span whose parts span a wide radius range. Measured at
-    M4.P1.T6: parts running 20.796 -> 0.552 px with the whole residual scattered at 0.552 leaves a
-    band one background-radius wide at the silhouette reading up to **0.3 alpha high (66-80 code
-    values)**; a 40x40 patch at 15 parts is +10.46% on its alpha integral, worst-pixel Δalpha
-    0.316. Interiors are unaffected — a uniform `T` field gives arrival exactly 1 at any radii — so
-    this is a silhouette-band defect, not a global one. Replace the single deepest-radius residual
-    with a **per-part split**: each split part contributes its own portion of the leftover
-    transmittance at **its own** radius, so the residual is shaped like the deposit it stands in
-    for. A point sample keeps exactly today's behaviour (one part, one radius) and must stay
-    bit-identical. `ResidualWindow` currently carries one radius per pixel and will need to carry a
-    small per-pixel set (or `scatterBackgroundCPU()` gains a per-part loop) — pick whichever keeps
-    `scatterBackgroundCPU()` simple, and do **not** optimize it here; P3.T5 profiles it.
-  - verify: the two doctest cases left FAILING at M4.P1.T6 go green **on their original,
-    untouched pins** — `volumetric parent reconstruction is EXACT in front of focus, at any part
-    count` (2/4/8/12/15 parts at α=0.9 and α=0.1, gate 1.8e-6) and `behind focus the residue is
-    structural` (+36.9/+50.2/+56.3/+61.0% ±0.1). A single point sample is bit-identical to
-    `f2e40d4`. Validation f3g and f3h — additivity controls that were exact pre-M4 and now read
-    +15.228%/-20.585% and -14.229% — return to their baseline readings, and the full harness shows
-    no new regression. Mutation-test the per-part split by collapsing it back to the deepest radius
-    and confirming both doctest cases and f3g/f3h fail again.
+- [x] M4.P1.T7 — Pool a volumetric parent's arrival claim onto one radius
+  - **Approach as originally written ("split the residual positively across each part's own
+    radius") was REFUTED during execution and is superseded by the text below.** For an isolated
+    source pixel in a uniform `T` field the surrounding kernels tile to exactly 1, so
+    `arrival(x) = 1 - K_R(x-p) + own_p(x)`. Exactness demands `own_p == K_R`; both carry unit mass
+    and `own_p >= 0`, so the pixel's whole claim must be a **single unit kernel at the residual
+    radius**. Non-negative portions at the parts' radii cannot reach it — at 15 parts the claim at
+    the deepest radius caps at 0.261 against the 1.0 required — and measured on the real pipeline
+    that direction makes the artifact **worse** (isolated pixel +27.03% -> +34.13%, 40x40 patch
+    +10.46% -> +11.99%). Expressing it residual-side would need **signed** per-part portions, which
+    also breaks `scatterBackgroundCPU()`'s `T > kFillDeficitTol` skip.
+  - what shipped: the inverse. A parent's split parts contribute their whole arrival share at the
+    **deepest part's radius** (the others go to zero), pooled per-parent in `flattenPixelToSoA()`'s
+    volumetric branch. The bucket split is an artefact of K and must not move where a parent claims
+    arrival. `ResidualWindow` and `scatterBackgroundCPU()` were left untouched, which is why this
+    needed neither of the two carrying designs the brief offered. `share` feeds only the two
+    arrival deposits, so this moves the denominator and never the numerator; the partition
+    invariant holds because only the distribution *within* one parent changes.
+  - outcome: both deliberately-red cases from `f2e40d4` green on their original pins; 82/82 cases,
+    238766 assertions; point sample bit-identical (it cannot reach the pooling block). Harness
+    `PASS=82 FAIL=7` -> `PASS=83 FAIL=6`. **c4 returned to its exact pre-M4 reading (1.397e-05
+    against a 1e-4 gate)** — pooling collapses a K-part parent's K arrival deposits into one.
   - size: L
 
 ## Phase 4.2: Kernel blending
@@ -324,7 +320,7 @@ behaviour, with no legacy knob. The "honest dip" contract is retired; docs, vali
     bound.
   - size: M
 
-- [ ] M4.P2.T4 — Isolate the share-side arrival deficit behind c4
+- [ ] M4.P2.T4 — Re-confirm the share-side arrival deficit (c4 went green at M4.P1.T7)
   - files: investigation first — `src/DeepCDefocusScatter.h`
     (`scatterFragmentSpans()`/`scatterFragmentSharp()`'s arrival deposit,
     `compositePixelCoveragePartition()`), `tests/test_defocus_scatter.cpp`
@@ -616,3 +612,34 @@ including.
   visible artifact for another in a milestone whose whole purpose is removing them. The c4
   share-side deficit is **investigated after Phase 4.2**, as new task M4.P2.T4, since kernel
   blending rewrites how weights reach arrival and may move or explain it.
+
+- 2026-09-10 — **The T7 brief was wrong and execution refuted it with a proof, not a preference.**
+  "Split the residual positively across each part's own radius" is unreachable: for an isolated
+  source pixel in a uniform `T` field the neighbours' kernels tile to 1, so
+  `arrival(x) = 1 - K_R(x-p) + own_p(x)`, and exactness forces `own_p == K_R` — a single unit
+  kernel at the residual radius. Non-negative per-part portions cap at 0.261 of the required 1.0 at
+  15 parts, and measured, that direction makes the artifact worse. What shipped is the inverse:
+  pool the parent's whole arrival claim onto the deepest part's radius. **`share` feeds only the
+  two arrival deposits**, so this moves the denominator and never the numerator — that is what
+  makes it safe, and it is worth re-checking before anything else touches `share`.
+- 2026-09-10 — **c4 was the same defect after all, and T7 fixed it.** The adjudication correctly
+  located it on the **share** side (at α=1.0 the residual deposits nothing, yet arrival still read
+  0.99965) but concluded it was independent of the residual-radius convention. It was not: pooling
+  is a share-side change, and c4 returned to 1.397e-05 exactly. M4.P2.T4 is re-scoped from
+  investigation to confirmation.
+- 2026-09-10 — **f3g and f3h do NOT return to baseline, and f3g provably cannot from within T7's
+  scope.** Both are additivity controls (`merged == soloA + soloB`) that were exact pre-M4. Traced
+  with a `background_depth` probe (since reverted): f3g's cards are one bucket, one part, radius
+  **27.895 px**, while the auto background radius is **12.25 px** (the CoC at the range anchor's
+  z=16); forcing `background_depth = 28` returns f3g to its exact pre-M4 reading. So f3g measures
+  the **object-vs-background radius mismatch** the design documents as a conditional, not the
+  split-part defect. f3h (11 parts, radii 37.67 -> 21.538) *is* the T7 defect — with the fix plus
+  `background_depth = 21.53846` it reads its exact pre-M4 numbers — but the auto radius still
+  cannot match it. **P3.T3 owns re-specifying both**, with hard outer bounds, and must not re-pin
+  them against new output. The open question underneath — what the auto background radius should be
+  when frame content sits at a very different CoC from `depthMax()` — is real and is NOT in this
+  milestone; raise it at the gate.
+- 2026-09-10 — **f3e/f3f moved in the wrong direction at T7** (+75.686/-3.470 -> +87.379/-1.585, and
+  worst cell +91.008% -> +104.788%). Both were already FAIL pre-M4 and belong to M1.P3.T23, not to
+  this milestone, but the movement is real and is recorded here so it is not mistaken for noise
+  later.
