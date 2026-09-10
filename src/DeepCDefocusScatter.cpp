@@ -1441,6 +1441,7 @@ void BucketPlanes::allocate(int bucketCountIn, int channelCountIn,
     alpha.assign(plane, 0.0f);
     weight.assign(plane, 0.0f);
     colocated.assign(plane, 0.0f);
+    arrival.assign(px, 0.0f);   // K-independent: one per pixel, not per bucket
 }
 
 void BucketPlanes::zero()
@@ -1451,6 +1452,7 @@ void BucketPlanes::zero()
     alpha.assign(alpha.size(), 0.0f);
     weight.assign(weight.size(), 0.0f);
     colocated.assign(colocated.size(), 0.0f);
+    arrival.assign(arrival.size(), 0.0f);
 }
 
 void BucketPlanes::release()
@@ -1459,6 +1461,7 @@ void BucketPlanes::release()
     alpha.release();
     weight.release();
     colocated.release();
+    arrival.release();
     bucketCount  = 0;
     channelCount = 0;
     width        = 0;
@@ -1469,7 +1472,7 @@ void BucketPlanes::release()
 std::size_t BucketPlanes::sizeBytes() const
 {
     return color.sizeBytes() + alpha.sizeBytes() + weight.sizeBytes()
-         + colocated.sizeBytes();
+         + colocated.sizeBytes() + arrival.sizeBytes();
 }
 
 BucketPlaneView BucketPlanes::view()
@@ -1479,6 +1482,7 @@ BucketPlaneView BucketPlanes::view()
     v.alpha        = alpha.data();
     v.weight       = weight.data();
     v.colocated    = colocated.data();
+    v.arrival      = arrival.data();
     v.bucketCount  = bucketCount;
     v.channelCount = channelCount;
     v.width        = width;
@@ -1568,6 +1572,7 @@ void scatterBandCPU(const ScatterParams& params,
         frag.alpha1      = samples.bucketAlpha1[f];
         frag.colorScale0 = samples.colorScale0[f];
         frag.colorScale1 = samples.colorScale1[f];
+        frag.share       = samples.arrivalShare[f];
 
         frag.color = samples.colorOf(f);
 

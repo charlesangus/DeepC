@@ -1144,6 +1144,18 @@ bool checkCompositionContract(const SampleSoA& soa,
 // Both area planes are ALPHA-INDEPENDENT and are never touched by the
 // saturation pass, exactly like the third.
 //
+// THE FIFTH PLANE, `arrival`, IS K-INDEPENDENT: one float per band pixel, not
+// per bucket (`arrival[i]`, no `k` term). It is the M4 coverage-renormalization
+// denominator — each fragment's RAW kernel weight (before the holdout
+// visibility fold) times its FragmentRecord::share, deposited once per
+// fragment regardless of which bucket(s) it lands in. It is not an alternative
+// layout for the same information the four bucket planes hold: the coverage
+// plane also carries holdout visibility and follows an area model (a bucket
+// can legitimately hold more than unit weight), so it cannot serve as this
+// denominator, and a per-bucket version of this plane would cost K times as
+// much for no benefit outside the narrow same-surface-surplus case that the
+// existing excess/attenuation machinery already handles.
+//
 // Pointers rather than PodBuffer so the DEEPC_HD bodies below never name a
 // host container; BucketPlanes::view() produces one.
 // ---------------------------------------------------------------------------
@@ -1152,6 +1164,7 @@ struct BucketPlaneView {
     float*         alpha       = nullptr;
     float*         weight      = nullptr;   // new area
     float*         colocated   = nullptr;   // co-located area
+    float*         arrival     = nullptr;   // K-independent: pixelCount, not bucketCount * pixelCount
     int            bucketCount = 0;
     int            channelCount = 0;
     int            width       = 0;
@@ -1161,6 +1174,7 @@ struct BucketPlaneView {
     DEEPC_HD inline bool valid() const
     {
         return alpha != nullptr && weight != nullptr && colocated != nullptr
+            && arrival != nullptr
             && (channelCount == 0 || color != nullptr)
             && bucketCount > 0 && channelCount >= 0 && width > 0 && height > 0
             && pixelCount == static_cast<std::ptrdiff_t>(width) * height;
@@ -1168,7 +1182,8 @@ struct BucketPlaneView {
 };
 
 // ---------------------------------------------------------------------------
-// BucketPlanes — the owning form: one band's K x (C + 3) planes
+// BucketPlanes — the owning form: one band's K x (C + 3) bucket planes plus
+// one K-independent arrival plane
 //
 // One instance per band-computing thread, reused across bands (allocate()
 // once, zero() per band) — the memory-limit knob caps how many of these can
@@ -1179,6 +1194,7 @@ struct BucketPlanes {
     PodBuffer<float> alpha;     // bucketCount * pixelCount
     PodBuffer<float> weight;    // bucketCount * pixelCount — new area
     PodBuffer<float> colocated; // bucketCount * pixelCount — co-located area
+    PodBuffer<float> arrival;  // pixelCount — K-INDEPENDENT, see BucketPlaneView
 
     int            bucketCount  = 0;
     int            channelCount = 0;
@@ -1186,7 +1202,7 @@ struct BucketPlanes {
     int            height       = 0;
     std::ptrdiff_t pixelCount   = 0;
 
-    // Sizes the four buffers and ZEROES them.  Safe to call repeatedly with
+    // Sizes the five buffers and ZEROES them.  Safe to call repeatedly with
     // the same geometry (PodBuffer keeps its capacity), which is the band
     // loop's normal path.
     void allocate(int bucketCountIn, int channelCountIn, int widthIn, int heightIn);
@@ -1200,14 +1216,22 @@ struct BucketPlanes {
 
     BucketPlaneView view();
 
-    // The per-band scratch formula, K*W*B*(C+3)*4 bytes, in one place so the
-    // memory-limit knob and the code cannot drift apart.
+    // The per-band scratch formula, K*W*B*(C+3)*4 + W*B*4 bytes, in one place
+    // so the memory-limit knob and the code cannot drift apart.
     //
     // (C+3), not (C+2): colour + alpha + new area + co-located area.  The
     // fourth plane is ~+17% of the bucket planes (~+17MB at 4K defaults)
     // against a ~2.4GB SoA, and is what makes the coverage-partition composite
     // exact at any within-parent radius spread — see BucketPlaneView and
     // compositePixelCoveragePartition().
+    //
+    // The trailing `+ W*B*4` is the fifth, K-independent `arrival` plane: at
+    // the same 4K/K=16 defaults it adds ~1MB against the ~112MB the four
+    // bucket planes already cost there (under 1%), and it is a smaller
+    // fraction still of a band with a holdout LUT connected (that LUT alone is
+    // already (K+1)*W*B*4, ~17MB at the same defaults — see bandBudgetBytes).
+    // It stays this small at any K because, unlike the other four, it is never
+    // multiplied by K.
     //
     // CLAMP AT THE CALL SITE.  Knob ranges are soft, so `depth_layers` must be
     // clamped to [4, 128] and the band height derived from a CLAMPED
@@ -1225,7 +1249,7 @@ struct BucketPlanes {
         const std::size_t c = (channelCount > 0) ? static_cast<std::size_t>(channelCount) : 0;
         const std::size_t w = (width > 0) ? static_cast<std::size_t>(width) : 0;
         const std::size_t h = (height > 0) ? static_cast<std::size_t>(height) : 0;
-        return k * w * h * (c + 3) * sizeof(float);
+        return k * w * h * (c + 3) * sizeof(float) + w * h * sizeof(float);
     }
 };
 
@@ -1617,6 +1641,11 @@ struct ScatterFragment {
     float colorScale0 = 0.0f;
     float colorScale1 = 0.0f;
 
+    // SampleSoA::arrivalShare, carried straight through.  Read only when
+    // depositCoverage is set (group 0 — see below), so a chromatic build's
+    // other groups never deposit it a second time.
+    float share = 0.0f;
+
     // HoldoutBoundaries::locate()'s pair — position between the HOLDOUT LUT's
     // own boundaries, NOT the bucketOf() pair above and NOT
     // DepthBuckets::locateBoundary()'s.  Filled by scatterBandCPU() from the
@@ -1885,6 +1914,18 @@ DEEPC_HD inline std::size_t scatterFragmentSpans(const BucketPlaneView& planes,
         // which is what lets the deposit loops vectorize.
         const float* w = kv.rowWeights(row) + skip;
 
+        // THE ARRIVAL DEPOSIT USES THE RAW ROW, captured before the holdout
+        // fold below overwrites `w`.  Depositing the vis-folded weight instead
+        // would let held-out alpha renormalize back up at composite time,
+        // which the M4 fill must never do — see BucketPlaneView.  One deposit
+        // per fragment regardless of which bucket(s) it lands in: gated on
+        // depositCoverage (group 0), the same flag the coverage plane uses.
+        if (frag.depositCoverage) {
+            float* __restrict__ arrivalDst = planes.arrival + dstOffset;
+            for (int i = 0; i < count; ++i)
+                arrivalDst[i] += w[i] * frag.share;
+        }
+
         if (useHoldout) {
             // Holdout visibility is multiplied in HERE, before the fragment
             // enters any accumulation structure — that is what makes the whole
@@ -1936,6 +1977,11 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 
     const std::ptrdiff_t dstOffset =
         static_cast<std::ptrdiff_t>(frag.destY) * planes.width + frag.destX;
+
+    // Raw weight is always 1 on the sharp path — deposited before any
+    // holdout fold, same reasoning as scatterFragmentSpans().
+    if (frag.depositCoverage)
+        planes.arrival[dstOffset] += frag.share;
 
     float w = 1.0f;
     if (holdout.enabled()) {
@@ -2519,7 +2565,7 @@ DEEPC_HD inline void mergeOldestHeadTiles(float* __restrict__ tileT,
 // COST.  A per-THREAD stack frame alive only inside one call: 2 floats per tile,
 // 128 bytes at depth 16, independent of K, of the band size, of the format and of
 // the thread count.  It adds NOTHING to the memory_limit formula
-// (`K*W*B*(C+3)*4`), which counts the bucket planes — no plane, and no
+// (`K*W*B*(C+3)*4 + W*B*4`), which counts the bucket planes — no plane, and no
 // per-bucket state of any kind, is added by the stack.  In time, on a
 // worst-case synthetic where EVERY bucket carries both new and co-located area
 // (4 channels, 20 000 pixels, best of 7), against a single tile:
@@ -3068,6 +3114,10 @@ void resolveBandCPU(const ScatterParams& params,
 //
 //   K*W*B*(C+3)*4                bucket planes: colour + alpha + the two area
 //                                planes
+// + W*B*4                        the fifth, K-independent arrival plane —
+//                                counted by bytesForBand() already, listed
+//                                here only so the combined figure is legible
+//                                as a sum of named terms
 // + (K+1)*W*B*4                  the holdout transmittance LUT, when a holdout
 //                                is connected — NOT counted by
 //                                bytesForBand(), measured 17.0 MB per 4096x64

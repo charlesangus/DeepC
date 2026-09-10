@@ -4094,14 +4094,15 @@ TEST_CASE("saturation is down-only and preserves the colour:alpha ratio, on the 
     }
 }
 
-TEST_CASE("BucketPlanes::zero() clears ALL FOUR planes, so a band loop may reuse the allocation")
+TEST_CASE("BucketPlanes::zero() clears ALL FIVE planes, so a band loop may reuse the allocation")
 {
     // The band loop allocates once and calls
     // zero() per band (see scatterBandCPU's header: "ACCUMULATED INTO, never
     // cleared here").  Every case in this file allocates fresh planes, and
     // allocate() zero-fills, so a zero() that missed a plane was invisible --
     // and would show up in production as the previous band's area bleeding
-    // into this one's composite.
+    // into this one's composite.  Includes the fifth, K-independent `arrival`
+    // plane added for M4.
     const int K = 4, C = 2, W = 10, H = 8;
     DiscKernelLUT lut(0.0f, 8.0f, 1.0f, 1.0f);
     const ScatterParams sp = makeScatterParams(W, H);
@@ -4115,6 +4116,7 @@ TEST_CASE("BucketPlanes::zero() clears ALL FOUR planes, so a band loop may reuse
         f.radius = 3.0f;                    // a real disc, so every plane is hit
         f.depth = 5.0f;
         f.alpha = alpha;
+        f.share = alpha;                    // nonzero, so arrival has something to clear too
         BucketWeight bw;
         bw.index = bucket;
         bw.frac  = 0.4f;                    // frac > 0 -> a rear deposit -> colocated
@@ -4139,6 +4141,7 @@ TEST_CASE("BucketPlanes::zero() clears ALL FOUR planes, so a band loop may reuse
         before += planeSum(reused.colocated, k, px);
     }
     REQUIRE(before > 0.0);
+    REQUIRE(planeSum(reused.arrival, 0, px) > 0.0);
 
     reused.zero();
     for (std::size_t i = 0; i < reused.color.size(); ++i)
@@ -4148,6 +4151,8 @@ TEST_CASE("BucketPlanes::zero() clears ALL FOUR planes, so a band loop may reuse
         REQUIRE(reused.weight[i] == 0.0f);
         REQUIRE(reused.colocated[i] == 0.0f);
     }
+    for (std::size_t i = 0; i < reused.arrival.size(); ++i)
+        REQUIRE(reused.arrival[i] == 0.0f);
 
     // And a second band scattered into the reused planes matches a fresh one,
     // plane for plane -- the property the band loop actually depends on.
@@ -4166,7 +4171,196 @@ TEST_CASE("BucketPlanes::zero() clears ALL FOUR planes, so a band loop may reuse
     }
     for (std::size_t i = 0; i < fresh.color.size(); ++i)
         if (reused.color[i] != fresh.color[i]) ++differing;
+    for (std::size_t i = 0; i < fresh.arrival.size(); ++i)
+        if (reused.arrival[i] != fresh.arrival[i]) ++differing;
     CHECK(differing == 0);
+}
+
+TEST_CASE("allocate() re-zeroes a dirty BucketPlanes, at the same geometry and at a "
+          "smaller one -- the band loop's ONLY clear")
+{
+    // The node calls allocate() per band and never zero(): a pooled job's
+    // planes arrive carrying the previous band's contents, and PodBuffer keeps
+    // its capacity across both calls, so allocate()'s fill is the only thing
+    // between one band and the next.  zero()'s own case above cannot see a
+    // plane missing from THIS path.
+    const int K = 4, C = 2, W = 12, H = 9;
+    DiscKernelLUT lut(0.0f, 8.0f, 1.0f, 1.0f);
+    HoldoutSoA none;
+
+    auto dirty = [&](BucketPlanes& planes, int w, int h) {
+        SampleSoA soa;
+        soa.begin(C, makeSingleChannelGroup(C));
+        FragmentRecord f;
+        f.x = w / 2; f.y = h / 2;
+        f.radius = 3.0f;                    // a real disc, so every plane is hit
+        f.depth  = 5.0f;
+        f.alpha  = 0.8f;
+        f.share  = 0.8f;
+        BucketWeight bw;
+        bw.index = 1;
+        bw.frac  = 0.4f;                    // frac > 0 -> a rear deposit -> colocated
+        f.deposit = fragmentDeposit(bw, f.alpha);
+        f.kind = FragmentKind::Point;
+        const float ch[2] = {f.alpha * 0.3f, f.alpha * 0.6f};
+        soa.appendFragment(f, ch);
+        scatterOnThread(makeScatterParams(w, h), soa, none, lut, planes);
+    };
+
+    auto checkClean = [](const BucketPlanes& p) {
+        for (std::size_t i = 0; i < p.color.size(); ++i)
+            REQUIRE(p.color[i] == 0.0f);
+        for (std::size_t i = 0; i < p.alpha.size(); ++i) {
+            REQUIRE(p.alpha[i] == 0.0f);
+            REQUIRE(p.weight[i] == 0.0f);
+            REQUIRE(p.colocated[i] == 0.0f);
+        }
+        for (std::size_t i = 0; i < p.arrival.size(); ++i)
+            REQUIRE(p.arrival[i] == 0.0f);
+    };
+
+    BucketPlanes planes;
+    planes.allocate(K, C, W, H);
+    dirty(planes, W, H);
+    REQUIRE(planeSum(planes.arrival, 0, static_cast<std::ptrdiff_t>(W) * H) > 0.0);
+
+    planes.allocate(K, C, W, H);
+    checkClean(planes);
+
+    // A SHRINK, which is the case a "same size, skip the fill" shortcut would
+    // get wrong in the other direction: every buffer keeps the larger
+    // capacity, so the live range is old data until the fill overwrites it.
+    dirty(planes, W, H);
+    planes.allocate(K, C, W - 3, H - 2);
+    checkClean(planes);
+}
+
+TEST_CASE("arrival is bit-identical with and without a holdout LUT connected -- "
+          "proves the deposit precedes the visibility fold")
+{
+    // THE LOAD-BEARING CASE.  arrival must accumulate the RAW kernel weight,
+    // before HoldoutVisibility::interpAtBucket() folds vis into it -- see
+    // scatterFragmentSpans()/scatterFragmentSharp().  A card sitting in front
+    // of both fragments below proves it two ways: alpha (which DOES fold vis
+    // in) drops when the card is connected, while arrival does not move at
+    // all.  If arrival ever picked up vis, this is the case that would catch
+    // it: the card is semi-transparent (0.5), so a vis-folded arrival would
+    // differ from the disconnected run by a large, unmissable factor.
+    const int C = 1, W = 10, H = 10, K = 8;
+    const CocParams         p  = makeManualRig(0.05f, 10.0f);
+    const DepthBuckets      bk = makeBoundedDeltaCocBuckets(p, 1.0f, 100.0f, K);
+    const HoldoutBoundaries hb = makeUniformHoldoutBoundaries(bk);
+
+    HoldoutSampleSoA hs;
+    HoldoutLut       lut;
+    buildHoldout(hs, lut, hb, W, H, [](int, int, std::vector<SampleRecord>& out) {
+        out.push_back(makeSample(5.0f, 5.0f, 0.5f, {}));   // semi-transparent card
+    });
+
+    DiscKernelLUT       kernel(0.0f, 8.0f, 1.0f, 1.0f);
+    const ScatterParams  sp = makeScatterParams(W, H);
+
+    auto buildSoA = [&]() {
+        SampleSoA soa;
+        soa.begin(C, makeSingleChannelGroup(C));
+
+        FragmentRecord disc;
+        disc.x = 4; disc.y = 4;
+        disc.radius = 2.5f;                 // a real, multi-row disc: exercises
+                                             // scatterFragmentSpans's row loop
+        disc.depth  = 80.0f;                // well behind the card
+        disc.alpha  = 0.7f;
+        disc.share  = disc.alpha;
+        BucketWeight bwDisc;
+        bwDisc.index = 3; bwDisc.frac = 0.0f;
+        disc.deposit = fragmentDeposit(bwDisc, disc.alpha);
+        disc.kind = FragmentKind::Point;
+        const float chDisc[1] = {disc.alpha * 0.4f};
+        soa.appendFragment(disc, chDisc);
+
+        FragmentRecord sharp;
+        sharp.x = 7; sharp.y = 6;
+        sharp.radius = 0.0f;                // the sharp fast path
+        sharp.depth  = 80.0f;
+        sharp.alpha  = 0.35f;
+        sharp.share  = sharp.alpha;
+        BucketWeight bwSharp;
+        bwSharp.index = 5; bwSharp.frac = 0.0f;
+        sharp.deposit = fragmentDeposit(bwSharp, sharp.alpha);
+        sharp.kind = FragmentKind::Point;
+        const float chSharp[1] = {sharp.alpha * 0.9f};
+        soa.appendFragment(sharp, chSharp);
+
+        return soa;
+    };
+
+    Band withHoldout;
+    withHoldout.K = K; withHoldout.C = C; withHoldout.W = W; withHoldout.H = H;
+    HoldoutSoA vis = lut.view();
+    runBand(withHoldout, sp, buildSoA(), vis, kernel, /*useThread*/ false);
+
+    Band noHoldout;
+    noHoldout.K = K; noHoldout.C = C; noHoldout.W = W; noHoldout.H = H;
+    HoldoutSoA none;
+    runBand(noHoldout, sp, buildSoA(), none, kernel, /*useThread*/ false);
+
+    // Sanity: the holdout really did attenuate something, or the bit-identical
+    // check below would be vacuously true.
+    const std::ptrdiff_t px = static_cast<std::ptrdiff_t>(W) * H;
+    double alphaWith = 0.0, alphaWithout = 0.0;
+    for (int k = 0; k < K; ++k) {
+        alphaWith    += planeSum(withHoldout.planes.alpha, k, px);
+        alphaWithout += planeSum(noHoldout.planes.alpha, k, px);
+    }
+    REQUIRE(alphaWith < alphaWithout - 1e-6);
+
+    // THE CHECK.  arrival never saw the card.
+    REQUIRE(withHoldout.planes.arrival.size() == noHoldout.planes.arrival.size());
+    std::size_t differing = 0;
+    for (std::size_t i = 0; i < withHoldout.planes.arrival.size(); ++i)
+        if (withHoldout.planes.arrival[i] != noHoldout.planes.arrival[i])
+            ++differing;
+    CHECK(differing == 0);
+}
+
+TEST_CASE("a single fragment's arrival deposits sum to its share within 1e-6")
+{
+    // The disc kernel's raw weights sum to 1 (DiscKernelLUT's own contract),
+    // so arrival[dst] += w[i]*share summed over an UNCLIPPED disc must recover
+    // `share` exactly, to floating-point summation error -- independent of
+    // `alpha`, which this pins by giving the fragment a share that is NOT its
+    // alpha.
+    const int K = 4, C = 1, W = 40, H = 40;
+    DiscKernelLUT        lut(0.0f, 12.0f, 1.0f, 1.0f);
+    const ScatterParams  sp = makeScatterParams(W, H);
+    HoldoutSoA none;
+
+    SampleSoA soa;
+    soa.begin(C, makeSingleChannelGroup(C));
+    FragmentRecord f;
+    f.x = W / 2; f.y = H / 2;           // comfortably inside: no band-edge clipping
+    f.radius = 5.0f;                    // a real, multi-row disc
+    f.depth  = 5.0f;
+    f.alpha  = 0.63f;
+    f.share  = 0.417f;                  // deliberately NOT equal to alpha
+    BucketWeight bw;
+    bw.index = 1; bw.frac = 0.3f;
+    f.deposit = fragmentDeposit(bw, f.alpha);
+    f.kind = FragmentKind::Point;
+    const float ch[1] = {f.alpha * 0.5f};
+    soa.appendFragment(f, ch);
+
+    BucketPlanes planes;
+    planes.allocate(K, C, W, H);
+    planes.zero();
+    scatterOnThread(sp, soa, none, lut, planes);
+
+    const std::ptrdiff_t px = static_cast<std::ptrdiff_t>(W) * H;
+    double sum = 0.0;
+    for (std::ptrdiff_t i = 0; i < px; ++i)
+        sum += static_cast<double>(planes.arrival[i]);
+
+    CHECK(std::fabs(sum - static_cast<double>(f.share)) <= 1e-6);
 }
 
 TEST_CASE("an ALPHA-ZERO fragment still deposits its colour: the cull is on alpha AND colour")
@@ -5852,20 +6046,45 @@ TEST_CASE("SampleSoA lifecycle: clear() keeps the allocation, release() drops it
     CHECK(soa.fragmentCount() == 0u);
 }
 
-TEST_CASE("BucketPlanes::bytesForBand is the (C+3) formula and matches a live sizeBytes()")
+TEST_CASE("BucketPlanes::bytesForBand is the (C+3) formula plus a K-independent "
+          "arrival plane, and matches a live sizeBytes()")
 {
-    // The memory-limit knob and the code must not drift apart.  The formula is
-    // (C+3), not (C+2): colour + alpha + new area + co-located area.
+    // The memory-limit knob and the code must not drift apart.  The bucket-
+    // scaled term is (C+3), not (C+2): colour + alpha + new area + co-located
+    // area.  The trailing `+ W*H*4` is the fifth, K-independent `arrival`
+    // plane: one float per band pixel, never multiplied by K.
     CHECK(BucketPlanes::bytesForBand(16, 4, 4096, 64)
-          == static_cast<std::size_t>(16) * 4096 * 64 * (4 + 3) * sizeof(float));
-    CHECK(BucketPlanes::bytesForBand(16, 4, 4096, 64) == 117440512u);
-    CHECK(BucketPlanes::bytesForBand(128, 4, 4096, 64) == 939524096u);
+          == static_cast<std::size_t>(16) * 4096 * 64 * (4 + 3) * sizeof(float)
+           + static_cast<std::size_t>(4096) * 64 * sizeof(float));
+    CHECK(BucketPlanes::bytesForBand(16, 4, 4096, 64) == 118489088u);
+    CHECK(BucketPlanes::bytesForBand(128, 4, 4096, 64) == 940572672u);
 
     BucketPlanes planes;
     planes.allocate(8, 3, 32, 16);
     CHECK(planes.sizeBytes() == BucketPlanes::bytesForBand(8, 3, 32, 16));
     planes.release();
     CHECK(planes.sizeBytes() == 0u);
+}
+
+TEST_CASE("BucketPlanes::bytesForBand's arrival term matches an independently "
+          "hand-computed byte count")
+{
+    // Hand-derived from the geometry alone -- NOT by calling bytesForBand()
+    // twice -- so this pins the formula itself rather than its own
+    // self-consistency.  K=6 buckets, C=3 channels, a 20x9 band:
+    //   bucket planes: K * W * H * (C+3) floats = 6 * 20 * 9 * 6      = 6480
+    //   arrival:                       W * H floats =      20 * 9    =  180
+    //   total floats: 6660, * 4 bytes/float = 26640 bytes.
+    const int K = 6, C = 3, W = 20, H = 9;
+    const std::size_t bucketFloats  = static_cast<std::size_t>(K) * W * H * (C + 3);
+    const std::size_t arrivalFloats = static_cast<std::size_t>(W) * H;
+    const std::size_t expectedBytes = (bucketFloats + arrivalFloats) * sizeof(float);
+    REQUIRE(expectedBytes == 26640u);
+    CHECK(BucketPlanes::bytesForBand(K, C, W, H) == expectedBytes);
+
+    BucketPlanes planes;
+    planes.allocate(K, C, W, H);
+    CHECK(planes.sizeBytes() == expectedBytes);
 }
 
 // ===========================================================================
@@ -6530,9 +6749,10 @@ TEST_CASE("bandBudgetBytes: bucket planes + holdout LUT + resident SoA, "
           "against hand-derived byte counts")
 {
     // The 4K default band: K=16, C=4, 4096x64.
-    // Planes: K*W*B*(C+3)*4 = 16*4096*64*7*4 = 117,440,512 (~117MB).
+    // Planes: K*W*B*(C+3)*4 + W*B*4 (the K-independent arrival plane)
+    //       = 117,440,512 + 1,048,576 = 118,489,088 (~118MB).
     CHECK(bandBudgetBytes(16, 4, 4096, 64, false, 0.0)
-          == doctest::Approx(117440512.0));
+          == doctest::Approx(118489088.0));
 
     // The holdout term, which bytesForBand() does NOT carry: (K+1)*W*B*4 =
     // 17*4096*64*4 = 17,825,792, i.e. 17.0 MB per 4096x64 band at K=16.
@@ -6543,14 +6763,20 @@ TEST_CASE("bandBudgetBytes: bucket planes + holdout LUT + resident SoA, "
     // The SoA term, at the ~100 B/fragment RESIDENT figure (61 B logical).
     CHECK(kSoAResidentBytesPerFragment == doctest::Approx(100.0));
     CHECK(bandBudgetBytes(16, 4, 4096, 64, false, 1.0e6)
-          == doctest::Approx(117440512.0 + 1.0e8));
+          == doctest::Approx(118489088.0 + 1.0e8));
 
-    // K=128 planes: 128*4096*64*7*4 = 939,524,096 (~940MB).
+    // K=128 planes: 128*4096*64*7*4 + 4096*64*4 = 939,524,096 + 1,048,576
+    // = 940,572,672 (~940MB).
     CHECK(bandBudgetBytes(128, 4, 4096, 64, false, 0.0)
-          == doctest::Approx(939524096.0));
+          == doctest::Approx(940572672.0));
 
-    // Degenerate inputs count as zero, never negative or wrapped.
-    CHECK(bandBudgetBytes(0, 4, 4096, 64, true, 0.0) == doctest::Approx(0.0));
+    // Degenerate bucket count still leaves W*H nonzero, and arrival is
+    // K-INDEPENDENT -- it does not zero out with bucketCount, only with width
+    // or height (see bytesForBand).  The holdout term does gate on
+    // bucketCount > 0, so at K=0 only the arrival plane's 4096*64*4 =
+    // 1,048,576 bytes survive.
+    CHECK(bandBudgetBytes(0, 4, 4096, 64, true, 0.0)
+          == doctest::Approx(1048576.0));
     CHECK(bandBudgetBytes(16, 4, -1, 64, true, 100.0)
           == doctest::Approx(100.0 * kSoAResidentBytesPerFragment));
 }
