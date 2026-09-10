@@ -1913,6 +1913,14 @@ private:
                          y0, y1, stats.fragments, stats.sharpFragments,
                          stats.culled, stats.rowSpans, stats.pixelDeposits);
         }
+
+        // The virtual background: `arrival` only, never color/alpha/weight/
+        // colocated -- see scatterBackgroundCPU(). Nothing yet divides by
+        // `arrival` (that is the next change), so this does not move the
+        // rendered pixels.
+        deepc::scatterBackgroundCPU(job.sp, job.residual, *job.kernel,
+                                    job.planes);
+
         deepc::resolveBandCPU(job.sp, job.planes,
                               job.bandColor.data(), job.bandAlpha.data());
 

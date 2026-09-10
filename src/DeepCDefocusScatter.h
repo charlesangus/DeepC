@@ -3238,6 +3238,47 @@ void scatterBandCPU(const ScatterParams& params,
                     ScatterStats*        stats = nullptr);
 
 // ---------------------------------------------------------------------------
+// scatterBackgroundCPU — THE VIRTUAL BACKGROUND.  Residual T -> `arrival`
+// ONLY.
+//
+//   params   : band geometry + the sharp-path threshold, same as
+//              scatterBandCPU() -- the sharp/disc split is the same one, at
+//              the same threshold, so a residual radius near focus takes the
+//              identical fast path a real fragment there would.
+//   residual : one source pixel's (T, radius) claim, over the FULL fetch
+//              window (band +/- padY, clipped to the OUTPUT box) -- see
+//              ResidualWindow, buildResidualWindow().  A window pixel can
+//              reach into this band from outside it, exactly like a real
+//              fragment's disc can; it is not culled to the band first.
+//   kernel   : the same KernelSampler seam scatterBandCPU() uses.  The
+//              lookup IS DiscKernelLUT::radiusToIndex(), reached through
+//              kernel.kernel(radiusPx, ...) -- called with THIS PIXEL'S OWN
+//              residual radius, never a single frame-wide one.  A mismatched
+//              radius is a measured artifact, not a rounding difference: a
+//              true alpha=0.9 surface reads ~0.893 instead of 0.900 (~1.8
+//              code values) if every pixel scatters at one global radius
+//              instead of its own.
+//   planes   : ACCUMULATED INTO, `arrival` ONLY.  This function does not
+//              take a pointer to `color`, `alpha`, `weight` or `colocated`
+//              and cannot touch them -- the virtual background carries zero
+//              alpha and zero colour by construction, it is a claim on the
+//              coverage DENOMINATOR alone.
+//
+// Every window pixel with T > 1e-4 deposits w * T; a pixel at or below that
+// has nothing left to claim and is skipped.
+//
+// DELIBERATELY NAIVE: pi*r^2 work per non-opaque source pixel, one full disc
+// rasterised per pixel with no sharing across pixels of the same radius.  Do
+// NOT optimize this -- profile first (a later task's job); the known
+// mitigation (bucket by kernel bin, convolve per bin) becomes a new task only
+// if the profile demands it.
+// ---------------------------------------------------------------------------
+void scatterBackgroundCPU(const ScatterParams&  params,
+                          const ResidualWindow&  residual,
+                          const KernelSampler&   kernel,
+                          BucketPlanes&          planes);
+
+// ---------------------------------------------------------------------------
 // resolveBandCPU — saturate down, then combine, into the band's flat output
 //
 // Runs, in order:

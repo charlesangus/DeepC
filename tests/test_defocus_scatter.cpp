@@ -7065,6 +7065,328 @@ TEST_CASE("planBands: shrink-to-fit floors at 1 row and the concurrent cap "
     }
 }
 
+// ===========================================================================
+// scatterBackgroundCPU — the virtual background (M4.P1.T5)
+// ===========================================================================
+
+TEST_CASE("scatterBackgroundCPU: background deposits sum to T per source pixel, "
+          "within 1e-6 -- both the disc kernel and the sharp fast path")
+{
+    DiscKernelLUT lut(0.0f, 20.0f, 1.0f, 1.0f);
+    const int W = 40, H = 40;
+    const ScatterParams sp = makeScatterParams(W, H);
+
+    SUBCASE("disc kernel, several radii and claims, unclipped (disc wholly inside the band)")
+    {
+        for (float r : {1.0f, 2.5f, 6.0f, 12.5f}) {
+            for (float T : {1.0f, 0.6f, 0.1234f}) {
+                ResidualWindow window;
+                window.allocate(0, 0, W, H, r);
+                for (int y = 0; y < H; ++y)
+                    for (int x = 0; x < W; ++x)
+                        window.setPixel(x, y, 0.0f, r);   // isolate: only (20,20) claims
+                window.setPixel(20, 20, T, r);
+
+                BucketPlanes planes;
+                planes.allocate(1, 1, W, H);
+                planes.zero();
+                scatterBackgroundCPU(sp, window, lut, planes);
+
+                const double sum =
+                    planeSum(planes.arrival, 0, static_cast<std::ptrdiff_t>(W) * H);
+                CHECK(sum == doctest::Approx(static_cast<double>(T)).epsilon(1e-6));
+            }
+        }
+    }
+
+    SUBCASE("sharp fast path (radius below kSharpRadiusPx): a single-pixel deposit of T, "
+            "even when the LUT was never built down to that radius")
+    {
+        // minRadius = 2.0, deliberately ABOVE kSharpRadiusPx: this is what a
+        // real frame's LUT looks like (built over the MEASURED radius range,
+        // which rarely reaches literal 0). A residual radius of 0.1 must take
+        // the sharp path and never touch this LUT at all -- routing it
+        // through kernel.kernel(0.1, ...) instead would clamp to the LUT's
+        // smallest built entry (radius 2.0) and spread the deposit over a
+        // multi-pixel disc instead of the fragment's own single pixel.
+        DiscKernelLUT sharpLut(2.0f, 20.0f, 1.0f, 1.0f);
+
+        ResidualWindow window;
+        window.allocate(0, 0, W, H, 0.1f);   // < kSharpRadiusPx -> sharp path
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x)
+                window.setPixel(x, y, 0.0f, 0.1f);
+        window.setPixel(15, 15, 0.42f, 0.1f);
+
+        BucketPlanes planes;
+        planes.allocate(1, 1, W, H);
+        planes.zero();
+        scatterBackgroundCPU(sp, window, sharpLut, planes);
+
+        const double sum = planeSum(planes.arrival, 0, static_cast<std::ptrdiff_t>(W) * H);
+        CHECK(sum == doctest::Approx(0.42).epsilon(1e-6));
+        CHECK(planes.arrival[static_cast<std::size_t>(15) * W + 15]
+              == doctest::Approx(0.42f));
+    }
+
+    SUBCASE("T at or below 1e-4 deposits nothing -- the residual has nothing left to claim")
+    {
+        ResidualWindow window;
+        window.allocate(0, 0, W, H, 5.0f);
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x)
+                window.setPixel(x, y, 0.0f, 5.0f);
+        window.setPixel(20, 20, 1e-4f, 5.0f);   // exactly at the threshold: excluded
+
+        BucketPlanes planes;
+        planes.allocate(1, 1, W, H);
+        planes.zero();
+        scatterBackgroundCPU(sp, window, lut, planes);
+
+        CHECK(planeSum(planes.arrival, 0, static_cast<std::ptrdiff_t>(W) * H) == 0.0);
+    }
+}
+
+TEST_CASE("scatterBackgroundCPU: a pixel WITH samples uses its own residual radius; a "
+          "pixel with NO samples uses the global background radius -- the kernel INDEX "
+          "chosen, not merely the deposit sum")
+{
+    DiscKernelLUT lut(0.0f, 30.0f, 1.0f, 1.0f);
+    const int W = 80, H = 80;
+    const ScatterParams sp = makeScatterParams(W, H);
+
+    const float rWithSamples = 3.0f;    // the pixel's own deepest-sample radius
+    const float rGlobal      = 18.0f;   // background_depth's global radius -- far from it
+
+    const int ax = 20, ay = 20;   // "has samples": scatters at rWithSamples
+    const int bx = 60, by = 60;   // "no samples": scatters at rGlobal, far enough not to overlap A
+
+    ResidualWindow window;
+    window.allocate(0, 0, W, H, rGlobal);
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x)
+            window.setPixel(x, y, 0.0f, rGlobal);
+    window.setPixel(ax, ay, 0.5f, rWithSamples);
+    window.setPixel(bx, by, 0.5f, rGlobal);
+
+    BucketPlanes planes;
+    planes.allocate(1, 1, W, H);
+    planes.zero();
+    scatterBackgroundCPU(sp, window, lut, planes);
+
+    // The independently-derived expected footprint for EACH radius, via the
+    // exact lookup scatterBackgroundCPU itself uses (DiscKernelLUT::kernel(),
+    // which resolves radiusToIndex() internally).
+    const KernelView kvA = lut.kernel(rWithSamples, ax, ay, 0.0f, 0);
+    const KernelView kvB = lut.kernel(rGlobal,      bx, by, 0.0f, 0);
+    REQUIRE(kvA.valid());
+    REQUIRE(kvB.valid());
+    REQUIRE(kvA.radiusX != kvB.radiusX);   // the two footprints are visibly different sizes
+
+    // A's actual deposit matches kvA's footprint pixel for pixel, scaled by its
+    // own T=0.5 -- NOT kvB's.  This is the assertion a dropped per-pixel radius
+    // (always using the global one) would break: A's footprint would come out
+    // kvB-shaped instead.
+    int pixelsCheckedA = 0;
+    for (int row = 0; row < kvA.rowCount; ++row) {
+        const RowSpan& span = kvA.row(row);
+        if (span.empty())
+            continue;
+        const int dy = ay + kvA.rowY(row);
+        const float* w = kvA.rowWeights(row);
+        for (int dx = span.xStart; dx <= span.xEnd; ++dx) {
+            const int destXPixel = ax + dx;
+            const float expected = w[dx - span.xStart] * 0.5f;
+            const float actual =
+                planes.arrival[static_cast<std::size_t>(dy) * W + destXPixel];
+            CHECK(actual == doctest::Approx(expected).epsilon(1e-6));
+            ++pixelsCheckedA;
+        }
+    }
+    CHECK(pixelsCheckedA > 0);
+
+    // B's actual deposit matches kvB's footprint, scaled by its own T=0.5.
+    int pixelsCheckedB = 0;
+    for (int row = 0; row < kvB.rowCount; ++row) {
+        const RowSpan& span = kvB.row(row);
+        if (span.empty())
+            continue;
+        const int dy = by + kvB.rowY(row);
+        const float* w = kvB.rowWeights(row);
+        for (int dx = span.xStart; dx <= span.xEnd; ++dx) {
+            const int destXPixel = bx + dx;
+            const float expected = w[dx - span.xStart] * 0.5f;
+            const float actual =
+                planes.arrival[static_cast<std::size_t>(dy) * W + destXPixel];
+            CHECK(actual == doctest::Approx(expected).epsilon(1e-6));
+            ++pixelsCheckedB;
+        }
+    }
+    CHECK(pixelsCheckedB > 0);
+}
+
+TEST_CASE("scatterBackgroundCPU: the per-pixel residual radius is what lets the future "
+          "composite division recover the true surface alpha -- the mutation test for "
+          "this task")
+{
+    // A single alpha=0.9 point sample and its own residual (T = 1 - 0.9 = 0.1)
+    // at the SAME pixel.  This function does not itself divide anything --
+    // that is the next task -- but the arithmetic it must support is
+    // alpha / arrival, and this pins exactly that at the fragment's own
+    // centre pixel:
+    //
+    //   arrival_centre = share * wC(rSample) + residualT * wC(residualRadius)
+    //   alpha_centre   = share * wC(rSample)
+    //
+    // When residualRadius == rSample, wC cancels and alpha/arrival is EXACTLY
+    // trueAlpha, independent of wC's actual value -- see the derivation.  When
+    // it does not, wC(rSample) != wC(residualRadius) and the ratio drifts off
+    // trueAlpha by an amount set by how far the two kernels' centre weights
+    // differ.  A background scatter that dropped the per-pixel radius (always
+    // using the global one) would make the "correct" case behave exactly like
+    // the "mismatched" one below, breaking the first CHECK.
+    DiscKernelLUT lut(0.0f, 30.0f, 1.0f, 1.0f);
+    const int W = 60, H = 60;
+    const int cx = 30, cy = 30;
+    const ScatterParams sp = makeScatterParams(W, H);
+    const float trueAlpha   = 0.9f;
+    const float rSample     = 6.0f;    // the pixel's own deepest-sample radius
+    const float rMismatched = 5.8f;    // a global radius that does NOT match it -- close,
+                                        // not wildly off, which is the realistic case
+
+    // The two radii resolve to genuinely different LUT entries -- not
+    // necessarily a different pixel footprint (radiusX can coincide at a
+    // 0.2px spacing), but a different centre weight, which is the quantity
+    // wC that actually drives the mismatch below.
+    const KernelView kvSample     = lut.kernel(rSample, 0, 0, 0.0f, 0);
+    const KernelView kvMismatched = lut.kernel(rMismatched, 0, 0, 0.0f, 0);
+    REQUIRE(kvSample.rowWeights(kvSample.radiusY)[kvSample.radiusX]
+            != kvMismatched.rowWeights(kvMismatched.radiusY)[kvMismatched.radiusX]);
+
+    auto recover = [&](float residualRadius) -> float {
+        SampleSoA soa;
+        soa.begin(1, makeSingleChannelGroup(1));
+        FragmentRecord f;
+        f.x = cx; f.y = cy;
+        f.radius = rSample;
+        f.depth  = 5.0f;
+        f.alpha  = trueAlpha;
+        f.share  = trueAlpha;             // point sample: share = T_in * alpha, T_in = 1
+        BucketWeight bw;
+        bw.index = 0;
+        bw.frac  = 0.0f;
+        f.deposit = fragmentDeposit(bw, trueAlpha);
+        f.kind = FragmentKind::Point;
+        const float ch[1] = {0.0f};       // colour is irrelevant here -- alpha only
+        soa.appendFragment(f, ch);
+
+        BucketPlanes planes;
+        planes.allocate(1, 1, W, H);
+        planes.zero();
+        ScatterScratch scratch;
+        HoldoutSoA noHoldout;
+        scatterBandCPU(sp, soa, noHoldout, lut, planes, scratch);
+
+        ResidualWindow window;
+        window.allocate(0, 0, W, H, residualRadius);
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x)
+                window.setPixel(x, y, 0.0f, residualRadius);
+        window.setPixel(cx, cy, 1.0f - trueAlpha, residualRadius);
+        scatterBackgroundCPU(sp, window, lut, planes);
+
+        const std::size_t centre = static_cast<std::size_t>(cy) * W + cx;
+        REQUIRE(planes.arrival[centre] > 0.0f);
+        return planes.alpha[centre] / planes.arrival[centre];
+    };
+
+    const float correct    = recover(rSample);
+    const float mismatched = recover(rMismatched);
+
+    CHECK(correct == doctest::Approx(trueAlpha).epsilon(1e-6));
+    // A 0.2px radius mismatch (6.0 vs 5.8) reads 0.893253 here -- the same
+    // ~1.8-code-value scale (1.8/255 =~ 0.007) the design doc quotes for this
+    // class of mismatch on a full scene.  Measured directly by this rig
+    // rather than re-derived by hand.
+    CHECK(mismatched == doctest::Approx(0.893253f).epsilon(1e-4));
+    CHECK(std::abs(mismatched - trueAlpha) > 0.005f);   // unambiguously NOT 0.9
+}
+
+TEST_CASE("scatterBackgroundCPU: never writes color, alpha, weight or colocated -- "
+          "arrival only")
+{
+    DiscKernelLUT lut(0.0f, 20.0f, 1.0f, 1.0f);
+    const int K = 3, C = 2, W = 30, H = 30;
+    const ScatterParams sp = makeScatterParams(W, H);
+
+    SampleSoA soa;
+    soa.begin(C, makeSingleChannelGroup(C));
+    FragmentRecord f;
+    f.x = 15; f.y = 15;
+    f.radius = 5.0f;
+    f.depth  = 5.0f;
+    f.alpha  = 0.7f;
+    f.share  = 0.7f;
+    BucketWeight bw;
+    bw.index = 1;
+    bw.frac  = 0.35f;                   // frac > 0 -> a rear deposit -> colocated too
+    f.deposit = fragmentDeposit(bw, f.alpha);
+    f.kind = FragmentKind::Point;
+    const float ch[2] = {f.alpha * 0.2f, f.alpha * 0.9f};
+    soa.appendFragment(f, ch);
+
+    BucketPlanes planes;
+    planes.allocate(K, C, W, H);
+    planes.zero();
+    ScatterScratch scratch;
+    HoldoutSoA noHoldout;
+    scatterBandCPU(sp, soa, noHoldout, lut, planes, scratch);
+
+    // Every plane really did receive something from the fragment scatter, so
+    // the "unchanged" checks below have something to protect.
+    const std::ptrdiff_t px = static_cast<std::ptrdiff_t>(W) * H;
+    double before = 0.0;
+    for (int k = 0; k < K; ++k) {
+        before += planeSum(planes.alpha, k, px);
+        before += planeSum(planes.weight, k, px);
+        before += planeSum(planes.colocated, k, px);
+    }
+    before += planeSum(planes.color, 0, static_cast<std::ptrdiff_t>(K) * C * px);
+    REQUIRE(before > 0.0);
+
+    const std::vector<float> colorBefore(planes.color.begin(), planes.color.end());
+    const std::vector<float> alphaBefore(planes.alpha.begin(), planes.alpha.end());
+    const std::vector<float> weightBefore(planes.weight.begin(), planes.weight.end());
+    const std::vector<float> colocatedBefore(planes.colocated.begin(), planes.colocated.end());
+
+    ResidualWindow window;
+    window.allocate(0, 0, W, H, 8.0f);
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x)
+            window.setPixel(x, y, 0.0f, 8.0f);
+    window.setPixel(20, 5, 0.9f, 8.0f);   // well clear of the fragment above
+
+    scatterBackgroundCPU(sp, window, lut, planes);
+
+    // arrival DID move (the background actually ran)...
+    CHECK(planeSum(planes.arrival, 0, px) > 0.0);
+
+    // ...but every other plane is BIT-UNCHANGED: this function never so much
+    // as takes a pointer to color/alpha/weight/colocated.
+    REQUIRE(planes.color.size() == colorBefore.size());
+    for (std::size_t i = 0; i < colorBefore.size(); ++i)
+        CHECK(planes.color[i] == colorBefore[i]);
+    REQUIRE(planes.alpha.size() == alphaBefore.size());
+    for (std::size_t i = 0; i < alphaBefore.size(); ++i)
+        CHECK(planes.alpha[i] == alphaBefore[i]);
+    REQUIRE(planes.weight.size() == weightBefore.size());
+    for (std::size_t i = 0; i < weightBefore.size(); ++i)
+        CHECK(planes.weight[i] == weightBefore[i]);
+    REQUIRE(planes.colocated.size() == colocatedBefore.size());
+    for (std::size_t i = 0; i < colocatedBefore.size(); ++i)
+        CHECK(planes.colocated[i] == colocatedBefore[i]);
+}
+
 TEST_CASE("BandLedger: the Dirty -> InProgress -> Done protocol, single thread")
 {
     TestLedger ledger;

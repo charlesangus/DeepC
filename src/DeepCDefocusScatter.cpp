@@ -1687,6 +1687,94 @@ void scatterBandCPU(const ScatterParams& params,
 }
 
 // ---------------------------------------------------------------------------
+// scatterBackgroundCPU
+// ---------------------------------------------------------------------------
+
+void scatterBackgroundCPU(const ScatterParams&  params,
+                          const ResidualWindow&  residual,
+                          const KernelSampler&   kernel,
+                          BucketPlanes&          planes)
+{
+    const BucketPlaneView view = planes.view();
+    if (!view.valid())
+        return;
+    if (view.width != params.bandWidth || view.height != params.bandHeight)
+        return;
+
+    const float sharpRadius = clampf(params.sharpRadiusPx, 0.0f, 1e6f);
+
+    for (int wy = 0; wy < residual.height; ++wy) {
+        const int py    = residual.y + wy;
+        const int destY = py - params.bandY;
+
+        for (int wx = 0; wx < residual.width; ++wx) {
+            const int px = residual.x + wx;
+            const std::size_t i =
+                static_cast<std::size_t>(residual.index(px, py));
+            const float T = residual.t[i];
+            if (!(T > 1e-4f))
+                continue;
+
+            const int   destX    = px - params.bandX;
+            const float radiusPx = residual.radiusPx[i];
+
+            // Sharp fast path, same threshold the fragment scatter uses: a
+            // pixel this close to the focal plane deposits its own claim at
+            // its own pixel, no disc rasterised.
+            if (!(radiusPx >= sharpRadius)) {
+                if (destX < 0 || destX >= view.width
+                 || destY < 0 || destY >= view.height)
+                    continue;
+                const std::ptrdiff_t dstOffset =
+                    static_cast<std::ptrdiff_t>(destY) * view.width + destX;
+                view.arrival[dstOffset] += T;
+                continue;
+            }
+
+            // The per-pixel kernel lookup: DiscKernelLUT::kernel() resolves
+            // `radiusPx` via radiusToIndex() internally, so this pixel's OWN
+            // residual radius -- not a single frame-wide one -- picks the
+            // disc.  See the header doc: a mismatched radius is a measured
+            // artifact, not a rounding difference.
+            const KernelView kv = kernel.kernel(radiusPx, destX, destY, 0.0f, 0);
+            if (!kv.valid())
+                continue;
+
+            for (int row = 0; row < kv.rowCount; ++row) {
+                const RowSpan& span = kv.row(row);
+                if (span.empty())
+                    continue;
+
+                const int dy = destY + kv.rowY(row);
+                if (dy < 0 || dy >= view.height)
+                    continue;
+
+                int xs = destX + span.xStart;
+                int xe = destX + span.xEnd;
+                int skip = 0;
+                if (xs < 0) {
+                    skip = -xs;
+                    xs   = 0;
+                }
+                if (xe >= view.width)
+                    xe = view.width - 1;
+                if (xe < xs)
+                    continue;
+
+                const int count = xe - xs + 1;
+                const std::ptrdiff_t dstOffset =
+                    static_cast<std::ptrdiff_t>(dy) * view.width + xs;
+                const float* w = kv.rowWeights(row) + skip;
+
+                float* __restrict__ arrivalDst = view.arrival + dstOffset;
+                for (int k = 0; k < count; ++k)
+                    arrivalDst[k] += w[k] * T;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // resolveBandCPU
 // ---------------------------------------------------------------------------
 
