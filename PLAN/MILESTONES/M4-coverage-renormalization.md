@@ -157,7 +157,7 @@ behaviour, with no legacy knob. The "honest dip" contract is retired; docs, vali
     `T = 1`. **Mutation-test each**: flip the `t` update and confirm every assertion fails.
   - size: M
 
-- [ ] M4.P1.T3 — Fifth arrival plane and raw-weight deposits
+- [x] M4.P1.T3 — Fifth arrival plane and raw-weight deposits
   - files: `src/DeepCDefocusScatter.cpp` (`BucketPlanes` `allocate`:1344, `zero`:1363,
     `release`:1373, `sizeBytes`:1386, `view`:1392), `src/DeepCDefocusScatter.h` (the struct at
     1144–1148 holding `color`/`alpha`/`weight`/`colocated`; `bytesForBand`:1188 with its memory
@@ -467,3 +467,29 @@ including.
   (M4.P1.T2), not just `samples.empty()`. A pixel whose every sample failed the zero-alpha
   early-out has nothing to scatter and no deepest sample either; treating it differently from a
   genuinely empty pixel would be arbitrary.
+
+- 2026-09-10 — **The "GCC -O3 miscompile" reported during M4.P1.T3 was not real**, and the
+  `target_compile_options(test_defocus_scatter PRIVATE -O2)` workaround proposed with it was
+  dropped, never committed. A differential harness compiling `DeepCDefocusScatter.cpp` at both
+  levels with otherwise identical flags and hashing all five planes over 4000 randomized trials
+  through the reused-vs-fresh threading pattern gives a **bit-identical** result
+  (`c9a7be7c184b54e4`) at `-O2` and `-O3`. Re-introducing the likely intermediate defect —
+  `arrival` in `allocate()` but not in `zero()` — reproduces the reported symptom exactly, at
+  **both** levels and with the same hash, so `-O2` never cleared it. The implementer hit a real
+  bug of their own, fixed it in passing, and did not retest whether the workaround was still
+  needed. Independently: the suite is green 12+ consecutive runs at `-O3 -mavx`, and clean under
+  ASan+UBSan. **The scoping was also wrong** — the code in question ships at `-O3` in the plugin,
+  so lowering only the test binary would have hidden the detector and shipped the defect. Any
+  future "lower the optimization level" proposal in this repo gets this treatment before it lands.
+- 2026-09-10 — **`allocate()`, not `zero()`, is the production per-band clear** (found at
+  M4.P1.T3). `DeepCDefocus.cpp` calls `allocate()` for every band and relies on its unconditional
+  re-fill; `zero()` is only ever called by tests. Every pre-existing `allocate()` test ran on a
+  fresh object or was immediately followed by `zero()`, so a buffer omitted from `allocate()`'s
+  fill on **reuse** was invisible to the suite. Now pinned by a test that dirties the planes and
+  re-allocates at the same geometry and at a smaller one. No `src/` defect existed; the gap was
+  in coverage.
+- 2026-09-10 — **TSan is unusable on this host.** The sandbox blocks the `personality` syscall,
+  so `setarch -R` fails and TSan aborts with `unexpected memory mapping` under this kernel's ASLR
+  entropy, PIE or not. ASan+UBSan work and are the substitute. The race question this was raised
+  for is answered structurally in any case: `BucketPlanes` is a `BandJob` member handed out under
+  `_jobLock`, so it is exclusive per thread and no two threads can write the same plane element.
