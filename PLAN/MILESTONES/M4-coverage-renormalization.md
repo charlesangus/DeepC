@@ -338,10 +338,17 @@ behaviour, with no legacy knob. The "honest dip" contract is retired; docs, vali
     DEFICIT (specified behaviour)" node_help block at 125–149 and limitation #1 at 199–211),
     `src/DeepCDefocusScatter.h` (commentary at ~2320–2410 and the honest-alpha sentence at
     ~2928–2943)
-  - approach: scene (i) is re-specified — the deficit now fills, and **that IS the feature**. g4's
-    and g5's deficit cells collapse; because Phase 4.2 lands in this same milestone, g5's
-    **over-read** cells (`+0.0593`, `+0.0340`, `+0.0653`, `+0.0706`) collapse too, rather than
-    surviving as interim pins. Re-measure every number against an **independent oracle** — never
+  - approach: scene (i) is re-specified — the deficit now fills, and **that IS the feature**.
+    **CORRECTED 2026-09-10, after M4.P1.T6 measured it: g4 does NOT collapse under the fill, and
+    neither does g5.** g4's residual is a bucket-composite artifact — `scenes.py`'s own commentary
+    calls it "one bucket pooling a head and a rear at unequal per-unit opacity" — so `arrival` is
+    already ~1 there and the deficit-only fill correctly never engages; it is not a coverage
+    shortfall and this milestone does not address it. g5 is the **over-read** arm, which
+    deficit-only division never touches by construction. If g5's four cells (`+0.0593`, `+0.0340`,
+    `+0.0653`, `+0.0706`) collapse at all it is **Phase 4.2's kernel blending** that does it, so
+    re-measure them after P2.T2 and not before; if they survive, they stay pinned with a hard outer
+    bound and g4 keeps its own pin unchanged. The cells that DID move under the fill are scene (i)
+    (i2/i3), c4, f3g/f3h and l6 — those are the re-spec targets. Re-measure every number against an **independent oracle** — never
     against the new output. node_help, stated plainly: the fill divides by **un-held-out** arrival,
     so holdout attenuation is preserved exactly and fill and holdout commute; the fill invents
     **foreground-coloured** coverage only where the renderer wrote none, like a 2D defocus, and
