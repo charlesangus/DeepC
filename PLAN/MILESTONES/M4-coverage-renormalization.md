@@ -218,7 +218,7 @@ behaviour, with no legacy knob. The "honest dip" contract is retired; docs, vali
     that second assertion is the mutation test, and must fail if the per-pixel radius is dropped.
   - size: M
 
-- [ ] M4.P1.T6 — Deficit-only division in the composite
+- [x] M4.P1.T6 — Deficit-only division in the composite
   - files: `src/DeepCDefocusScatter.cpp` (`resolveBandCPU()`:1605),
     `src/DeepCDefocusScatter.h` (`compositePixelCoveragePartition()`:2512; the down-only clamp
     block at 2947–2954), `tests/test_defocus_scatter.cpp`
@@ -236,6 +236,34 @@ behaviour, with no legacy knob. The "honest dip" contract is retired; docs, vali
     while `D = 1 - 2e-5` does divide; the colour:alpha pair stays locked through the `accAlpha > 1`
     clamp; two 0.5 fog layers still read 0.75.
   - size: M
+
+- [ ] M4.P1.T7 — Split the residual across each part's own radius
+  - files: `src/DeepCDefocusScatter.cpp` (`flattenPixelToSoA()`'s staging loop, the volumetric
+    split-part branch; `scatterBackgroundCPU()`), `src/DeepCDefocusScatter.h`
+    (`ResidualWindow`, `flattenPixelToSoA()`'s residual out-params),
+    `tests/test_defocus_scatter.cpp`
+  - approach: M4's original spec — "each pixel's residual scatters at its own **deepest** sample's
+    CoC" — is wrong for a volumetric span whose parts span a wide radius range. Measured at
+    M4.P1.T6: parts running 20.796 -> 0.552 px with the whole residual scattered at 0.552 leaves a
+    band one background-radius wide at the silhouette reading up to **0.3 alpha high (66-80 code
+    values)**; a 40x40 patch at 15 parts is +10.46% on its alpha integral, worst-pixel Δalpha
+    0.316. Interiors are unaffected — a uniform `T` field gives arrival exactly 1 at any radii — so
+    this is a silhouette-band defect, not a global one. Replace the single deepest-radius residual
+    with a **per-part split**: each split part contributes its own portion of the leftover
+    transmittance at **its own** radius, so the residual is shaped like the deposit it stands in
+    for. A point sample keeps exactly today's behaviour (one part, one radius) and must stay
+    bit-identical. `ResidualWindow` currently carries one radius per pixel and will need to carry a
+    small per-pixel set (or `scatterBackgroundCPU()` gains a per-part loop) — pick whichever keeps
+    `scatterBackgroundCPU()` simple, and do **not** optimize it here; P3.T5 profiles it.
+  - verify: the two doctest cases left FAILING at M4.P1.T6 go green **on their original,
+    untouched pins** — `volumetric parent reconstruction is EXACT in front of focus, at any part
+    count` (2/4/8/12/15 parts at α=0.9 and α=0.1, gate 1.8e-6) and `behind focus the residue is
+    structural` (+36.9/+50.2/+56.3/+61.0% ±0.1). A single point sample is bit-identical to
+    `f2e40d4`. Validation f3g and f3h — additivity controls that were exact pre-M4 and now read
+    +15.228%/-20.585% and -14.229% — return to their baseline readings, and the full harness shows
+    no new regression. Mutation-test the per-part split by collapsing it back to the deepest radius
+    and confirming both doctest cases and f3g/f3h fail again.
+  - size: L
 
 ## Phase 4.2: Kernel blending
 
@@ -295,6 +323,28 @@ behaviour, with no legacy knob. The "honest dip" contract is retired; docs, vali
     fuzzed fragment set is lossless within 1e-6; i7 re-measured and re-pinned with a hard outer
     bound.
   - size: M
+
+- [ ] M4.P2.T4 — Isolate the share-side arrival deficit behind c4
+  - files: investigation first — `src/DeepCDefocusScatter.h`
+    (`scatterFragmentSpans()`/`scatterFragmentSharp()`'s arrival deposit,
+    `compositePixelCoveragePartition()`), `tests/test_defocus_scatter.cpp`
+  - approach: validation c4 regressed at M4.P1.T6 (1.397e-05 -> 5.261e-04 against a 1e-4 gate,
+    ~0.13 code values) and it is **not** the residual-radius defect T7 fixes. The α=1.0 control
+    settles that: where `T = 0` and `scatterBackgroundCPU()` deposits nothing at all, a
+    fully-covered opaque uniform field still reads colour **+3.548e-4 above its input**, because
+    arrival reads 0.99965 rather than 1. So it is a **share-side** deficit in the arrival
+    accumulator. Known shape: uniform across the interior (spread 0.00e+00), erratic in sign across
+    α (-5.4e-6 / +5.85e-4 / +1.11e-4 / -1.05e-5 at α = 0.99/0.90/0.50/0.20) and across K (+8.6e-5 /
+    -2.1e-5 / +5.85e-4 at K = 4/8/16), vanishing at small CoC (size 4 -> 1.6e-7; span 20-30 ->
+    9.3e-8) and appearing at large CoC. Sequenced **after** Phase 4.2 by the user's ruling: kernel
+    blending rewrites how weights reach arrival and may move or explain this, and measuring it
+    first risks measuring it twice. Find the root cause before proposing a fix; if the cause turns
+    out to be float accumulation order in a single K-independent plane summing ~K× more terms than
+    any per-bucket plane, say so explicitly — that is a different fix from a weight bug.
+  - verify: the root cause is named and demonstrated by a test that fails for that reason and no
+    other; c4 returns inside its 1e-4 gate, or the gate is re-specified against an **independent
+    oracle** with a hard outer bound and the reason recorded. Mutation-test whatever pins it.
+  - size: L
 
 ## Phase 4.3: Scenes, re-spec, sign-off
 
@@ -531,3 +581,38 @@ including.
   fixture at `minRadius = 2.0` makes the mutation clamp to a much larger entry and the test then
   catches it. Any future kernel-path test in this milestone should use a measured-range LUT, not a
   zero-floor one, or it risks pinning nothing — this is M1's standing lesson in its exact form.
+
+- 2026-09-10 — **The claimed "fill flattens an isolated object's bloom into a plateau" was a rig
+  artifact, not a defect** (adjudicated at M4.P1.T6). The rig had been "fixed" to a **1×1** residual
+  window, which deletes the virtual-background contribution of every surrounding empty pixel and
+  reproduces verbatim the failure mode M4.P1.T4 was built to prevent. End-to-end settles it: an
+  isolated α=0.8 card over emptiness renders **bit-identical to the pre-M4 baseline** in alpha and
+  colour, at full-frame bbox and at a `DeepCrop`-tightened one, falloff intact (0.458700 centre →
+  0.003039 → 0.000000). The plugin is provably live — a BG-with-a-hole halo reads 0.446–0.757 on
+  baseline and exactly 1.000000 on the new build. **Lesson for the rest of this milestone: a
+  residual window in any test rig must be shaped as production shapes it** (full window, `T = 1`
+  defaults, background radius from the content's own farthest depth — `frameSetup()` builds buckets
+  from the frame's *measured* range, so for a frame holding one object the auto radius IS its
+  deepest sample's CoC). A 1×1 window models nothing.
+- 2026-09-10 — **`scatterBackgroundCPU()`'s skip floor is `kFillDeficitTol`, not a bare `1e-4`**
+  (M4.P1.T6). The two constants were set by different tasks and never reconciled: a pixel whose
+  true residual landed in `(1e-5, 1e-4]` had it withheld from the denominator, so `D` undershot 1
+  by more than the fill's own tolerance and a genuinely non-opaque pixel was pulled to alpha 1
+  (measured error equalled `1 - trueAlpha` to 6 significant figures). They are **not independently
+  settable**: the mass a skip withholds is bounded by `tol * Σw = tol`, so the fill's tolerance is
+  the loosest floor that provably cannot trigger a false divide.
+- 2026-09-10 — **Arrival accuracy is now a correctness requirement, not a cosmetic one.** Anything
+  that leaves arrival systematically short of 1 is a **colour and alpha error** after M4.P1.T6, and
+  arrival is the least-accurate accumulator in the pipeline: one K-independent float summing every
+  fragment's deposit, i.e. ~K× more terms than any per-bucket plane. Weigh that in every later
+  change that touches a deposit path — Phase 4.2's blending especially, which doubles the raster
+  work feeding it.
+- 2026-09-10 — **`kFillMinArrival = 1e-3` is an unbounded cliff, flagged not fixed.** Just above it
+  the fill multiplies by ~1000 and the down-clamp caps alpha at 1; a doctest pins that as intended.
+  It is correct wherever numerator and arrival stay proportional, which is the normal case, but
+  nothing bounds the case where they do not. No scene reaches it today. Revisit if one ever does.
+- 2026-09-10 — **User rulings on the two M4.P1.T6 defects**: the residual-radius convention is
+  **fixed now**, as new task M4.P1.T7, because shipping a 0.3-alpha silhouette band would trade one
+  visible artifact for another in a milestone whose whole purpose is removing them. The c4
+  share-side deficit is **investigated after Phase 4.2**, as new task M4.P2.T4, since kernel
+  blending rewrites how weights reach arrival and may move or explain it.
