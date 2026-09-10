@@ -113,7 +113,7 @@ behaviour, with no legacy knob. The "honest dip" contract is retired; docs, vali
 
 ## Phase 4.1: Fill mechanics
 
-- [ ] M4.P1.T1 — Baseline capture, and commit the pending harness changes
+- [x] M4.P1.T1 — Baseline capture, and commit the pending harness changes
   - files: `tests/nuke/run_validation.sh` (currently modified, uncommitted), `scripts/hostguard.sh`
     and `scripts/hostguard-hook.py` (currently untracked)
   - approach: commit the pending harness work **first**, so the baseline is reproducible: the
@@ -410,3 +410,48 @@ release gate — local-build binaries need `GLIBC_2.29` and cannot load on RHEL 
   prototyping both candidates rather than deriving the answer, because the existing LUT grid is
   hyperbolic-below-16px with a radius-0 delta at index 0 and does not match the design's
   "odd integer diameters" phrasing.
+
+### 2026-09-10 — M4.P1.T1 baseline (T0)
+
+**Preserved artifacts** — `~/deepc-baselines/M4-T0/` (outside the repo tree, survives every
+branch move): `DeepCDefocus.so`, `PROVENANCE.txt`, `validation-baseline.log` (the full a–l
+harness output, every cell number), `profile-baseline.log`. Built from `bb07e57` on
+`claude/deep-defocus-node-plan-o0ld83` against Nuke 17.0v3 out of `build/local-17.0`.
+Verified loading in headless Nuke from that path (49 knobs). P3.T4 explains its deltas against
+`validation-baseline.log`; P3.T5's sign-off and m2's bloom pin render from this `.so`.
+
+**Unit suites:** `test_defocus_math` 27/27 cases, 140887 assertions; `test_defocus_scatter`
+64/64 cases, 212725 assertions. Both green.
+
+**Harness tally: `PASS=86 FAIL=2 XFAIL=9 SKIP=1`** — reproduces M1's closing tally exactly, no
+deltas to explain. The non-PASS roster, which is what P3.T4 compares against:
+
+| Cell | Reading | Gate | Status |
+|------|---------|------|--------|
+| e4 escape mid-cook cancel | — | — | SKIP |
+| f2 opaque holdout erases unoccluded FG | 5 strips; 0.975 depth units (78% of bracket) | 0 strips (xfail < 100%) | XFAIL |
+| f3c fog density, defocused, overlapping slabs | 0.7491561 (−0.113%) | 0.75 ± 1e-05 (xfail < 2.0%) | XFAIL |
+| f3d fog density, span + point, shared bucket | 0.7374337 (−1.676%) | 0.75 ± 1e-05 (xfail < 5.0%) | XFAIL |
+| f3e unequal density, overlapping spans | +77.411% high / −2.011% low | ≤ 0.5% per px | FAIL |
+| f3f unequal density swept, worst cell | +83.648% high / −2.240% low (K 64) | ≤ 0.5% per px, every cell | FAIL |
+| g4 K=16 flat-field alpha at α=0.90 | 0.0325 low (0.870724 vs 0.90) | 0 (xfail 0.0325 ± 0.0040) | XFAIL |
+| g5 K=16 α=0.10 over-read | +0.0593 (0.105926) | 0 (xfail +0.0593 ± 0.0040) | XFAIL |
+| g5 K=16 α=0.30 over-read | +0.0340 (0.310197) | 0 (xfail +0.0340 ± 0.0040) | XFAIL |
+| g5 K=4 α=0.10 over-read | +0.0653 (0.106526) | 0 (xfail +0.0653 ± 0.0040) | XFAIL |
+| g5 K=16 α=0.01 over-read | +0.0706 (0.010706) | 0 (xfail +0.0706 ± 0.0040) | XFAIL |
+| l6 CoC field's own extremum | 9.937e-03 | ≤ 3.9e-03 (xfail < 1.5e-02) | XFAIL |
+
+g4 is the deficit arm and the five g5 rows the over-read arm — Phase 4.1 collapses the former,
+Phase 4.2 the latter, and P3.T3 re-pins both. l1/l5 (2.084e-03 / 3.667e-03 against a 3.9e-03
+gate) are the closest PASS rows to a boundary and are the ones most likely to move.
+
+**Profile (`run_profile.sh`, variant=defocus, 5 reps):** `min=59.282 median=70.353 mean=68.915
+max=79.334` s wall, `cpuMedian=63.390` s, `coresBusyMedian=0.90`, `rssPeakGB=1.770`. Read the
+wall figures as a *ratio* only against an after-run taken the same way: this ran under
+`scripts/hostguard.sh --mem-gb 6` at nice 19 with a concurrency cap of 2, so ~0.9 cores busy is
+the guard, not the node. `cpuMedian` is the stabler comparand.
+
+**Harness memory:** the default hostguard budget (MemTotal/4 = 3.84 GB) kills the run at scene
+(i) — it peaks at 4.58 GB. Every harness invocation in this milestone needs
+`scripts/hostguard.sh --mem-gb 6`, which the milestone's later `verify` steps should be read as
+including.
