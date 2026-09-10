@@ -199,7 +199,7 @@ behaviour, with no legacy knob. The "honest dip" contract is retired; docs, vali
     appears in the node's properties under headless-Nuke script inspection.
   - size: M
 
-- [ ] M4.P1.T5 — `scatterBackgroundCPU()`
+- [x] M4.P1.T5 — `scatterBackgroundCPU()`
   - files: `src/DeepCDefocusScatter.cpp`, `src/DeepCDefocusScatter.h`,
     `tests/test_defocus_scatter.cpp`
   - approach: for each source pixel with `T > 1e-4`, deposit `w * T` into `arrival` using a kernel
@@ -509,3 +509,18 @@ including.
   Consequence: `maxInFlight` drops 9 → 8 in the doc block's 4 GB/2160-row case, and the two
   peak-RSS measurements recorded there predate the term and are now undercounts by its size —
   both noted in the block. `bandBudgetBytes()`/`planBands()` gained a trailing `padY` parameter.
+
+- 2026-09-10 — **`DiscKernelLUT::radiusToIndex()` is private; the brief was wrong to point at it**
+  (M4.P1.T5). `private:` is at `DeepCDefocusKernel.h:474`, the method at :634 — verified.
+  `scatterBackgroundCPU()` takes `const KernelSampler&` and reaches the per-pixel lookup through
+  the public `kernel()`, the same seam `scatterBandCPU()` uses, which also keeps the CUDA seam
+  uniform rather than special-casing a concrete `DiscKernelLUT&` parameter. **P2.T1's brief cites
+  the same private method — read it as "through `KernelSampler::kernel()`" there too.**
+- 2026-09-10 — **A sharp-path mutation test was initially vacuous, and the fix is a realistic LUT**
+  (M4.P1.T5). Bypassing `scatterBackgroundCPU()`'s sharp fast path broke nothing at first: with a
+  LUT built from `minRadius = 0` at `edge_softness = 1.0`, a sub-`kSharpRadiusPx` radius
+  degenerates to an identical single-pixel disc, so the two paths agree by construction. Production
+  builds its LUT over the frame's **measured** radius range, which rarely reaches 0. Rebuilding the
+  fixture at `minRadius = 2.0` makes the mutation clamp to a much larger entry and the test then
+  catches it. Any future kernel-path test in this milestone should use a measured-range LUT, not a
+  zero-floor one, or it risks pinning nothing — this is M1's standing lesson in its exact form.
