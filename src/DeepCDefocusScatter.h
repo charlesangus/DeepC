@@ -2758,6 +2758,12 @@ constexpr int kCompositeHeadTiles = 16;
 static_assert(kCompositeHeadTiles >= 2,
               "the head-tile merge needs at least two tiles");
 
+// Below this, arrival must exceed a noise floor before it is trusted as a
+// divisor, and must stay clear of size-0's one-ulp-under-1 sums so the
+// bit-exact parity gate never sees a division.
+constexpr float kFillMinArrival  = 1e-3f;
+constexpr float kFillDeficitTol  = 1e-5f;
+
 DEEPC_HD inline void compositePixelCoveragePartition(
     const float* __restrict__ bucketColor,
     const float* __restrict__ bucketAlpha,
@@ -2767,7 +2773,8 @@ DEEPC_HD inline void compositePixelCoveragePartition(
     int                       channelCount,
     std::ptrdiff_t            pixelCount,
     float* __restrict__       outColor,
-    float* __restrict__       outAlpha)
+    float* __restrict__       outAlpha,
+    float                     arrival = 1.0f)
 {
     for (int c = 0; c < channelCount; ++c)
         outColor[static_cast<std::ptrdiff_t>(c) * pixelCount] = 0.0f;
@@ -3193,6 +3200,16 @@ DEEPC_HD inline void compositePixelCoveragePartition(
     // is every identity documented above -- all of them are bit-unchanged.
     // "Clamp one of a premultiplied pair and not the other" is a recurring
     // defect in this node; this is the same guard against it.
+    // Deficit-only fill: scale the premultiplied pair up together so a
+    // pixel's true coverage never reads short of what actually arrived here.
+    // The upper bound excludes size-0's one-ulp-under-1 sums -- gate (a).
+    if (arrival > kFillMinArrival && arrival < 1.0f - kFillDeficitTol) {
+        const float s = 1.0f / arrival;
+        accAlpha *= s;
+        for (int c = 0; c < channelCount; ++c)
+            outColor[static_cast<std::ptrdiff_t>(c) * pixelCount] *= s;
+    }
+
     const float outA = clampf(accAlpha, 0.0f, 1.0f);
     if (accAlpha > outA && accAlpha > 0.0f) {
         const float s = outA / accAlpha;
@@ -3264,8 +3281,9 @@ void scatterBandCPU(const ScatterParams& params,
 //              alpha and zero colour by construction, it is a claim on the
 //              coverage DENOMINATOR alone.
 //
-// Every window pixel with T > 1e-4 deposits w * T; a pixel at or below that
-// has nothing left to claim and is skipped.
+// Every window pixel with T > kFillDeficitTol deposits w * T; a pixel at or
+// below that is skipped.  That floor is the composite's own deficit tolerance
+// on purpose -- see the skip in the body.
 //
 // DELIBERATELY NAIVE: pi*r^2 work per non-opaque source pixel, one full disc
 // rasterised per pixel with no sharing across pixels of the same radius.  Do

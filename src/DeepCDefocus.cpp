@@ -1915,9 +1915,10 @@ private:
         }
 
         // The virtual background: `arrival` only, never color/alpha/weight/
-        // colocated -- see scatterBackgroundCPU(). Nothing yet divides by
-        // `arrival` (that is the next change), so this does not move the
-        // rendered pixels.
+        // colocated -- see scatterBackgroundCPU(). It has to run between the
+        // fragment scatter and the resolve, because the resolve divides by the
+        // finished `arrival` and a residual missing from it reads as a
+        // coverage deficit that is not there.
         deepc::scatterBackgroundCPU(job.sp, job.residual, *job.kernel,
                                     job.planes);
 

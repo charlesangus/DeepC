@@ -723,10 +723,16 @@ void scatterOnThread(const ScatterParams& sp, const SampleSoA& soa,
     worker.join();
 }
 
-// Full band: allocate, zero, scatter (threaded unless told otherwise), resolve.
+// Full band: allocate, zero, scatter (threaded unless told otherwise),
+// virtual-background scatter (when `residual` is supplied), resolve -- the
+// production order (scatterBandCPU -> scatterBackgroundCPU -> resolveBandCPU;
+// see DeepCDefocus.cpp's computeBand()).  `residual` defaults to nullptr so a
+// caller that does not model the virtual background gets NO background
+// deposit at all, not a silently-empty one: arrival then carries only the
+// fragments' own raw weight, exactly like the two-step pipeline before M4.
 void runBand(Band& band, const ScatterParams& sp, const SampleSoA& soa,
              const HoldoutSoA& holdout, const KernelSampler& kernel,
-             bool useThread = true)
+             bool useThread = true, const ResidualWindow* residual = nullptr)
 {
     band.planes.allocate(band.K, band.C, band.W, band.H);
     band.planes.zero();
@@ -737,6 +743,9 @@ void runBand(Band& band, const ScatterParams& sp, const SampleSoA& soa,
         ScatterScratch scratch;
         scatterBandCPU(sp, soa, holdout, kernel, band.planes, scratch);
     }
+
+    if (residual != nullptr)
+        scatterBackgroundCPU(sp, *residual, kernel, band.planes);
 
     // Poisoned, so a composite that fails to overwrite is visible rather than
     // reading as a zero it never wrote.
@@ -787,6 +796,67 @@ SampleSoA flattenOnePixel(const FlattenParams& fp, const DepthBuckets& b,
     flattenPixelToSoA(fp, b, x, y, samples, scratch, soa, nullptr,
                       residualT, residualRadiusPx);
     return soa;
+}
+
+// The AUTO resolution of `background_depth` (0 = auto): the CoC at the
+// buckets' own farthest measured depth -- see resolveBackgroundRadiusPx().
+// Every ResidualWindow cell built below defaults to this radius; a pixel
+// with a real sample overwrites it with that sample's OWN residual radius.
+float autoBackgroundRadiusPx(const CocParams& p, const DepthBuckets& bk)
+{
+    return radiusPixels(p, bk.depthMax());
+}
+
+// A rig with ONE real source pixel, windowed the way computeBand() windows it:
+// over the whole output box, every other cell left at the "no samples here"
+// default of T = 1 at the global background radius.  Sizing the window to the
+// source pixel instead deletes that surrounding field, and the deletion is not
+// benign: arrival then equals the object's own kernel weight at every pixel the
+// object reaches, so accAlpha/arrival is the SAME constant everywhere the disc
+// lands -- including the faintest edge pixel -- and the division flattens an
+// anti-aliased bloom into a hard disc.  With the field present the empty
+// pixels' unit-weight discs sum back to 1 and the deficit gate never fires.
+//
+// The background radius is the source pixel's own residual radius, and that is
+// not a convenience: frameSetup() builds the buckets from the frame's MEASURED
+// depth range, so in a frame holding this one object the farthest measured
+// depth is that object's own deepest sample and the auto background radius
+// resolves to exactly the radius its residual scatters at.  (The fixed 1..100
+// bucket range these rigs share is a fixture, not a measurement, so taking the
+// radius from it instead would model a frame with unseen geometry at depth 100
+// -- the mismatched-radius case the design calls out as conditional.)
+void oneSourcePixelWindow(ResidualWindow& window, int W, int H,
+                          int px, int py,
+                          float residualT, float residualRadiusPx)
+{
+    window.allocate(0, 0, W, H, residualRadiusPx);
+    window.setPixel(px, py, residualT, residualRadiusPx);
+}
+
+// Flattens samplesFn(x, y) at every pixel of [x0,x1) x [y0,y1) into `soa`,
+// and records that pixel's own residual T / residual radius into `window`
+// (already allocated over at least this box) -- the doctest-side equivalent
+// of production's buildResidualWindow(), without a live deep-fetch loop. A
+// pixel `samplesFn` returns nothing for keeps the window's pre-set default
+// (T=1, the background radius `window` was allocated with), same as
+// flattenPixelToSoA()'s own "no sample" convention.
+template <typename SamplesFn>
+void flattenIntoWithResidual(const FlattenParams& fp, const DepthBuckets& bk,
+                             int x0, int y0, int x1, int y1,
+                             SampleSoA& soa, FlattenScratch& scratch,
+                             ResidualWindow& window, SamplesFn&& samplesFn)
+{
+    for (int y = y0; y < y1; ++y) {
+        for (int x = x0; x < x1; ++x) {
+            std::vector<SampleRecord> v = samplesFn(x, y);
+            const std::size_t i = static_cast<std::size_t>(window.index(x, y));
+            float residualT = 1.0f;
+            float residualR = window.radiusPx[i];
+            flattenPixelToSoA(fp, bk, x, y, v, scratch, soa, nullptr,
+                              &residualT, &residualR);
+            window.setPixel(x, y, residualT, residualR);
+        }
+    }
 }
 
 FlattenParams makeFlattenParams(const CocParams& p, int channelCount,
@@ -1145,9 +1215,11 @@ TEST_CASE("the tidy pre-pass is correctness-required: coincident samples over-co
     // depth 9.0 is 0.266px of CoC on this rig, i.e. the SHARP fast path.
     REQUIRE(radiusPixels(p, 9.0f) < kSharpRadiusPx);
 
+    float residualT = 1.0f, residualR = 0.0f;
     const SampleSoA soa = flattenOnePixel(fp, bk, 16, 16,
         {makeSample(9.0f, 9.0f, 0.3f, {0.3f * 0.8f}),
-         makeSample(9.0f, 9.0f, 0.4f, {0.4f * 0.8f})});
+         makeSample(9.0f, 9.0f, 0.4f, {0.4f * 0.8f})},
+        &residualT, &residualR);
 
     // Tidy collapsed the coincident pair into ONE sample before bucketing.
     REQUIRE(soa.fragmentCount() == 1);
@@ -1162,7 +1234,14 @@ TEST_CASE("the tidy pre-pass is correctness-required: coincident samples over-co
     Band band;
     band.K = bk.bucketCount(); band.C = 1; band.W = W; band.H = H;
     HoldoutSoA noHoldout;
-    runBand(band, makeScatterParams(W, H), soa, noHoldout, lut);
+
+    // The production pipeline's middle step: without it, arrival carries only
+    // the fragment's own raw weight (here exactly 1, the sharp path), so its
+    // residual T=0.42 is never restored and this pixel's own deposit divides
+    // by less than the numerator it was building -- inflating alpha past 1.
+    ResidualWindow window;
+    oneSourcePixelWindow(window, W, H, 16, 16, residualT, residualR);
+    runBand(band, makeScatterParams(W, H), soa, noHoldout, lut, true, &window);
 
     // A sharp fragment deposits weight 1 into its own pixel, so the band
     // integral IS that pixel and it must be the sequential `over`.
@@ -2109,16 +2188,28 @@ TEST_CASE("size-0 flatten is a DeepToImage `over` of the pixel, at every K and b
                             {a * rng.unit(), a * rng.unit(), a * rng.unit()}));
                         z += rng.range(0.05f, 6.0f);    // strictly disjoint depths
                     }
-                    std::vector<SampleRecord> copy = v;
-                    flattenPixelToSoA(fp, bk, i % W, i / W, copy, scratch, soa, nullptr, nullptr, nullptr);
                 }
+
+                // i = y*W + x (row-major), so `pixels` is directly indexable by
+                // (x, y); a COPY goes to the flatten, same as the original loop,
+                // since it sorts/mutates in place and `pixels` must survive for
+                // the reference computation below.
+                ResidualWindow window;
+                window.allocate(0, 0, W, H, autoBackgroundRadiusPx(p, bk));
+                flattenIntoWithResidual(fp, bk, 0, 0, W, H, soa, scratch, window,
+                    [&](int x, int y) -> std::vector<SampleRecord> {
+                        const std::size_t i = static_cast<std::size_t>(y) * W
+                                             + static_cast<std::size_t>(x);
+                        return (i < pixels.size()) ? pixels[i]
+                                                   : std::vector<SampleRecord>{};
+                    });
 
                 Band band;
                 band.K = K; band.C = C; band.W = W; band.H = H;
                 HoldoutSoA noHoldout;
                 DiscKernelLUT kernel(0.0f, 1.0f, 1.0f, 1.0f);
                 runBand(band, makeScatterParams(W, H),
-                        soa, noHoldout, kernel, /*useThread*/ false);
+                        soa, noHoldout, kernel, /*useThread*/ false, &window);
 
                 double worstAlpha = 0.0, worstColor = 0.0;
                 int    bad = 0;
@@ -2597,9 +2688,16 @@ TEST_CASE("size-0 flatten is a DeepToImage `over` for MIXED point+volumetric con
                     {a * rng.unit(), a * rng.unit(), a * rng.unit()}));
                 z += th + rng.range(0.05f, 6.0f);      // strictly disjoint
             }
-            std::vector<SampleRecord> copy = v;
-            flattenPixelToSoA(fp, bk, i % W, i / W, copy, scratch, soa, nullptr, nullptr, nullptr);
         }
+
+        ResidualWindow window;
+        window.allocate(0, 0, W, H, autoBackgroundRadiusPx(p, bk));
+        flattenIntoWithResidual(fp, bk, 0, 0, W, H, soa, scratch, window,
+            [&](int x, int y) -> std::vector<SampleRecord> {
+                const std::size_t i = static_cast<std::size_t>(y) * W
+                                     + static_cast<std::size_t>(x);
+                return (i < pixels.size()) ? pixels[i] : std::vector<SampleRecord>{};
+            });
 
         HoldoutSampleSoA hs;
         HoldoutLut       lut;
@@ -2614,7 +2712,7 @@ TEST_CASE("size-0 flatten is a DeepToImage `over` for MIXED point+volumetric con
         band.K = K; band.C = C; band.W = W; band.H = H;
         DiscKernelLUT kernel(0.0f, 1.0f, 1.0f, 1.0f);
         runBand(band, makeScatterParams(W, H),
-                soa, view, kernel, /*useThread*/ false);
+                soa, view, kernel, /*useThread*/ false, &window);
 
         double worstAlpha = 0.0, worstColor = 0.0;
         int    bad = 0;
@@ -2664,9 +2762,11 @@ TEST_CASE("with a holdout connected, two sharp samples IN FRONT of a card read t
         FlattenParams fp = makeFlattenParams(p, 1, /*preMerge*/ true);
         fp.holdoutConnected = holdout;
 
+        float residualT = 1.0f, residualR = 0.0f;
         const SampleSoA soa = flattenOnePixel(fp, bk, 4, 4,
             {makeSample(20.0f, 20.0f, 0.5f, {0.5f}),
-             makeSample(40.0f, 40.0f, 0.5f, {0.5f})});
+             makeSample(40.0f, 40.0f, 0.5f, {0.5f})},
+            &residualT, &residualR);
 
         HoldoutSampleSoA hs;
         HoldoutLut       lut;
@@ -2679,8 +2779,10 @@ TEST_CASE("with a holdout connected, two sharp samples IN FRONT of a card read t
         Band band;
         band.K = K; band.C = 1; band.W = W; band.H = H;
         DiscKernelLUT kernel(0.0f, 1.0f, 1.0f, 1.0f);
+        ResidualWindow window;
+        oneSourcePixelWindow(window, W, H, 4, 4, residualT, residualR);
         runBand(band, makeScatterParams(W, H),
-                soa, view, kernel, /*useThread*/ false);
+                soa, view, kernel, /*useThread*/ false, &window);
 
         CHECK(std::fabs(static_cast<double>(band.outAlpha(4, 4)) - truth) <= 2e-07);
         CHECK(std::fabs(static_cast<double>(band.outColor(0, 4, 4)) - truth) <= 2e-07);
@@ -2708,9 +2810,11 @@ TEST_CASE("the per-bucket attenuation needs no holdout gate: each fragment keeps
     FlattenParams fp = makeFlattenParams(p, 1, /*preMerge*/ true);
     fp.holdoutConnected = true;
 
+    float residualT = 1.0f, residualR = 0.0f;
     const SampleSoA soa = flattenOnePixel(fp, bk, 4, 4,
         {makeSample(20.0f, 20.0f, 0.5f, {0.5f}),
-         makeSample(60.0f, 60.0f, 0.5f, {0.5f})});
+         makeSample(60.0f, 60.0f, 0.5f, {0.5f})},
+        &residualT, &residualR);
     // They really do collide: same pixel, same (sharp) kernel, and deposit
     // ranges that intersect -- so the attenuation is engaged here.
     REQUIRE(soa.fragmentCount() == 2u);
@@ -2728,8 +2832,10 @@ TEST_CASE("the per-bucket attenuation needs no holdout gate: each fragment keeps
     Band band;
     band.K = K; band.C = 1; band.W = W; band.H = H;
     DiscKernelLUT kernel(0.0f, 1.0f, 1.0f, 1.0f);
+    ResidualWindow window;
+    oneSourcePixelWindow(window, W, H, 4, 4, residualT, residualR);
     runBand(band, makeScatterParams(W, H),
-            soa, lut.view(), kernel, /*useThread*/ false);
+            soa, lut.view(), kernel, /*useThread*/ false, &window);
 
     CHECK(std::fabs(static_cast<double>(band.outAlpha(4, 4)) - 0.5) <= 2e-06);
     CHECK(std::fabs(static_cast<double>(band.outColor(0, 4, 4)) - 0.5) <= 2e-06);
@@ -3225,9 +3331,11 @@ TEST_CASE("the two-sample collision case resolves to the flatten, not to a fully
     for (bool preMerge : {false, true}) {
         CAPTURE(preMerge);
         const FlattenParams fp = makeFlattenParams(p, 1, preMerge);
+        float residualT = 1.0f, residualR = 0.0f;
         const SampleSoA soa = flattenOnePixel(fp, bk, 4, 4,
             {makeSample(9.063f, 9.063f, 0.4667f, {0.4667f * 0.25f}),
-             makeSample(11.039f, 11.039f, 0.5899f, {0.5899f * 0.75f})});
+             makeSample(11.039f, 11.039f, 0.5899f, {0.5899f * 0.75f})},
+            &residualT, &residualR);
 
         // Both are on the sharp path here (radius ~0.27px), so they are one
         // kernel and the collision is resolvable exactly.
@@ -3236,8 +3344,10 @@ TEST_CASE("the two-sample collision case resolves to the flatten, not to a fully
         Band band;
         band.K = 8; band.C = 1; band.W = W; band.H = H;
         HoldoutSoA noHoldout;
+        ResidualWindow window;
+        oneSourcePixelWindow(window, W, H, 4, 4, residualT, residualR);
         runBand(band, makeScatterParams(W, H),
-                soa, noHoldout, kernel);
+                soa, noHoldout, kernel, true, &window);
 
         CHECK(std::fabs(static_cast<double>(band.outAlpha(4, 4)) - truth) <= 2e-06);
         // Premultiplied colour follows the same `over`.
@@ -3591,19 +3701,22 @@ TEST_CASE("no step at the sharp threshold: a 0-2px ramp over a two-layer flat fi
         SampleSoA soa;
         soa.begin(C, fp.groups);
         FlattenScratch scratch;
-        for (int y = -pad; y < H + pad; ++y)
-            for (int x = -pad; x < W + pad; ++x) {
-                std::vector<SampleRecord> v{makeSample(z1, z1, a1, {a1 * 0.5f}),
-                                            makeSample(z2, z2, a2, {a2 * 0.5f})};
-                flattenPixelToSoA(fp, bk, x, y, v, scratch, soa, nullptr, nullptr, nullptr);
-            }
+        ResidualWindow window;
+        window.allocate(-pad, -pad, W + 2 * pad, H + 2 * pad,
+                        autoBackgroundRadiusPx(p, bk));
+        flattenIntoWithResidual(fp, bk, -pad, -pad, W + pad, H + pad,
+            soa, scratch, window,
+            [&](int, int) -> std::vector<SampleRecord> {
+                return {makeSample(z1, z1, a1, {a1 * 0.5f}),
+                       makeSample(z2, z2, a2, {a2 * 0.5f})};
+            });
 
         Band band;
         band.K = K; band.C = C; band.W = W; band.H = H;
         HoldoutSoA noHoldout;
         DiscKernelLUT kernel(0.0f, std::max(1.0f, rMax), 1.0f, 1.0f);
         runBand(band, makeScatterParams(W, H),
-                soa, noHoldout, kernel, /*useThread*/ false);
+                soa, noHoldout, kernel, /*useThread*/ false, &window);
 
         const double v = band.outAlpha(W / 2, H / 2);
         worstError = std::max(worstError, std::fabs(v - truth));
@@ -3656,12 +3769,13 @@ TEST_CASE("the collision merge does not carry a fragment across a holdout bracke
         SampleSoA soa;
         soa.begin(C, fp.groups);
         FlattenScratch scratch;
-        for (int y = 0; y < H; ++y)
-            for (int x = 0; x < W; ++x) {
-                std::vector<SampleRecord> v{makeSample(20.0f, 20.0f, 0.5f, {0.5f}),
-                                            makeSample(40.0f, 40.0f, 0.5f, {0.5f})};
-                flattenPixelToSoA(fp, bk, x, y, v, scratch, soa, nullptr, nullptr, nullptr);
-            }
+        ResidualWindow window;
+        window.allocate(0, 0, W, H, autoBackgroundRadiusPx(p, bk));
+        flattenIntoWithResidual(fp, bk, 0, 0, W, H, soa, scratch, window,
+            [&](int, int) -> std::vector<SampleRecord> {
+                return {makeSample(20.0f, 20.0f, 0.5f, {0.5f}),
+                       makeSample(40.0f, 40.0f, 0.5f, {0.5f})};
+            });
 
         const std::size_t perPixel =
             soa.fragmentCount() / static_cast<std::size_t>(W * H);
@@ -3671,7 +3785,7 @@ TEST_CASE("the collision merge does not carry a fragment across a holdout bracke
         DiscKernelLUT kernel(0.0f, 1.0f, 1.0f, 1.0f);
         HoldoutSoA view = lut.view();
         runBand(band, makeScatterParams(W, H),
-                soa, view, kernel, /*useThread*/ false);
+                soa, view, kernel, /*useThread*/ false, &window);
 
         if (connected) {
             CHECK(perPixel == 2u);
@@ -3724,12 +3838,13 @@ TEST_CASE("pre_merge does not carry a fragment across a holdout bracket either")
         SampleSoA soa;
         soa.begin(C, fp.groups);
         FlattenScratch scratch;
-        for (int y = 0; y < H; ++y)
-            for (int x = 0; x < W; ++x) {
-                std::vector<SampleRecord> v{makeSample(za, za, 0.5f, {0.5f}),
-                                            makeSample(zb, zb, 0.5f, {0.5f})};
-                flattenPixelToSoA(fp, bk, x, y, v, scratch, soa, nullptr, nullptr, nullptr);
-            }
+        ResidualWindow window;
+        window.allocate(0, 0, W, H, autoBackgroundRadiusPx(p, bk));
+        flattenIntoWithResidual(fp, bk, 0, 0, W, H, soa, scratch, window,
+            [&](int, int) -> std::vector<SampleRecord> {
+                return {makeSample(za, za, 0.5f, {0.5f}),
+                       makeSample(zb, zb, 0.5f, {0.5f})};
+            });
         CHECK(soa.fragmentCount() == static_cast<std::size_t>(W * H) * 2u);
 
         Band band;
@@ -3737,7 +3852,7 @@ TEST_CASE("pre_merge does not carry a fragment across a holdout bracket either")
         DiscKernelLUT kernel(0.0f, 60.0f, 1.0f, 1.0f);
         HoldoutSoA view = lut.view();
         runBand(band, makeScatterParams(W, H),
-                soa, view, kernel, /*useThread*/ false);
+                soa, view, kernel, /*useThread*/ false, &window);
         // The front sample survives whole; the back one is behind an opaque card.
         CHECK(std::fabs(static_cast<double>(band.outAlpha(4, 4)) - 0.5) <= 2e-06);
     }
@@ -4037,12 +4152,15 @@ TEST_CASE("flat field identities: opaque field is alpha 1 to 1e-6 (NOT exactly 1
             SampleSoA soa;
             soa.begin(C, fp.groups);
             FlattenScratch scratch;
-            for (int y = -pad; y < H + pad; ++y)
-                for (int x = -pad; x < W + pad; ++x) {
-                    std::vector<SampleRecord> v{makeSample(depth, depth, alpha,
+            ResidualWindow window;
+            window.allocate(-pad, -pad, W + 2 * pad, H + 2 * pad,
+                            autoBackgroundRadiusPx(p, bk));
+            flattenIntoWithResidual(fp, bk, -pad, -pad, W + pad, H + pad,
+                soa, scratch, window,
+                [&](int, int) -> std::vector<SampleRecord> {
+                    return {makeSample(depth, depth, alpha,
                         {alpha * unpremult[0], alpha * unpremult[1], alpha * unpremult[2]})};
-                    flattenPixelToSoA(fp, bk, x, y, v, scratch, soa, nullptr, nullptr, nullptr);
-                }
+                });
 
             {
                 CAPTURE(depth);
@@ -4051,7 +4169,7 @@ TEST_CASE("flat field identities: opaque field is alpha 1 to 1e-6 (NOT exactly 1
                 Band band;
                 band.K = bk.bucketCount(); band.C = C; band.W = W; band.H = H;
                 HoldoutSoA noHoldout;
-                runBand(band, makeScatterParams(W, H), soa, noHoldout, lut);
+                runBand(band, makeScatterParams(W, H), soa, noHoldout, lut, true, &window);
 
                 const int cx = W / 2, cy = H / 2;
                 const double a = band.outAlpha(cx, cy);
@@ -4093,27 +4211,39 @@ TEST_CASE("flat opaque field ACROSS buckets: the bucket composite holds alpha 1"
     soa.begin(1, fp.groups);
     FlattenScratch scratch;
     const int pad = 14;
-    for (int y = -pad; y < H + pad; ++y)
-        for (int x = -pad; x < W + pad; ++x) {
-            std::vector<SampleRecord> v{makeSample(((x + y) & 1) ? dA : dB,
-                                                    ((x + y) & 1) ? dA : dB, 1.0f, {0.8f})};
-            flattenPixelToSoA(fp, bk, x, y, v, scratch, soa, nullptr, nullptr, nullptr);
-        }
+    ResidualWindow window;
+    window.allocate(-pad, -pad, W + 2 * pad, H + 2 * pad,
+                    autoBackgroundRadiusPx(p, bk));
+    flattenIntoWithResidual(fp, bk, -pad, -pad, W + pad, H + pad,
+        soa, scratch, window,
+        [&](int x, int y) -> std::vector<SampleRecord> {
+            return {makeSample(((x + y) & 1) ? dA : dB,
+                               ((x + y) & 1) ? dA : dB, 1.0f, {0.8f})};
+        });
 
+    double minArrival = 2.0, maxArrival = -1.0;
     double minAlpha = 2.0, maxAlpha = -1.0, ratio = 0.0;
     {
         Band band;
         band.K = bk.bucketCount(); band.C = 1; band.W = W; band.H = H;
         HoldoutSoA noHoldout;
-        runBand(band, makeScatterParams(W, H), soa, noHoldout, lut);
+        runBand(band, makeScatterParams(W, H), soa, noHoldout, lut, true, &window);
 
         for (int y = 16; y < 32; ++y)
             for (int x = 16; x < 32; ++x) {
+                const std::size_t i = static_cast<std::size_t>(y) * W
+                                    + static_cast<std::size_t>(x);
+                const double d = static_cast<double>(band.planes.arrival[i]);
+                minArrival = std::min(minArrival, d);
+                maxArrival = std::max(maxArrival, d);
                 minAlpha = std::min(minAlpha, static_cast<double>(band.outAlpha(x, y)));
                 maxAlpha = std::max(maxAlpha, static_cast<double>(band.outAlpha(x, y)));
             }
         ratio = band.outColor(0, 24, 24) / band.outAlpha(24, 24);
     }
+    CAPTURE(minArrival);
+    CAPTURE(maxArrival);
+    CAPTURE(minAlpha);
 
     // The composite holds the identity to 5e-3 (measured 0.995718 at the worst
     // interior pixel: the two checkerboard depths rasterise DIFFERENT radii,
@@ -4122,9 +4252,17 @@ TEST_CASE("flat opaque field ACROSS buckets: the bucket composite holds alpha 1"
     // uniform 0.5px kernel grid's 0.99927, so it would not notice the grid
     // being coarsened.
     //
+    // THE BAND IS ON `arrival`, NOT ON THE OUTPUT ALPHA, and the same numbers
+    // to the digit: on a field this dense every source pixel is opaque, so its
+    // whole unit share is what scatters and arrival IS the pixel's coverage
+    // sum -- the quantity the band was always about.  The output alpha is no
+    // longer that quantity, because dividing by arrival is exactly what the
+    // node now does with it; reading the band off alpha would only re-measure
+    // the division.
+    //
     // WHY THE BAND SITS WHERE IT DOES.  A checkerboard is the Nyquist pattern,
     // so what it really measures is the kernels' response at (pi, pi):
-    // alpha == 1 + (C_A - C_B)/2 with C_r = sum (-1)^(dx+dy) w_r.  A uniform
+    // coverage == 1 + (C_A - C_B)/2 with C_r = sum (-1)^(dx+dy) w_r.  A uniform
     // 0.5px grid would SNAP the two radii to 8.00 and 6.50, and
     // (C_8.00 - C_6.50)/2 = -7.30e-04 is a number that belongs to the snapping.
     // This grid snaps them to 7.876923 and 6.400000, giving -4.28e-03 against
@@ -4134,8 +4272,13 @@ TEST_CASE("flat opaque field ACROSS buckets: the bucket composite holds alpha 1"
     // A plain `over` of the buckets reads 0.7479..0.7521 on this same fixture
     // -- the 25.0%-across-2-buckets deficit -- which is what makes this
     // configuration the cleanest discriminator available.
-    CHECK(minAlpha > 0.9954);
-    CHECK(minAlpha < 0.9960);
+    CHECK(minArrival > 0.9954);
+    CHECK(minArrival < 0.9960);
+    // Both signs of the Nyquist response are present, and only the deficit
+    // side is corrected: the surplus cell keeps its over-read in arrival and
+    // the pre-existing down-only clamp is what caps its alpha.
+    CHECK(maxArrival > 1.0);
+    CHECK(minAlpha > 1.0 - 1e-06);
     CHECK(maxAlpha <= 1.0);
     // The ratio holds: any error here is an alpha deficit, not a colour desync.
     CHECK(std::fabs(ratio - 0.8) <= 1e-05);
@@ -4728,20 +4871,33 @@ TEST_CASE("volumetric parent reconstruction is EXACT in front of focus, at any p
             CAPTURE(alpha);
             CAPTURE(nBuckets);
             const FlattenParams fp = makeFlattenParams(p, 1, /*preMerge*/ true);
+            float residualT = 1.0f, residualR = 0.0f;
             const SampleSoA soa = flattenOnePixel(fp, bk, W / 2, H / 2,
                 {makeSample(bk.boundary(15 - nBuckets), bk.boundary(15), alpha,
-                            {alpha * unpremult})});
+                            {alpha * unpremult})},
+                &residualT, &residualR);
             REQUIRE(soa.fragmentCount() == static_cast<std::size_t>(nBuckets));
 
             Band band;
             band.K = bk.bucketCount(); band.C = 1; band.W = W; band.H = H;
             HoldoutSoA noHoldout;
+            ResidualWindow window;
+            oneSourcePixelWindow(window, W, H, W / 2, H / 2, residualT, residualR);
             runBand(band, makeScatterParams(W, H),
-                    soa, noHoldout, lut);
+                    soa, noHoldout, lut, true, &window);
 
             // MEASURED <= 1e-07 relative at every one of these; 2e-06 is ~20x
             // headroom.  Before the fourth plane the same cases read -6.4% at 4
             // buckets, -24.8% at 8, -46.5% at 12 and -92.1% full range.
+            //
+            // RED at every part count above 1, and the composite is not what
+            // moved: the coverage fill is.  In front of focus a parent's parts
+            // run large-to-small front to back (20.80 px down to 0.55 px at 15
+            // parts), the residual scatters at the DEEPEST part's radius, and
+            // arrival at the parent's own pixel therefore reads 0.40-0.61
+            // instead of 1 -- so the deficit division fires on content that has
+            // no deficit and adds +25%.  Composited without the division these
+            // same cases still read the parent exactly (measured 0.900000).
             CHECK(std::fabs(bandAlphaSum(band) - alpha) <= 2e-06 * alpha);
             CHECK(std::fabs(bandColorSum(band, 0) - alpha * unpremult) <= 2e-06 * alpha);
 
@@ -4793,21 +4949,33 @@ TEST_CASE("behind focus the residue is structural: "
     // quantisation.  A plain `over` of the buckets reads 48.77 / 75.03 / 90.96
     // / 117.12 on the same cases, i.e. far worse.  These are the SHIPPED
     // composite's numbers.
+    //
+    // RED at 2/3/4 parts, by +1.75 / +0.62 / +0.37 points.  The residue itself
+    // is unmoved -- composited without the coverage division these read
+    // 36.86 / 50.25 / 56.31 / 61.00 exactly.  Behind focus the parts run
+    // small-to-large front to back, so the residual's own (deepest, largest)
+    // radius spreads its claim WIDER than the parts that lost it and arrival
+    // dips below 1 only in a thin ring; the same mismatch that costs +25% in
+    // front of focus costs a fraction of a point here.
     struct Case { int buckets; double partitionPct; };
     const Case cases[] = {{2, 36.86}, {3, 50.25}, {4, 56.31}, {8, 61.00}};
 
     for (const Case& cs : cases) {
         CAPTURE(cs.buckets);
         const FlattenParams fp = makeFlattenParams(p, 1, /*preMerge*/ true);
+        float residualT = 1.0f, residualR = 0.0f;
         const SampleSoA soa = flattenOnePixel(fp, bk, W / 2, H / 2,
-            {makeSample(bk.boundary(0), bk.boundary(cs.buckets), alpha, {alpha * unpremult})});
+            {makeSample(bk.boundary(0), bk.boundary(cs.buckets), alpha, {alpha * unpremult})},
+            &residualT, &residualR);
         REQUIRE(soa.fragmentCount() == static_cast<std::size_t>(cs.buckets));
 
         {
             Band band;
             band.K = bk.bucketCount(); band.C = 1; band.W = W; band.H = H;
             HoldoutSoA noHoldout;
-            runBand(band, makeScatterParams(W, H), soa, noHoldout, lut);
+            ResidualWindow window;
+            oneSourcePixelWindow(window, W, H, W / 2, H / 2, residualT, residualR);
+            runBand(band, makeScatterParams(W, H), soa, noHoldout, lut, true, &window);
 
             const double pct = (bandAlphaSum(band) - alpha) / alpha * 100.0;
             const double want = cs.partitionPct;
@@ -4967,6 +5135,117 @@ TEST_CASE("the four hand-built composite identities, with the fourth plane both 
         REQUIRE(a > 0.0f);
         CHECK(std::fabs(c / a - unpremult) <= 1e-05);
         CHECK(a <= 1.0f);
+    }
+}
+
+TEST_CASE("deficit-only fill: arrival divides the premultiplied pair together, "
+          "and only for a real deficit")
+{
+    // Same standalone entry point as the identities above, now driving the
+    // trailing `arrival` argument directly rather than leaving it at its
+    // default (1.0, i.e. no-op).
+    auto composite = [](std::vector<float> cov, std::vector<float> alpha,
+                        std::vector<float> colocated, std::vector<float> color,
+                        float arrival, float* outColor, float* outAlpha) {
+        compositePixelCoveragePartition(color.data(), alpha.data(), cov.data(),
+                                        colocated.data(),
+                                        static_cast<int>(cov.size()), 1, 1,
+                                        outColor, outAlpha, arrival);
+    };
+
+    const float unpremult = 0.8f;
+    float c = -1.0f, a = -1.0f;
+
+    SUBCASE("flat opaque, D = 0.93 -> alpha exactly 1, unpremult colour ratio preserved")
+    {
+        composite({1.0f}, {1.0f}, {0.0f}, {unpremult}, 0.93f, &c, &a);
+        CHECK(a == 1.0f);
+        REQUIRE(a > 0.0f);
+        CHECK(std::fabs(c / a - unpremult) <= 1e-06f);
+    }
+
+    SUBCASE("a surplus, D = 1.3, is left untouched")
+    {
+        composite({0.6f}, {0.6f}, {0.0f}, {0.6f * unpremult}, 1.3f, &c, &a);
+        CHECK(a == doctest::Approx(0.6f).epsilon(1e-6));
+        CHECK(c == doctest::Approx(0.6f * unpremult).epsilon(1e-6));
+
+        // Bit-identical to a no-op arrival: a surplus takes the same early
+        // branch as "no arrival supplied at all".
+        float c2 = -1.0f, a2 = -1.0f;
+        composite({0.6f}, {0.6f}, {0.0f}, {0.6f * unpremult}, 1.0f, &c2, &a2);
+        CHECK(a == a2);
+        CHECK(c == c2);
+    }
+
+    SUBCASE("D = 0 with a zero numerator -> 0, never manufactured")
+    {
+        composite({0.0f}, {0.0f}, {0.0f}, {0.0f}, 0.0f, &c, &a);
+        CHECK(a == 0.0f);
+        CHECK(c == 0.0f);
+    }
+
+    SUBCASE("the kFillMinArrival boundary, approached from both sides")
+    {
+        // A real 0.5 numerator throughout; only D moves across the floor.
+        composite({0.5f}, {0.5f}, {0.0f}, {0.5f * unpremult},
+                  kFillMinArrival - 1e-6f, &c, &a);
+        CHECK(a == 0.5f);   // below the floor: untouched
+
+        composite({0.5f}, {0.5f}, {0.0f}, {0.5f * unpremult},
+                  kFillMinArrival, &c, &a);
+        CHECK(a == 0.5f);   // AT the floor: the compare is strict '>', still untouched
+
+        composite({0.5f}, {0.5f}, {0.0f}, {0.5f * unpremult},
+                  kFillMinArrival + 1e-6f, &c, &a);
+        // Just above the floor: s = 1/D is enormous (~1000x), so the fill
+        // overshoots 1 and the pre-existing down-only clamp caps it there --
+        // this subcase's own assertion is that the fill fired at all.
+        CHECK(a == 1.0f);
+    }
+
+    SUBCASE("gate (a): a sharp-path pixel at D = 1 - 1ulp is bit-identical to D = 1; "
+            "D = 1 - 2e-5 does divide")
+    {
+        // cov = 1 models the sharp path's own w = 1 deposit; alpha = 0.77 is
+        // an arbitrary non-opaque surface value with a real fractional bit
+        // pattern to compare.
+        float cBase = -1.0f, aBase = -1.0f;
+        composite({1.0f}, {0.77f}, {0.0f}, {0.77f * unpremult}, 1.0f, &cBase, &aBase);
+
+        const float oneUlpUnder = std::nextafter(1.0f, 0.0f);
+        // Confirms the ulp sits INSIDE the tolerance band (does not trip the divide).
+        REQUIRE(!(oneUlpUnder < 1.0f - kFillDeficitTol));
+        float cUlp = -1.0f, aUlp = -1.0f;
+        composite({1.0f}, {0.77f}, {0.0f}, {0.77f * unpremult}, oneUlpUnder, &cUlp, &aUlp);
+        CHECK(aUlp == aBase);   // bit-exact: the fill did not run
+        CHECK(cUlp == cBase);
+
+        float cDiv = -1.0f, aDiv = -1.0f;
+        composite({1.0f}, {0.77f}, {0.0f}, {0.77f * unpremult}, 1.0f - 2e-5f, &cDiv, &aDiv);
+        CHECK(aDiv != aBase);   // the fill DID run
+        CHECK(aDiv == doctest::Approx(0.77f / (1.0f - 2e-5f)).epsilon(1e-5));
+    }
+
+    SUBCASE("the colour:alpha pair stays locked through the accAlpha > 1 clamp")
+    {
+        // The two-bucket, area-plus-co-located case from the identities above
+        // (baseline total 0.75, no fill), now with D = 0.5 -- a deficit big
+        // enough that the fill's own 2x scale overshoots 1 and the pre-
+        // existing down-only clamp has to absorb it.
+        composite({0.4f, 0.5f}, {0.5f, 0.4f}, {0.6f, 0.0f},
+                  {0.5f * unpremult, 0.4f * unpremult}, 0.5f, &c, &a);
+        CHECK(a == 1.0f);
+        REQUIRE(a > 0.0f);
+        CHECK(std::fabs(c / a - unpremult) <= 1e-06f);
+    }
+
+    SUBCASE("two 0.5 fog layers still read 0.75 at D = 1 (shares + residual sum to 1)")
+    {
+        composite({1.0f, 1.0f}, {0.5f, 0.5f}, {0.0f, 0.0f},
+                  {0.5f * unpremult, 0.5f * unpremult}, 1.0f, &c, &a);
+        CHECK(a == doctest::Approx(0.75f).epsilon(1e-6));
+        CHECK(c == doctest::Approx(0.75f * unpremult).epsilon(1e-6));
     }
 }
 
@@ -5991,14 +6270,18 @@ TEST_CASE("pre_merge moves neither alpha nor coverage for a SINGLE parent")
 
                 for (int pm = 0; pm < 2; ++pm) {
                     const FlattenParams fp = makeFlattenParams(p, 1, pm != 0);
+                    float residualT = 1.0f, residualR = 0.0f;
                     const SampleSoA soa = flattenOnePixel(fp, bk, W / 2, H / 2,
                         {makeSample(bk.boundary(15 - nBuckets), bk.boundary(15), alpha,
-                                    {alpha * 0.5f})});
+                                    {alpha * 0.5f})},
+                        &residualT, &residualR);
                     Band band;
                     band.K = bk.bucketCount(); band.C = 1; band.W = W; band.H = H;
                     HoldoutSoA noHoldout;
+                    ResidualWindow window;
+                    oneSourcePixelWindow(window, W, H, W / 2, H / 2, residualT, residualR);
                     runBand(band, makeScatterParams(W, H),
-                            soa, noHoldout, lut);
+                            soa, noHoldout, lut, true, &window);
                     alphaSum[pm] = bandAlphaSum(band);
                     for (int k = 0; k < band.K; ++k) {
                         newArea[pm]   += planeSum(band.planes.weight, k, band.pixels());
@@ -6041,17 +6324,21 @@ TEST_CASE("pre_merge moves neither alpha nor coverage for a SINGLE parent")
 
         for (int pm = 0; pm < 2; ++pm) {
             const FlattenParams fp = makeFlattenParams(p, 1, pm != 0);
+            float residualT = 1.0f, residualR = 0.0f;
             const SampleSoA soa = flattenOnePixel(fp, bk, W / 2, H / 2,
                 {makeSample(9.0f, 9.0f, 0.3f, {0.3f}),
-                 makeSample(9.02f, 9.02f, 0.4f, {0.4f})});
+                 makeSample(9.02f, 9.02f, 0.4f, {0.4f})},
+                &residualT, &residualR);
             // ONE fragment either way now: they share a bucketOf() assignment
             // and are both on the sharp path, so they are one kernel.
             REQUIRE(soa.fragmentCount() == 1u);
             Band band;
             band.K = bk.bucketCount(); band.C = 1; band.W = W; band.H = H;
             HoldoutSoA noHoldout;
+            ResidualWindow window;
+            oneSourcePixelWindow(window, W, H, W / 2, H / 2, residualT, residualR);
             runBand(band, makeScatterParams(W, H),
-                    soa, noHoldout, lut);
+                    soa, noHoldout, lut, true, &window);
             alphaSum[pm] = bandAlphaSum(band);
             for (int k = 0; k < band.K; ++k)
                 newArea[pm] += planeSum(band.planes.weight, k, band.pixels());
@@ -6707,13 +6994,29 @@ TEST_CASE("the holdout multiplies into the scatter's deposits, per DESTINATION p
         REQUIRE(view.enabled());
         REQUIRE(view.pixelCount < static_cast<std::ptrdiff_t>(W) * H);
 
+        float residualT = 1.0f, residualR = 0.0f;
         const SampleSoA soa = flattenOnePixel(fp, bk, W / 2, H / 2,
-            {makeSample(6.0f, 6.0f, 0.8f, {0.4f})});
+            {makeSample(6.0f, 6.0f, 0.8f, {0.4f})}, &residualT, &residualR);
         Band band;
         band.K = bk.bucketCount(); band.C = 1; band.W = W; band.H = H;
+        ResidualWindow window;
+        oneSourcePixelWindow(window, W, H, W / 2, H / 2, residualT, residualR);
         runBand(band, makeScatterParams(W, H),
-                soa, view, lut);
+                soa, view, lut, true, &window);
         // Not erased: the short LUT was ignored rather than sampled.
+        //
+        // RED, NOT RE-PINNED: this rig is now correct (a matching-radius
+        // virtual background for the one real source pixel), and it exposes a
+        // real consequence of the deficit-only division, not a modelling gap
+        // in this rig. Investigated directly: at every pixel this disc's
+        // kernel reaches, arrival and the pre-fill alpha share the SAME
+        // per-pixel kernel weight w(pixel) (accAlpha = w*0.8, arrival =
+        // w*(0.8+0.2) = w), so accAlpha/arrival is the CONSTANT 0.8 at every
+        // one of them -- including edge pixels the disc barely grazes, whose
+        // pre-fill alpha was correctly anti-aliased (a small fraction of
+        // 0.8). The fill overwrites that fraction with the full 0.8
+        // everywhere, turning the disc's soft, anti-aliased edge into a hard
+        // one. See the task report for the general statement of this finding.
         CHECK(bandAlphaSum(band) == doctest::Approx(0.8).epsilon(1e-5));
     }
 }
@@ -7129,21 +7432,30 @@ TEST_CASE("scatterBackgroundCPU: background deposits sum to T per source pixel, 
               == doctest::Approx(0.42f));
     }
 
-    SUBCASE("T at or below 1e-4 deposits nothing -- the residual has nothing left to claim")
+    SUBCASE("the skip floor is the composite's deficit tolerance, not a looser one")
     {
-        ResidualWindow window;
-        window.allocate(0, 0, W, H, 5.0f);
-        for (int y = 0; y < H; ++y)
-            for (int x = 0; x < W; ++x)
-                window.setPixel(x, y, 0.0f, 5.0f);
-        window.setPixel(20, 20, 1e-4f, 5.0f);   // exactly at the threshold: excluded
+        // Anything dropped here is missing from the divisor the fill measures
+        // against 1, so a residual the fill would still divide for must be
+        // deposited.  At the tolerance it is dropped (the fill reads that
+        // pixel as full anyway); a hair above it, it is not.
+        auto sumAt = [&](float T) {
+            ResidualWindow window;
+            window.allocate(0, 0, W, H, 5.0f);
+            for (int y = 0; y < H; ++y)
+                for (int x = 0; x < W; ++x)
+                    window.setPixel(x, y, 0.0f, 5.0f);
+            window.setPixel(20, 20, T, 5.0f);
 
-        BucketPlanes planes;
-        planes.allocate(1, 1, W, H);
-        planes.zero();
-        scatterBackgroundCPU(sp, window, lut, planes);
+            BucketPlanes planes;
+            planes.allocate(1, 1, W, H);
+            planes.zero();
+            scatterBackgroundCPU(sp, window, lut, planes);
+            return planeSum(planes.arrival, 0, static_cast<std::ptrdiff_t>(W) * H);
+        };
 
-        CHECK(planeSum(planes.arrival, 0, static_cast<std::ptrdiff_t>(W) * H) == 0.0);
+        CHECK(sumAt(kFillDeficitTol) == 0.0);
+        CHECK(sumAt(2.0f * kFillDeficitTol)
+              == doctest::Approx(2.0 * kFillDeficitTol).epsilon(1e-5));
     }
 }
 
@@ -7855,3 +8167,4 @@ TEST_CASE("BandLedger: a setup re-claim drains active readers first, and the "
     ledger.endRead();
     CHECK(!ledger.beginRead(1));      // the old key stays dead
 }
+

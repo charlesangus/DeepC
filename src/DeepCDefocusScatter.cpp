@@ -1711,8 +1711,17 @@ void scatterBackgroundCPU(const ScatterParams&  params,
             const int px = residual.x + wx;
             const std::size_t i =
                 static_cast<std::size_t>(residual.index(px, py));
+            // The skip floor IS the fill's deficit tolerance, and the two
+            // cannot be set independently: whatever this drops is missing from
+            // the divisor the fill later measures against 1.  Each dropped
+            // pixel withholds at most kFillDeficitTol of a unit kernel, so the
+            // whole dropped field costs arrival at most kFillDeficitTol and
+            // the fill still reads that pixel as full.  Drop at a looser floor
+            // than the fill's and a genuinely non-opaque pixel divides by an
+            // arrival short by more than the tolerance, which pulls it to
+            // alpha 1 -- the error is exactly the residual that was withheld.
             const float T = residual.t[i];
-            if (!(T > 1e-4f))
+            if (!(T > kFillDeficitTol))
                 continue;
 
             const int   destX    = px - params.bandX;
@@ -1815,7 +1824,8 @@ void resolveBandCPU(const ScatterParams& params,
                                         view.channelCount,
                                         view.pixelCount,
                                         outColor + i,
-                                        outAlpha + i);
+                                        outAlpha + i,
+                                        view.arrival[i]);
     }
 }
 
