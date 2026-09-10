@@ -286,6 +286,7 @@ class DeepCDefocus : public DD::Image::Iop
     float _frontCocMult;         // Float, default 1.0, 0-4
     float _backCocMult;          // Float, default 1.0, 0-4
     float _edgeSoftness;         // Float px, default 1.0, 0-4
+    float _backgroundDepth;      // Float px, default 0.0 = auto, 0-500
 
     // --- Output ------------------------------------------------------------
     ChannelSet _channels;        // Input_ChannelSet, default rgba
@@ -397,6 +398,7 @@ class DeepCDefocus : public DD::Image::Iop
         int  alphaPlane       = -1;
         int  mattePlane       = -1;
         int  padY             = 0;
+        float backgroundRadiusPx = 0.0f;   // resolveBackgroundRadiusPx(), see frameSetup()
         int  bandHeight       = 1;    // never < 1
         int  bandCount        = 0;
         int  maxInFlight      = 1;    // memory-limit cap, floor 1
@@ -442,6 +444,7 @@ public:
         _frontCocMult(1.0f),
         _backCocMult(1.0f),
         _edgeSoftness(1.0f),
+        _backgroundDepth(0.0f),
         _channels(Mask_RGBA),
         _outputHoldoutMatte(false),
         _holdoutMatteChannel(Chan_Black),
@@ -595,6 +598,14 @@ public:
         Float_knob(f, &_edgeSoftness, IRange(0.0, 4.0), "edge_softness", "edge softness");
         Tooltip(f, "Width, in pixels, of the anti-aliased disc-edge falloff band.");
 
+        Float_knob(f, &_backgroundDepth, IRange(0.0, 500.0), "background_depth", "background depth");
+        Tooltip(f, "Defocus radius, in pixels, of the invented coverage that fills in "
+                    "behind pixels the deep image left completely empty.\n\n"
+                    "0 = auto: the CoC at the frame's farthest measured depth. A manual "
+                    "value is clamped to the frame's own measured radius range.\n\n"
+                    "Has no effect on any pixel with at least one sample — those always "
+                    "borrow their own deepest sample's defocus instead.");
+
         // --- Output ----------------------------------------------------------
         Divider(f, "Output");
 
@@ -698,6 +709,15 @@ public:
     {
         const float t = (_mergeTolerance > 0.0f) ? std::min(_mergeTolerance, 16.0f) : 0.0f;
         return t * _proxyScale;
+    }
+
+    // background_depth, a radius in pixels like max_radius, so it is
+    // proxy-scaled here rather than by applyProxyScale() — CocParams does not
+    // carry it, same reasoning as clampedMergeTolerancePx() above. <= 0 is
+    // left as-is (deepc::resolveBackgroundRadiusPx() reads that as "auto").
+    float clampedBackgroundDepthPx() const
+    {
+        return (_backgroundDepth > 0.0f) ? _backgroundDepth * _proxyScale : 0.0f;
     }
 
     // memory_limit, in bytes. Soft range 1-64 GB; the floor is deliberately
@@ -1128,6 +1148,7 @@ private:
         job->alphaPlane        = _shared.alphaPlane;
         job->mattePlane        = _shared.mattePlane;
         job->padY              = _shared.padY;
+        job->backgroundRadiusPx = _shared.backgroundRadiusPx;
         job->sp                = _shared.spBase;
         return job;
     }
@@ -1192,6 +1213,7 @@ private:
         int alphaPlane = -1;
         int mattePlane = -1;
         int padY       = 0;
+        float backgroundRadiusPx = 0.0f;   // see FrameShared::backgroundRadiusPx
 
         // bandY / bandHeight are filled per band; everything else (origin,
         // width, sharp threshold) is set once, explicitly, from the knobs.
@@ -1201,6 +1223,7 @@ private:
         deepc::FlattenScratch   flattenScratch;
         deepc::ScatterScratch   scatterScratch;
         deepc::BucketPlanes     planes;
+        deepc::ResidualWindow   residual;   // virtual-background T/radius, full fetch window
         deepc::HoldoutSampleSoA holdoutSamples;
         deepc::HoldoutLut       holdoutLut;
 
@@ -1339,6 +1362,15 @@ private:
         // sampler will actually hand back.
         rMax = std::min(rMax, deepc::DiscKernelLUT::kMaxSupportedRadius);
 
+        // background_depth: 0 (auto) resolves to the CoC at the frame's
+        // farthest measured depth; a manual value is clamped to rMax. Passed
+        // through explicitly (this file's convention — see BandJob) rather
+        // than read as a member from inside computeBand()'s residual-map
+        // build, which is the only consumer for now.
+        const float cocAtDepthMax = deepc::radiusPixels(fp.coc, buckets.depthMax());
+        _shared.backgroundRadiusPx = deepc::resolveBackgroundRadiusPx(
+            clampedBackgroundDepthPx(), cocAtDepthMax, rMax);
+
         // edge_softness is proxy-scaled HERE. applyProxyScale() deliberately
         // does not touch it — CocParams does not carry it — so the LUT build
         // is where it lands.
@@ -1398,6 +1430,9 @@ private:
         // CLAMPED values, never raw knob values.
         //
         // The budget is a COMBINED figure: bucket planes K*W*B*(C+3)*4, PLUS
+        // the virtual-background window 2*W*(B+2*padY)*4 (ResidualWindow —
+        // it is owned per-BandJob exactly like the bucket planes, so `padY`
+        // is passed through here rather than left at the default 0), PLUS
         // the holdout LUT (K+1)*W*B*4 (measured 17.0 MB per 4096x64 band at
         // K=16), PLUS the SoA fragment stream at ~100 B/fragment RESIDENT
         // (61 B logical), which is the DOMINANT term at 4K (~1.49GB against
@@ -1434,7 +1469,7 @@ private:
 
         const deepc::BandPlan plan = deepc::planBands(
             memoryLimitBytes(), fc.box.h(), K, C, W, holdoutConnected,
-            initialBandHeight, worstBandFragments);
+            initialBandHeight, worstBandFragments, padY);
 
         _shared.bandHeight   = plan.bandHeight;
         _shared.bandCount    = plan.bandCount;
@@ -1444,7 +1479,7 @@ private:
         if (_debugBands) {
             const double fragments = worstBandFragments(plan.bandHeight);
             const double perBand = deepc::bandBudgetBytes(
-                K, C, W, plan.bandHeight, holdoutConnected, fragments);
+                K, C, W, plan.bandHeight, holdoutConnected, fragments, padY);
             std::fprintf(stderr,
                          "DeepCDefocus: budget limitGB %.3f bandGB %.3f "
                          "maxInFlight %d promisedGB %.3f fragments %.0f\n",
@@ -1695,36 +1730,45 @@ private:
         const std::ptrdiff_t px = static_cast<std::ptrdiff_t>(W) * h;
 
         // --- source fetch: band +/- padY, clipped to the source bbox -------
+        // Also builds the M4 virtual-background window: T = 1 (and the
+        // background radius) for every fetch-window pixel inside the OUTPUT
+        // box, whether or not it lies in `srcBox` — see
+        // deepc::buildResidualWindow(). A deep input whose bbox is tight
+        // around its content still needs a virtual background on every bloom
+        // pixel outside that bbox, or arrival there equals the bloom's own
+        // weight and a soft edge divides to a hard disc.
         job.soa.begin(C, job.fp->groups);
-
-        const int fy0 = std::max(job.srcBox.y(), y0 - job.padY);
-        const int fy1 = std::min(job.srcBox.t(), y1 + job.padY);
 
         const ChannelSet need = neededDeepChannels();
 
+        DeepPlane deepRow;   // captured by both callbacks below
         const auto fetchStart = std::chrono::steady_clock::now();
-        for (int y = fy0; y < fy1; ++y) {
-            if (aborted())
-                return false;
-
-            DeepPlane deepRow;
-            if (!job.src->deepEngine(y, job.srcBox.x(), job.srcBox.r(), need, deepRow)) {
-                Iop::abort();
-                return false;
-            }
-
-            for (int x = job.srcBox.x(); x < job.srcBox.r(); ++x) {
+        const bool fetchOk = deepc::buildResidualWindow(
+            job.residual,
+            fc.box.x(), fc.box.r(), fc.box.y(), fc.box.t(),
+            job.srcBox.x(), job.srcBox.r(), job.srcBox.y(), job.srcBox.t(),
+            y0, y1, job.padY, job.backgroundRadiusPx,
+            [&](int y) -> bool {
+                if (aborted())
+                    return false;
+                if (!job.src->deepEngine(y, job.srcBox.x(), job.srcBox.r(), need, deepRow)) {
+                    Iop::abort();
+                    return false;
+                }
+                return true;
+            },
+            [&](int x, int y, float& residualT, float& residualRadiusPx) -> bool {
                 if (!fillSampleRecords(deepRow.getPixel(y, x), *job.colorChannels,
                                        job.samples))
-                    continue;
-
-                // Residual T / residual radius are not consumed on this call
-                // path yet (virtual-background scatter is a separate change).
+                    return false;
                 deepc::flattenPixelToSoA(*job.fp, *job.buckets, x, y,
                                          job.samples, job.flattenScratch,
-                                         job.soa, nullptr, nullptr, nullptr);
-            }
-        }
+                                         job.soa, nullptr,
+                                         &residualT, &residualRadiusPx);
+                return true;
+            });
+        if (!fetchOk)
+            return false;
         if (fetchMs) {
             *fetchMs = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - fetchStart).count();

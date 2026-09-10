@@ -1254,6 +1254,176 @@ struct BucketPlanes {
 };
 
 // ---------------------------------------------------------------------------
+// residualWindowYRange — the Y extent of the M4 virtual-background window:
+// band +/- padY, clipped to the OUTPUT box, NEVER to `srcBox`.
+//
+// The SoA fetch loop clips its OWN row range to `srcBox` (correct for that
+// loop — deepEngine() has no data outside it), and reusing that clip to size
+// or default the residual map is exactly the bug this function exists to
+// avoid: a deep input whose bbox is tight around its content would then give
+// every bloom pixel outside `srcBox` no virtual background at all, arrival
+// there would equal the bloom's own weight, and a soft defocused edge would
+// divide to a hard disc. See ResidualWindow.
+// ---------------------------------------------------------------------------
+DEEPC_HD inline void residualWindowYRange(int outputBoxY0, int outputBoxY1,
+                                          int bandY0, int bandY1, int padY,
+                                          int& windowY0, int& windowY1)
+{
+    const int lo = bandY0 - padY;
+    const int hi = bandY1 + padY;
+    windowY0 = (lo > outputBoxY0) ? lo : outputBoxY0;
+    windowY1 = (hi < outputBoxY1) ? hi : outputBoxY1;
+}
+
+// ---------------------------------------------------------------------------
+// resolveBackgroundRadiusPx — the `background_depth` knob's resolution.
+//
+// backgroundDepthKnob <= 0 (including NaN, same convention as clampf) means
+// auto: the CoC at the frame's farthest measured depth. A positive manual
+// value is clamped to rMax, the frame's own measured radius range, so
+// invented coverage for pixels with no samples at all never blurs wider than
+// anything the frame actually measured.
+// ---------------------------------------------------------------------------
+DEEPC_HD inline float resolveBackgroundRadiusPx(float backgroundDepthKnob,
+                                                float cocAtDepthMax,
+                                                float rMax)
+{
+    if (!(backgroundDepthKnob > 0.0f))
+        return cocAtDepthMax;
+    return clampf(backgroundDepthKnob, 0.0f, rMax);
+}
+
+// ---------------------------------------------------------------------------
+// ResidualWindow — the virtual background's per-pixel claim, over the FULL
+// fetch window (band +/- padY rows, clipped only to the output box) rather
+// than `srcBox`.
+//
+// allocate() defaults every cell to T = 1 (fully unclaimed) and the caller's
+// background radius BEFORE any source pixel is visited.  A deep input whose
+// bbox is tight around its content must still get a virtual background on
+// every bloom pixel outside that bbox, or arrival there equals the bloom's
+// own weight and a soft edge divides to a hard disc — so this default is set
+// over the window's full extent, not just the sub-rectangle the fetch loop
+// can query DeepPlane pixels from. setPixel() is called only for pixels the
+// fetch loop actually visits (inside `srcBox` AND this window — see
+// contains()); every other cell keeps the allocate()-time default.
+//
+// Owned by one BandJob, exactly like BucketPlanes — one instance per
+// CONCURRENT band (the memory-limit cap), not per render thread — so it is a
+// genuine per-in-flight-band resident cost and bandBudgetBytes() counts it
+// (bytesForWindow() below), not merely names it as an omission.
+//
+// Consumed by nothing yet — scatterBackgroundCPU() is a later change.
+// ---------------------------------------------------------------------------
+struct ResidualWindow {
+    PodBuffer<float> t;         // residual transmittance, one per window pixel
+    PodBuffer<float> radiusPx;  // residual scatter radius, one per window pixel
+
+    int x      = 0;   // window origin, absolute image coordinates
+    int y      = 0;
+    int width  = 0;
+    int height = 0;
+
+    void allocate(int xIn, int yIn, int widthIn, int heightIn,
+                  float backgroundRadiusPx)
+    {
+        x      = xIn;
+        y      = yIn;
+        width  = (widthIn  > 0) ? widthIn  : 0;
+        height = (heightIn > 0) ? heightIn : 0;
+
+        const std::size_t n = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+        t.assign(n, 1.0f);
+        radiusPx.assign(n, backgroundRadiusPx);
+    }
+
+    std::ptrdiff_t index(int px, int py) const
+    {
+        return static_cast<std::ptrdiff_t>(py - y) * width + (px - x);
+    }
+
+    bool contains(int px, int py) const
+    {
+        return px >= x && px < x + width && py >= y && py < y + height;
+    }
+
+    // residualT/residualRadiusPx are flattenPixelToSoA()'s out-params for
+    // pixel (px, py); write them straight through, no reinterpretation here.
+    void setPixel(int px, int py, float residualT, float residualRadiusPx)
+    {
+        const std::ptrdiff_t i = index(px, py);
+        t[static_cast<std::size_t>(i)]        = residualT;
+        radiusPx[static_cast<std::size_t>(i)] = residualRadiusPx;
+    }
+
+    // Two buffers (T + residual radius), K-INDEPENDENT like the arrival
+    // plane — `height` here is the WINDOW height (band height + 2*padY,
+    // clipped to the output box; see residualWindowYRange()), not the band
+    // height alone, because that is what allocate() above actually sizes.
+    // One place so bandBudgetBytes() and the code cannot drift apart, same
+    // convention as BucketPlanes::bytesForBand().
+    static std::size_t bytesForWindow(int width, int height)
+    {
+        const std::size_t w = (width  > 0) ? static_cast<std::size_t>(width)  : 0;
+        const std::size_t h = (height > 0) ? static_cast<std::size_t>(height) : 0;
+        return 2 * w * h * sizeof(float);
+    }
+};
+
+// ---------------------------------------------------------------------------
+// buildResidualWindow — the ONE place that sizes and fills a ResidualWindow,
+// shared by production (DeepCDefocus.cpp's computeBand()) and the doctest
+// suite, so the output-box-vs-srcBox decision this exists to get right is
+// tested through the exact code that runs it, not a re-implementation of it.
+//
+// `outputBox*` bounds the window (see ResidualWindow, residualWindowYRange);
+// `srcBox*` bounds the ROWS AND COLUMNS actually visited — deepEngine() has
+// no data outside it, same as the pre-existing fetch loop.
+//
+// `fetchRow(y)` runs once per visited row (production: deepEngine() into a
+// DeepPlane, returning false on abort/failure); `flattenPixel(x, y, t, r)`
+// runs once per visited column of that row and returns false for a pixel
+// with nothing to flatten (production: fillSampleRecords()'s own false),
+// leaving `t`/`r` at the caller-seeded "no sample" defaults it was called
+// with. Returns false the moment either callback does.
+// ---------------------------------------------------------------------------
+template <typename FetchRowFn, typename FlattenPixelFn>
+bool buildResidualWindow(ResidualWindow& window,
+                         int outputBoxX0, int outputBoxX1,
+                         int outputBoxY0, int outputBoxY1,
+                         int srcBoxX0, int srcBoxX1,
+                         int srcBoxY0, int srcBoxY1,
+                         int bandY0, int bandY1, int padY,
+                         float backgroundRadiusPx,
+                         FetchRowFn&&     fetchRow,
+                         FlattenPixelFn&& flattenPixel)
+{
+    int wy0 = 0, wy1 = 0;
+    residualWindowYRange(outputBoxY0, outputBoxY1, bandY0, bandY1, padY, wy0, wy1);
+    window.allocate(outputBoxX0, wy0, outputBoxX1 - outputBoxX0, wy1 - wy0,
+                    backgroundRadiusPx);
+
+    const int fy0raw = bandY0 - padY;
+    const int fy1raw = bandY1 + padY;
+    const int fy0 = (srcBoxY0 > fy0raw) ? srcBoxY0 : fy0raw;
+    const int fy1 = (srcBoxY1 < fy1raw) ? srcBoxY1 : fy1raw;
+
+    for (int py = fy0; py < fy1; ++py) {
+        if (!fetchRow(py))
+            return false;
+        for (int px = srcBoxX0; px < srcBoxX1; ++px) {
+            float t = 1.0f;
+            float r = backgroundRadiusPx;
+            if (!flattenPixel(px, py, t, r))
+                continue;
+            if (window.contains(px, py))
+                window.setPixel(px, py, t, r);
+        }
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // HoldoutSoA — per-dest-pixel boundary transmittance LUT.
 //
 // The scatter takes `vis` from here and multiplies it into every deposit
@@ -3118,6 +3288,19 @@ void resolveBandCPU(const ScatterParams& params,
 //                                counted by bytesForBand() already, listed
 //                                here only so the combined figure is legible
 //                                as a sum of named terms
+// + 2*W*(B+2*padY)*4             the M4 virtual-background window (T +
+//                                residual radius planes) — K-independent like
+//                                arrival, but sized to the WINDOW height
+//                                (B+2*padY, clipped to the output box; see
+//                                residualWindowYRange()), not B alone. One
+//                                BandJob per CONCURRENT band owns it exactly
+//                                like the bucket planes (ResidualWindow), so
+//                                it is COUNTED here, not named as an
+//                                omission. Measured 8.72 MB per 4096x64 band
+//                                at the max_radius=100 / edge_softness=1
+//                                defaults (padY=101): windowHeight=64+2*101
+//                                =266, 2*4096*266*4 = 8,716,288 B — nearly
+//                                4x the arrival plane at the same defaults.
 // + (K+1)*W*B*4                  the holdout transmittance LUT, when a holdout
 //                                is connected — NOT counted by
 //                                bytesForBand(), measured 17.0 MB per 4096x64
@@ -3135,12 +3318,19 @@ void resolveBandCPU(const ScatterParams& params,
 // alpha<=0 samples the flatten drops and under-counts volumetric splits; both
 // errors are small against the 100-vs-61 resident margin already folded in.
 //
+// `padY` defaults to 0 (no virtual-background window reach) so a caller that
+// does not pass it still gets a term — 2*W*B*4 at padY=0, the window's
+// UNPADDED size — never a silent zero; the real caller (frameSetup()) always
+// passes its actual padY.
+//
 // WHAT THE KNOB ACTUALLY DELIVERS.  The figure omits the band's own output
 // planes (W*B*(C+2)*4 — 2.95 MB against a 485 MB band at 4K/K=64) and the
 // flatten/scatter scratch, which is sized per PIXEL (one pixel's sample
 // count), not per band.  Measured against peak RSS, on the two configurations
 // where maxInFlight actually binds (it binds only once several bands are in
-// flight at once):
+// flight at once) — BEFORE the virtual-background window term above existed,
+// so both promised figures are now undercounts by that term's size at their
+// band geometry:
 //
 //   3840x2160, 20 spp, K=64, limit 1.5 GB: cap 3, promised 1.456 GiB,
 //     process peak +1.489 GiB, of which +0.270 GiB is the same scene with
@@ -3158,10 +3348,12 @@ constexpr double kSoAResidentBytesPerFragment = 100.0;
 
 inline double bandBudgetBytes(int bucketCount, int channelCount, int width,
                               int height, bool holdoutConnected,
-                              double fragmentEstimate)
+                              double fragmentEstimate, int padY = 0)
 {
     double bytes = static_cast<double>(
         BucketPlanes::bytesForBand(bucketCount, channelCount, width, height));
+    bytes += static_cast<double>(
+        ResidualWindow::bytesForWindow(width, height + 2 * padY));
     if (holdoutConnected && bucketCount > 0 && width > 0 && height > 0) {
         bytes += static_cast<double>(bucketCount + 1)
                * static_cast<double>(width)
@@ -3188,6 +3380,11 @@ inline double bandBudgetBytes(int bucketCount, int channelCount, int width,
 // `fragmentsForBandHeight(b)` returns the caller's WORST-CASE per-band
 // fragment estimate at band height b (worst over the frame's bands, since the
 // cap is one number for all of them).
+//
+// `padY` (default 0) is the virtual-background window's reach beyond the
+// band on each side — see bandBudgetBytes(). Trailing and defaulted so every
+// existing caller stays source-compatible; the real caller passes its actual
+// padY.
 // ---------------------------------------------------------------------------
 struct BandPlan {
     int bandHeight  = 1;
@@ -3203,7 +3400,8 @@ inline BandPlan planBands(double memoryLimitBytes,
                           int    width,
                           bool   holdoutConnected,
                           int    initialBandHeight,
-                          FragmentsForBandHeight&& fragmentsForBandHeight)
+                          FragmentsForBandHeight&& fragmentsForBandHeight,
+                          int    padY = 0)
 {
     BandPlan plan;
     if (frameHeight <= 0 || width <= 0) {
@@ -3220,11 +3418,11 @@ inline BandPlan planBands(double memoryLimitBytes,
         b = frameHeight;
 
     double bytes = bandBudgetBytes(bucketCount, channelCount, width, b,
-                                   holdoutConnected, fragmentsForBandHeight(b));
+                                   holdoutConnected, fragmentsForBandHeight(b), padY);
     while (b > 1 && bytes > memoryLimitBytes) {
         b = (b / 2 > 0) ? b / 2 : 1;
         bytes = bandBudgetBytes(bucketCount, channelCount, width, b,
-                                holdoutConnected, fragmentsForBandHeight(b));
+                                holdoutConnected, fragmentsForBandHeight(b), padY);
     }
 
     plan.bandHeight = b;

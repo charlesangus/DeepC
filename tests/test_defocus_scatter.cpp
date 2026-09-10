@@ -1925,6 +1925,152 @@ TEST_CASE("an empty pixel leaves residualT at 1 and does not touch residualRadiu
     }
 }
 
+TEST_CASE("residualWindowYRange clips the virtual-background window to the OUTPUT box, "
+          "never to anything narrower")
+{
+    SUBCASE("interior band: padY reach stays well inside the output box")
+    {
+        int y0 = -1, y1 = -1;
+        residualWindowYRange(/*outputBoxY0*/ 0, /*outputBoxY1*/ 1000,
+                             /*bandY0*/ 400, /*bandY1*/ 460, /*padY*/ 10, y0, y1);
+        CHECK(y0 == 390);
+        CHECK(y1 == 470);
+    }
+
+    SUBCASE("band at the TOP of the output box: padY reach is clamped up to the box, "
+            "not down to some tighter bound (the srcBox-clip bug this replaces)")
+    {
+        int y0 = -1, y1 = -1;
+        residualWindowYRange(0, 1000, /*bandY0*/ 0, /*bandY1*/ 60, /*padY*/ 25, y0, y1);
+        CHECK(y0 == 0);      // clamped to the output box top, not -25
+        CHECK(y1 == 85);
+    }
+
+    SUBCASE("band at the BOTTOM of the output box")
+    {
+        int y0 = -1, y1 = -1;
+        residualWindowYRange(0, 1000, /*bandY0*/ 940, /*bandY1*/ 1000, /*padY*/ 25, y0, y1);
+        CHECK(y0 == 915);
+        CHECK(y1 == 1000);   // clamped to the output box bottom, not 1025
+    }
+
+    SUBCASE("a band exactly spanning the whole box, with padY: both ends clamp")
+    {
+        int y0 = -1, y1 = -1;
+        residualWindowYRange(0, 100, 0, 100, 50, y0, y1);
+        CHECK(y0 == 0);
+        CHECK(y1 == 100);
+    }
+}
+
+// A hand-built stand-in for computeBand()'s fetch loop, over a deep source
+// whose bbox (`srcBox`) is DELIBERATELY TIGHTER than the output box on every
+// side -- the "bloom over emptiness" case this fix exists for.  Every
+// (x, y) inside `srcBox` reports a real, non-default flatten result; nothing
+// outside it is ever visited, exactly like deepEngine() has no data there.
+struct TightSrcBoxRig {
+    int outX0 = 0, outX1 = 40, outY0 = 0, outY1 = 40;   // the output box
+    int srcX0 = 10, srcX1 = 30, srcY0 = 10, srcY1 = 30;  // strictly inside it
+    int bandY0 = 0, bandY1 = 40, padY = 5;
+    float backgroundRadiusPx = 8.0f;
+
+    // The value every SRCBOX pixel's flatten reports -- picked far from both
+    // defaults (T=1, radius=backgroundRadiusPx) so a cell that accidentally
+    // keeps its default is unambiguous.
+    static constexpr float kSampleT      = 0.25f;
+    static constexpr float kSampleRadius = 2.5f;
+
+    ResidualWindow run() const
+    {
+        ResidualWindow window;
+        std::size_t rowFetches = 0;
+        const bool ok = buildResidualWindow(
+            window, outX0, outX1, outY0, outY1, srcX0, srcX1, srcY0, srcY1,
+            bandY0, bandY1, padY, backgroundRadiusPx,
+            [&](int) -> bool { ++rowFetches; return true; },
+            [&](int, int, float& t, float& r) -> bool {
+                t = kSampleT;
+                r = kSampleRadius;
+                return true;
+            });
+        REQUIRE(ok);
+        CHECK(rowFetches == static_cast<std::size_t>(srcY1 - srcY0));
+        return window;
+    }
+};
+
+TEST_CASE("buildResidualWindow: fetch-window pixels inside the output box but outside a "
+          "TIGHT srcBox stay at T=1 and the background radius; srcBox pixels take the "
+          "flatten's values")
+{
+    const TightSrcBoxRig rig;
+    const ResidualWindow window = rig.run();
+
+    // The window itself spans the OUTPUT box (clipped by padY at the edges,
+    // which don't bind here), not srcBox -- this is the size half of the fix.
+    CHECK(window.x == rig.outX0);
+    CHECK(window.width == rig.outX1 - rig.outX0);
+    REQUIRE(window.contains(rig.outX0, rig.outY0));
+    REQUIRE(window.contains(rig.outX1 - 1, rig.outY1 - 1));
+
+    int outsideChecked = 0, insideChecked = 0;
+    for (int y = window.y; y < window.y + window.height; ++y) {
+        for (int x = window.x; x < window.x + window.width; ++x) {
+            const bool insideSrcBox = x >= rig.srcX0 && x < rig.srcX1
+                                    && y >= rig.srcY0 && y < rig.srcY1;
+            const std::ptrdiff_t i = window.index(x, y);
+            if (insideSrcBox) {
+                CHECK(window.t[static_cast<std::size_t>(i)] == TightSrcBoxRig::kSampleT);
+                CHECK(window.radiusPx[static_cast<std::size_t>(i)]
+                      == TightSrcBoxRig::kSampleRadius);
+                ++insideChecked;
+            } else {
+                // THE ASSERTION THIS TASK EXISTS FOR: every fetch-window pixel
+                // inside the output box but outside srcBox is a fully open
+                // virtual background, not a hard edge.
+                CHECK(window.t[static_cast<std::size_t>(i)] == 1.0f);
+                CHECK(window.radiusPx[static_cast<std::size_t>(i)] == rig.backgroundRadiusPx);
+                ++outsideChecked;
+            }
+        }
+    }
+    CHECK(insideChecked == (rig.srcX1 - rig.srcX0) * (rig.srcY1 - rig.srcY0));
+    CHECK(outsideChecked > 0);   // the srcBox-outside region is non-empty in this rig
+}
+
+TEST_CASE("resolveBackgroundRadiusPx: 0 (and anything <= 0, and NaN) is auto -- the CoC at "
+          "depthMax(); a manual value above rMax clamps to rMax")
+{
+    const float cocAtDepthMax = 6.0f;
+    const float rMax          = 20.0f;
+
+    SUBCASE("0 is auto")
+    {
+        CHECK(resolveBackgroundRadiusPx(0.0f, cocAtDepthMax, rMax) == cocAtDepthMax);
+    }
+    SUBCASE("negative is auto, same convention as clampf's NaN handling")
+    {
+        CHECK(resolveBackgroundRadiusPx(-3.0f, cocAtDepthMax, rMax) == cocAtDepthMax);
+    }
+    SUBCASE("NaN is auto")
+    {
+        CHECK(resolveBackgroundRadiusPx(std::numeric_limits<float>::quiet_NaN(),
+                                        cocAtDepthMax, rMax) == cocAtDepthMax);
+    }
+    SUBCASE("a manual value within range passes through unchanged")
+    {
+        CHECK(resolveBackgroundRadiusPx(12.0f, cocAtDepthMax, rMax) == 12.0f);
+    }
+    SUBCASE("a manual value above rMax clamps to rMax")
+    {
+        CHECK(resolveBackgroundRadiusPx(500.0f, cocAtDepthMax, rMax) == rMax);
+    }
+    SUBCASE("a manual value exactly at rMax is unchanged")
+    {
+        CHECK(resolveBackgroundRadiusPx(rMax, cocAtDepthMax, rMax) == rMax);
+    }
+}
+
 TEST_CASE("size-0 flatten is a DeepToImage `over` of the pixel, at every K and both pre_merge "
           "states")
 {
@@ -6745,17 +6891,23 @@ bool neverAborted() { return false; }
 
 } // namespace
 
-TEST_CASE("bandBudgetBytes: bucket planes + holdout LUT + resident SoA, "
-          "against hand-derived byte counts")
+TEST_CASE("bandBudgetBytes: bucket planes + virtual-background window + holdout LUT + "
+          "resident SoA, against hand-derived byte counts")
 {
-    // The 4K default band: K=16, C=4, 4096x64.
+    // The 4K default band: K=16, C=4, 4096x64, padY defaulted to 0 (the
+    // window is then just W*B, unpadded -- see bytesForWindow).
     // Planes: K*W*B*(C+3)*4 + W*B*4 (the K-independent arrival plane)
     //       = 117,440,512 + 1,048,576 = 118,489,088 (~118MB).
+    // Residual window: 2*W*B*4 (T + radius planes, K-independent) at padY=0
+    //       = 2*4096*64*4 = 2,097,152.
+    // Total = 118,489,088 + 2,097,152 = 120,586,240.
     CHECK(bandBudgetBytes(16, 4, 4096, 64, false, 0.0)
-          == doctest::Approx(118489088.0));
+          == doctest::Approx(120586240.0));
 
     // The holdout term, which bytesForBand() does NOT carry: (K+1)*W*B*4 =
-    // 17*4096*64*4 = 17,825,792, i.e. 17.0 MB per 4096x64 band at K=16.
+    // 17*4096*64*4 = 17,825,792, i.e. 17.0 MB per 4096x64 band at K=16.  The
+    // residual window term is identical on both sides of the subtraction
+    // (it does not depend on holdoutConnected), so it cancels out here.
     CHECK(bandBudgetBytes(16, 4, 4096, 64, true, 0.0)
           - bandBudgetBytes(16, 4, 4096, 64, false, 0.0)
           == doctest::Approx(17825792.0));
@@ -6763,22 +6915,56 @@ TEST_CASE("bandBudgetBytes: bucket planes + holdout LUT + resident SoA, "
     // The SoA term, at the ~100 B/fragment RESIDENT figure (61 B logical).
     CHECK(kSoAResidentBytesPerFragment == doctest::Approx(100.0));
     CHECK(bandBudgetBytes(16, 4, 4096, 64, false, 1.0e6)
-          == doctest::Approx(118489088.0 + 1.0e8));
+          == doctest::Approx(120586240.0 + 1.0e8));
 
     // K=128 planes: 128*4096*64*7*4 + 4096*64*4 = 939,524,096 + 1,048,576
-    // = 940,572,672 (~940MB).
+    // = 940,572,672 (~940MB); residual window is K-INDEPENDENT, so it adds
+    // the same 2,097,152 as the K=16 case above: 942,669,824.
     CHECK(bandBudgetBytes(128, 4, 4096, 64, false, 0.0)
-          == doctest::Approx(940572672.0));
+          == doctest::Approx(942669824.0));
 
-    // Degenerate bucket count still leaves W*H nonzero, and arrival is
-    // K-INDEPENDENT -- it does not zero out with bucketCount, only with width
-    // or height (see bytesForBand).  The holdout term does gate on
-    // bucketCount > 0, so at K=0 only the arrival plane's 4096*64*4 =
-    // 1,048,576 bytes survive.
+    // Degenerate bucket count still leaves W*H nonzero: arrival AND the
+    // residual window are both K-INDEPENDENT -- neither zeroes out with
+    // bucketCount, only with width or height (see bytesForBand,
+    // bytesForWindow).  The holdout term does gate on bucketCount > 0, so at
+    // K=0 only arrival (4096*64*4 = 1,048,576) and the residual window
+    // (2*4096*64*4 = 2,097,152) survive: 3,145,728.
     CHECK(bandBudgetBytes(0, 4, 4096, 64, true, 0.0)
-          == doctest::Approx(1048576.0));
+          == doctest::Approx(3145728.0));
+
+    // Negative width sanitises to 0 in BOTH bytesForBand and bytesForWindow
+    // (same "> 0 else 0" convention), so only the SoA term survives here,
+    // unchanged from before the residual window existed.
     CHECK(bandBudgetBytes(16, 4, -1, 64, true, 100.0)
           == doctest::Approx(100.0 * kSoAResidentBytesPerFragment));
+}
+
+TEST_CASE("bandBudgetBytes: the virtual-background window scales with padY, "
+          "not with K, against an independently hand-derived byte count")
+{
+    // max_radius=100 / edge_softness=1 defaults give padY=101 (see
+    // DeepCDefocus.cpp's frameSetup(): ceil((100 + 0.5) * 1.0)).  At the 4K
+    // default band (W=4096, B=64) the window height is B + 2*padY = 266, so
+    // the term is 2*W*266*4 = 8,716,288 B (~8.72 MB) -- nearly 4x the
+    // arrival plane's 1,048,576 B at the same geometry, and unaffected by K.
+    const double planes16 = bandBudgetBytes(16, 4, 4096, 64, false, 0.0, 0);   // padY=0
+    const double withPad16 = bandBudgetBytes(16, 4, 4096, 64, false, 0.0, 101);
+    const double withPad128 = bandBudgetBytes(128, 4, 4096, 64, false, 0.0, 101);
+
+    CHECK(withPad16 - planes16 == doctest::Approx(8716288.0 - 2097152.0));
+    CHECK(withPad16 - bandBudgetBytes(16, 4, 4096, 64, false, 0.0)
+          == doctest::Approx(8716288.0 - 2097152.0));
+
+    // K-INDEPENDENT: the padY=101 window term is identical at K=16 and
+    // K=128 (only the bucket-plane term differs between them).
+    CHECK(withPad128 - withPad16
+          == doctest::Approx(bandBudgetBytes(128, 4, 4096, 64, false, 0.0)
+                            - bandBudgetBytes(16, 4, 4096, 64, false, 0.0)));
+
+    // ResidualWindow::bytesForWindow() directly, at the window's own size
+    // (not the band's) -- the independent hand derivation for the 8.72 MB
+    // figure quoted in bandBudgetBytes()'s doc block.
+    CHECK(ResidualWindow::bytesForWindow(4096, 64 + 2 * 101) == 8716288u);
 }
 
 TEST_CASE("planBands: shrink-to-fit floors at 1 row and the concurrent cap "
@@ -6786,19 +6972,24 @@ TEST_CASE("planBands: shrink-to-fit floors at 1 row and the concurrent cap "
 {
     const auto noFragments = [](int) { return 0.0; };
 
-    // Fits outright: 4GB limit, 2160 rows, K=16 C=4 W=4096, B=256.
-    // bytes(256) = 16*4096*256*7*4 = 469,762,048; cap = floor(4GiB / that)
-    // = 9; bandCount = ceil(2160/256) = 9.
+    // Fits outright: 4GB limit, 2160 rows, K=16 C=4 W=4096, B=256, padY
+    // defaulted to 0. bytes(256) = 16*4096*256*7*4 + 4096*256*4 (arrival) +
+    // 2*4096*256*4 (residual window at padY=0) = 469,762,048 + 4,194,304 +
+    // 8,388,608 = 482,344,960; cap = floor(4GiB / that) = 8 (4,294,967,296 /
+    // 482,344,960 = 8.905); bandCount = ceil(2160/256) = 9.  Before the
+    // residual window existed this cap read 9 — it is one slot lower now
+    // because the window is a real per-band cost the old figure omitted.
     {
         const BandPlan p = planBands(4.0 * 1024.0 * 1024.0 * 1024.0,
                                      2160, 16, 4, 4096, false, 256, noFragments);
         CHECK(p.bandHeight == 256);
         CHECK(p.bandCount == 9);
-        CHECK(p.maxInFlight == 9);
+        CHECK(p.maxInFlight == 8);
     }
 
-    // Shrinks: 64MB limit. bytes(256)=470MB > 64MB -> 128 (235MB) -> 64
-    // (117MB) -> 32 (58.7MB fits). One band in flight (64MB/58.7MB < 2).
+    // Shrinks: 64MB limit. bytes(256)=482,344,960 > 64MB -> 128 (241,172,480)
+    // -> 64 (120,586,240) -> 32 (60,293,120, fits: 64MB=67,108,864). One band
+    // in flight (67,108,864/60,293,120 < 2).
     {
         const BandPlan p = planBands(64.0 * 1024.0 * 1024.0,
                                      2160, 16, 4, 4096, false, 256, noFragments);
@@ -6809,7 +7000,8 @@ TEST_CASE("planBands: shrink-to-fit floors at 1 row and the concurrent cap "
 
     // Even ONE row over the limit: bandHeight floors at 1 and the cap floors
     // at 1 — the band is over budget and still gets its slot (the design's
-    // "never deadlock at 0").  bytes(1) = 16*4096*7*4 = 1,835,008 > 1MB.
+    // "never deadlock at 0").  bytes(1) = 16*4096*7*4 + 4096*4 + 2*4096*4
+    // = 1,835,008 + 16,384 + 32,768 = 1,884,160 > 1MB.
     {
         const BandPlan p = planBands(1.0 * 1024.0 * 1024.0,
                                      2160, 16, 4, 4096, false, 256, noFragments);
@@ -6820,7 +7012,9 @@ TEST_CASE("planBands: shrink-to-fit floors at 1 row and the concurrent cap "
 
     // The fragment estimator participates in the shrink: 20 spp over a 4096
     // window at 100 B resident dominates the planes and forces the halving.
-    // bytes(256) with fragments = 470MB + 4096*256*20*100 = 2.56GB.
+    // bytes(64) with fragments = 120,586,240 + 4096*64*20*100 (524,288,000)
+    // = 644,874,240 <= 1GB (1,073,741,824); bytes(128) with fragments =
+    // 241,172,480 + 1,048,576,000 = 1,289,748,480 > 1GB, so 128 does not fit.
     {
         const auto sppFragments = [](int b) {
             return 4096.0 * static_cast<double>(b) * 20.0;
@@ -6832,9 +7026,27 @@ TEST_CASE("planBands: shrink-to-fit floors at 1 row and the concurrent cap "
                                             2160, 16, 4, 4096, false, 256,
                                             noFragments);
         CHECK(withFrag.bandHeight < without.bandHeight);
-        CHECK(withFrag.bandHeight == 64);   // 64: 117MB + 524MB = 642MB <= 1GB
+        CHECK(withFrag.bandHeight == 64);
         CHECK(withFrag.maxInFlight == 1);
         CHECK(without.bandHeight == 256);
+    }
+
+    // padY is a real, load-bearing shrink input, not a cosmetic default: at
+    // a 32MB limit, padY=0 (the default used everywhere else in this test)
+    // fits at bandHeight=16 (bytes(16,padY=0)=30,146,560), but the frame's
+    // actual padY=101 (max_radius=100, edge_softness=1 defaults) needs the
+    // WINDOW height 16+2*101=218, not 16, and bytes(16,padY=101)=36,765,696
+    // exceeds the 32MB (33,554,432) limit -- so it shrinks one step further,
+    // to bandHeight=8 (bytes(8,padY=101)=21,692,416, fits).
+    {
+        const double limit = 32.0 * 1024.0 * 1024.0;
+        const BandPlan noPad = planBands(limit, 2160, 16, 4, 4096, false, 256,
+                                         noFragments, /*padY*/ 0);
+        const BandPlan pad101 = planBands(limit, 2160, 16, 4, 4096, false, 256,
+                                          noFragments, /*padY*/ 101);
+        CHECK(noPad.bandHeight == 16);
+        CHECK(pad101.bandHeight == 8);
+        CHECK(pad101.bandHeight < noPad.bandHeight);
     }
 
     // The cap never exceeds the band count (extra slots could never be
