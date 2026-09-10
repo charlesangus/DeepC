@@ -1,6 +1,6 @@
 ---
 title: DeepCDefocus — deep-input, flat-output defocus node
-status: running
+status: ready
 current: null
 pm_heartbeat: 2026-09-06T16:07:30-04:00
 ship: pr-per-milestone
@@ -14,6 +14,9 @@ whose key differentiator vs. pgBokeh/Bokeh is depth-correct holdouts that stay p
 depth, after scatter. v1 (Milestone 1) ships plain anti-aliased circular bokeh, CPU-only,
 proving correctness end to end; v2 (Milestone 2) adds aberrations via a separate kernel-field
 node; v3 (Milestone 3) adds a CUDA backend behind the seams v1/v2 leave in place.
+Milestone 4 — planned after v1 shipped — retires v1's "honest coverage dip" contract and
+renormalizes scatter coverage, fixing the focal-line opacity bands and FG-silhouette halos that
+Bokeh/pgBokeh don't exhibit; it runs before M2 because it rewrites the kernel step M2 builds on.
 
 # Context and constraints
 
@@ -97,6 +100,10 @@ node; v3 (Milestone 3) adds a CUDA backend behind the seams v1/v2 leave in place
 | M1 | DeepCDefocus v1 (CPU, round bokeh, holdout)          | done   | [M1-deepcdefocus-v1.md](PLAN/MILESTONES/M1-deepcdefocus-v1.md) |
 | M2 | DeepCKernelField + aberrations                       | todo   | [M2-kernelfield-aberrations.md](PLAN/MILESTONES/M2-kernelfield-aberrations.md) |
 | M3 | CUDA backend                                         | todo   | [M3-cuda-backend.md](PLAN/MILESTONES/M3-cuda-backend.md) |
+| M4 | Coverage renormalization (bands + halos)             | todo   | [M4-coverage-renormalization.md](PLAN/MILESTONES/M4-coverage-renormalization.md) |
+
+> **Execution order is M4 → M2 → M3**, not board order. M4 fixes a measured defect in shipped
+> behaviour and rewrites the kernel step M2's kernel-field node builds on (see M4's `## Decisions`).
 
 # Open questions
 
