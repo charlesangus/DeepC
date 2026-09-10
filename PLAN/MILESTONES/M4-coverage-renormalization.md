@@ -643,3 +643,39 @@ including.
   worst cell +91.008% -> +104.788%). Both were already FAIL pre-M4 and belong to M1.P3.T23, not to
   this milestone, but the movement is real and is recorded here so it is not mistaken for noise
   later.
+
+- 2026-09-10 — **M4.P2.T1 decided: candidate B** (blend between the existing hyperbolic grid nodes),
+  not A (re-cut to odd integer diameters). Decided from pixels, per the milestone's own rule. A
+  makes the bracket 1.0 px wide in radius, and a linear blend across a bracket that wide is not the
+  disc at the midpoint — it is a bright core with a dim annulus. Worst per-tap error against the
+  exact disc family: **A 0.9983 of peak, B 0.0850, shipped 0.2255** — A is worse than what it
+  replaces; B is 2.6x better. Rendered, an isolated highlight at d=2 px comes back from A as a 1-px
+  hotspot with 0.12 neighbours where truth is a 3-px disc with 0.50 neighbours, peak 0.568 against
+  a true 0.299. B is pixel-identical to the shipped disc family. A also re-cuts the global grid,
+  invalidating the measured rationale block at `DeepCDefocusKernel.h:156-250`, the
+  `scatterKernelBin` contract, the LUT `rMin` contract and the memory-budget notes; blast radius in
+  the unit suite is A 9 cases / 1474 assertions vs B 5 / 9. Evidence:
+  `~/deepc-baselines/M4-P2T1/` (`png/01_bokeh_shape.png`, `png/04_kernel_error_vs_exact_disc.png`,
+  `measurements.txt`, 21 raw EXRs).
+- 2026-09-10 — **User ruling: the blend is pushed to the deposit sites**, not carried in a
+  `KernelView`. Deposit sites take two weighted rasterisations; `KernelView` keeps its immutable,
+  shareable-across-render-threads contract, no caller audit is needed, and the CUDA seam stays
+  clean because the deposits are already the `DEEPC_HD` kernel functions. Cost: a second raster
+  pass near integer sizes, which P3.T5 profiles.
+- 2026-09-10 — **User ruling: the `edge_softness > 1` delta inconsistency is deferred**, pinned not
+  fixed. At `edge_softness` 4.0 (the knob's documented max) LUT entry 0 is not a delta — its centre
+  row is `[0, 0.1199, 0.2397, 0.1199, 0]` — and at 2.0 the r=0.5 node is `[0.1301, 0.3903, 0.1301]`,
+  while the scatter's sharp fast path deposits a literal single pixel regardless. Today the mismatch
+  is hidden; a minimum-diameter clamp would turn it into a visible C0 discontinuity at `d = 1`.
+  Pin current behaviour, keep the clamp at a fixed 0.5 px, handle it in a follow-up. **This is a
+  known visible defect for anyone raising `edge_softness` above 1** — it needs a tracked follow-up
+  outside this milestone, not just this note.
+- 2026-09-10 — **`scatterKernelBin` must be RE-DERIVED under blending, not "tightened" as P2.T3's
+  brief says.** Two radii rasterise identically only with the same bracket **and** the same `f`, so
+  the int bin can no longer be `kernelGridIndex()`. It also feeds the claim/frontier machinery at
+  `DeepCDefocusScatter.cpp:490`, not only the flatten absorb — both call sites need the new
+  predicate. P2.T1 used `lrint(r * 4096)` for the bake-off only, to keep the comparison
+  unconfounded; that is not a proposed answer.
+- 2026-09-10 — **"Exact at the nodes" has no bite as a gate.** Every scheme is trivially exact at
+  its own nodes. P2.T1 measured it as exactness against the exact disc rasterisation at that radius
+  (shipped 2.980e-08, A 2.446e-09, B 2.980e-08). P2.T2 must state it that way or it gates nothing.
