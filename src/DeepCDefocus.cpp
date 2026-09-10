@@ -1718,9 +1718,11 @@ private:
                                        job.samples))
                     continue;
 
+                // Residual T / residual radius are not consumed on this call
+                // path yet (virtual-background scatter is a separate change).
                 deepc::flattenPixelToSoA(*job.fp, *job.buckets, x, y,
                                          job.samples, job.flattenScratch,
-                                         job.soa, nullptr);
+                                         job.soa, nullptr, nullptr, nullptr);
             }
         }
         if (fetchMs) {

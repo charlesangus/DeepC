@@ -774,14 +774,18 @@ double planeSum(const PodBuffer<float>& p, int k, std::ptrdiff_t pixelCount)
     return s;
 }
 
-// Flatten one hand-built pixel into a fresh SoA.
+// Flatten one hand-built pixel into a fresh SoA.  `residualT`/`residualRadiusPx`
+// default to nullptr so the many callers that don't care about the residual
+// need no change; pass real pointers to inspect it.
 SampleSoA flattenOnePixel(const FlattenParams& fp, const DepthBuckets& b,
-                          int x, int y, std::vector<SampleRecord> samples)
+                          int x, int y, std::vector<SampleRecord> samples,
+                          float* residualT = nullptr, float* residualRadiusPx = nullptr)
 {
     SampleSoA soa;
     soa.begin(fp.channelCount, fp.groups);
     FlattenScratch scratch;
-    flattenPixelToSoA(fp, b, x, y, samples, scratch, soa, nullptr);
+    flattenPixelToSoA(fp, b, x, y, samples, scratch, soa, nullptr,
+                      residualT, residualRadiusPx);
     return soa;
 }
 
@@ -1355,7 +1359,7 @@ TEST_CASE("channel counts: the flatten sizes its staging from the SoA, the scatt
         for (int c = 0; c < soaChan; ++c)
             ch[static_cast<std::size_t>(c)] = 0.9f * (0.1f + 0.13f * c);
         std::vector<SampleRecord> v{makeSample(bk.boundary(6), bk.boundary(9), 0.9f, ch)};
-        flattenPixelToSoA(fp, bk, 0, 0, v, scratch, soa, nullptr);
+        flattenPixelToSoA(fp, bk, 0, 0, v, scratch, soa, nullptr, nullptr, nullptr);
         REQUIRE(soa.fragmentCount() >= 1u);
 
         // Every channel the SoA declared carries its scaled value; the parts'
@@ -1630,6 +1634,297 @@ CocParams makeManualRig(float sizePx, float focusDistance)
 
 } // namespace
 
+// ===========================================================================
+// The gather-share partition — flattenPixelToSoA's `share`/residual out-params
+// ===========================================================================
+
+namespace {
+
+// Sums one freshly-flattened pixel's arrivalShare.  Every case below flattens
+// exactly one pixel into a fresh SoA, so every appended fragment belongs to it
+// and this is the pixel's whole "shares" side of the partition.
+double shareSum(const SampleSoA& soa)
+{
+    double sum = 0.0;
+    for (std::size_t i = 0; i < soa.fragmentCount(); ++i)
+        sum += static_cast<double>(soa.arrivalShare[i]);
+    return sum;
+}
+
+} // namespace
+
+TEST_CASE("the gather-share partition sums to exactly 1: shares + residual, fuzzed over "
+          "point, volumetric-split, pre-merged and same-pixel-collision stacks")
+{
+    // THE MUTATION-TESTED PROPERTY.  Every SUBCASE below fuzzes a different
+    // stack SHAPE; all of them must hold shareSum(soa) + residualT == 1 to
+    // 1e-6, because the partition (share = t * alpha; t *= (1 - alpha)) makes
+    // it true by construction regardless of how downstream pre-merge or the
+    // deposit-collision merge later regroup the staged fragments — both only
+    // ever SUM shares, never rescale them.
+    Lcg rng(0xA57Eu);
+    const CocParams    p  = makeStandardRig(10.0f);
+    const DepthBuckets bk = makeStandardBuckets(p, 16);
+
+    SUBCASE("point stacks")
+    {
+        for (int iter = 0; iter < 400; ++iter) {
+            CAPTURE(iter);
+            const bool preMerge = (rng.unit() < 0.5f);
+            const FlattenParams fp = makeFlattenParams(p, 1, preMerge, rng.range(0.0f, 2.0f));
+            const int n = rng.intRange(1, 8);
+            std::vector<SampleRecord> v;
+            for (int s = 0; s < n; ++s) {
+                const float z = rng.range(1.05f, 99.0f);
+                const float a = rng.range(0.001f, 1.0f);
+                v.push_back(makeSample(z, z, a, {a * 0.5f}));
+            }
+            float residualT = -1.0f, residualR = -1.0f;
+            const SampleSoA soa = flattenOnePixel(fp, bk, 0, 0, v, &residualT, &residualR);
+            REQUIRE(residualT >= 0.0f);
+            CHECK(std::fabs(shareSum(soa) + static_cast<double>(residualT) - 1.0) <= 1e-6);
+        }
+    }
+
+    SUBCASE("volumetric-split stacks")
+    {
+        for (int iter = 0; iter < 400; ++iter) {
+            CAPTURE(iter);
+            const bool preMerge = (rng.unit() < 0.5f);
+            const FlattenParams fp = makeFlattenParams(p, 1, preMerge, rng.range(0.0f, 2.0f));
+            const int n = rng.intRange(1, 4);
+            std::vector<SampleRecord> v;
+            float z = rng.range(1.05f, 30.0f);
+            for (int s = 0; s < n; ++s) {
+                const float thickness = rng.range(2.0f, 25.0f);
+                const float a = rng.range(0.001f, 1.0f);
+                v.push_back(makeSample(z, z + thickness, a, {a * 0.5f}));
+                z += thickness + rng.range(0.5f, 8.0f);
+                if (z > 95.0f)
+                    z = rng.range(1.05f, 10.0f);
+            }
+            float residualT = -1.0f, residualR = -1.0f;
+            const SampleSoA soa = flattenOnePixel(fp, bk, 0, 0, v, &residualT, &residualR);
+            REQUIRE(residualT >= 0.0f);
+            CHECK(std::fabs(shareSum(soa) + static_cast<double>(residualT) - 1.0) <= 1e-6);
+        }
+    }
+
+    SUBCASE("pre-merged stacks")
+    {
+        // A generous tolerance and a tight depth cluster inside one WIDE
+        // (K=4) containing bucket: pre-merge groups these aggressively.  The
+        // per-iteration merge is not REQUIRE'd (a straddling cluster could
+        // occasionally spill across a bucket boundary); instead the whole
+        // subcase is checked to have exercised the merge at least once, so
+        // the fuzz is not vacuous.
+        const DepthBuckets bk4 = makeBoundedDeltaCocBuckets(p, 1.0f, 100.0f, 4);
+        bool mergedAtLeastOnce = false;
+        for (int iter = 0; iter < 400; ++iter) {
+            CAPTURE(iter);
+            const FlattenParams fp = makeFlattenParams(p, 1, /*preMerge*/ true, /*tol*/ 5.0f);
+            const int n = rng.intRange(2, 6);
+            std::vector<SampleRecord> v;
+            const float base = rng.range(1.05f, 90.0f);
+            for (int s = 0; s < n; ++s) {
+                const float z = base + rng.range(0.0f, 0.2f) * static_cast<float>(s);
+                const float a = rng.range(0.001f, 1.0f);
+                v.push_back(makeSample(z, z, a, {a * 0.5f}));
+            }
+            float residualT = -1.0f, residualR = -1.0f;
+            const SampleSoA soa = flattenOnePixel(fp, bk4, 0, 0, v, &residualT, &residualR);
+            REQUIRE(residualT >= 0.0f);
+            if (soa.fragmentCount() < static_cast<std::size_t>(n))
+                mergedAtLeastOnce = true;
+            CHECK(std::fabs(shareSum(soa) + static_cast<double>(residualT) - 1.0) <= 1e-6);
+        }
+        CHECK(mergedAtLeastOnce);
+    }
+
+    SUBCASE("same-pixel-collision stacks")
+    {
+        // Straddle the focal plane at K=8 (the standard rig's front/back
+        // containing-bucket boundary sits exactly there, per the pinned
+        // two-sample collision case elsewhere in this file): every sample
+        // stays on the sharp path (one scatterKernelBin for all of them,
+        // unconditionally -- see scatterKernelBin) while landing in
+        // DIFFERENT containing buckets, which is what the deposit-collision
+        // merge (not pre-merge) exists for.
+        const DepthBuckets bk8 = makeBoundedDeltaCocBuckets(p, 1.0f, 100.0f, 8);
+        bool collidedAtLeastOnce = false;
+        for (int iter = 0; iter < 400; ++iter) {
+            CAPTURE(iter);
+            const bool preMerge = (rng.unit() < 0.5f);
+            const FlattenParams fp = makeFlattenParams(p, 1, preMerge);
+            const int n = rng.intRange(2, 4);
+            std::vector<SampleRecord> v;
+            for (int s = 0; s < n; ++s) {
+                const bool  front = (s % 2 == 0);
+                const float z     = front ? rng.range(8.5f, 9.9f) : rng.range(10.1f, 11.5f);
+                const float a     = rng.range(0.001f, 1.0f);
+                REQUIRE(radiusPixels(p, z) < kSharpRadiusPx);
+                v.push_back(makeSample(z, z, a, {a * 0.5f}));
+            }
+            float residualT = -1.0f, residualR = -1.0f;
+            const SampleSoA soa = flattenOnePixel(fp, bk8, 0, 0, v, &residualT, &residualR);
+            REQUIRE(residualT >= 0.0f);
+            if (soa.fragmentCount() < static_cast<std::size_t>(n))
+                collidedAtLeastOnce = true;
+            CHECK(std::fabs(shareSum(soa) + static_cast<double>(residualT) - 1.0) <= 1e-6);
+        }
+        CHECK(collidedAtLeastOnce);
+    }
+}
+
+TEST_CASE("the deposit-collision merge sums shares, never attenuates them: bit-identical to "
+          "the raw staged shares it merged")
+{
+    // Exactly the "two-sample collision" rig used elsewhere in this file: z =
+    // 9.063 / 11.039 at K = 8 straddle the front/back containing-bucket
+    // boundary (the focal plane) while sharing the sharp-path kernel, so the
+    // deposit-collision merge folds them into ONE emitted fragment -- NOT
+    // pre-merge, whose own grouping predicate requires the SAME containing
+    // bucket, which these do not share.
+    const CocParams    p  = makeStandardRig(10.0f);
+    const DepthBuckets bk = makeBoundedDeltaCocBuckets(p, 1.0f, 100.0f, 8);
+
+    for (bool preMerge : {false, true}) {
+        CAPTURE(preMerge);
+        const FlattenParams fp = makeFlattenParams(p, 1, preMerge);
+        std::vector<SampleRecord> v{makeSample(9.063f, 9.063f, 0.4667f, {0.4667f * 0.25f}),
+                                    makeSample(11.039f, 11.039f, 0.5899f, {0.5899f * 0.75f})};
+        SampleSoA soa;
+        soa.begin(1, fp.groups);
+        FlattenScratch scratch;
+        flattenPixelToSoA(fp, bk, 4, 4, v, scratch, soa, nullptr, nullptr, nullptr);
+
+        REQUIRE(scratch.stagedCount == 2u);      // two fragments were staged...
+        REQUIRE(soa.fragmentCount() == 1u);      // ...and the collision merged them
+
+        // The raw, pre-collision shares -- computed once in the flatten's
+        // step 4, before either merge ever runs -- summed the exact same way
+        // (a single float addition) the collision merge itself sums them.
+        const float expected = scratch.staged[0].share + scratch.staged[1].share;
+        CHECK(soa.arrivalShare[0] == expected);   // bit-exact, not approximate
+    }
+}
+
+TEST_CASE("residualRadiusPx is the deepest STAGED fragment's own radius, for point, "
+          "volumetric-split and pre-merged stacks")
+{
+    const CocParams    p  = makeStandardRig(10.0f);
+    const DepthBuckets bk = makeStandardBuckets(p, 16);
+
+    SUBCASE("point stack")
+    {
+        const FlattenParams fp = makeFlattenParams(p, 1, /*preMerge*/ false);
+        std::vector<SampleRecord> v{makeSample(3.0f, 3.0f, 0.4f, {0.2f}),
+                                    makeSample(20.0f, 20.0f, 0.6f, {0.3f})};   // deepest
+        SampleSoA soa;
+        soa.begin(1, fp.groups);
+        FlattenScratch scratch;
+        float residualT = -1.0f, residualR = -1.0f;
+        flattenPixelToSoA(fp, bk, 0, 0, v, scratch, soa, nullptr, &residualT, &residualR);
+
+        REQUIRE(scratch.stagedCount >= 1u);
+        CHECK(residualR == scratch.staged[scratch.stagedCount - 1].radius);
+
+        // Independent cross-check, in double precision, off the design
+        // reference's own CoC formula -- this stack never merges, so the
+        // deepest sample's own radius at its own mid-depth is unambiguous.
+        CHECK(residualR == doctest::Approx(refRadiusPx(p, 20.0)).epsilon(1e-4));
+    }
+
+    SUBCASE("volumetric-split stack")
+    {
+        const FlattenParams fp = makeFlattenParams(p, 1, /*preMerge*/ false);
+        // One span crossing several bucket boundaries, well inside [1, 100].
+        // The standard rig's back range [10, 100] is a SINGLE bucket (15
+        // front / 1 back at focus 10), so the span must sit in front of
+        // focus to actually cross more than one.
+        std::vector<SampleRecord> v{makeSample(2.0f, 8.0f, 0.7f, {0.35f})};
+        SampleSoA soa;
+        soa.begin(1, fp.groups);
+        FlattenScratch scratch;
+        float residualT = -1.0f, residualR = -1.0f;
+        flattenPixelToSoA(fp, bk, 0, 0, v, scratch, soa, nullptr, &residualT, &residualR);
+
+        REQUIRE(scratch.stagedCount >= 2u);      // the span really did split
+        CHECK(residualR == scratch.staged[scratch.stagedCount - 1].radius);
+
+        // Cross-check: the tail part's own [zFront, zBack] via the
+        // independent span-split reference, at its own mid-depth.
+        const std::vector<RefPart> parts = refSplitSpan(bk, 2.0, 8.0, 0.7);
+        REQUIRE(!parts.empty());
+        const RefPart& tail = parts.back();
+        const double   tailMid = tail.zFront + 0.5 * (tail.zBack - tail.zFront);
+        CHECK(residualR == doctest::Approx(refRadiusPx(p, tailMid)).epsilon(1e-4));
+    }
+
+    SUBCASE("pre-merged stack")
+    {
+        // Two point samples close enough in depth to land in one (wide,
+        // K = 4) containing bucket and inside a generous merge tolerance, so
+        // pre-merge folds them into ONE emitted fragment -- whose own radius
+        // (the union midpoint) residualRadiusPx must NOT report.
+        const DepthBuckets bk4 = makeBoundedDeltaCocBuckets(p, 1.0f, 100.0f, 4);
+        const FlattenParams fp = makeFlattenParams(p, 1, /*preMerge*/ true, /*tol*/ 5.0f);
+        std::vector<SampleRecord> v{makeSample(50.0f, 50.0f, 0.4f, {0.2f}),
+                                    makeSample(50.3f, 50.3f, 0.5f, {0.25f})};  // deepest
+        SampleSoA soa;
+        soa.begin(1, fp.groups);
+        FlattenScratch scratch;
+        float residualT = -1.0f, residualR = -1.0f;
+        flattenPixelToSoA(fp, bk4, 0, 0, v, scratch, soa, nullptr, &residualT, &residualR);
+
+        REQUIRE(scratch.stagedCount == 2u);      // both staged separately...
+        REQUIRE(soa.fragmentCount() == 1u);      // ...then pre-merged into one
+
+        CHECK(residualR == scratch.staged[scratch.stagedCount - 1].radius);
+        // And it is NOT the merged fragment's own (union-midpoint) radius --
+        // getting that distinction right is the reason this is captured
+        // before pre-merge runs, not read back off the SoA.
+        CHECK(residualR != soa.radius[0]);
+        CHECK(residualR == doctest::Approx(refRadiusPx(p, 50.3)).epsilon(1e-4));
+    }
+}
+
+TEST_CASE("an empty pixel leaves residualT at 1 and does not touch residualRadiusPx")
+{
+    const CocParams    p  = makeStandardRig(10.0f);
+    const DepthBuckets bk = makeStandardBuckets(p, 16);
+    const FlattenParams fp = makeFlattenParams(p, 1, /*preMerge*/ true);
+
+    SUBCASE("no samples at all")
+    {
+        SampleSoA soa;
+        soa.begin(1, fp.groups);
+        FlattenScratch scratch;
+        std::vector<SampleRecord> v;
+        float residualT = -1.0f, residualR = 12345.0f;
+        flattenPixelToSoA(fp, bk, 0, 0, v, scratch, soa, nullptr, &residualT, &residualR);
+        CHECK(residualT == 1.0f);
+        CHECK(residualR == 12345.0f);            // untouched, per the caller's own default
+        CHECK(soa.fragmentCount() == 0u);
+    }
+
+    SUBCASE("samples present but every one fails the zero-alpha early-out")
+    {
+        // Same convention as the empty-list case: nothing was staged, so
+        // there is no "deepest sample" to take a residual radius from.
+        SampleSoA soa;
+        soa.begin(1, fp.groups);
+        FlattenScratch scratch;
+        std::vector<SampleRecord> v{makeSample(5.0f, 5.0f, 0.0f, {0.0f}),
+                                    makeSample(9.0f, 9.0f, 0.0f, {0.0f})};
+        float residualT = -1.0f, residualR = 12345.0f;
+        flattenPixelToSoA(fp, bk, 0, 0, v, scratch, soa, nullptr, &residualT, &residualR);
+        CHECK(residualT == 1.0f);
+        CHECK(residualR == 12345.0f);
+        CHECK(soa.fragmentCount() == 0u);
+    }
+}
+
 TEST_CASE("size-0 flatten is a DeepToImage `over` of the pixel, at every K and both pre_merge "
           "states")
 {
@@ -1669,7 +1964,7 @@ TEST_CASE("size-0 flatten is a DeepToImage `over` of the pixel, at every K and b
                         z += rng.range(0.05f, 6.0f);    // strictly disjoint depths
                     }
                     std::vector<SampleRecord> copy = v;
-                    flattenPixelToSoA(fp, bk, i % W, i / W, copy, scratch, soa, nullptr);
+                    flattenPixelToSoA(fp, bk, i % W, i / W, copy, scratch, soa, nullptr, nullptr, nullptr);
                 }
 
                 Band band;
@@ -1933,7 +2228,7 @@ TEST_CASE("the area claim is per PIXEL and survives a degenerate bucket set")
                             v.push_back(makeSample(z, z, a, {a * 0.5f}));
                             z += rng.range(0.05f, 6.0f);
                         }
-                        flattenPixelToSoA(fp, bk, x, y, v, scratch, soa, nullptr);
+                        flattenPixelToSoA(fp, bk, x, y, v, scratch, soa, nullptr, nullptr, nullptr);
                     }
 
                 int lastX = -12345, lastY = -12345, firsts = 0;
@@ -1983,11 +2278,11 @@ TEST_CASE("the area claim is per PIXEL and survives a degenerate bucket set")
             std::vector<SampleRecord> v = pixel;
             SampleSoA throwaway;
             throwaway.begin(1, fp.groups);
-            flattenPixelToSoA(fp, bkA, 0, 0, v, shared, throwaway, nullptr);
+            flattenPixelToSoA(fp, bkA, 0, 0, v, shared, throwaway, nullptr, nullptr, nullptr);
         }
         {
             std::vector<SampleRecord> v = pixel;
-            flattenPixelToSoA(fp, bkB, 0, 0, v, shared, reused, nullptr);
+            flattenPixelToSoA(fp, bkB, 0, 0, v, shared, reused, nullptr, nullptr, nullptr);
         }
 
         const SampleSoA fresh = flattenOnePixel(fp, bkB, 0, 0, pixel);
@@ -2045,7 +2340,7 @@ TEST_CASE("the area claim is per PIXEL and survives a degenerate bucket set")
         scratch.runAlpha.assign(static_cast<std::size_t>(bk.bucketCount()), 1.0f);
         for (int i = 0; i < 3; ++i) {
             std::vector<SampleRecord> v{makeSample(5.0f, 5.0f, 0.5f, {0.5f})};
-            flattenPixelToSoA(fp, bk, i, 0, v, scratch, soa, nullptr);
+            flattenPixelToSoA(fp, bk, i, 0, v, scratch, soa, nullptr, nullptr, nullptr);
         }
         REQUIRE(soa.fragmentCount() == 3u);
         for (std::size_t i = 0; i < soa.fragmentCount(); ++i) {
@@ -2157,7 +2452,7 @@ TEST_CASE("size-0 flatten is a DeepToImage `over` for MIXED point+volumetric con
                 z += th + rng.range(0.05f, 6.0f);      // strictly disjoint
             }
             std::vector<SampleRecord> copy = v;
-            flattenPixelToSoA(fp, bk, i % W, i / W, copy, scratch, soa, nullptr);
+            flattenPixelToSoA(fp, bk, i % W, i / W, copy, scratch, soa, nullptr, nullptr, nullptr);
         }
 
         HoldoutSampleSoA hs;
@@ -2329,7 +2624,7 @@ TEST_CASE("two opaque layers at one pixel read exactly 1.000000 at any alpha pai
             for (int x = 0; x < W; ++x) {
                 std::vector<SampleRecord> v{makeSample(4.0f, 4.0f, a1, {a1}),
                                             makeSample(9.0f, 9.0f, a2, {a2})};
-                flattenPixelToSoA(fp, bk, x, y, v, scratch, soa, nullptr);
+                flattenPixelToSoA(fp, bk, x, y, v, scratch, soa, nullptr, nullptr, nullptr);
             }
 
         Band band;
@@ -2388,7 +2683,7 @@ TEST_CASE("the bucket alphas MULTIPLY to the pixel's flatten: 1 - prod(1 - A_k)"
         soa.begin(C, fp.groups);
         FlattenScratch scratch;
         std::vector<SampleRecord> copy = v;
-        flattenPixelToSoA(fp, bk, 2, 2, copy, scratch, soa, nullptr);
+        flattenPixelToSoA(fp, bk, 2, 2, copy, scratch, soa, nullptr, nullptr, nullptr);
 
         Band band;
         band.K = K; band.C = C; band.W = W; band.H = H;
@@ -2451,7 +2746,7 @@ TEST_CASE("the monotone bucket frontier: a trailing deposit never lands in FRONT
                 v.push_back(makeSample(z, z + th, a, {a * 0.5f}));
                 z += th + rng.range(0.02f, 4.0f);
             }
-            flattenPixelToSoA(fp, bk, i % W, i / W, v, scratch, soa, nullptr);
+            flattenPixelToSoA(fp, bk, i % W, i / W, v, scratch, soa, nullptr, nullptr, nullptr);
         }
 
         int frontier = -1, lastX = -1, lastY = -1;
@@ -2684,7 +2979,7 @@ TEST_CASE("claimNewArea() RECORDS the claiming kernel, not just the stamp")
     soa.begin(1, fp.groups);
     std::vector<SampleRecord> v{makeSample(zA, zA, 0.5f,  {0.5f}),
                                 makeSample(zB, zB, 0.25f, {0.25f})};
-    flattenPixelToSoA(fp, bk, 0, 0, v, scratch, soa, nullptr);
+    flattenPixelToSoA(fp, bk, 0, 0, v, scratch, soa, nullptr, nullptr, nullptr);
 
     REQUIRE(soa.fragmentCount() == 2u);
     REQUIRE(soa.bucketIndex0[0] == soa.bucketIndex0[1]);      // they do collide
@@ -2859,7 +3154,7 @@ TEST_CASE("within one bucket at one pixel, every area claim belongs to ONE kerne
                             v.push_back(makeSample(z, z + th, a, {a * 0.5f}));
                             z += th + rng.range(0.05f, 5.0f);
                         }
-                        flattenPixelToSoA(fp, bk, x, y, v, scratch, soa, nullptr);
+                        flattenPixelToSoA(fp, bk, x, y, v, scratch, soa, nullptr, nullptr, nullptr);
                     }
 
                 // (source pixel, bucket, kernel bin) of every head, read off the
@@ -3154,7 +3449,7 @@ TEST_CASE("no step at the sharp threshold: a 0-2px ramp over a two-layer flat fi
             for (int x = -pad; x < W + pad; ++x) {
                 std::vector<SampleRecord> v{makeSample(z1, z1, a1, {a1 * 0.5f}),
                                             makeSample(z2, z2, a2, {a2 * 0.5f})};
-                flattenPixelToSoA(fp, bk, x, y, v, scratch, soa, nullptr);
+                flattenPixelToSoA(fp, bk, x, y, v, scratch, soa, nullptr, nullptr, nullptr);
             }
 
         Band band;
@@ -3219,7 +3514,7 @@ TEST_CASE("the collision merge does not carry a fragment across a holdout bracke
             for (int x = 0; x < W; ++x) {
                 std::vector<SampleRecord> v{makeSample(20.0f, 20.0f, 0.5f, {0.5f}),
                                             makeSample(40.0f, 40.0f, 0.5f, {0.5f})};
-                flattenPixelToSoA(fp, bk, x, y, v, scratch, soa, nullptr);
+                flattenPixelToSoA(fp, bk, x, y, v, scratch, soa, nullptr, nullptr, nullptr);
             }
 
         const std::size_t perPixel =
@@ -3287,7 +3582,7 @@ TEST_CASE("pre_merge does not carry a fragment across a holdout bracket either")
             for (int x = 0; x < W; ++x) {
                 std::vector<SampleRecord> v{makeSample(za, za, 0.5f, {0.5f}),
                                             makeSample(zb, zb, 0.5f, {0.5f})};
-                flattenPixelToSoA(fp, bk, x, y, v, scratch, soa, nullptr);
+                flattenPixelToSoA(fp, bk, x, y, v, scratch, soa, nullptr, nullptr, nullptr);
             }
         CHECK(soa.fragmentCount() == static_cast<std::size_t>(W * H) * 2u);
 
@@ -3338,7 +3633,7 @@ TEST_CASE("scatterBandCPU's deposits match an independent rasterisation, plane f
         for (const Src& s : srcs) {
             std::vector<SampleRecord> v{makeSample(s.zf, s.zb, s.a,
                 {s.a * 0.2f, s.a * 0.55f, s.a * 0.9f})};
-            flattenPixelToSoA(fp, bk, s.x, s.y, v, scratch, soa, nullptr);
+            flattenPixelToSoA(fp, bk, s.x, s.y, v, scratch, soa, nullptr, nullptr, nullptr);
         }
         REQUIRE(soa.fragmentCount() >= 7);
 
@@ -3363,7 +3658,7 @@ TEST_CASE("scatterBandCPU's deposits match an independent rasterisation, plane f
         soa.begin(C, fp.groups);
         FlattenScratch scratch;
         std::vector<SampleRecord> v{makeSample(3.0f, 3.0f, 0.8f, {0.16f, 0.44f, 0.72f})};
-        flattenPixelToSoA(fp, bk, 120, 214, v, scratch, soa, nullptr);
+        flattenPixelToSoA(fp, bk, 120, 214, v, scratch, soa, nullptr, nullptr, nullptr);
 
         ScatterParams sp = makeScatterParams(W, H);
         sp.bandX = 100;
@@ -3412,9 +3707,9 @@ TEST_CASE("scatterBandCPU's deposits match an independent rasterisation, plane f
             std::vector<SampleRecord> v{makeSample(2.0f + 0.5f * i, 2.0f + 0.5f * i, a,
                                                     {a * 0.2f, a * 0.5f, a * 0.9f})};
             std::vector<SampleRecord> v2 = v;
-            flattenPixelToSoA(fp, bk, 10 + 3 * i, 12, v, scratch, whole, nullptr);
+            flattenPixelToSoA(fp, bk, 10 + 3 * i, 12, v, scratch, whole, nullptr, nullptr, nullptr);
             flattenPixelToSoA(fp, bk, 10 + 3 * i, 12, v2, scratch,
-                              (i < 3) ? partA : partB, nullptr);
+                              (i < 3) ? partA : partB, nullptr, nullptr, nullptr);
         }
 
         const ScatterParams sp = makeScatterParams(W, H);
@@ -3462,8 +3757,8 @@ TEST_CASE("the deposit invariant: new area + co-located area == the fragments' o
     FlattenScratch scratch;
     std::vector<SampleRecord> a{makeSample(3.0f, 3.0f, 0.8f, {0.4f})};     // point: 2 deposits
     std::vector<SampleRecord> b{makeSample(2.2f, 4.5f, 0.6f, {0.3f})};     // span: N parts
-    flattenPixelToSoA(fp, bk, 60, 60, a, scratch, soa, nullptr);
-    flattenPixelToSoA(fp, bk, 58, 62, b, scratch, soa, nullptr);
+    flattenPixelToSoA(fp, bk, 60, 60, a, scratch, soa, nullptr, nullptr, nullptr);
+    flattenPixelToSoA(fp, bk, 58, 62, b, scratch, soa, nullptr, nullptr, nullptr);
 
     // Independently: one unit of area per deposit that carries alpha.
     double expectedArea = 0.0;
@@ -3600,7 +3895,7 @@ TEST_CASE("flat field identities: opaque field is alpha 1 to 1e-6 (NOT exactly 1
                 for (int x = -pad; x < W + pad; ++x) {
                     std::vector<SampleRecord> v{makeSample(depth, depth, alpha,
                         {alpha * unpremult[0], alpha * unpremult[1], alpha * unpremult[2]})};
-                    flattenPixelToSoA(fp, bk, x, y, v, scratch, soa, nullptr);
+                    flattenPixelToSoA(fp, bk, x, y, v, scratch, soa, nullptr, nullptr, nullptr);
                 }
 
             {
@@ -3656,7 +3951,7 @@ TEST_CASE("flat opaque field ACROSS buckets: the bucket composite holds alpha 1"
         for (int x = -pad; x < W + pad; ++x) {
             std::vector<SampleRecord> v{makeSample(((x + y) & 1) ? dA : dB,
                                                     ((x + y) & 1) ? dA : dB, 1.0f, {0.8f})};
-            flattenPixelToSoA(fp, bk, x, y, v, scratch, soa, nullptr);
+            flattenPixelToSoA(fp, bk, x, y, v, scratch, soa, nullptr, nullptr, nullptr);
         }
 
     double minAlpha = 2.0, maxAlpha = -1.0, ratio = 0.0;
@@ -5299,7 +5594,7 @@ TEST_CASE("volumetric fog through the REAL path: a pixel whose alpha clamps keep
                 const float a  = rng.range(0.05f, 0.99f);
                 v.push_back(makeSample(zf, zb, a, {a * unpremult}));
             }
-            flattenPixelToSoA(fp, bk, x, y, v, scratch, soa, nullptr);
+            flattenPixelToSoA(fp, bk, x, y, v, scratch, soa, nullptr, nullptr, nullptr);
         }
     REQUIRE(soa.fragmentCount() > 1000u);
 
@@ -5918,10 +6213,10 @@ TEST_CASE("the holdout multiplies into the scatter's deposits, per DESTINATION p
         FlattenScratch scratch;
         // Behind the card (z=6 > 4): its disc straddles the card's edge.
         std::vector<SampleRecord> behind{makeSample(6.0f, 6.0f, 0.9f, {0.45f})};
-        flattenPixelToSoA(fp, bk, W / 2, H / 2, behind, scratch, soa, nullptr);
+        flattenPixelToSoA(fp, bk, W / 2, H / 2, behind, scratch, soa, nullptr, nullptr, nullptr);
         // In front of the card (z=3): unattenuated.
         std::vector<SampleRecord> front{makeSample(3.0f, 3.0f, 0.8f, {0.4f})};
-        flattenPixelToSoA(fp, bk, W / 2 - 4, H / 2, front, scratch, soa, nullptr);
+        flattenPixelToSoA(fp, bk, W / 2 - 4, H / 2, front, scratch, soa, nullptr, nullptr, nullptr);
 
         const ScatterParams sp = makeScatterParams(W, H);
         BucketPlanes planes;

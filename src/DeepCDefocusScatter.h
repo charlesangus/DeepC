@@ -576,6 +576,14 @@ struct FragmentRecord {
     BucketDeposit deposit  = {};        // the two bucket deposits (see contract)
     FragmentKind  kind     = FragmentKind::Point;
 
+    // This fragment's slice of the source pixel's unit area, in front-to-back
+    // arrival order: share = t * alpha, t *= (1 - alpha), so a pixel's shares
+    // plus its final residual t sum to exactly 1.  Set once in the flatten's
+    // staging loop and carried through pre-merge (summed) and the deposit-
+    // collision merge (summed) UNCHANGED — collision attenuation rescales
+    // `alpha`/`deposit`, never this, or the partition stops summing to 1.
+    float         share    = 0.0f;
+
     // NOTE: there is deliberately NO precomputed holdout boundary pair here.
     // The holdout LUT has its OWN boundary set, not the ΔCoC bucket
     // boundaries, and the scatter derives the pair from `depth` in O(1) closed
@@ -643,6 +651,11 @@ struct SampleSoA {
     PodBuffer<float>        radius;
     PodBuffer<float>        depth;
     PodBuffer<float>        alpha;
+
+    // FragmentRecord::share, carried straight through — the gather-share
+    // partition's per-fragment claim on its source pixel's unit area.  Not
+    // touched by the deposit-collision attenuation (see FragmentRecord).
+    PodBuffer<float>        arrivalShare;
 
     PodBuffer<std::int32_t> bucketIndex0;
     PodBuffer<std::int32_t> bucketIndex1;
@@ -851,6 +864,10 @@ struct FlattenScratch {
         // group head's flag) — see the pre-merge block in the .cpp for why
         // that is both loss-free and duplication-free.
         bool               coverageHead = true;
+        // See FragmentRecord::share.  Set once per staged fragment (or per
+        // split part folded into one, when consecutive parts share a
+        // bucket); a pre-merge group's share is the SUM of its members'.
+        float              share  = 0.0f;
         std::vector<float> channels;
     };
 
@@ -955,6 +972,17 @@ void applyProxyScale(CocParams& p, float proxyScale);
 //   scratch     : per-thread scratch, see FlattenScratch
 //   out         : SoA to append to; call out.begin() once per band first
 //   stats       : optional, may be nullptr
+//   residualT   : optional, may be nullptr.  Set to the pixel's virtual
+//                 background claim — the running transmittance left after
+//                 every fragment's share has been taken, front-to-back, so
+//                 shares + *residualT sum to exactly 1.  A pixel with no
+//                 samples (or none surviving the zero-alpha early-out) sets
+//                 *residualT to 1 and leaves residualRadiusPx untouched.
+//   residualRadiusPx : optional, may be nullptr.  Set to the deepest staged
+//                 fragment's scatter radius (the last one staged front-to-
+//                 back, after any split/merge inside step 4) — the radius the
+//                 residual scatters at.  Left untouched when there is no
+//                 staged fragment to take it from.
 //
 // Pipeline, in order:
 //   1. sanitise depths and alphas (NaN/inf depths would make std::sort's
@@ -965,8 +993,11 @@ void applyProxyScale(CocParams& p, float proxyScale);
 //   3. deepc::tidyOverlapping()  — ALWAYS ON, correctness-required
 //   4. per sample: point  -> bucketOf() + fragmentDeposit()
 //                  volume -> splitSpanAtBoundaries() + bucketOfContaining()
-//      (the COMPOSITION CONTRACT: one if/else, never both)
-//   5. optional pre-merge of adjacent fragments within merge_tolerance
+//      (the COMPOSITION CONTRACT: one if/else, never both); this step also
+//      partitions the pixel's unit area front-to-back (share = t * alpha,
+//      t *= (1 - alpha)) into FlattenScratch::Staged::share
+//   5. optional pre-merge of adjacent fragments within merge_tolerance (sums
+//      member shares)
 //   6. append to the SoA
 // ---------------------------------------------------------------------------
 void flattenPixelToSoA(const FlattenParams& params,
@@ -976,7 +1007,9 @@ void flattenPixelToSoA(const FlattenParams& params,
                        std::vector<SampleRecord>& samples,
                        FlattenScratch&      scratch,
                        SampleSoA&           out,
-                       FlattenStats*        stats);
+                       FlattenStats*        stats,
+                       float*               residualT,
+                       float*               residualRadiusPx);
 
 // ---------------------------------------------------------------------------
 // checkCompositionContract — runtime audit of the SoA's contract invariants
