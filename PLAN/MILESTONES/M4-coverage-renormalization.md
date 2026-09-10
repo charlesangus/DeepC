@@ -134,7 +134,7 @@ behaviour, with no legacy knob. The "honest dip" contract is retired; docs, vali
     headless Nuke from its recorded path.
   - size: M
 
-- [ ] M4.P1.T2 — Gather-share partition and residual radius in the flatten
+- [x] M4.P1.T2 — Gather-share partition and residual radius in the flatten
   - files: `src/DeepCDefocusScatter.cpp` (`flattenPixelToSoA()` spans 574–1058; its front-to-back
     staging loop, "4. sample -> fragments (THE COMPOSITION CONTRACT)", is 648–797),
     `src/DeepCDefocusScatter.h` (`FlattenScratch::Staged`, `FragmentRecord`, `SampleSoA`,
@@ -455,3 +455,15 @@ the guard, not the node. `cpuMedian` is the stabler comparand.
 (i) — it peaks at 4.58 GB. Every harness invocation in this milestone needs
 `scripts/hostguard.sh --mem-gb 6`, which the milestone's later `verify` steps should be read as
 including.
+
+- 2026-09-10 — **`residualRadiusPx` is captured before pre-merge, not after** (M4.P1.T2). The
+  milestone's "after any split/merge" was read as "after step 4's same-bucket split-merge", not
+  "after the pre-merge/collision regrouping": a pre-merge group's radius is a union midpoint, so
+  taking it would report a radius shallower than the pixel's genuinely deepest surface. The
+  residual scatters at the CoC of the deepest surface actually present, so the pre-regroup
+  staged radius is the right one. The two differ by at most `merge_tolerance` (0.25 px default)
+  when pre-merge is on, and not at all when it is off.
+- 2026-09-10 — **The `T = 1` / untouched-radius convention covers the `staged == 0` path too**
+  (M4.P1.T2), not just `samples.empty()`. A pixel whose every sample failed the zero-alpha
+  early-out has nothing to scatter and no deepest sample either; treating it differently from a
+  genuinely empty pixel would be arbitrary.
