@@ -178,7 +178,7 @@ behaviour, with no legacy knob. The "honest dip" contract is retired; docs, vali
     `share` within 1e-6.
   - size: M
 
-- [ ] M4.P1.T4 — Residual maps over the full fetch window, and the `background_depth` knob
+- [x] M4.P1.T4 — Residual maps over the full fetch window, and the `background_depth` knob
   - files: `src/DeepCDefocus.cpp` (`computeBand()`:1685, its fetch loop 1706–1725;
     `frameSetup()`:1215 with the measured-radius block at 1328–1340 and `rMin = 0` at ~1353),
     `src/DeepCDefocusScatter.h` (`ScatterParams`), `tests/test_defocus_scatter.cpp`
@@ -493,3 +493,19 @@ including.
   entropy, PIE or not. ASan+UBSan work and are the substitute. The race question this was raised
   for is answered structurally in any case: `BucketPlanes` is a `BandJob` member handed out under
   `_jobLock`, so it is exclusive per thread and no two threads can write the same plane element.
+
+- 2026-09-10 — **`buildResidualWindow()` is extracted as a shared driver, not just a container**
+  (M4.P1.T4). The doctest binary has no Nuke/NDK dependency, so a fetch loop living only in
+  `DeepCDefocus.cpp` is unreachable from any test — and the output-box-vs-`srcBox` bounds are the
+  one thing this task exists to get right. Production and the suite now run the same loop through
+  row-fetch/flatten callbacks. Wider than the brief's "if that needs a small extraction, do it",
+  and the right call.
+- 2026-09-10 — **`ResidualWindow` is counted in `bandBudgetBytes()`, not named as an omission**
+  (M4.P1.T4). It costs `2*W*(B + 2*padY)*4`, K-independent — 8.72 MB per band at the 4K/K=16
+  defaults with `max_radius=100`/`edge_softness=1.0` (`padY=101`), measured by running the
+  compiled function rather than by hand. `BandJob` owns it and comes from `_jobPool`, so it
+  scales with `maxInFlight` exactly as the bucket planes and the holdout LUT do; that lifetime is
+  what makes counting correct rather than naming it the way the band output planes are named.
+  Consequence: `maxInFlight` drops 9 → 8 in the doc block's 4 GB/2160-row case, and the two
+  peak-RSS measurements recorded there predate the term and are now undercounts by its size —
+  both noted in the block. `bandBudgetBytes()`/`planBands()` gained a trailing `padY` parameter.
