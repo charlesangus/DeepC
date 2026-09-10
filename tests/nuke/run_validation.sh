@@ -5,6 +5,7 @@
 #   tests/nuke/run_validation.sh                       # scenes (a)-(l), defaults
 #   tests/nuke/run_validation.sh --scenes g,h --k 64
 #   tests/nuke/run_validation.sh --pre-merge off
+#   tests/nuke/run_validation.sh --threads 2           # cap Nuke's core count
 #
 # Nothing here is tied to one machine: the Nuke executable and the plugin
 # directory come from the environment, with a search over the usual locations
@@ -61,7 +62,8 @@ fi
 if [[ -z "${pluginDir}" || ! -f "${pluginDir}/DeepCDefocus.so" ]]; then
     echo "error: no directory with DeepCDefocus.so found; set DEEPC_PLUGIN_DIR" >&2
     echo "       (build it with: cmake -S . -B build/local-17.0 -D Nuke_ROOT=<sdk> \\" >&2
-    echo "                       && cmake --build build/local-17.0 -j8)" >&2
+    echo "        && scripts/hostguard.sh -- cmake --build build/local-17.0)" >&2
+    echo "       -j8 on this 4-core host is what thrashes it; the guard caps the job." >&2
     exit 2
 fi
 
@@ -75,8 +77,20 @@ echo "plugin: ${pluginDir} (DeepCDefocus.so built $(date -r "${pluginDir}/DeepCD
 # ("--k needs a value"), and `--max-radius 40` the same. Fold every
 # `--option value` pair into `--option=value`, which it forwards intact.
 # Bare flags (--strict, --keep-renders, --list) pass through untouched.
+threads=""
 args=()
 while (( $# )); do
+    # --threads N is this wrapper's own option (Nuke's -m), not the runner's.
+    # Without it a validation run takes every core on the box.
+    if [[ "$1" == "--threads" ]]; then
+        threads="$2"
+        shift 2
+        continue
+    elif [[ "$1" == --threads=* ]]; then
+        threads="${1#--threads=}"
+        shift
+        continue
+    fi
     if [[ "$1" == --* && "$1" != *=* && $# -ge 2 && "$2" != -* ]]; then
         args+=("$1=$2")
         shift 2
@@ -86,6 +100,12 @@ while (( $# )); do
     fi
 done
 
+nukeArgs=()
+if [[ -n "${threads}" ]]; then
+    nukeArgs+=(-m "${threads}")
+fi
+
 NUKE_PATH="${pluginDir}${NUKE_PATH:+:${NUKE_PATH}}" \
-    exec "${nukeBin}" -t "${scriptDir}/run_validation.py" \
+    exec "${nukeBin}" ${nukeArgs[@]+"${nukeArgs[@]}"} \
+         -t "${scriptDir}/run_validation.py" \
          ${args[@]+"${args[@]}"}
