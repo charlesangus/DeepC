@@ -1968,6 +1968,66 @@ TEST_CASE("residualRadiusPx is the deepest STAGED fragment's own radius, for poi
     }
 }
 
+TEST_CASE("one split parent claims arrival at ONE radius: its parts pool their shares "
+          "onto the deepest part")
+{
+    // The bucket split is an artefact of K, so it must not move where a parent
+    // claims arrival -- otherwise the deficit division fires on a parent whose
+    // parts span a wide radius range.  Pooling is per PARENT, never per pixel:
+    // two genuinely different surfaces keep two claims at two radii, which is
+    // the signal the coverage fill exists to read.
+    const CocParams     p  = makeStandardRig(10.0f);
+    const DepthBuckets  bk = makeStandardBuckets(p, 16);
+    const FlattenParams fp = makeFlattenParams(p, 1, /*preMerge*/ false);
+
+    SUBCASE("a split parent's whole share sits on its deepest part")
+    {
+        float residualT = -1.0f, residualR = -1.0f;
+        const SampleSoA soa = flattenOnePixel(fp, bk, 0, 0,
+            {makeSample(2.0f, 8.0f, 0.7f, {0.35f})}, &residualT, &residualR);
+        const std::size_t n = soa.fragmentCount();
+        REQUIRE(n >= 2u);                        // the span really did split
+
+        std::size_t claimants = 0;
+        for (std::size_t i = 0; i < n; ++i)
+            if (soa.arrivalShare[i] != 0.0f) {
+                ++claimants;
+                CHECK(soa.radius[i] == residualR);
+                CHECK(soa.arrivalShare[i] == doctest::Approx(0.7).epsilon(1e-6));
+            }
+        CHECK(claimants == 1u);
+        CHECK(std::fabs(shareSum(soa) + static_cast<double>(residualT) - 1.0) <= 1e-6);
+    }
+
+    SUBCASE("a point sample behind it keeps its OWN claim")
+    {
+        float residualT = -1.0f, residualR = -1.0f;
+        const SampleSoA soa = flattenOnePixel(fp, bk, 0, 0,
+            {makeSample(2.0f, 8.0f, 0.7f, {0.35f}),
+             makeSample(20.0f, 20.0f, 0.6f, {0.3f})}, &residualT, &residualR);
+        const std::size_t n = soa.fragmentCount();
+        REQUIRE(n >= 3u);
+
+        std::size_t claimants = 0;
+        for (std::size_t i = 0; i < n; ++i)
+            if (soa.arrivalShare[i] != 0.0f)
+                ++claimants;
+        CHECK(claimants == 2u);                  // one per parent, not one per part
+        CHECK(soa.arrivalShare[n - 1] == doctest::Approx(0.3 * 0.6).epsilon(1e-6));
+        CHECK(std::fabs(shareSum(soa) + static_cast<double>(residualT) - 1.0) <= 1e-6);
+    }
+
+    SUBCASE("a lone point sample is bit-identical to the unpooled partition")
+    {
+        float residualT = -1.0f, residualR = -1.0f;
+        const SampleSoA soa = flattenOnePixel(fp, bk, 0, 0,
+            {makeSample(3.0f, 3.0f, 0.4f, {0.2f})}, &residualT, &residualR);
+        REQUIRE(soa.fragmentCount() == 1u);
+        CHECK(soa.arrivalShare[0] == 0.4f);      // share = 1 * alpha, exactly
+        CHECK(residualT == 0.6f);
+    }
+}
+
 TEST_CASE("an empty pixel leaves residualT at 1 and does not touch residualRadiusPx")
 {
     const CocParams    p  = makeStandardRig(10.0f);
@@ -4890,14 +4950,15 @@ TEST_CASE("volumetric parent reconstruction is EXACT in front of focus, at any p
             // headroom.  Before the fourth plane the same cases read -6.4% at 4
             // buckets, -24.8% at 8, -46.5% at 12 and -92.1% full range.
             //
-            // RED at every part count above 1, and the composite is not what
-            // moved: the coverage fill is.  In front of focus a parent's parts
-            // run large-to-small front to back (20.80 px down to 0.55 px at 15
-            // parts), the residual scatters at the DEEPEST part's radius, and
-            // arrival at the parent's own pixel therefore reads 0.40-0.61
-            // instead of 1 -- so the deficit division fires on content that has
-            // no deficit and adds +25%.  Composited without the division these
-            // same cases still read the parent exactly (measured 0.900000).
+            // THE COVERAGE FILL MUST NOT FIRE HERE, and only the share pooling
+            // in FragmentRecord::share keeps it from doing so.  In front of
+            // focus a parent's parts run large-to-small front to back (20.80 px
+            // down to 0.55 px at 15 parts); spread the parent's arrival claim
+            // across those radii and its own pixel reads 0.40-0.61 instead of
+            // 1, so the deficit division fires on content that has no deficit
+            // and adds +25%.  Pooled onto the deepest part the claim is the
+            // same unit kernel the surrounding window deposits, arrival is
+            // exactly 1, and the parent survives the division untouched.
             CHECK(std::fabs(bandAlphaSum(band) - alpha) <= 2e-06 * alpha);
             CHECK(std::fabs(bandColorSum(band, 0) - alpha * unpremult) <= 2e-06 * alpha);
 
@@ -4950,13 +5011,13 @@ TEST_CASE("behind focus the residue is structural: "
     // / 117.12 on the same cases, i.e. far worse.  These are the SHIPPED
     // composite's numbers.
     //
-    // RED at 2/3/4 parts, by +1.75 / +0.62 / +0.37 points.  The residue itself
-    // is unmoved -- composited without the coverage division these read
-    // 36.86 / 50.25 / 56.31 / 61.00 exactly.  Behind focus the parts run
-    // small-to-large front to back, so the residual's own (deepest, largest)
-    // radius spreads its claim WIDER than the parts that lost it and arrival
-    // dips below 1 only in a thin ring; the same mismatch that costs +25% in
-    // front of focus costs a fraction of a point here.
+    // THESE ARE COMPOSITE NUMBERS, so the coverage fill must leave them alone.
+    // Behind focus the parts run small-to-large front to back; spread the
+    // parent's arrival claim across those radii and it lands WIDER than the
+    // unit background kernel around it, arrival dips below 1 in a thin ring,
+    // and the residue reads +1.75 / +0.62 / +0.37 points high.  Pooled onto
+    // the deepest part (FragmentRecord::share) arrival is exactly 1 and the
+    // pins below are the composite's own.
     struct Case { int buckets; double partitionPct; };
     const Case cases[] = {{2, 36.86}, {3, 50.25}, {4, 56.31}, {8, 61.00}};
 

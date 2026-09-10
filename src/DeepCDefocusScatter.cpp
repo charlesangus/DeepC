@@ -771,6 +771,9 @@ void flattenPixelToSoA(const FlattenParams& params,
         // measured range.
         bool haveParentPart = false;
 
+        const std::size_t parentFirstStaged = scratch.stagedCount;
+        float             parentShare       = 0.0f;
+
         for (int p = 0; p < nParts; ++p) {
             const SpanSplitPart& part = parts[p];
 
@@ -791,6 +794,7 @@ void flattenPixelToSoA(const FlattenParams& params,
             // part's worth of transmittance left after it.
             const float partShare = arrivalT * part.alpha;
             arrivalT *= (1.0f - part.alpha);
+            parentShare += partShare;
 
             if (haveParentPart) {
                 FlattenScratch::Staged& prev = scratch.staged[scratch.stagedCount - 1];
@@ -839,6 +843,16 @@ void flattenPixelToSoA(const FlattenParams& params,
             st.radius = radiusPixels(params.coc, st.depth);
             st.bucket = partBucket;
             haveParentPart = true;
+        }
+
+        // The split is an artefact of K and must not move where the parent
+        // claims arrival: spread over the parts' own radii, a wide-to-narrow
+        // parent claims far less at its own pixel than the unit background
+        // kernel its neighbours deposit, and the deficit division fires on it.
+        if (scratch.stagedCount > parentFirstStaged) {
+            for (std::size_t k = parentFirstStaged; k + 1 < scratch.stagedCount; ++k)
+                scratch.staged[k].share = 0.0f;
+            scratch.staged[scratch.stagedCount - 1].share = parentShare;
         }
     }
 

@@ -582,6 +582,11 @@ struct FragmentRecord {
     // staging loop and carried through pre-merge (summed) and the deposit-
     // collision merge (summed) UNCHANGED — collision attenuation rescales
     // `alpha`/`deposit`, never this, or the partition stops summing to 1.
+    //
+    // ONE EXCEPTION: the parts of a single volumetric parent pool their
+    // shares onto the DEEPEST part, so the bucket split cannot move the
+    // parent's arrival claim off the radius its residual scatters at.  The
+    // pixel's share total is untouched, so shares + residual still sum to 1.
     float         share    = 0.0f;
 
     // NOTE: there is deliberately NO precomputed holdout boundary pair here.
@@ -995,7 +1000,8 @@ void applyProxyScale(CocParams& p, float proxyScale);
 //                  volume -> splitSpanAtBoundaries() + bucketOfContaining()
 //      (the COMPOSITION CONTRACT: one if/else, never both); this step also
 //      partitions the pixel's unit area front-to-back (share = t * alpha,
-//      t *= (1 - alpha)) into FlattenScratch::Staged::share
+//      t *= (1 - alpha)) into FlattenScratch::Staged::share, pooling one
+//      split parent's parts onto its deepest part (see FragmentRecord::share)
 //   5. optional pre-merge of adjacent fragments within merge_tolerance (sums
 //      member shares)
 //   6. append to the SoA
