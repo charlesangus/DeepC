@@ -88,6 +88,12 @@ Bokeh/pgBokeh don't exhibit; it runs before M2 because it rewrites the kernel st
   coverage than the docker path currently offers.
 - **House style**: 4-space indentation, `_` member prefix, lowerCamelCase (per README
   conventions).
+- **The `plan` branch stays LOCAL — never push it.** This overrides PLAN-FORMAT.md §9's
+  "then push the plan branch with `git -C .plan push`" at the milestone gate: skip that step, and
+  skip it at every other point too. Planning artifacts are not published for this project. The
+  branch tracks `origin/plan` and history up to `6245660` was pushed by an earlier session before
+  this rule existed; leave that as it is unless the user asks for it to be removed. Code branches
+  and PRs are unaffected — the milestone PR still gets pushed and merged as normal.
 - **Branch**: all work happens on the existing branch `claude/deep-defocus-node-plan-o0ld83`
   (not a fresh `milestone/<id>-<slug>` branch per milestone — this was locked in with the user
   and deliberately overrides the default per-milestone branch convention). Still gate each

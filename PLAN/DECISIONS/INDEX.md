@@ -6,3 +6,4 @@
 - 2026-09-06 — docker-linux-gate-runs-here: `./docker-build.sh --linux` DOES run here (mirror.gcr.io base + AlmaLinux 8 packages + local Nuke SDK); supersedes blocker #1 of the 2026-09-05 file, 16.0-only and Windows-impossible still stand → DECISIONS/2026-09-06-docker-linux-gate-runs-here.md
 - 2026-09-06 — local-build-is-not-shippable: the local dev build needs GLIBC_2.29 and cannot load on RHEL 8 (4 plugins); only the container build is release-safe → DECISIONS/2026-09-06-local-build-is-not-shippable.md
 - 2026-09-10 — coverage-fill-replaces-honest-dip: v1's "honest coverage dip" is retired; DeepCDefocus renormalizes scatter coverage like pgBokeh, as the only behaviour with no legacy knob → DECISIONS/2026-09-10-coverage-fill-replaces-honest-dip.md
+- 2026-09-10 — plan-branch-stays-local: the `plan` branch is never pushed, overriding PLAN-FORMAT.md §9's push at the milestone gate; code PRs unaffected → DECISIONS/2026-09-10-plan-branch-stays-local.md
