@@ -48,7 +48,7 @@ Constraints from the board apply in full: no SIMD, `DEEPC_HD` header-only kernel
   - verify: doctests — (1) a flat card over a flat BG far behind: every card pixel finds the nearest BG pixel, distance and identity checked against a brute-force scan; (2) a nearer card beside the hole is never chosen; (3) a receding plane (opaque and α=0.9, slope like m3's) finds **nothing** from any interior pixel, and **does** once `kFillSlope` is mutated to 0 — the mutation test; (4) the root prune: a uniform-depth field answers "none" without visiting any leaf (count visits); (5) fallback: with primary reach 2 and fallback reach 100 a pixel 10 px inside finds the BG, and with fallback reach 2 finds none; (6) band invariance: the same pixel queried from two maps windowed differently, both containing its full reach disc, gives the identical answer; (7) the opaque/larger-radius prune fires and does not fire on the two sides of `radius_Q == radius_P`.
   - size: L
 
-- [ ] M5.P2.T2 — Synthesis: append the borrowed hidden sample before the flatten, `background` mode only
+- [x] M5.P2.T2 — Synthesis: append the borrowed hidden sample before the flatten, `background` mode only
   - files: `src/DeepCDefocus.cpp` (`computeBand()`'s pass-2 pixel callback ~1794–1803, between `fillSampleRecords()` and `flattenPixelToSoA()`), `src/DeepCDefocusFill.h` (`synthesizeHiddenSample(map, q, rayScaleP, out SampleRecord)`: raw depths `= camera depth / rayScale_P` so the flatten's own ray correction lands on Q's camera depth), `tests/test_defocus_scatter.cpp`
   - approach: for each pass-2 pixel with samples, run `findBackgroundSource()`; if found and not pruned, `push_back` one `SampleRecord` (Q's `zFront/zBack`, `alpha`, premultiplied `channels`) onto `job.samples` and call the **unchanged** `flattenPixelToSoA()`. Nothing else changes: the residual out-params, the SoA, the residual window and `scatterBackgroundCPU()` all see a pixel that simply has one more sample. Empties skip the search entirely. Keep the FG-mode branch free of any new call.
   - verify: doctests — (1) **the twin identity**: a sparse card+BG stack flattened with the synthetic sample appended is **bit-identical** (SoA fragments, `residualT`, `residualRadiusPx`) to the same pixel flattened with the real hidden sample; (2) behind an opaque FG the synthetic's `share` is 0 and `residualT` stays 0; behind an α=0.5 FG its share is `0.5·α_Q` and `residualT` becomes `0.5·(1−α_Q)` at Q's radius; (3) end-to-end through `scatterBandCPU` + `scatterBackgroundCPU` + `resolveBandCPU` on a small halo rig: the vacated band reads alpha 1 and the FG:BG mix of the twin within 1e-6, and reads FG colour when synthesis is disabled — the mutation; (4) a holdout LUT at 0.5 halves the synthesized deposits exactly as it halves the twin's.
@@ -123,4 +123,17 @@ Constraints from the board apply in full: no SIMD, `DEEPC_HD` header-only kernel
   `(d², y, x)` tie rule, and it cuts the halo-card query from 38.6 tiles / 260 leaves to 16.3 / 16.3.
   `FillPredicate{depthTol, slope}` is the mutation seam. Pyramid: 4×4 tiles, root prune answers a
   uniform field in 1 tile / 0 leaves.
+- 2026-09-11 — **P2.T2 landed (`1086474`): `fill: background` is live and the twin identity holds at
+  0 ulps** — haloSparse() in background mode equals `deepMerge([haloForeground(), haloBackground()])`
+  in background mode on every channel (renders kept at `~/deepc-validation/M5-P2T2/`); the band's
+  R/A reads 0.512…0.798 vs 0.800 in foreground mode, alpha 1 throughout; holdout at 0.5 halves the
+  synthesised deposits exactly as the twin's. Foreground mode 0 ulps against M5-T0. Three deviations
+  from the brief, all accepted: `T_P` for the prune comes from a `residualTransmittance()` helper
+  (product of `1−α`, matches the flatten's `residualT` to < 1e-6 over 800 fuzzed stacks) rather
+  than a second flatten; `fill_search` is resolved **per pixel** (`BandJob` now carries the clamped
+  knob + `fillMaxRadiusPx`, auto = `2·r_P+1` at P's own map radius); and pass 1 extends the map by
+  `max_radius` (not the frame-resolved reach) so the fallback tier never sees a truncated disc —
+  the budget term follows. Overlapping-span Q: the synthetic is Q's deepest raw sample and the twin
+  stays bit-exact; only the map's `radiusPx` differs from the flatten's (0.261 vs 0.333, both inside
+  the span's own range) and it feeds only the prune.
 
