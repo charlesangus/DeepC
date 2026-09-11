@@ -410,7 +410,7 @@ enum class FragmentKind : std::uint8_t {
 //     boundaries into P independent fragments.  If each of those deposited its
 //     own `w*vis`, one slab would claim the same pixel area once per bucket it
 //     spans: a 4-part alpha-0.9 slab measures a band alpha sum of 1.7506
-//     against an honest 0.9000, growing toward K x as alpha -> 1, and exact
+//     against the true 0.9000, growing toward K x as alpha -> 1, and exact
 //     ONLY at full kernel coverage — i.e. wrong for every bokeh, every edge and
 //     every isolated fog element.
 //
@@ -1101,8 +1101,9 @@ bool checkCompositionContract(const SampleSoA& soa,
 //     wherever its kernel weight is below 1 — +93.8% worst case over 3000
 //     random (alpha, fraction, radius) triples, i.e. an isolated opaque bokeh
 //     at DOUBLE energy, and a defocused opaque edge's alpha/colour ramp
-//     inflated from 0.437 to 0.683.  Erring HIGH is what the node's
-//     honest-alpha contract forbids outright.
+//     inflated from 0.437 to 0.683.  Erring HIGH is an over-read nothing in
+//     this node licenses: the saturation pass scales down only, and the
+//     coverage fill restores only a shortfall of arrival.
 //
 // `over` has no plane to correct any of that with, which is the structural
 // reason: the coverage partition reads the coverage and co-located area planes.
@@ -1132,9 +1133,11 @@ bool checkCompositionContract(const SampleSoA& soa,
 //
 // THE THIRD PLANE IS `sum of w*vis`, PURE KERNEL COVERAGE, INDEPENDENT OF
 // ALPHA — NOT `sum of w*alpha*vis`, which is character-for-character the alpha
-// plane.  It is what distinguishes bucketing-induced alpha loss from the
-// honest coverage deficit of validation scene (i), and it is what the
-// coverage partition composites against.
+// plane.  It is what distinguishes bucketing-induced alpha loss from a
+// genuine coverage shortfall (a defocused foreground with nothing behind it,
+// validation scene (i)) — which the coverage fill then restores from the
+// fifth plane below — and it is what the coverage partition composites
+// against.
 //
 // THE FOURTH PLANE IS THE SAME QUANTITY FOR THE OTHER HALF OF THE
 // DEPOSIT: `sum of w*vis` over exactly the deposits that carry alpha but claim
@@ -1155,7 +1158,7 @@ bool checkCompositionContract(const SampleSoA& soa,
 // saturation pass, exactly like the third.
 //
 // THE FIFTH PLANE, `arrival`, IS K-INDEPENDENT: one float per band pixel, not
-// per bucket (`arrival[i]`, no `k` term). It is the M4 coverage-renormalization
+// per bucket (`arrival[i]`, no `k` term). It is the coverage fill's
 // denominator — each fragment's RAW kernel weight (before the holdout
 // visibility fold) times its FragmentRecord::share, deposited once per
 // fragment regardless of which bucket(s) it lands in. It is not an alternative
@@ -1264,7 +1267,7 @@ struct BucketPlanes {
 };
 
 // ---------------------------------------------------------------------------
-// residualWindowYRange — the Y extent of the M4 virtual-background window:
+// residualWindowYRange — the Y extent of the virtual-background window:
 // band +/- padY, clipped to the OUTPUT box, NEVER to `srcBox`.
 //
 // The SoA fetch loop clips its OWN row range to `srcBox` (correct for that
@@ -1918,7 +1921,7 @@ DEEPC_HD inline void depositRowSpan(const BucketPlaneView& planes,
 
         // The coverage plane is alpha-INDEPENDENT: it accumulates w*vis
         // itself, so a fully transparent fragment still reports the pixel area
-        // its kernel covers.  That is what makes an honest coverage deficit
+        // its kernel covers.  That is what makes a genuine coverage shortfall
         // (validation scene (i)) distinguishable from a bucketing artefact.
         if (depositWeight) {
             float* __restrict__ cp = planes.weight + planeBase;
@@ -1965,15 +1968,16 @@ DEEPC_HD inline void depositRowSpan(const BucketPlaneView& planes,
 // (the third plane is `sum of w*vis`, pure kernel coverage).  A fractionally split fragment is ONE surface seen as two
 // co-located depth layers — the transmittance split exists precisely so that
 // `over`-compositing them reproduces the original — so it covers its kernel's
-// area once, not twice.  Depositing it into both planes makes a pixel with an
-// honest 60% coverage deficit (validation scene (i)) report 120% coverage,
+// area once, not twice.  Depositing it into both planes makes a pixel with a
+// genuine 60% coverage shortfall (validation scene (i)) report 120% coverage,
 // which is exactly the distinction the plane exists to preserve, and
 // CoveragePartition then reads the rear deposit as landing on fresh, unclaimed
 // pixel area: measured, an isolated opaque fragment's bokeh then comes out at
-// DOUBLE energy (band alpha sum 2.000 against an honest 1.000) and a defocused
+// DOUBLE energy (band alpha sum 2.000 against the true 1.000) and a defocused
 // opaque edge's alpha ramp is doubled and clipped (0.437 -> 0.874, 0.563 ->
-// 1.000) — i.e. the honest alpha dip filled in with fabricated colour.  With
-// the single deposit the same cases
+// 1.000) — i.e. a coverage shortfall papered over with doubled energy rather
+// than restored by the arrival-normalised fill.  With the single deposit the
+// same cases
 // reconstruct the unbucketed additive scatter EXACTLY, at alpha 1 and at fog
 // alphas alike.
 //
@@ -1995,7 +1999,7 @@ DEEPC_HD inline void depositRowSpan(const BucketPlaneView& planes,
 // boundaries becomes several independent fragments, and only the front-most of
 // them carries `coverageHead`.  A slab that spans four buckets covers its
 // kernel's area once, not four times; without the flag it measures a band alpha
-// sum of 1.7506 against an honest 0.9000.  The non-head parts take the
+// sum of 1.7506 against the true 0.9000.  The non-head parts take the
 // identical "alpha and colour with no coverage" path the rear deposit takes,
 // through the identical residual term, so the composite needs no special
 // case for them.
@@ -2107,7 +2111,7 @@ DEEPC_HD inline std::size_t scatterFragmentSpans(const BucketPlaneView& planes,
         // THE ARRIVAL DEPOSIT USES THE RAW ROW, captured before the holdout
         // fold below overwrites `w`.  Depositing the vis-folded weight instead
         // would let held-out alpha renormalize back up at composite time,
-        // which the M4 fill must never do — see BucketPlaneView.  One deposit
+        // which the fill must never do — see BucketPlaneView.  One deposit
         // per fragment regardless of which bucket(s) it lands in: gated on
         // depositCoverage (group 0), the same flag the coverage plane uses.
         // `arrivalScale` carries this pass's blend weight, so a bracketed
@@ -2256,9 +2260,10 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 // 0.8748 against the input's true unpremultiplied 0.5 — a 75%-too-bright
 // pixel, not merely a dim one.  Unclamped the ratio is 0.5000 on every case
 // measured.  Dropping real deposited alpha is
-// the same class of error as fabricating it, and nothing in this node's
-// honest-alpha contract licenses it (that contract forbids scaling alpha UP,
-// not accounting for what was actually deposited).  Removing it cannot
+// the same class of error as fabricating it, and nothing in this node
+// licenses it: this composite accounts for what was deposited, and the
+// coverage fill that follows it scales the pair by arrival, never one of
+// them.  Removing it cannot
 // over-count either: per bucket the three terms still sum to at most
 // aCov + aRes = A_k, so accAlpha never exceeds the alpha the scatter
 // deposited.  Every documented identity below is bit-unchanged by this
@@ -2284,9 +2289,11 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 //     reconstructs the unbucketed additive scatter exactly: band alpha sum
 //     1.0000 for an opaque fragment and 0.5000 for an alpha-0.5 one, against
 //     2.0000 / 0.5858 before the residual term existed.
-//   * validation scene (i)'s honest coverage hole — total coverage < 1 means
-//     everything is `fit` and the answer is the (deficient) coverage itself.
-//     NOTHING here ever scales alpha UP.
+//   * a coverage hole (validation scene (i)'s silhouette band) — total
+//     coverage < 1 means everything is `fit` and the bucket walk's answer is
+//     the coverage itself; the deficit-only fill after the walk then divides
+//     the pair by the arrival plane.  Nothing in the bucket walk scales alpha
+//     UP.
 //   * over-covered bucket (C_k > 1, i.e. the case the saturate-down pass
 //     exists for) — C_k is clamped to 1 at use, which is what keeps
 //     a_k = A_k/C_k <= 1 after saturation has pulled A_k down to 1.
@@ -2501,9 +2508,8 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 // deposits left, and the dropped one is then attenuated by the survivor's
 // tile, which is not in front of it.  Swept over parts x offset x weight x
 // alpha that reads up to +21.1% HIGH, saturating the output alpha to exactly 1
-// at alpha 0.90, where the pooled composite reads 4-16% LOW.  The sign is the
-// honest-alpha contract's forbidden one, and two fog slabs at overlapping
-// depths is ordinary comp content.
+// at alpha 0.90, where the pooled composite reads 4-16% LOW.  The sign is an
+// over-read, and two fog slabs at overlapping depths is ordinary comp content.
 //
 // THE FIX IS MORE STATE, and neither cheap alternative was a trade worth
 // making: `always carry the chain` reads -9.3% on the dense ramp and `merge the
@@ -2652,16 +2658,27 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 // (same weights, g1 reads 1e-08).  Renormalise the deposited weights per
 // pixel on the faithful 1-column model of that rig (see the unit suite)
 // and every low-alpha cell flips to a small DEFICIT (-0.25/-0.70/-0.87% at
-// K=4/16/64, alpha 0.10): what THIS function contributes at low alpha is in
-// the permitted direction.  No composite rule at any plane count can remove
+// K=4/16/64, alpha 0.10): what THIS function contributes at low alpha is a
+// deficit, not an over-read.  No composite rule at any plane count can remove
 // the rest -- the same planes arise from ~190 independent small cards at the
 // same depths, whose over-composited truth is HIGHER than alpha, so one plane
 // set carries two truths ("one receding surface" vs "many overlapping
 // surfaces" is parent identity, which no accumulation plane carries) -- and
-// the scatter-side fix, per-destination-pixel weight renormalisation, breaks
-// content this composite is exact on (two full-coverage 0.5 fog layers read
-// 0.75 today, 0.50 renormalised; a direction-gated version is the design's
-// own deferred `alpha-renormalize` toggle).  ACCEPTED AND BOUNDED: harness g5
+// the coverage fill at the end of this function does not reach it EITHER,
+// by construction: it divides by the arrival plane only where that plane
+// falls short of 1, and on this ramp's interior arrival reads 1.06..1.09
+// on every row.  Dividing surpluses out too was built and measured and is
+// rejected: the arrival plane cannot tell a continuous surface's
+// over-delivery from a defocused neighbour legitimately overlapping an
+// occluder, so it double-corrects against the area model's saturation (the
+// opaque version of this ramp reads 0.833 at focus; an in-focus opaque card
+// beside a defocused opaque background bleeds 28% background; an alpha-0.5
+// bloom over an opaque background punches it to 0.859).  Renormalising the
+// deposited WEIGHTS per pixel would break content this composite is exact
+// on (two full-coverage 0.5 fog layers read 0.75, 0.50 renormalised); the
+// fill divides by a partition of SOURCE AREA instead -- shares plus the
+// virtual background sum to exactly 1 there -- which is what lets it leave
+// genuine overlap alone.  ACCEPTED AND BOUNDED: harness g5
 // pins alpha 0.10/0.30 at K=16, the worst corner
 // (alpha 0.10 / K=4, +6.5%), and the alpha-0.01 scatter control, each as a
 // two-sided band, mutation-tested in both directions.  It is content-driven,
@@ -2710,10 +2727,10 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 // or loses any.
 //
 // THE MERGED TRANSMITTANCE IS THE MINIMUM, NOT THE AREA-WEIGHTED MEAN, and the
-// reason is the honest-alpha contract rather than a measurement: min <= the
+// reason is the direction of the error rather than a measurement: min <= the
 // mean, and a lower tile transmittance can only REDUCE the alpha a later
-// residual adds, so whatever the cap costs it costs downward — the direction
-// the contract permits.  Said plainly: over 80 000 randomised overflow pixels
+// residual adds, so whatever the cap costs it costs as a deficit, never as an
+// over-read.  Said plainly: over 80 000 randomised overflow pixels
 // the two forms were indistinguishable (identical worst readings in every row,
 // mean |error| within 0.02 points), so this is chosen on the argument and NOT
 // on the numbers; if a later corpus separates them, that measurement decides.
@@ -2749,8 +2766,8 @@ DEEPC_HD inline void mergeOldestHeadTiles(float* __restrict__ tileT,
 //
 // TWO TILES ALREADY REMOVE THE UPWARD ERROR ENTIRELY — past the cap the stack
 // folds its two oldest tiles together and a partly-covered frontier tile can no
-// longer split, and both of those OVER-occlude, which is the direction the
-// honest-alpha contract permits.  What the depth buys after that is the size of
+// longer split, and both of those OVER-occlude — a deficit, never an
+// over-read.  What the depth buys after that is the size of
 // the remaining DEFICIT.  On the random corpus above that knee is at 4 and 8,
 // 16 and 32 are indistinguishable out to 128 parents; on the WORST case the
 // unit suite pins — 32 equal parents of 32 parts each, i.e. 32 chains open at
@@ -3094,7 +3111,7 @@ DEEPC_HD inline void compositePixelCoveragePartition(
                     // merging: mergeOldestHeadTiles() renumbers the stack, and
                     // `lastTile` was resolved before it.  A full stack takes
                     // the whole-tile branch instead, which over-occludes the
-                    // ring — downward, the direction the contract permits.
+                    // ring — downward, a deficit rather than an over-read.
                     if (ring > 0.0f && lastTake > 0.0f
                         && tileCount < kCompositeHeadTiles) {
                         for (int t = tileCount; t > lastTile; --t) {
@@ -3216,14 +3233,15 @@ DEEPC_HD inline void compositePixelCoveragePartition(
     // saturate path (24x24 band, K in [2,24], focus in [0.8, 60]): 970 of
     // 172800 pixels came out above 1, worst 1.6598 -- and with the alpha
     // clamped and the colour not, that pixel shipped premultiplied colour
-    // 0.9959 against an honest 0.5975, i.e. +66% too bright.  Overlapping
+    // 0.9959 against the true 0.5975, i.e. +66% too bright.  Overlapping
     // volumetric fog reaches it easily; it is not a hand-built-planes case.
     //
     // Scaling both by the same factor is what the node already does one pass
     // earlier in saturateBucketPixel() and is DOWN-ONLY, so it fabricates no
-    // coverage and leaves the honest-alpha contract (and validation scene
-    // (i)'s deficit) untouched.  It is a no-op wherever accAlpha <= 1, which
-    // is every identity documented above -- all of them are bit-unchanged.
+    // coverage; the deficit-only fill just below is the one place the pair
+    // is scaled UP, by the arrival plane and together.  It is a no-op
+    // wherever accAlpha <= 1, which is every identity documented above --
+    // all of them are bit-unchanged.
     // "Clamp one of a premultiplied pair and not the other" is a recurring
     // defect in this node; this is the same guard against it.
     // Deficit-only fill: scale the premultiplied pair up together so a
@@ -3329,10 +3347,12 @@ void scatterBackgroundCPU(const ScatterParams&  params,
 //   1. saturateBucketPlanes() — wherever a bucket's alpha exceeds 1, rescale
 //      its colour AND alpha by 1/alpha.  DOWN ONLY, NEVER UP.  This is not
 //      optional and is not behind a flag: see the header of the scatter
-//      section for the measured over-count it exists to correct.  Scaling up
-//      would fabricate coverage and hide validation scene (i)'s honest alpha
-//      dip, which is specified behaviour for this node.
-//   2. compositePixelCoveragePartition(), the bucket composite.
+//      section for the measured over-count it exists to correct.  A shortfall
+//      is not this pass's to fix: the coverage fill inside step 2 restores it
+//      from the arrival plane, with the pair scaled together, and this pass
+//      has no per-pixel arrival to scale by.
+//   2. compositePixelCoveragePartition(), the bucket composite, ending in
+//      the deficit-only coverage fill.
 //
 // outColor is `channelCount` planes of `pixelCount` floats
 // (outColor[c*pixelCount + i]); outAlpha is one.  Both are OVERWRITTEN.
@@ -3373,7 +3393,7 @@ void resolveBandCPU(const ScatterParams& params,
 //                                counted by bytesForBand() already, listed
 //                                here only so the combined figure is legible
 //                                as a sum of named terms
-// + 2*W*(B+2*padY)*4             the M4 virtual-background window (T +
+// + 2*W*(B+2*padY)*4             the virtual-background window (T +
 //                                residual radius planes) — K-independent like
 //                                arrival, but sized to the WINDOW height
 //                                (B+2*padY, clipped to the output box; see

@@ -2512,7 +2512,7 @@ TEST_CASE("sameScatterKernel is never true for two radii that rasterise differen
     // (a hard edge, where adjacent nodes differ by a whole pixel's weight and
     // a widened cell shows up first).  Radii below the floor clamp onto the
     // 2px entry -- identical planes that the predicate may still call
-    // different, which is the permitted direction.
+    // different, which costs an absorb and never correctness.
     struct Fixture { const char* name; float softness; };
     const Fixture fixtures[] = {{"edge_softness 1", 1.0f}, {"edge_softness 0", 0.0f}};
 
@@ -4881,8 +4881,13 @@ TEST_CASE("saturation is down-only and preserves the colour:alpha ratio, on the 
         CHECK(band.outColor(1, 0, 0) == 0.0f);
     }
 
-    SUBCASE("alpha < 1 is never scaled up: an honest coverage deficit survives resolve")
+    SUBCASE("alpha < 1 with no arrival claim is never scaled up: a coverage deficit survives "
+            "resolve when nothing feeds the fill's divisor")
     {
+        // The record is built by hand with `share` left at 0, so the arrival
+        // plane stays 0 at the pixel and the deficit-only fill is inert (its
+        // divisor is below kFillMinArrival); what is left is the bucket walk
+        // alone, which must hand back exactly what was deposited.
         SampleSoA soa;
         soa.begin(1, makeSingleChannelGroup(1));
         FragmentRecord f;
@@ -5572,7 +5577,8 @@ TEST_CASE("the four hand-built composite identities, with the fourth plane both 
         // 31.6%-over-4-buckets deficit.
     }
 
-    SUBCASE("validation scene (i): an honest 60% coverage hole stays 0.6, never scaled up")
+    SUBCASE("a 60% coverage hole stays 0.6 through the bucket walk (the fill's divisor is "
+            "the caller's, and absent here)")
     {
         composite({0.6f, 0.0f, 0.0f, 0.0f}, {0.6f, 0.0f, 0.0f, 0.0f},
                   {0.0f, 0.0f, 0.0f, 0.0f},
@@ -5927,7 +5933,7 @@ TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, a
     {
         // NEITHER IS CAUSED BY THE HEAD-TILE STACK -- both read bit-identically
         // with a single pooled tile -- but nothing else bounds them, and both
-        // err in the honest-alpha contract's FORBIDDEN direction, so they are
+        // are OVER-reads, which nothing in this node licenses, so they are
         // pinned here rather than left as prose.  Truth is the area model, hand-derived.
 
         // (1) THE EXCESS REGIME REGISTERS NO TILE.  A fragment whose head lands
@@ -6124,8 +6130,8 @@ TEST_CASE("the depth-ramp mosaic reconstructs the surface EXACTLY, at every N, a
         // them are attenuated by that fold, and a partly-covered frontier tile
         // can no longer split (the split needs a free slot and must not make
         // one by merging, which renumbers the stack) so its uncovered ring is
-        // over-occluded too.  Measured -5.132% at alpha 0.90 — a DEFICIT, which
-        // is the direction the honest-alpha contract permits, and banded rather
+        // over-occluded too.  Measured -5.132% at alpha 0.90 — a DEFICIT, not
+        // an over-read, and banded rather
         // than one-sided because a change that simply dropped the residual term
         // would satisfy a ceiling.  RAISE THE DEPTH AND THIS ROW GOES EXACT;
         // that is the trade the constant records, not a defect.
@@ -6643,9 +6649,9 @@ TEST_CASE("the g4 rig's low-alpha over-read is the SCATTER's weight over-deliver
 
         // (2) THE ATTRIBUTION CONTROL: renormalise the weights per pixel --
         // deliver exactly 1 -- and every low-alpha cell flips to a small
-        // DEFICIT.  What the COMPOSITE contributes at low alpha is in the
-        // permitted direction; the whole forbidden-direction excursion
-        // enters at scatter time.  (Banded: a composite regression that
+        // DEFICIT.  What the COMPOSITE contributes at low alpha is a
+        // deficit, not an over-read; the whole over-read enters at scatter
+        // time.  (Banded: a composite regression that
         // inflated low alpha would push this back over zero.)
         const double renorm10 = interiorMean(buckets, k, 0.10f, false, nullptr);
         const double renormed = interiorMean(buckets, k, 0.10f, true, nullptr);
@@ -6655,7 +6661,7 @@ TEST_CASE("the g4 rig's low-alpha over-read is the SCATTER's weight over-deliver
 
         // (3) THE RAW READINGS THEMSELVES, banded, so this model stays
         // anchored to the rendered sweep it reproduces: alpha 0.10 reads
-        // HIGH (the forbidden direction) and alpha 0.90 at K >= 16 reads
+        // HIGH (an over-read) and alpha 0.90 at K >= 16 reads
         // LOW (g4's own deficit) on the very same weights.
         CHECK(renorm10 > 0.04);                     // +0.058..+0.066 measured (step 3)
         CHECK(renorm10 < 0.07);
@@ -6731,7 +6737,7 @@ TEST_CASE("volumetric fog through the REAL path: a pixel whose alpha clamps keep
     // D_k > aRes, so the sum over buckets is not bounded the way the
     // per-bucket terms are.  On THIS fixture 19 of 576 pixels clamp, and
     // without the colour rescaled alongside the alpha the worst of them ships
-    // premultiplied colour 0.9959 against an honest 0.5975: +59.5% too bright.
+    // premultiplied colour 0.9959 against the true 0.5975: +59.5% too bright.
     // (Over 300 randomised fields the worst was +66.0%, at accAlpha 1.6598.)
     const CocParams    p  = makeStandardRig(30.0f);
     const DepthBuckets bk = makeBoundedDeltaCocBuckets(p, 1.0f, 100.0f, 8);

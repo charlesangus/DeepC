@@ -118,8 +118,10 @@ CHECK_F = (
     "The bottom row pins the harness's f3e, which FAILS -- see its own note. "
     "The harness's other scene-(f) rows are not reproduced here: f2 (opaque-"
     "holdout erasure onset, XFAIL), f3/f3b (equal-density fog density, PASS), "
-    "f3c/f3d (equal-density overlapping slabs, XFAIL) and f3f-f3i (the rest of "
-    "the unequal-density family; f3f FAILS)."
+    "f3c/f3d (equal-density overlapping slabs, XFAIL), f3f (the unequal-"
+    "density sweep; FAILS), f3g/f3h (pinned XFAILs: the coverage fill's "
+    "background-radius mismatch, with f3g2/f3h2 as the background_depth "
+    "controls that return them to exact) and f3i."
 )
 
 CHECK_F3E = (
@@ -127,9 +129,11 @@ CHECK_F3E = (
     "Two 40x40 cards 8 px apart, depth spans [8,12] at alpha 0.99 and [9,13] "
     "at alpha 0.10, defocused at size=14. Below saturation the node's area "
     "model is additive, so the merged render must equal the sum of the two "
-    "cards rendered SEPARATELY. It does not: the harness reads +77.411% high "
-    "on the worst probed pixel against a 0.5% gate, i.e. the node INVENTS "
-    "alpha, the one direction the honest-alpha contract forbids.\n\n"
+    "cards rendered SEPARATELY. It does not: the harness reads +87.2% high "
+    "on the worst probed pixel against a 0.5% gate (+77.4% before the "
+    "coverage fill; the extra is the fill's background-radius mismatch, "
+    "which f3g/f3h isolate), i.e. the node INVENTS alpha -- more than the "
+    "two cards deposited.\n\n"
     "'soloA + soloB' is that oracle and 'oracle vs merged' is the error. The "
     "faint corner card is the RANGE ANCHOR: every branch here must measure the "
     "same depth range, or solo and merged would be bucketed differently and "
@@ -153,7 +157,9 @@ CHECK_G = (
     "resolves.\n\n"
     "Bottom row: the SAME ramp at alpha < 1, which is where the residual is. "
     "Both branches are documented XFAILs in the harness and neither reads its "
-    "input alpha back -- see their own note."
+    "input alpha back -- see their own note. The coverage fill does not reach "
+    "them: it divides only where less than unit weight arrives, and on this "
+    "ramp's interior the arrival is 1.06-1.09 everywhere."
 )
 
 CHECK_G_ALPHA = (
@@ -161,13 +167,16 @@ CHECK_G_ALPHA = (
     "Identical rig to the opaque branches above, at K=16, with the plane's "
     "premultiplied colour scaled to alpha 0.90 and alpha 0.10. The correct "
     "interior flat field is the input alpha exactly. It is not:\n\n"
-    "  alpha 0.90 (g4): reads 0.8707, a 3.25% DEFICIT\n"
+    "  alpha 0.90 (g4): reads 0.8708, a 3.25% DEFICIT\n"
     "  alpha 0.10 (g5): reads 0.1059, a 5.93% OVER-READ\n\n"
-    "The over-read is in the direction the honest-alpha contract forbids and "
-    "it grows as alpha falls (the harness also pins alpha 0.30 at +3.40% and "
-    "alpha 0.01 at +7.06%, not reproduced here). Both are one bucket pooling a "
-    "head and a rear at unequal per-unit opacity -- accumulation-time "
-    "information loss, which no per-bucket composite rule can undo.\n\n"
+    "The over-read grows as alpha falls (the harness also pins alpha 0.30 at "
+    "+3.40% and alpha 0.01 at +7.07%, not reproduced here): it is the "
+    "scatter's own over-delivery on this steep CoC slope, attenuated by "
+    "(1 - alpha). The deficit is one bucket pooling a head and a rear at "
+    "unequal per-unit opacity -- accumulation-time information loss, which "
+    "no per-bucket composite rule can undo. Neither is a shortfall of "
+    "ARRIVAL: the arrival plane reads 1.06-1.09 across this interior, so the "
+    "deficit-only coverage fill never engages here, and cannot.\n\n"
     "Both harness checks are pinned BANDS around their reading, so any change "
     "to these numbers -- an improvement included -- must re-pin them."
 )
@@ -185,16 +194,19 @@ CHECK_H = (
 )
 
 CHECK_I = (
-    "Scene (i) -- sparse reveal / coverage deficit\n\n"
+    "Scene (i) -- sparse reveal / coverage fill\n\n"
     "Check: an opaque near card over a distant card, built with exactly one "
-    "sample per pixel (no hidden data anywhere), must show a documented "
-    "alpha dip inside the silhouette when the near card is defocused -- and "
-    "no fabricated colour behind that dip.\n\n"
-    "Two branches: 'sparse' (one sample per pixel; must dip) and 'DeepMerge "
-    "twin' (the same visible content but with the occluded far card's "
-    "samples kept; must NOT dip). Agreement of the two confirms the dip is "
-    "the missing hidden data, not a node artefact. The harness's pre_merge "
-    "reachability sweep (i6/i7) is not reproduced here."
+    "sample per pixel (no hidden data anywhere), used to show an alpha dip "
+    "about one CoC wide inside the silhouette when the near card is "
+    "defocused (0.51 at its deepest). The coverage fill now closes it: the "
+    "edge band must read alpha 1, filled with the NEAR card's own colour "
+    "ratio and no fabricated colour from the far card.\n\n"
+    "Two branches: 'sparse' (one sample per pixel; filled to 1 by the node) "
+    "and 'DeepMerge twin' (the same visible content but with the occluded "
+    "far card's samples kept; alpha 1 by data, and the far card's BLUE "
+    "showing through the defocused edge, which the sparse branch must NOT "
+    "reproduce). The harness's pre_merge reachability sweep (i6/i7) is not "
+    "reproduced here."
 )
 
 CHECK_J = (
@@ -561,12 +573,13 @@ def buildSceneI(settings):
     sparseNode = makeDefocus(settings, sparseSource, size=size,
                              focusDistance=focus, cocMode="manual")
     sparseNode.setXYpos(-160, 180)
-    sparseNode["label"].setValue("must show the honest alpha dip")
+    sparseNode["label"].setValue("edge band filled to alpha 1, FG colour")
 
     mergedNode = makeDefocus(settings, mergedSource, size=size,
                              focusDistance=focus, cocMode="manual")
     mergedNode.setXYpos(140, 180)
-    mergedNode["label"].setValue("must NOT dip (hidden samples present)")
+    mergedNode["label"].setValue("alpha 1 by data; far card's blue shows "
+                                 "through the edge")
 
     stickyNote(CHECK_I, 340, 0)
 

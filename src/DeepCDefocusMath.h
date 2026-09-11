@@ -1832,11 +1832,11 @@ DEEPC_HD inline int splitSpanAtBoundaries(const DepthBuckets& buckets,
 // pulls that back to alpha == 1 with the colour:alpha ratio — i.e. the
 // unpremultiplied colour — preserved exactly.
 //
-// SATURATE DOWN ONLY, NEVER SCALE UP.  alpha < 1 is left strictly alone: a
-// defocused foreground scattering outward with nothing behind it produces an
-// honest alpha dip inside the silhouette, and that coverage deficit is
-// specified behaviour for this node (it is what makes the comp-over-plate
-// workflow correct).  Scaling up would fabricate coverage and hide it.
+// SATURATE DOWN ONLY, NEVER SCALE UP.  alpha < 1 is left strictly alone here:
+// a shortfall of coverage (a defocused foreground scattering outward with
+// nothing behind it) is the coverage fill's to restore, in the composite,
+// from the per-pixel arrival plane and with colour and alpha scaled together.
+// This pass has no arrival to scale by and must not guess.
 //
 // alpha is assigned exactly 1.0f rather than multiplied by 1/alpha: the two
 // are the same analytically, but the multiply can land a half-ulp above 1 and
