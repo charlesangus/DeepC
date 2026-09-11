@@ -690,18 +690,78 @@ inline void synthesizeHiddenSample(const SurfaceMap& map, int qx, int qy,
 }
 
 // ---------------------------------------------------------------------------
+// averageBackground — the smear estimator: Q's alpha/channels replaced by the
+// mean over every qualifying pixel on a stride-capped lattice within reachPx.
+// Depth and radius stay the nearest Q's.  The stride caps the reads per pixel
+// at kFillAverageBudget whatever the reach.
+// ---------------------------------------------------------------------------
+constexpr int kFillAverageBudget = 800;
+
+DEEPC_HD inline int fillAverageStride(int reachPx)
+{
+    const float area   = 3.14159265f * static_cast<float>(reachPx) * static_cast<float>(reachPx);
+    const int   stride = static_cast<int>(std::ceil(std::sqrt(area / static_cast<float>(kFillAverageBudget))));
+    return (stride > 1) ? stride : 1;
+}
+
+inline bool averageBackground(const SurfaceMap& map, const FillPredicate& pred,
+                              int x, int y, float zBackP, float stepP, int reachPx,
+                              SampleRecord& out)
+{
+    const int          stride = fillAverageStride(reachPx);
+    const int          steps  = reachPx / stride;
+    const std::int64_t reach2 = static_cast<std::int64_t>(reachPx) * reachPx;
+    const int          C      = map.channelCount;
+
+    // Accumulated in double so a uniform disc's mean is bit-exact to its value.
+    std::vector<double> channelSum(static_cast<std::size_t>(C), 0.0);
+    double alphaSum = 0.0;
+    int    n        = 0;
+    for (int j = -steps; j <= steps; ++j) {
+        const int dy = j * stride;
+        const int ny = y + dy;
+        for (int i = -steps; i <= steps; ++i) {
+            const int dx = i * stride;
+            const int nx = x + dx;
+            const std::int64_t d2 = static_cast<std::int64_t>(dx) * dx + static_cast<std::int64_t>(dy) * dy;
+            if (d2 > reach2 || !map.contains(nx, ny))
+                continue;
+            const std::ptrdiff_t q = map.index(nx, ny);
+            if (map.empty(q))
+                continue;
+            if (!qualifiesAsBackground(pred, zBackP, stepP, std::sqrt(static_cast<float>(d2)),
+                                       map.plane(SurfaceMap::kZFront)[q]))
+                continue;
+            alphaSum += map.plane(SurfaceMap::kAlpha)[q];
+            for (int c = 0; c < C; ++c)
+                channelSum[static_cast<std::size_t>(c)] += map.plane(SurfaceMap::kChannel0 + c)[q];
+            ++n;
+        }
+    }
+    if (n == 0)
+        return false;
+    out.alpha = static_cast<float>(alphaSum / n);
+    for (int c = 0; c < C; ++c)
+        out.channels[static_cast<std::size_t>(c)] = static_cast<float>(channelSum[static_cast<std::size_t>(c)] / n);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // appendHiddenBackground — the whole per-pixel synthesis for pixel P, run on
 // P's real samples just before they are flattened: search, prune, and append
 // ONE synthetic sample (Q's surface) to `samples`.  Returns whether one was
 // appended.  `fillSearchPx` is the knob's clamped value (<= 0 = auto, resolved
 // per pixel against P's own staged radius); `maxRadiusPx` is both the
-// fallback reach and the reach the map was extended by.
+// fallback reach and the reach the map was extended by.  `fillSmear` swaps
+// the nearest Q's colour for the disc average when the PRIMARY tier found Q;
+// a fallback-tier Q is always copied verbatim.
 // ---------------------------------------------------------------------------
 inline bool appendHiddenBackground(const SurfaceMap&      map,
                                    const MaxDepthPyramid& pyramid,
                                    const FlattenParams&   params,
                                    int x, int y,
                                    float fillSearchPx, float maxRadiusPx,
+                                   bool fillSmear,
                                    std::vector<SampleRecord>& samples,
                                    FillSearchStats* stats = nullptr)
 {
@@ -726,6 +786,11 @@ inline bool appendHiddenBackground(const SurfaceMap&      map,
 
     samples.resize(samples.size() + 1);
     synthesizeHiddenSample(map, q.qx, q.qy, rayDepthScaleAt(params, x, y), samples.back());
+    if (fillSmear && q.distance <= static_cast<float>(primary)) {
+        const float zBackP = map.plane(SurfaceMap::kZBack)[iP];
+        const float stepP  = localDepthStep(map, x, y);
+        averageBackground(map, FillPredicate(), x, y, zBackP, stepP, primary, samples.back());
+    }
     return true;
 }
 

@@ -328,6 +328,7 @@ class DeepCDefocus : public DD::Image::Iop
     float _backgroundDepth;      // Float px, default 0.0 = auto, 0-500
     int   _fill;                 // Enum {foreground, background}, default foreground
     float _fillSearch;           // Float px, default 0.0 = auto, 0-500
+    bool  _fillSmear;            // Bool, default true
 
     // --- Output ------------------------------------------------------------
     ChannelSet _channels;        // Input_ChannelSet, default rgba
@@ -443,6 +444,7 @@ class DeepCDefocus : public DD::Image::Iop
         deepc::FillMode fillMode = deepc::FillMode::Foreground;   // resolvedFillMode()
         float fillSearchPx    = 0.0f;   // clampedFillSearchPx(); <= 0 is auto
         float fillMaxRadiusPx = 0.0f;   // clampedMaxRadius(): fallback reach and map extension
+        bool  fillSmear       = true;   // fill_smear: disc-average the borrowed colour
         int  bandHeight       = 1;    // never < 1
         int  bandCount        = 0;
         int  maxInFlight      = 1;    // memory-limit cap, floor 1
@@ -491,6 +493,7 @@ public:
         _backgroundDepth(0.0f),
         _fill(static_cast<int>(deepc::FillMode::Foreground)),
         _fillSearch(0.0f),
+        _fillSmear(true),
         _channels(Mask_RGBA),
         _outputHoldoutMatte(false),
         _holdoutMatteChannel(Chan_Black),
@@ -660,6 +663,11 @@ public:
         Float_knob(f, &_fillSearch, IRange(0.0, 500.0), "fill_search", "fill search");
         Tooltip(f, "Search radius, in pixels, for the background colour that fill "
                     "borrows from surrounding pixels. 0 = auto.");
+
+        Bool_knob(f, &_fillSmear, "fill_smear", "smear");
+        Tooltip(f, "In background mode, average the borrowed background colour "
+                    "over the search disc instead of copying the nearest pixel's "
+                    "(removes streaks on textured backgrounds).");
 
         // --- Output ----------------------------------------------------------
         Divider(f, "Output");
@@ -1224,6 +1232,7 @@ private:
         job->fillMode           = _shared.fillMode;
         job->fillSearchPx       = _shared.fillSearchPx;
         job->fillMaxRadiusPx    = _shared.fillMaxRadiusPx;
+        job->fillSmear          = _shared.fillSmear;
         job->sp                = _shared.spBase;
         return job;
     }
@@ -1292,6 +1301,7 @@ private:
         deepc::FillMode fillMode = deepc::FillMode::Foreground;   // see FrameShared::fillMode
         float fillSearchPx    = 0.0f;   // see FrameShared::fillSearchPx
         float fillMaxRadiusPx = 0.0f;   // see FrameShared::fillMaxRadiusPx
+        bool  fillSmear       = true;   // see FrameShared::fillSmear
 
         // bandY / bandHeight are filled per band; everything else (origin,
         // width, sharp threshold) is set once, explicitly, from the knobs.
@@ -1459,6 +1469,7 @@ private:
         _shared.fillMode        = resolvedFillMode();
         _shared.fillSearchPx    = clampedFillSearchPx();
         _shared.fillMaxRadiusPx = static_cast<float>(clampedMaxRadius());
+        _shared.fillSmear       = _fillSmear;
 
         // edge_softness is proxy-scaled HERE. applyProxyScale() deliberately
         // does not touch it — CocParams does not carry it — so the LUT build
@@ -1932,7 +1943,8 @@ private:
                 if (job.fillMode == deepc::FillMode::Background) {
                     deepc::appendHiddenBackground(job.surfaces, job.pyramid, *job.fp,
                                                   x, y, job.fillSearchPx,
-                                                  job.fillMaxRadiusPx, job.samples);
+                                                  job.fillMaxRadiusPx, job.fillSmear,
+                                                  job.samples);
                 }
                 deepc::flattenPixelToSoA(*job.fp, *job.buckets, x, y,
                                          job.samples, job.flattenScratch,
