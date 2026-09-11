@@ -268,7 +268,7 @@ behaviour, with no legacy knob. The "honest dip" contract is retired; docs, vali
 > semi-transparent surfaces it is visible in alpha, and blending is the only route to correct it.
 > This phase is in the milestone, not deferred — see the milestone-shape decision below.
 
-- [ ] M4.P2.T1 — Decide the bracketing-kernel scheme from rendered pixels
+- [x] M4.P2.T1 — Decide the bracketing-kernel scheme from rendered pixels
   - files: `src/DeepCDefocusKernel.h` (`kernelGridIndex()`:287 — a free function, not a member;
     `DiscKernelLUT::radiusToIndex()`:634) — prototype only, plus a throwaway render script
   - approach: the design says "odd integer diameters" are the bracketing set, but the grid today
@@ -679,3 +679,9 @@ including.
 - 2026-09-10 — **"Exact at the nodes" has no bite as a gate.** Every scheme is trivially exact at
   its own nodes. P2.T1 measured it as exactness against the exact disc rasterisation at that radius
   (shipped 2.980e-08, A 2.446e-09, B 2.980e-08). P2.T2 must state it that way or it gates nothing.
+- 2026-09-10 — **User ruling: Phase 4.2 stays in the milestone, implemented as specified.** After
+  P2.T1 the PM raised cutting the phase (candidate B's blend is pixel-identical to the shipped disc
+  family at the nodes, so the visible win is confined to semi-transparent near-focus alpha) and
+  recommended dropping it. The user overruled: the blending machinery is expected to matter for
+  later work, and P2.T2–T4 are to be implemented as the plan and the review file describe. This
+  supersedes that recommendation; the phase is not optional and not deferred.
