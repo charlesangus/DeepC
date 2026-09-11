@@ -1310,6 +1310,32 @@ DEEPC_HD inline float resolveBackgroundRadiusPx(float backgroundDepthKnob,
 }
 
 // ---------------------------------------------------------------------------
+// FillMode — the `fill` knob: what a pixel the renderer left with no coverage
+// at all is filled with.
+// ---------------------------------------------------------------------------
+enum class FillMode {
+    Foreground = 0,
+    Background = 1
+};
+
+// ---------------------------------------------------------------------------
+// resolveFillSearchPx — the `fill_search` knob's resolution.
+//
+// knobPx <= 0 (including NaN, same convention as resolveBackgroundRadiusPx)
+// means auto: 2*radiusPx + 1, wide enough to reach past the invented disc's
+// own radius on either side. Either branch is then clamped to maxRadiusPx,
+// the frame's own hard search-radius bound.
+// ---------------------------------------------------------------------------
+DEEPC_HD inline float resolveFillSearchPx(float knobPx, float radiusPx, float maxRadiusPx)
+{
+    if (!(knobPx > 0.0f)) {
+        const float autoPx = 2.0f * radiusPx + 1.0f;
+        return (autoPx < maxRadiusPx) ? autoPx : maxRadiusPx;
+    }
+    return (knobPx < maxRadiusPx) ? knobPx : maxRadiusPx;
+}
+
+// ---------------------------------------------------------------------------
 // ResidualWindow — the virtual background's per-pixel claim, over the FULL
 // fetch window (band +/- padY rows, clipped only to the output box) rather
 // than `srcBox`.

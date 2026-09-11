@@ -299,6 +299,10 @@ static const char* const worldUnitsNames[] = {
     "mm", "cm", "dm", "m", "in", "ft", nullptr
 };
 
+static const char* const fillModeNames[] = {
+    "foreground", "background", nullptr
+};
+
 // ---------------------------------------------------------------------------
 class DeepCDefocus : public DD::Image::Iop
 {
@@ -321,6 +325,8 @@ class DeepCDefocus : public DD::Image::Iop
     float _backCocMult;          // Float, default 1.0, 0-4
     float _edgeSoftness;         // Float px, default 1.0, 0-4
     float _backgroundDepth;      // Float px, default 0.0 = auto, 0-500
+    int   _fill;                 // Enum {foreground, background}, default foreground
+    float _fillSearch;           // Float px, default 0.0 = auto, 0-500
 
     // --- Output ------------------------------------------------------------
     ChannelSet _channels;        // Input_ChannelSet, default rgba
@@ -433,6 +439,8 @@ class DeepCDefocus : public DD::Image::Iop
         int  mattePlane       = -1;
         int  padY             = 0;
         float backgroundRadiusPx = 0.0f;   // resolveBackgroundRadiusPx(), see frameSetup()
+        deepc::FillMode fillMode = deepc::FillMode::Foreground;   // resolvedFillMode()
+        float fillSearchPx   = 0.0f;   // resolveFillSearchPx(), see frameSetup()
         int  bandHeight       = 1;    // never < 1
         int  bandCount        = 0;
         int  maxInFlight      = 1;    // memory-limit cap, floor 1
@@ -479,6 +487,8 @@ public:
         _backCocMult(1.0f),
         _edgeSoftness(1.0f),
         _backgroundDepth(0.0f),
+        _fill(static_cast<int>(deepc::FillMode::Foreground)),
+        _fillSearch(0.0f),
         _channels(Mask_RGBA),
         _outputHoldoutMatte(false),
         _holdoutMatteChannel(Chan_Black),
@@ -640,6 +650,15 @@ public:
                     "Has no effect on any pixel with at least one sample — those always "
                     "borrow their own deepest sample's defocus instead.");
 
+        Enumeration_knob(f, &_fill, fillModeNames, "fill", "fill");
+        Tooltip(f, "Chooses whether coverage the renderer left completely empty is "
+                    "filled with foreground colour (default) or with background "
+                    "colour borrowed from surrounding pixels.");
+
+        Float_knob(f, &_fillSearch, IRange(0.0, 500.0), "fill_search", "fill search");
+        Tooltip(f, "Search radius, in pixels, for the background colour that fill "
+                    "borrows from surrounding pixels. 0 = auto.");
+
         // --- Output ----------------------------------------------------------
         Divider(f, "Output");
 
@@ -752,6 +771,23 @@ public:
     float clampedBackgroundDepthPx() const
     {
         return (_backgroundDepth > 0.0f) ? _backgroundDepth * _proxyScale : 0.0f;
+    }
+
+    // fill's resolved mode. The knob is a plain enum index, so no clamp is
+    // needed beyond the cast (Enumeration_knob already bounds it to the
+    // label table).
+    deepc::FillMode resolvedFillMode() const
+    {
+        return static_cast<deepc::FillMode>(_fill);
+    }
+
+    // fill_search, a search-radius in pixels like background_depth, so it is
+    // proxy-scaled here rather than by applyProxyScale() — same reasoning as
+    // clampedBackgroundDepthPx() above. <= 0 is left as-is (
+    // deepc::resolveFillSearchPx() reads that as "auto").
+    float clampedFillSearchPx() const
+    {
+        return (_fillSearch > 0.0f) ? _fillSearch * _proxyScale : 0.0f;
     }
 
     // memory_limit, in bytes. Soft range 1-64 GB; the floor is deliberately
@@ -1183,6 +1219,8 @@ private:
         job->mattePlane        = _shared.mattePlane;
         job->padY              = _shared.padY;
         job->backgroundRadiusPx = _shared.backgroundRadiusPx;
+        job->fillMode           = _shared.fillMode;
+        job->fillSearchPx       = _shared.fillSearchPx;
         job->sp                = _shared.spBase;
         return job;
     }
@@ -1248,6 +1286,8 @@ private:
         int mattePlane = -1;
         int padY       = 0;
         float backgroundRadiusPx = 0.0f;   // see FrameShared::backgroundRadiusPx
+        deepc::FillMode fillMode = deepc::FillMode::Foreground;   // see FrameShared::fillMode
+        float fillSearchPx   = 0.0f;   // see FrameShared::fillSearchPx
 
         // bandY / bandHeight are filled per band; everything else (origin,
         // width, sharp threshold) is set once, explicitly, from the knobs.
@@ -1404,6 +1444,13 @@ private:
         const float cocAtDepthMax = deepc::radiusPixels(fp.coc, buckets.depthMax());
         _shared.backgroundRadiusPx = deepc::resolveBackgroundRadiusPx(
             clampedBackgroundDepthPx(), cocAtDepthMax, rMax);
+
+        // fill / fill_search: carried through explicitly, same convention as
+        // background_depth above. Read by nothing else yet.
+        _shared.fillMode = resolvedFillMode();
+        _shared.fillSearchPx = deepc::resolveFillSearchPx(
+            clampedFillSearchPx(), _shared.backgroundRadiusPx,
+            static_cast<float>(clampedMaxRadius()));
 
         // edge_softness is proxy-scaled HERE. applyProxyScale() deliberately
         // does not touch it — CocParams does not carry it — so the LUT build

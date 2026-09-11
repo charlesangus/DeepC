@@ -2383,6 +2383,35 @@ TEST_CASE("resolveBackgroundRadiusPx: 0 (and anything <= 0, and NaN) is auto -- 
     }
 }
 
+TEST_CASE("resolveFillSearchPx: 0 (and NaN) is auto -- 2*radiusPx + 1; a manual value clamps to "
+          "maxRadiusPx")
+{
+    const float radiusPx    = 6.0f;
+    const float maxRadiusPx = 20.0f;
+
+    SUBCASE("0 is auto: 2*radiusPx + 1")
+    {
+        CHECK(resolveFillSearchPx(0.0f, radiusPx, maxRadiusPx) == 13.0f);
+    }
+    SUBCASE("NaN is auto")
+    {
+        CHECK(resolveFillSearchPx(std::numeric_limits<float>::quiet_NaN(),
+                                  radiusPx, maxRadiusPx) == 13.0f);
+    }
+    SUBCASE("auto clamps to maxRadiusPx when 2*radiusPx + 1 would exceed it")
+    {
+        CHECK(resolveFillSearchPx(0.0f, 15.0f, maxRadiusPx) == maxRadiusPx);
+    }
+    SUBCASE("a manual value within range passes through unchanged")
+    {
+        CHECK(resolveFillSearchPx(9.0f, radiusPx, maxRadiusPx) == 9.0f);
+    }
+    SUBCASE("a manual value above maxRadiusPx clamps to maxRadiusPx")
+    {
+        CHECK(resolveFillSearchPx(500.0f, radiusPx, maxRadiusPx) == maxRadiusPx);
+    }
+}
+
 TEST_CASE("size-0 flatten is a DeepToImage `over` of the pixel, at every K and both pre_merge "
           "states")
 {
