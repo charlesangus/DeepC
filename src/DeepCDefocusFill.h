@@ -20,6 +20,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 
 #include "DeepCDefocusMath.h"
@@ -283,6 +284,384 @@ bool buildSurfaceMap(SurfaceMap& map,
         }
     }
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// The background predicate: Q's surface may stand in behind P's iff
+//
+//   zFront_Q > zBack_P + max(kFillDepthTol * zBack_P,
+//                            kFillSlope * step_P * d(P, Q))
+//
+// The relative term rejects coplanar noise.  The slope term is what stops a
+// receding CONTINUOUS surface borrowing from a deeper part of itself: with a
+// relative tolerance alone an alpha-0.9 ramp over nothing would fill from its
+// own far rows and read 0.99.  step_P is P's own local depth step (see
+// localDepthStep), so a surface never qualifies as its own background, while
+// a real background behind a flat card (no local step) qualifies at the
+// first term.
+//
+// kFillSlope 2 is not enough: a ground plane's depth is convex in y, and over
+// a 100 px reach its far rows outrun a 2x-step line.  Larger than 4 only
+// trades away fill behind tilted surfaces.
+// ---------------------------------------------------------------------------
+constexpr float kFillDepthTol = 0.02f;
+constexpr float kFillSlope    = 4.0f;
+
+struct FillPredicate {
+    float depthTol = kFillDepthTol;
+    float slope    = kFillSlope;
+};
+
+// Monotone non-decreasing in distancePx, which is what lets the pyramid
+// evaluate it at a tile's nearest point and prune conservatively.
+DEEPC_HD inline float fillDepthThreshold(const FillPredicate& pred,
+                                         float zBackP, float stepP, float distancePx)
+{
+    const float relative = pred.depthTol * zBackP;
+    const float sloped   = pred.slope * stepP * distancePx;
+    return zBackP + ((relative > sloped) ? relative : sloped);
+}
+
+DEEPC_HD inline bool qualifiesAsBackground(const FillPredicate& pred,
+                                           float zBackP, float stepP, float distancePx,
+                                           float zFrontQ)
+{
+    return zFrontQ > fillDepthThreshold(pred, zBackP, stepP, distancePx);
+}
+
+DEEPC_HD inline bool neighbourZBack(const SurfaceMap& map, int nx, int ny, float& zBack)
+{
+    if (!map.contains(nx, ny))
+        return false;
+    const std::ptrdiff_t i = map.index(nx, ny);
+    if (map.empty(i))
+        return false;
+    zBack = map.plane(SurfaceMap::kZBack)[i];
+    return true;
+}
+
+// The SMALLER of the two opposite-neighbour steps per axis, so a silhouette
+// pixel reads its own surface's step rather than the jump to whatever lies
+// beside it; a missing or empty neighbour is no information, not a step.
+DEEPC_HD inline float axisDepthStep(float zP, bool haveLo, float zLo, bool haveHi, float zHi)
+{
+    const float stepLo = haveLo ? std::fabs(zP - zLo) : 0.0f;
+    const float stepHi = haveHi ? std::fabs(zP - zHi) : 0.0f;
+    if (haveLo && haveHi)
+        return (stepLo < stepHi) ? stepLo : stepHi;
+    return haveLo ? stepLo : stepHi;
+}
+
+DEEPC_HD inline float localDepthStep(const SurfaceMap& map, int x, int y)
+{
+    const float zP = map.plane(SurfaceMap::kZBack)[map.index(x, y)];
+    float zL = 0.0f, zR = 0.0f, zD = 0.0f, zU = 0.0f;
+    const bool haveL = neighbourZBack(map, x - 1, y, zL);
+    const bool haveR = neighbourZBack(map, x + 1, y, zR);
+    const bool haveD = neighbourZBack(map, x, y - 1, zD);
+    const bool haveU = neighbourZBack(map, x, y + 1, zU);
+    const float gx = axisDepthStep(zP, haveL, zL, haveR, zR);
+    const float gy = axisDepthStep(zP, haveD, zD, haveU, zU);
+    return (gx > gy) ? gx : gy;
+}
+
+// ---------------------------------------------------------------------------
+// pruneSynthesis — the post-check on a found source.
+//
+// residualTP is P's residual transmittance as the flatten reports it (for a
+// single-surface P that is 1 - alpha_P); the caller passes it because the map
+// holds only the deepest surface's alpha.  An opaque P whose background's disc
+// is at least as wide as its own gets that background from outside the
+// silhouette anyway, so synthesising it would double-count; a semi-
+// transparent P always synthesises.
+// ---------------------------------------------------------------------------
+DEEPC_HD inline bool pruneSynthesis(float residualTP, float radiusPxP, float radiusPxQ)
+{
+    return residualTP <= kFillDeficitTol && radiusPxQ >= radiusPxP;
+}
+
+// ---------------------------------------------------------------------------
+// MaxDepthPyramid — max zFront over 4x4 tiles, level on level, above a
+// SurfaceMap.  Level 0 is the map's own zFront plane and is not stored; level
+// l holds one float per 4^l x 4^l block of map pixels, up to the root level
+// whose single tile covers the whole map.  kEmpty is -inf, so an empty cell
+// never lifts a tile's max and an all-empty tile stays -inf.
+// ---------------------------------------------------------------------------
+struct MaxDepthPyramid {
+    static constexpr int kTileShift = 2;
+    static constexpr int kTile      = 1 << kTileShift;
+    static constexpr int kMaxLevels = 12;
+
+    PodBuffer<float> _tiles;
+    std::ptrdiff_t   _offset[kMaxLevels + 1] = {};
+    int              _width[kMaxLevels + 1]  = {};
+    int              _height[kMaxLevels + 1] = {};
+    int              _levelCount = 0;
+
+    int levelCount() const { return _levelCount; }
+    int width(int level) const  { return _width[level]; }
+    int height(int level) const { return _height[level]; }
+
+    const float* level(int l) const { return _tiles.data() + _offset[l]; }
+    float*       level(int l)       { return _tiles.data() + _offset[l]; }
+
+    void clear()
+    {
+        _levelCount = 0;
+        _tiles.clear();
+    }
+
+    static int levelsForWindow(int width, int height)
+    {
+        if (width <= 0 || height <= 0)
+            return 0;
+        int levels = 0;
+        int w = width, h = height;
+        do {
+            w = (w + kTile - 1) / kTile;
+            h = (h + kTile - 1) / kTile;
+            ++levels;
+        } while ((w > 1 || h > 1) && levels < kMaxLevels);
+        return levels;
+    }
+
+    static std::size_t bytesForWindow(int width, int height)
+    {
+        const int levels = levelsForWindow(width, height);
+        std::size_t n = 0;
+        int w = width, h = height;
+        for (int l = 1; l <= levels; ++l) {
+            w = (w + kTile - 1) / kTile;
+            h = (h + kTile - 1) / kTile;
+            n += static_cast<std::size_t>(w) * static_cast<std::size_t>(h);
+        }
+        return n * sizeof(float);
+    }
+
+    void build(const SurfaceMap& map)
+    {
+        _levelCount = levelsForWindow(map.width, map.height);
+        _width[0]   = map.width;
+        _height[0]  = map.height;
+        _offset[0]  = 0;
+
+        std::size_t total = 0;
+        for (int l = 1; l <= _levelCount; ++l) {
+            _width[l]  = (_width[l - 1] + kTile - 1) / kTile;
+            _height[l] = (_height[l - 1] + kTile - 1) / kTile;
+            _offset[l] = static_cast<std::ptrdiff_t>(total);
+            total += static_cast<std::size_t>(_width[l]) * static_cast<std::size_t>(_height[l]);
+        }
+        _tiles.resizeUninitialized(total);
+
+        for (int l = 1; l <= _levelCount; ++l) {
+            const float* src  = (l == 1) ? map.plane(SurfaceMap::kZFront) : level(l - 1);
+            const int    srcW = _width[l - 1];
+            const int    srcH = _height[l - 1];
+            float*       dst  = level(l);
+            const int    dstW = _width[l];
+            const int    dstH = _height[l];
+            for (int ty = 0; ty < dstH; ++ty) {
+                const int y0 = ty * kTile;
+                const int y1 = (y0 + kTile < srcH) ? y0 + kTile : srcH;
+                for (int tx = 0; tx < dstW; ++tx) {
+                    const int x0 = tx * kTile;
+                    const int x1 = (x0 + kTile < srcW) ? x0 + kTile : srcW;
+                    float m = SurfaceMap::kEmpty;
+                    for (int sy = y0; sy < y1; ++sy) {
+                        const float* row = src + static_cast<std::ptrdiff_t>(sy) * srcW;
+                        for (int sx = x0; sx < x1; ++sx)
+                            m = (row[sx] > m) ? row[sx] : m;
+                    }
+                    dst[static_cast<std::ptrdiff_t>(ty) * dstW + tx] = m;
+                }
+            }
+        }
+    }
+};
+
+struct FillSearchStats {
+    int tilesVisited  = 0;
+    int leavesVisited = 0;
+};
+
+struct BackgroundSource {
+    bool  found    = false;
+    int   qx       = 0;
+    int   qy       = 0;
+    float distance = 0.0f;
+};
+
+struct FillTileRef {
+    int level;
+    int tx;
+    int ty;
+};
+
+DEEPC_HD inline std::int64_t tileMinDistanceSq(int px, int py,
+                                               int x0, int x1, int y0, int y1)
+{
+    const int dx = (px < x0) ? (x0 - px) : ((px >= x1) ? (px - (x1 - 1)) : 0);
+    const int dy = (py < y0) ? (y0 - py) : ((py >= y1) ? (py - (y1 - 1)) : 0);
+    return static_cast<std::int64_t>(dx) * dx + static_cast<std::int64_t>(dy) * dy;
+}
+
+// Ties in distance resolve to the lowest y, then the lowest x, whatever
+// order the tiles are walked in.
+DEEPC_HD inline bool precedesInScan(std::int64_t d2, int y, int x,
+                                    std::int64_t bestD2, int bestY, int bestX)
+{
+    if (d2 != bestD2)
+        return d2 < bestD2;
+    if (y != bestY)
+        return y < bestY;
+    return x < bestX;
+}
+
+// ---------------------------------------------------------------------------
+// nearestBackground — the nearest qualifying Q within reachPx of P, by
+// branch-and-bound over the pyramid: a tile is skipped when its max zFront
+// cannot beat the threshold at the tile's nearest point, or when that point
+// is already farther than the best found.  Explicit stack, children ordered
+// nearest-first, no allocation.  P is (px, py) in map-local coordinates.
+// ---------------------------------------------------------------------------
+DEEPC_HD inline BackgroundSource nearestBackground(const SurfaceMap&      map,
+                                                   const MaxDepthPyramid& pyramid,
+                                                   const FillPredicate&   pred,
+                                                   int px, int py,
+                                                   float zBackP, float stepP,
+                                                   int reachPx,
+                                                   FillSearchStats* stats)
+{
+    BackgroundSource out;
+    const int levels = pyramid.levelCount();
+    if (levels <= 0 || reachPx < 0)
+        return out;
+
+    const std::int64_t reach2 = static_cast<std::int64_t>(reachPx) * reachPx;
+    std::int64_t bestD2 = reach2 + 1;
+    int bestX = 0, bestY = 0;
+
+    const float* zFront = map.plane(SurfaceMap::kZFront);
+
+    FillTileRef stack[MaxDepthPyramid::kMaxLevels * MaxDepthPyramid::kTile * MaxDepthPyramid::kTile + 1];
+    int sp = 0;
+    stack[sp++] = FillTileRef{levels, 0, 0};
+
+    while (sp > 0) {
+        const FillTileRef t = stack[--sp];
+        const int shift = MaxDepthPyramid::kTileShift * t.level;
+        const int x0 = t.tx << shift;
+        const int y0 = t.ty << shift;
+        const int x1 = ((x0 + (1 << shift)) < map.width)  ? (x0 + (1 << shift)) : map.width;
+        const int y1 = ((y0 + (1 << shift)) < map.height) ? (y0 + (1 << shift)) : map.height;
+
+        const std::int64_t d2 = tileMinDistanceSq(px, py, x0, x1, y0, y1);
+        if (d2 > reach2 || d2 > bestD2)
+            continue;
+        if (stats)
+            ++stats->tilesVisited;
+
+        const float tileMax = pyramid.level(t.level)[static_cast<std::ptrdiff_t>(t.ty) * pyramid.width(t.level) + t.tx];
+        if (!qualifiesAsBackground(pred, zBackP, stepP, std::sqrt(static_cast<float>(d2)), tileMax))
+            continue;
+
+        if (t.level == 1) {
+            for (int y = y0; y < y1; ++y) {
+                const float* row = zFront + static_cast<std::ptrdiff_t>(y) * map.width;
+                for (int x = x0; x < x1; ++x) {
+                    if (stats)
+                        ++stats->leavesVisited;
+                    const std::int64_t dx = x - px;
+                    const std::int64_t dy = y - py;
+                    const std::int64_t q2 = dx * dx + dy * dy;
+                    if (q2 > reach2 || !precedesInScan(q2, y, x, bestD2, bestY, bestX))
+                        continue;
+                    if (!qualifiesAsBackground(pred, zBackP, stepP, std::sqrt(static_cast<float>(q2)), row[x]))
+                        continue;
+                    bestD2 = q2;
+                    bestX  = x;
+                    bestY  = y;
+                }
+            }
+            continue;
+        }
+
+        // Children go on the stack farthest-first so the nearest pops first
+        // and the distance bound tightens before the far ones are examined;
+        // the exact tie rule makes the answer independent of this order.
+        const int childLevel = t.level - 1;
+        const int childShift = MaxDepthPyramid::kTileShift * childLevel;
+        const int childW = pyramid.width(childLevel);
+        const int childH = pyramid.height(childLevel);
+        FillTileRef  child[MaxDepthPyramid::kTile * MaxDepthPyramid::kTile];
+        std::int64_t childD2[MaxDepthPyramid::kTile * MaxDepthPyramid::kTile];
+        int n = 0;
+        for (int j = 0; j < MaxDepthPyramid::kTile; ++j) {
+            const int cy = (t.ty << MaxDepthPyramid::kTileShift) + j;
+            if (cy >= childH)
+                break;
+            for (int i = 0; i < MaxDepthPyramid::kTile; ++i) {
+                const int cx = (t.tx << MaxDepthPyramid::kTileShift) + i;
+                if (cx >= childW)
+                    break;
+                const int cx0 = cx << childShift;
+                const int cy0 = cy << childShift;
+                const int cx1 = ((cx0 + (1 << childShift)) < map.width)  ? (cx0 + (1 << childShift)) : map.width;
+                const int cy1 = ((cy0 + (1 << childShift)) < map.height) ? (cy0 + (1 << childShift)) : map.height;
+                const std::int64_t cd2 = tileMinDistanceSq(px, py, cx0, cx1, cy0, cy1);
+                int k = n++;
+                while (k > 0 && childD2[k - 1] < cd2) {
+                    child[k]   = child[k - 1];
+                    childD2[k] = childD2[k - 1];
+                    --k;
+                }
+                child[k]   = FillTileRef{childLevel, cx, cy};
+                childD2[k] = cd2;
+            }
+        }
+        for (int k = 0; k < n; ++k)
+            stack[sp++] = child[k];
+    }
+
+    if (bestD2 > reach2)
+        return out;
+    out.found    = true;
+    out.qx       = map.x + bestX;
+    out.qy       = map.y + bestY;
+    out.distance = std::sqrt(static_cast<float>(bestD2));
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// findBackgroundSource — the two-tier query for absolute pixel (x, y): the
+// nearest qualifying source within primaryReachPx, else within
+// fallbackReachPx, else none.  Both reaches must not exceed the extension the
+// map was built with, so every query sees its whole disc whatever band the
+// map was windowed for.
+// ---------------------------------------------------------------------------
+DEEPC_HD inline BackgroundSource findBackgroundSource(const SurfaceMap&      map,
+                                                      const MaxDepthPyramid& pyramid,
+                                                      int x, int y,
+                                                      int primaryReachPx,
+                                                      int fallbackReachPx,
+                                                      const FillPredicate& pred = FillPredicate(),
+                                                      FillSearchStats*     stats = nullptr)
+{
+    if (!map.contains(x, y) || map.empty(map.index(x, y)))
+        return BackgroundSource();
+
+    const float zBackP = map.plane(SurfaceMap::kZBack)[map.index(x, y)];
+    const float stepP  = localDepthStep(map, x, y);
+    const int   px     = x - map.x;
+    const int   py     = y - map.y;
+
+    BackgroundSource r = nearestBackground(map, pyramid, pred, px, py, zBackP, stepP,
+                                           primaryReachPx, stats);
+    if (!r.found && fallbackReachPx > primaryReachPx)
+        r = nearestBackground(map, pyramid, pred, px, py, zBackP, stepP,
+                              fallbackReachPx, stats);
+    return r;
 }
 
 } // namespace deepc

@@ -52,6 +52,8 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdio>
+#include <functional>
 #include <limits>
 #include <mutex>
 #include <thread>
@@ -2795,6 +2797,553 @@ TEST_CASE("buildSurfaceMap: the extended window is band +/- (padY + reach) clipp
                 return VectorSamples{&row};
             });
         CHECK(!ok3);
+    }
+}
+
+// ===========================================================================
+// Background fill: the depth-aware nearest-source search
+// ===========================================================================
+
+namespace {
+
+// Scene (m)'s rigs, rebuilt from their constants rather than rendered: the
+// halo card (m1) and the receding ground plane (m3), on the plugin's own CoC
+// law so the map's radii are the ones the flatten would stage.
+constexpr int   kFillRigSize   = 256;
+constexpr int   kHaloX0        = 80;
+constexpr int   kHaloX1        = 176;
+constexpr float kHaloNearZ     = 4.0f;
+constexpr float kHaloFarZ      = 20.0f;
+constexpr float kNearCardZ     = 3.0f;
+constexpr int   kNearCardX1    = 192;
+constexpr float kGroundC       = 1720.0f;
+constexpr float kGroundHorizon = 300.0f;
+constexpr int   kRampInterior0 = 66;
+constexpr int   kRampInterior1 = 190;
+
+float groundDepth(int y)
+{
+    return kGroundC / (kGroundHorizon - static_cast<float>(y));
+}
+
+bool inHaloCard(int x, int y)
+{
+    return x >= kHaloX0 && x < kHaloX1 && y >= kHaloX0 && y < kHaloX1;
+}
+
+bool inNearCard(int x, int y)
+{
+    return x >= kHaloX1 && x < kNearCardX1 && y >= kHaloX0 && y < kHaloX1;
+}
+
+struct FillRig {
+    CocParams     coc;
+    DepthBuckets  buckets;
+    FlattenParams fp;
+};
+
+FillRig makeHaloFillRig()
+{
+    FillRig r;
+    r.coc     = makeManualRig(4.0f, kHaloFarZ);
+    r.buckets = makeBoundedDeltaCocBuckets(r.coc, kNearCardZ, kHaloFarZ, 16);
+    r.fp      = makeFlattenParams(r.coc, 1, true);
+    return r;
+}
+
+FillRig makeRampFillRig()
+{
+    FillRig r;
+    r.coc     = makeManualRig(86.0f, 10.0f);
+    r.buckets = makeBoundedDeltaCocBuckets(r.coc, groundDepth(0), groundDepth(kFillRigSize - 1), 16);
+    r.fp      = makeFlattenParams(r.coc, 1, true);
+    return r;
+}
+
+std::vector<SampleRecord> haloStack(int x, int y, bool nearCard)
+{
+    if (inHaloCard(x, y))
+        return {makeSample(kHaloNearZ, kHaloNearZ, 1.0f, {0.8f})};
+    if (nearCard && inNearCard(x, y))
+        return {makeSample(kNearCardZ, kNearCardZ, 1.0f, {0.5f})};
+    return {makeSample(kHaloFarZ, kHaloFarZ, 1.0f, {0.2f})};
+}
+
+std::vector<SampleRecord> rampStack(int, int y, float alpha)
+{
+    const float z = groundDepth(y);
+    return {makeSample(z, z, alpha, {0.4f * alpha})};
+}
+
+template <typename StackFn>
+void buildRigMap(SurfaceMap& map, const FillRig& rig,
+                 int bandY0, int bandY1, int padY, int reach, StackFn&& stackAt)
+{
+    std::vector<SampleRecord> row;
+    const bool ok = buildSurfaceMap(
+        map, rig.fp, rig.buckets,
+        0, kFillRigSize, 0, kFillRigSize,
+        0, kFillRigSize, 0, kFillRigSize,
+        bandY0, bandY1, padY, reach, 1,
+        [](int) { return true; },
+        [&](int x, int y) -> VectorSamples {
+            row = stackAt(x, y);
+            return VectorSamples{&row};
+        });
+    REQUIRE(ok);
+}
+
+void buildFullFrameMap(SurfaceMap& map, MaxDepthPyramid& pyramid, const FillRig& rig,
+                       const std::function<std::vector<SampleRecord>(int, int)>& stackAt)
+{
+    buildRigMap(map, rig, 0, kFillRigSize, 0, 0, stackAt);
+    pyramid.build(map);
+}
+
+// Independent restatement of the step rule: per axis the smaller of the two
+// opposite-neighbour |dz|, an absent neighbour deferring to the other side.
+float refLocalStep(const SurfaceMap& map, int x, int y)
+{
+    const float* zb = map.plane(SurfaceMap::kZBack);
+    const float  zP = zb[map.index(x, y)];
+    float g = 0.0f;
+    const int dirs[2][2] = {{1, 0}, {0, 1}};
+    for (const auto& d : dirs) {
+        std::vector<float> steps;
+        for (int s = -1; s <= 1; s += 2) {
+            const int nx = x + s * d[0], ny = y + s * d[1];
+            if (map.contains(nx, ny) && !map.empty(map.index(nx, ny)))
+                steps.push_back(std::fabs(zP - zb[map.index(nx, ny)]));
+        }
+        float axis = 0.0f;
+        if (!steps.empty())
+            axis = *std::min_element(steps.begin(), steps.end());
+        g = std::max(g, axis);
+    }
+    return g;
+}
+
+float refThreshold(const FillPredicate& pred, float zP, float g, float d)
+{
+    return zP + std::max(pred.depthTol * zP, pred.slope * g * d);
+}
+
+BackgroundSource bruteForceNearest(const SurfaceMap& map, int x, int y, int reach,
+                                   const FillPredicate& pred)
+{
+    BackgroundSource best;
+    const std::ptrdiff_t iP = map.index(x, y);
+    if (map.empty(iP))
+        return best;
+    const float zP = map.plane(SurfaceMap::kZBack)[iP];
+    const float g  = refLocalStep(map, x, y);
+    std::int64_t bestD2 = static_cast<std::int64_t>(reach) * reach + 1;
+    for (int qy = y - reach; qy <= y + reach; ++qy) {
+        for (int qx = x - reach; qx <= x + reach; ++qx) {
+            if (!map.contains(qx, qy))
+                continue;
+            const std::int64_t dx = qx - x, dy = qy - y;
+            const std::int64_t d2 = dx * dx + dy * dy;
+            if (d2 > bestD2 || d2 > static_cast<std::int64_t>(reach) * reach)
+                continue;
+            if (d2 == bestD2 && (qy > best.qy || (qy == best.qy && qx > best.qx)))
+                continue;
+            const std::ptrdiff_t iQ = map.index(qx, qy);
+            if (map.empty(iQ))
+                continue;
+            const float zQ = map.plane(SurfaceMap::kZFront)[iQ];
+            if (!(zQ > refThreshold(pred, zP, g, std::sqrt(static_cast<float>(d2)))))
+                continue;
+            bestD2 = d2;
+            best.found = true;
+            best.qx = qx;
+            best.qy = qy;
+            best.distance = std::sqrt(static_cast<float>(d2));
+        }
+    }
+    return best;
+}
+
+BackgroundSource bruteForceTiered(const SurfaceMap& map, int x, int y,
+                                  int primary, int fallback, const FillPredicate& pred)
+{
+    BackgroundSource r = bruteForceNearest(map, x, y, primary, pred);
+    if (!r.found && fallback > primary)
+        r = bruteForceNearest(map, x, y, fallback, pred);
+    return r;
+}
+
+bool sameSource(const BackgroundSource& a, const BackgroundSource& b)
+{
+    return a.found == b.found && (!a.found || (a.qx == b.qx && a.qy == b.qy && a.distance == b.distance));
+}
+
+// The margins each rig's intended decision clears the predicate by.
+struct RigMargins {
+    float haloAcceptBg  = 0.0f;
+    float rampReject    = 0.0f;
+    float nearRejectFg  = 0.0f;
+    float nearAcceptBg  = 0.0f;
+};
+
+float haloAcceptMargin(const SurfaceMap& map, const MaxDepthPyramid& pyr,
+                       const FillPredicate& pred, int reach)
+{
+    float worst = std::numeric_limits<float>::infinity();
+    for (int y = kHaloX0; y < kHaloX1; ++y) {
+        for (int x = kHaloX0; x < kHaloX1; ++x) {
+            const BackgroundSource s = findBackgroundSource(map, pyr, x, y, reach, reach, pred);
+            REQUIRE(s.found);
+            const float zP = map.plane(SurfaceMap::kZBack)[map.index(x, y)];
+            worst = std::min(worst, kHaloFarZ - refThreshold(pred, zP, refLocalStep(map, x, y), s.distance));
+        }
+    }
+    return worst;
+}
+
+float rampRejectMargin(const SurfaceMap& map, const FillPredicate& pred, int reach)
+{
+    // The ramp is x-invariant and the threshold grows with distance, so the
+    // closest-to-qualifying Q for any P lies in P's own column.
+    float worst = std::numeric_limits<float>::infinity();
+    const int x = kFillRigSize / 2;
+    for (int y = kRampInterior0; y < kRampInterior1; ++y) {
+        const float zP = map.plane(SurfaceMap::kZBack)[map.index(x, y)];
+        const float g  = refLocalStep(map, x, y);
+        for (int qy = std::max(0, y - reach); qy < std::min(kFillRigSize, y + reach + 1); ++qy) {
+            if (qy == y)
+                continue;
+            const float zQ = map.plane(SurfaceMap::kZFront)[map.index(x, qy)];
+            worst = std::min(worst, refThreshold(pred, zP, g, static_cast<float>(std::abs(qy - y))) - zQ);
+        }
+    }
+    return worst;
+}
+
+float nearCardRejectMargin(const SurfaceMap& map, const FillPredicate& pred, int reach)
+{
+    float worst = std::numeric_limits<float>::infinity();
+    for (int y = kHaloX0; y < kHaloX1; ++y) {
+        for (int x = kHaloX0; x < kHaloX1; ++x) {
+            const float zP = map.plane(SurfaceMap::kZBack)[map.index(x, y)];
+            const float g  = refLocalStep(map, x, y);
+            for (int qy = kHaloX0; qy < kHaloX1; ++qy) {
+                for (int qx = kHaloX1; qx < kNearCardX1; ++qx) {
+                    const float dx = static_cast<float>(qx - x), dy = static_cast<float>(qy - y);
+                    const float d  = std::sqrt(dx * dx + dy * dy);
+                    if (d > static_cast<float>(reach))
+                        continue;
+                    worst = std::min(worst, refThreshold(pred, zP, g, d) - kNearCardZ);
+                }
+            }
+        }
+    }
+    return worst;
+}
+
+} // namespace
+
+TEST_CASE("fill predicate constants: margins on the halo card, the ramp and the near-card "
+          "control, for the shipped pair and the sweep around it")
+{
+    const FillRig halo = makeHaloFillRig();
+    const FillRig ramp = makeRampFillRig();
+
+    SurfaceMap haloMap, nearMap, rampMap;
+    MaxDepthPyramid haloPyr, nearPyr, rampPyr;
+    buildFullFrameMap(haloMap, haloPyr, halo, [](int x, int y) { return haloStack(x, y, false); });
+    buildFullFrameMap(nearMap, nearPyr, halo, [](int x, int y) { return haloStack(x, y, true); });
+    buildFullFrameMap(rampMap, rampPyr, ramp, [](int x, int y) { return rampStack(x, y, 1.0f); });
+
+    CHECK(haloMap.plane(SurfaceMap::kRadius)[haloMap.index(100, 100)] == 16.0f);
+    CHECK(haloMap.plane(SurfaceMap::kRadius)[haloMap.index(10, 10)]   == 0.0f);
+    CHECK(rampMap.plane(SurfaceMap::kRadius)[rampMap.index(10, 128)]  == 0.0f);
+    CHECK(rampMap.plane(SurfaceMap::kRadius)[rampMap.index(10, 0)]    == doctest::Approx(64.0f).epsilon(1e-4));
+
+    for (int y = 0; y < kFillRigSize; y += 7)
+        for (int x = 0; x < kFillRigSize; x += 5) {
+            CHECK(localDepthStep(haloMap, x, y) == refLocalStep(haloMap, x, y));
+            CHECK(localDepthStep(nearMap, x, y) == refLocalStep(nearMap, x, y));
+            CHECK(localDepthStep(rampMap, x, y) == refLocalStep(rampMap, x, y));
+        }
+    CHECK(localDepthStep(haloMap, kHaloX0, 100) == 0.0f);
+    CHECK(localDepthStep(haloMap, kHaloX1 - 1, kHaloX1 - 1) == 0.0f);
+    CHECK(localDepthStep(nearMap, kHaloX1, 100) == 0.0f);
+    CHECK(localDepthStep(rampMap, 100, 100) == doctest::Approx(groundDepth(100) - groundDepth(99)));
+
+    const int reach = 100;
+    const float tols[]   = {0.01f, 0.02f, 0.05f};
+    const float slopes[] = {2.0f, 4.0f, 8.0f};
+    std::printf("\nfill predicate margins (reach %d px): tol slope | halo-accept-bg  ramp-reject  "
+                "near-reject-fg  near-accept-bg\n", reach);
+    for (float tol : tols) {
+        for (float slope : slopes) {
+            const FillPredicate pred{tol, slope};
+            RigMargins m;
+            m.haloAcceptBg = haloAcceptMargin(haloMap, haloPyr, pred, reach);
+            m.rampReject   = rampRejectMargin(rampMap, pred, reach);
+            m.nearRejectFg = nearCardRejectMargin(nearMap, pred, reach);
+            m.nearAcceptBg = haloAcceptMargin(nearMap, nearPyr, pred, reach);
+            std::printf("  %.2f  %4.1f  | %14.3f  %11.3f  %14.3f  %14.3f\n",
+                        tol, slope, m.haloAcceptBg, m.rampReject, m.nearRejectFg, m.nearAcceptBg);
+            if (slope == 2.0f)
+                CHECK(m.rampReject < 0.0f);
+        }
+    }
+
+    const FillPredicate shipped;
+    CHECK(shipped.depthTol == kFillDepthTol);
+    CHECK(shipped.slope == kFillSlope);
+    CHECK(haloAcceptMargin(haloMap, haloPyr, shipped, reach) > 15.0f);
+    CHECK(rampRejectMargin(rampMap, shipped, reach) > 0.1f);
+    CHECK(nearCardRejectMargin(nearMap, shipped, reach) > 1.0f);
+    CHECK(haloAcceptMargin(nearMap, nearPyr, shipped, reach) > 15.0f);
+}
+
+TEST_CASE("findBackgroundSource: every halo-card pixel finds the nearest background pixel, "
+          "matching a brute-force scan of the same predicate")
+{
+    const FillRig halo = makeHaloFillRig();
+    SurfaceMap map;
+    MaxDepthPyramid pyr;
+    buildFullFrameMap(map, pyr, halo, [](int x, int y) { return haloStack(x, y, false); });
+    CHECK(pyr.levelCount() == 4);
+
+    const int primary = 33, fallback = 100;
+    FillSearchStats stats;
+    int queries = 0;
+    for (int y = kHaloX0; y < kHaloX1; ++y) {
+        for (int x = kHaloX0; x < kHaloX1; ++x) {
+            const BackgroundSource s = findBackgroundSource(map, pyr, x, y, primary, fallback,
+                                                            FillPredicate(), &stats);
+            ++queries;
+            REQUIRE(s.found);
+            const int toEdge = std::min(std::min(x - kHaloX0 + 1, kHaloX1 - x),
+                                        std::min(y - kHaloX0 + 1, kHaloX1 - y));
+            CHECK(s.distance == static_cast<float>(toEdge));
+            CHECK(map.plane(SurfaceMap::kZFront)[map.index(s.qx, s.qy)] == kHaloFarZ);
+            const bool onRing = (x == kHaloX0 || x == kHaloX1 - 1 || y == kHaloX0 || y == kHaloX1 - 1);
+            if (onRing || ((x - kHaloX0) % 4 == 0 && (y - kHaloX0) % 4 == 0)) {
+                const BackgroundSource ref = bruteForceTiered(map, x, y, primary, fallback, FillPredicate());
+                CHECK(sameSource(s, ref));
+            }
+        }
+    }
+    std::printf("\nhalo card search cost: %d queries, %.2f tiles and %.2f leaves per query\n",
+                queries, static_cast<double>(stats.tilesVisited) / queries,
+                static_cast<double>(stats.leavesVisited) / queries);
+    CHECK(stats.leavesVisited < queries * 48);
+
+    SUBCASE("background pixels find nothing: the root tile's max is their own depth")
+    {
+        FillSearchStats bg;
+        for (int y = 0; y < kFillRigSize; y += 3) {
+            for (int x = 0; x < kFillRigSize; x += 3) {
+                if (inHaloCard(x, y))
+                    continue;
+                CHECK(!findBackgroundSource(map, pyr, x, y, primary, fallback, FillPredicate(), &bg).found);
+            }
+        }
+        CHECK(bg.leavesVisited == 0);
+    }
+
+    SUBCASE("an empty or out-of-map query is not found")
+    {
+        CHECK(!findBackgroundSource(map, pyr, -1, 10, primary, fallback).found);
+        CHECK(!findBackgroundSource(map, pyr, 10, kFillRigSize, primary, fallback).found);
+        SurfaceMap sparse;
+        MaxDepthPyramid sparsePyr;
+        buildFullFrameMap(sparse, sparsePyr, halo, [](int x, int y) {
+            return inHaloCard(x, y) ? std::vector<SampleRecord>() : haloStack(x, y, false);
+        });
+        CHECK(!findBackgroundSource(sparse, sparsePyr, 100, 100, primary, fallback).found);
+        CHECK(!findBackgroundSource(sparse, sparsePyr, 10, 100, primary, fallback).found);
+    }
+}
+
+TEST_CASE("findBackgroundSource: a nearer card beside the hole is never chosen, and the "
+          "background is still found around it")
+{
+    const FillRig halo = makeHaloFillRig();
+    SurfaceMap map;
+    MaxDepthPyramid pyr;
+    buildFullFrameMap(map, pyr, halo, [](int x, int y) { return haloStack(x, y, true); });
+
+    const int primary = 33, fallback = 100;
+    for (int y = kHaloX0; y < kHaloX1; ++y) {
+        for (int x = kHaloX0; x < kHaloX1; ++x) {
+            const BackgroundSource s = findBackgroundSource(map, pyr, x, y, primary, fallback);
+            REQUIRE(s.found);
+            CHECK(!inHaloCard(s.qx, s.qy));
+            CHECK(!inNearCard(s.qx, s.qy));
+            CHECK(map.plane(SurfaceMap::kZFront)[map.index(s.qx, s.qy)] == kHaloFarZ);
+            if ((x % 4 == 0 && y % 4 == 0) || x == kHaloX1 - 1) {
+                const BackgroundSource ref = bruteForceTiered(map, x, y, primary, fallback, FillPredicate());
+                CHECK(sameSource(s, ref));
+            }
+        }
+    }
+    const BackgroundSource edge = findBackgroundSource(map, pyr, kHaloX1 - 1, 128, primary, fallback);
+    CHECK(edge.distance == 17.0f);
+    CHECK(edge.qx == kNearCardX1);
+
+    SUBCASE("the near card itself sees the halo card as ITS background: the rule is depth "
+            "order, not identity")
+    {
+        const BackgroundSource s = findBackgroundSource(map, pyr, kHaloX1, 128, primary, fallback);
+        REQUIRE(s.found);
+        CHECK(s.distance == 1.0f);
+        CHECK(s.qx == kHaloX1 - 1);
+        CHECK(inHaloCard(s.qx, s.qy));
+        CHECK(sameSource(s, bruteForceTiered(map, kHaloX1, 128, primary, fallback, FillPredicate())));
+    }
+}
+
+TEST_CASE("findBackgroundSource: a receding plane finds nothing from any interior pixel, "
+          "opaque and at alpha 0.9; with the slope rule off it self-fills")
+{
+    const FillRig ramp = makeRampFillRig();
+    const int reach = 100;
+    for (float alpha : {1.0f, 0.9f}) {
+        CAPTURE(alpha);
+        SurfaceMap map;
+        MaxDepthPyramid pyr;
+        buildFullFrameMap(map, pyr, ramp, [alpha](int x, int y) { return rampStack(x, y, alpha); });
+
+        int found = 0;
+        for (int y = kRampInterior0; y < kRampInterior1; ++y)
+            for (int x = kRampInterior0; x < kRampInterior1; ++x)
+                found += findBackgroundSource(map, pyr, x, y, reach, reach).found ? 1 : 0;
+        CHECK(found == 0);
+
+        const FillPredicate noSlope{kFillDepthTol, 0.0f};
+        int selfFilled = 0, deeperRow = 0;
+        for (int y = kRampInterior0; y < kRampInterior1; ++y) {
+            for (int x = kRampInterior0; x < kRampInterior1; ++x) {
+                const BackgroundSource s = findBackgroundSource(map, pyr, x, y, reach, reach, noSlope);
+                selfFilled += s.found ? 1 : 0;
+                deeperRow  += (s.found && s.qy > y) ? 1 : 0;
+                if (x == 128 && y % 16 == 0)
+                    CHECK(sameSource(s, bruteForceTiered(map, x, y, reach, reach, noSlope)));
+            }
+        }
+        const int interior = (kRampInterior1 - kRampInterior0) * (kRampInterior1 - kRampInterior0);
+        CHECK(selfFilled == interior);
+        CHECK(deeperRow == interior);
+    }
+}
+
+TEST_CASE("findBackgroundSource: a uniform-depth field answers none at the root, visiting "
+          "no leaf")
+{
+    const FillRig halo = makeHaloFillRig();
+    SurfaceMap map;
+    MaxDepthPyramid pyr;
+    buildFullFrameMap(map, pyr, halo, [](int, int) {
+        return std::vector<SampleRecord>{makeSample(kHaloFarZ, kHaloFarZ, 1.0f, {0.2f})};
+    });
+    REQUIRE(pyr.levelCount() == 4);
+    CHECK(pyr.width(4) == 1);
+    CHECK(pyr.height(4) == 1);
+    CHECK(pyr.level(4)[0] == kHaloFarZ);
+    CHECK(pyr.width(1) == 64);
+    CHECK(MaxDepthPyramid::bytesForWindow(kFillRigSize, kFillRigSize)
+          == (64u * 64u + 16u * 16u + 4u * 4u + 1u) * sizeof(float));
+
+    FillSearchStats stats;
+    int queries = 0;
+    for (int y = 0; y < kFillRigSize; y += 5) {
+        for (int x = 0; x < kFillRigSize; x += 5) {
+            CHECK(!findBackgroundSource(map, pyr, x, y, 100, 100, FillPredicate(), &stats).found);
+            ++queries;
+        }
+    }
+    CHECK(stats.tilesVisited == queries);
+    CHECK(stats.leavesVisited == 0);
+    std::printf("\nuniform field search cost: %d queries, %d tiles, %d leaves\n",
+                queries, stats.tilesVisited, stats.leavesVisited);
+
+    SUBCASE("a two-tier query on the same field costs one root visit per tier")
+    {
+        FillSearchStats two;
+        CHECK(!findBackgroundSource(map, pyr, 40, 40, 2, 100, FillPredicate(), &two).found);
+        CHECK(two.tilesVisited == 2);
+        CHECK(two.leavesVisited == 0);
+    }
+}
+
+TEST_CASE("findBackgroundSource: the fallback tier reaches what the primary cannot")
+{
+    const FillRig halo = makeHaloFillRig();
+    SurfaceMap map;
+    MaxDepthPyramid pyr;
+    buildFullFrameMap(map, pyr, halo, [](int x, int y) { return haloStack(x, y, false); });
+
+    const int x = kHaloX0 + 10, y = 128;
+    const BackgroundSource far = findBackgroundSource(map, pyr, x, y, 2, 100);
+    REQUIRE(far.found);
+    CHECK(far.distance == 11.0f);
+    CHECK(far.qx == kHaloX0 - 1);
+    CHECK(far.qy == y);
+
+    CHECK(!findBackgroundSource(map, pyr, x, y, 2, 2).found);
+    CHECK(!findBackgroundSource(map, pyr, x, y, 2, 10).found);
+    CHECK(findBackgroundSource(map, pyr, x, y, 2, 11).found);
+    CHECK(findBackgroundSource(map, pyr, x, y, 11, 11).found);
+    CHECK(findBackgroundSource(map, pyr, x, y, 100, 2).found);
+}
+
+TEST_CASE("findBackgroundSource: band invariance -- two maps windowed differently around a "
+          "pixel's full reach disc answer identically")
+{
+    const FillRig halo = makeHaloFillRig();
+    const int primary = 33, fallback = 60;
+
+    SurfaceMap wide, narrow;
+    MaxDepthPyramid widePyr, narrowPyr;
+    buildRigMap(wide, halo, 100, 140, 5, fallback, [](int x, int y) { return haloStack(x, y, false); });
+    buildRigMap(narrow, halo, 120, 124, 2, fallback, [](int x, int y) { return haloStack(x, y, false); });
+    widePyr.build(wide);
+    narrowPyr.build(narrow);
+    REQUIRE(wide.y == 35);
+    REQUIRE(wide.height == 170);
+    REQUIRE(narrow.y == 58);
+    REQUIRE(narrow.height == 128);
+    CHECK(widePyr.levelCount() == 4);
+    CHECK(narrowPyr.levelCount() == 4);
+
+    for (int y = 120; y < 124; ++y) {
+        for (int x = kHaloX0; x < kHaloX1; ++x) {
+            const BackgroundSource a = findBackgroundSource(wide, widePyr, x, y, primary, fallback);
+            const BackgroundSource b = findBackgroundSource(narrow, narrowPyr, x, y, primary, fallback);
+            REQUIRE(a.found);
+            CHECK(sameSource(a, b));
+            CHECK(a.qx == b.qx);
+            CHECK(a.qy == b.qy);
+            CHECK(a.distance == b.distance);
+        }
+    }
+    const BackgroundSource a = findBackgroundSource(wide, widePyr, 120, 122, primary, fallback);
+    CHECK(a.distance == 41.0f);
+    CHECK(a.qx == kHaloX0 - 1);
+    CHECK(a.qy == 122);
+}
+
+TEST_CASE("pruneSynthesis: an opaque P is pruned iff the source's disc is at least its own; "
+          "a semi-transparent P never is")
+{
+    const float rP = 16.0f;
+    CHECK(pruneSynthesis(0.0f, rP, rP));
+    CHECK(pruneSynthesis(0.0f, rP, rP + 0.001f));
+    CHECK(!pruneSynthesis(0.0f, rP, rP - 0.001f));
+    CHECK(!pruneSynthesis(0.0f, rP, 0.0f));
+    CHECK(pruneSynthesis(kFillDeficitTol, rP, rP));
+    CHECK(!pruneSynthesis(kFillDeficitTol * 2.0f, rP, rP));
+
+    for (float t : {0.1f, 0.5f, 1.0f}) {
+        CHECK(!pruneSynthesis(t, rP, rP));
+        CHECK(!pruneSynthesis(t, rP, rP + 100.0f));
+        CHECK(!pruneSynthesis(t, rP, 0.0f));
     }
 }
 
