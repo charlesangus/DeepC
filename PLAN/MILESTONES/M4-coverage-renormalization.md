@@ -895,3 +895,19 @@ including.
   difference was a de-localised path). The user asked for a **Codex review of the PR before
   merge**, overriding this run's `--no-review`.
 
+- 2026-09-11 — **PR #106 reviewed by Codex (quota: 5h 0%, 7d 12%), 7 findings, one round, merged
+  `c9a36d3`.** F0 (major) was real: an exact 1 px diameter (`radius == kSharpRadiusPx`) went
+  through the LUT, bit-identical to the sharp path at `edge_softness ≤ 1` but a soft 3×3 above it,
+  so d=1 differed in colour, alpha, coverage and arrival at softness 2/4. Fixed in `4be308c`:
+  predicate `!(radius > sharpRadius)` at both deposit sites and in `scatterKernelBin`, doctest
+  pinning bit-identity at softness 0/1/2/4, the kernel-bin edge test re-specified to
+  floor-is-sharp. F1 (major, "residual radius should come from the deepest sample even at α=0")
+  declined with a measurement — α=0 samples are dropped before staging, so both cases follow one
+  rule ("an α=0 sample is not a surface"); the residual takes the deepest *surface's* radius so
+  `alpha/arrival` recovers the true alpha (0.900000 today vs 0.866486 under the reviewer's rule);
+  pinned by a doctest. F2 (doctest DeepToImage oracle) declined — scene (a) is the bit-exact gate.
+  F3 hostguard-hook substring bypass fixed (only the `hostguard.sh` segment is exempt). F4/F5/F6
+  comment-policy cleanups; `src/` and `tests/*.cpp` now carry no plan/task references. Full suite
+  after the fixes: `109/2/11/1`, unchanged. `./docker-build.sh --linux` (release gate) not run in
+  this session — the user's to run against `master`.
+
