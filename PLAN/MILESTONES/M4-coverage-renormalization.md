@@ -395,7 +395,7 @@ behaviour, with no legacy knob. The "honest dip" contract is retired; docs, vali
     arrival deposit — both must fail; m5 writes readable EXRs at the expected paths.
   - size: M
 
-- [ ] M4.P3.T3 — Re-spec and re-pin the retired honest-dip contract
+- [x] M4.P3.T3 — Re-spec and re-pin the retired honest-dip contract
   - files: `tests/nuke/scenes.py` (scene (i); g4 at :1805 `G4_PIN, G4_BAND = 0.0325, 0.004`; the
     g5 cells at :1933–1941; l6 `hardTol=1.5e-02` at :2953; f2 `F2_HARD = 1.00` at :633 and f3
     `F3C_HARD = 2.0e-02`/`F3D_HARD = 5.0e-02` at :681–682 if they move),
@@ -841,3 +841,18 @@ including.
   `over_checker_m3_ramp_a0.9.exr`; on this build the board shows through 0 / 0 / 15376 interior px,
   on T0 4864 / 248 / 15376. **P3.T5 runs `--scenes m --out-dir <dir>` once per `.so`** (T0 at
   `~/deepc-baselines/M4-T0`) and puts the pairs in front of the user.
+
+- 2026-09-11 — **P3.T3 landed (`877bb23`): the honest-dip contract is re-specified.** The former reds
+  are green: i2 fill gate 5.96e-8 (T0 0.513, 24 px dip), i3 FG-colour ratio 2.2e-5, new i5b
+  non-vacuity guard (DeepMerge twin 0.292 vs sparse 0); c1 → term-count gate 5010·2⁻²⁴ (arrival
+  1+1.3e-6, fill inert); f3b → 5630·2⁻²⁴; l6 XFAIL retired into a plain 110·2⁻²⁴ gate (5.96e-8)
+  with l6b/c/d colour and doubled-size arms; f3g/f3h flipped PASS → **XFAIL** pinned at
+  +14.93/−20.39 and +5.44/−10.79 pt ± 0.50 (band = hard bound) — the background-radius mismatch
+  the node_help documents, predicted to 3 decimals by a kernel-geometry model and returned to the
+  T0 reading by the f3g2/f3h2 `background_depth` controls; g4 and g5×3 unchanged, g5 α=0.01
+  +0.0706 → +0.0707 (blended kernel; fill on == off since arrival is 1.06–1.09). c4 untouched
+  (1.671e-5 vs 1e-4). f3e/f3f remain the documented plain FAILs (f3e +87.2%, of which +77.4% is
+  the pre-fill composite over-read). Every re-pin mutation-tested (fill off / alpha-only fill /
+  perturbed pin). Oracle probe preserved at `~/deepc-baselines/M4-P3T3/`. Harness needs
+  `hostguard.sh --mem-gb 6` — the 3.84 GB default kills c_fog.
+
