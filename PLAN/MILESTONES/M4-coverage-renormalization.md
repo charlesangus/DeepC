@@ -320,7 +320,7 @@ behaviour, with no legacy knob. The "honest dip" contract is retired; docs, vali
     bound.
   - size: M
 
-- [ ] M4.P2.T4 — Re-confirm the share-side arrival deficit (c4 went green at M4.P1.T7)
+- [x] M4.P2.T4 — Re-confirm the share-side arrival deficit (c4 went green at M4.P1.T7)
   - files: investigation first — `src/DeepCDefocusScatter.h`
     (`scatterFragmentSpans()`/`scatterFragmentSharp()`'s arrival deposit,
     `compositePixelCoveragePartition()`), `tests/test_defocus_scatter.cpp`
@@ -739,3 +739,25 @@ including.
   (M4.P2.T3): a point sample's two-bucket partition is not linear under `over`, so
   absorb-vs-separate differ by a partition residual unrelated to the kernel. The absorb fuzz uses
   whole-weight samples and says so.
+
+- 2026-09-11 — **c4's mechanism is named: float accumulation order in the single K-independent
+  arrival plane, not a weight bug** (M4.P2.T4). The exact float products arrival receives, re-summed
+  in double, land on 1 to ≤ 1.7e-7 (the LUT's normalisation residual); a float replica in deposit
+  order reproduces the plane bit-for-bit. T7 fixed c4 by cutting the term count ~400× (114 vs
+  48,564 terms/pixel on a c4-shaped fixture at K=16), not by fixing a share value. Pinned at
+  `|arrival − target| ≤ n·2⁻²⁴ + 5e-7` with `n` the design's own term count, worst cell at 25% of
+  bound; three mutations caught (un-pool, drop `(1−f)/f` from arrival, skip the second pass).
+  c4 reads 1.671e-05 after P2.T2/T3 (was 1.397e-05), inside its 1e-4 gate, gate untouched.
+  **Standing risk:** anything that spreads arrival claims over large kernels — or a much larger
+  `max_radius` on volumetric content — re-opens c4 unless the plane accumulates in double or
+  pairwise. Un-pooling is only visible when the pooled radius is much smaller than the parts';
+  the near-focus split fixture is the load-bearing one.
+- 2026-09-11 — **c1 is red (1.472e-05 vs a 1e-6 gate) and was not on the expected-red roster.**
+  It read exactly 0 at T0/T6 only because alpha over-read and was clamped to 1; under P2.T2's
+  blend the sign flipped and the same accumulation family shows through in the per-bucket
+  numerator (alpha 0.9999506 at K=16, α=1 on the near-focus split fixture, arrival exact). Gate
+  untouched. **P3.T3 owns re-specifying c1** with a hard outer bound derived from the term-count
+  model, not an exact-1 expectation, and not a re-pin against new output.
+- 2026-09-11 — **Phase 4.2 complete** (T1 `—`, T2 `fc489c4`, T3 `bd5438c`, T4 `4924972`). Scene
+  status entering Phase 4.3: c1, i2, i3, g4, g5 red as expected (c1 newly so); everything else
+  in scenes (c) and (i) green; the full a–l roster is P3.T4's to explain against T0.
