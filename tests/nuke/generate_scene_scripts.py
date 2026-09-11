@@ -32,10 +32,11 @@ from harness import (                                            # noqa: E402
     resetScript, slab,
 )
 from scenes import (                                              # noqa: E402
-    GROUND_COLOR, GROUND_FOCUS, HALO_BG, HALO_FG, HALO_FOCUS, HALO_NEAR_Z,
-    HALO_RADIUS, HALO_SIZE, UNEQ_CARD_A, UNEQ_CARD_B,
+    CHECKER_CELL_PX, GROUND_COLOR, GROUND_FOCUS, HALO_BG, HALO_FG, HALO_FOCUS,
+    HALO_HOLDOUT_ALPHA, HALO_HOLDOUT_Z, HALO_NEAR_Z, HALO_RADIUS, HALO_SIZE,
+    UNEQ_CARD_A, UNEQ_CARD_B,
     _uneqAnchor, _uneqCard, groundPlane, haloBackground, haloForeground,
-    haloSparse, stripSource, texturedLayer,
+    haloHoldout, haloSparse, overChecker, stripSource, texturedLayer,
 )
 
 OUT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -286,6 +287,46 @@ CHECK_M_RAMP = (
     "DeepFromImage premultiplies the plane's already-premultiplied colour "
     "once more, and the harness reads the source's ratio from a stock "
     "flatten rather than assuming it."
+)
+
+CHECK_M_HOLDOUT = (
+    "Scene (m) -- coverage fill: fill and holdout commute (m4), and the "
+    "renders for the eye (m5)\n\n"
+    "The fill divides by the RAW arrival -- deposited before holdout "
+    "visibility is folded in -- while every colour and alpha deposit "
+    "carries that visibility. A full-frame %.1f-alpha card at z=%g, in "
+    "front of everything, therefore halves the numerator and leaves the "
+    "divisor alone: visibility is exactly %.1f at every depth, halving is "
+    "exact in float, so the held render must be the unheld one halved "
+    "wherever nothing saturates.\n\n"
+    "  m4a: the flat card over nothing (m2's rig, K=16), with and without "
+    "the holdout. Arrival is 1 everywhere, so held/unheld alpha is 0.5 at "
+    "EVERY pixel that carries alpha, to n x 2^-24 with n the disc's tap "
+    "count (5.4e-05); reads 1.7e-06. Colour scales by the same factor.\n"
+    "  m4b: the alpha-1 ramp (m3's rig, K=16), with and without the same "
+    "card. On rows 126/130 -- the two rows whose arrival is below 1 (0.972), "
+    "the rows the fill moves -- held/unheld is 0.5 at every pixel to "
+    "1.9e-06; reads exactly 0. That is the observable form of 'the fill "
+    "multiplier is the same with and without the card'. On every OTHER "
+    "row arrival exceeds 1 and the ratio is NOT 0.5: the unheld render "
+    "clamps its surplus to alpha 1 while the held one, at half, never "
+    "reaches the clamp and reads arrival/2 -- 0.6005 on rows 127/129, "
+    "~0.536 across the far field. The area model's saturation sets that, "
+    "not the fill (which never engages where arrival > 1); it is pinned "
+    "two-sided (+/- 0.004) as documented behaviour.\n\n"
+    "Folding visibility into the arrival deposit instead reads a ratio of "
+    "1 on every one of these pixels: the holdout's attenuation "
+    "renormalised straight back.\n\n"
+    "  m5: the m1 halo and both m3 ramps are also written over this %d px "
+    "checkerboard to --out-dir (default ~/deepc-validation/"
+    "over_checker_*.exr), to be compared by eye against a pre-fill build's "
+    "files from the same command. Where the board shows through is where "
+    "alpha is short; across the measured interior (rows/cols 66-189) it is "
+    "hidden completely under the halo and the alpha-1 ramp on a build "
+    "whose fill works, and shows through the halo band and rows 126/130 on "
+    "the pre-fill build."
+    % (HALO_HOLDOUT_ALPHA, HALO_HOLDOUT_Z, HALO_HOLDOUT_ALPHA,
+       CHECKER_CELL_PX)
 )
 
 
@@ -637,6 +678,9 @@ def buildSceneM(settings):
     haloNode.setXYpos(0, 220)
     haloNode["label"].setValue("m1: NO dip (was 0.27-0.52 deep), filled "
                                "band is FG colour")
+    haloBoard = overChecker(haloNode)
+    haloBoard.setXYpos(0, 320)
+    haloBoard["label"].setValue("m5: the halo over the board (for the eye)")
 
     alone = haloForeground()
     alone.setXYpos(250, 100)
@@ -649,8 +693,22 @@ def buildSceneM(settings):
                                 "profile, K=16)")
     stickyNote(CHECK_M, 480, 0)
 
+    # m4a: the same card over nothing, held out by the half-alpha card.
+    holdout = haloHoldout()
+    holdout.setXYpos(-170, 320)
+    holdout["label"].setValue("m4 holdout: full-frame alpha %.1f card at "
+                              "z=%g, in front of everything"
+                              % (HALO_HOLDOUT_ALPHA, HALO_HOLDOUT_Z))
+    heldCard = makeDefocus(bloomCell, alone, size=HALO_SIZE,
+                           focusDistance=HALO_FOCUS, cocMode="manual",
+                           holdout=holdout)
+    heldCard.setXYpos(250, 320)
+    heldCard["label"].setValue("m4a: exactly half of m2 at every pixel "
+                               "(arrival 1 everywhere)")
+
     # The ramp: scene (g)'s rig, both alphas, K=16.
     rampCell = settings.derive(k=16)
+    rampNodes = {}
     for alpha, xpos, label in (
             (1.0, -170, "m3a: EVERY interior row within 1/255 of 1"),
             (0.90, 90, "m3b: no near-focus row short of 0.9 - 1/255; "
@@ -663,7 +721,22 @@ def buildSceneM(settings):
                            focusDistance=GROUND_FOCUS, cocMode="manual")
         node.setXYpos(xpos, 540)
         node["label"].setValue("K=16; " + label)
+        rampNodes[alpha] = (ramp, node)
+        board = overChecker(node)
+        board.setXYpos(xpos, 640)
+        board["label"].setValue("m5: alpha %.2f ramp over the board (for "
+                                "the eye)" % alpha)
     stickyNote(CHECK_M_RAMP, 480, 420)
+
+    # m4b: the alpha-1 ramp held out by the same card.
+    heldRamp = makeDefocus(rampCell, rampNodes[1.0][0], size=86.0,
+                           focusDistance=GROUND_FOCUS, cocMode="manual",
+                           holdout=holdout)
+    heldRamp.setXYpos(-330, 540)
+    heldRamp["label"].setValue("m4b: half of m3a on rows 126/130 (arrival "
+                               "0.972); arrival/2 elsewhere (0.6005 at "
+                               "127/129)")
+    stickyNote(CHECK_M_HOLDOUT, 480, 900)
 
 
 SCENE_BUILDERS = [

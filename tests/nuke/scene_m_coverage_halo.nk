@@ -97,6 +97,22 @@ DeepCDefocus {
  xpos 0
  ypos 220
 }
+CheckerBoard2 {
+ inputs 0
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ boxsize 16
+ color0 {0.04 0.04 0.04 1}
+ color1 {0.85 0.85 0.85 1}
+ centerlinewidth 0
+ name CheckerBoard1
+}
+Merge2 {
+ inputs 2
+ name Merge1
+ label "m5: the halo over the board (for the eye)"
+ xpos 0
+ ypos 320
+}
 Constant {
  inputs 0
  color {0 0 0 0}
@@ -117,6 +133,7 @@ DeepFromImage {
  xpos 250
  ypos 100
 }
+set N2dfbb7b0 [stack 0]
 DeepCDefocus {
  coc_mode Manual
  focus_distance 20
@@ -135,9 +152,36 @@ StickyNote {
 }
 Constant {
  inputs 0
- color {0.4 0.55 0.7 1}
+ color {0 0 0 0.5}
  format "256 256 0 0 256 256 1 deepc_val_256"
  name Constant5
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 2
+ name DeepFromImage5
+ label "m4 holdout: full-frame alpha 0.5 card at z=2, in front of everything"
+ xpos -170
+ ypos 320
+}
+set N2dfecc40 [stack 0]
+push $N2dfbb7b0
+DeepCDefocus {
+ inputs 2
+ coc_mode Manual
+ focus_distance 20
+ size 4
+ name DeepCDefocus4
+ label "m4a: exactly half of m2 at every pixel (arrival 1 everywhere)"
+ xpos 250
+ ypos 320
+}
+Constant {
+ inputs 0
+ color {0.4 0.55 0.7 1}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant6
 }
 Expression {
  channel0 depth
@@ -145,24 +189,41 @@ Expression {
  name Expression3
 }
 DeepFromImage {
- name DeepFromImage5
+ name DeepFromImage6
  label "scene (g)'s ramp, alpha 1.00"
  xpos -170
  ypos 420
 }
+set N2e02aed0 [stack 0]
 DeepCDefocus {
  coc_mode Manual
  size 86
- name DeepCDefocus4
+ name DeepCDefocus5
  label "K=16; m3a: EVERY interior row within 1/255 of 1"
  xpos -170
  ypos 540
+}
+CheckerBoard2 {
+ inputs 0
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ boxsize 16
+ color0 {0.04 0.04 0.04 1}
+ color1 {0.85 0.85 0.85 1}
+ centerlinewidth 0
+ name CheckerBoard2
+}
+Merge2 {
+ inputs 2
+ name Merge2
+ label "m5: alpha 1.00 ramp over the board (for the eye)"
+ xpos -170
+ ypos 640
 }
 Constant {
  inputs 0
  color {0.36 0.495 0.63 0.9}
  format "256 256 0 0 256 256 1 deepc_val_256"
- name Constant6
+ name Constant7
 }
 Expression {
  channel0 depth
@@ -170,7 +231,7 @@ Expression {
  name Expression4
 }
 DeepFromImage {
- name DeepFromImage6
+ name DeepFromImage7
  label "scene (g)'s ramp, alpha 0.90"
  xpos 90
  ypos 420
@@ -178,10 +239,26 @@ DeepFromImage {
 DeepCDefocus {
  coc_mode Manual
  size 86
- name DeepCDefocus5
+ name DeepCDefocus6
  label "K=16; m3b: no near-focus row short of 0.9 - 1/255; m3c: near-focus surplus pinned +0.0734"
  xpos 90
  ypos 540
+}
+CheckerBoard2 {
+ inputs 0
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ boxsize 16
+ color0 {0.04 0.04 0.04 1}
+ color1 {0.85 0.85 0.85 1}
+ centerlinewidth 0
+ name CheckerBoard3
+}
+Merge2 {
+ inputs 2
+ name Merge3
+ label "m5: alpha 0.90 ramp over the board (for the eye)"
+ xpos 90
+ ypos 640
 }
 StickyNote {
  inputs 0
@@ -190,4 +267,23 @@ StickyNote {
  note_font_size 14
  xpos 480
  ypos 420
+}
+push $N2dfecc40
+push $N2e02aed0
+DeepCDefocus {
+ inputs 2
+ coc_mode Manual
+ size 86
+ name DeepCDefocus7
+ label "m4b: half of m3a on rows 126/130 (arrival 0.972); arrival/2 elsewhere (0.6005 at 127/129)"
+ xpos -330
+ ypos 540
+}
+StickyNote {
+ inputs 0
+ name StickyNote3
+ label "Scene (m) -- coverage fill: fill and holdout commute (m4), and the renders for the eye (m5)\n\nThe fill divides by the RAW arrival -- deposited before holdout visibility is folded in -- while every colour and alpha deposit carries that visibility. A full-frame 0.5-alpha card at z=2, in front of everything, therefore halves the numerator and leaves the divisor alone: visibility is exactly 0.5 at every depth, halving is exact in float, so the held render must be the unheld one halved wherever nothing saturates.\n\n  m4a: the flat card over nothing (m2's rig, K=16), with and without the holdout. Arrival is 1 everywhere, so held/unheld alpha is 0.5 at EVERY pixel that carries alpha, to n x 2^-24 with n the disc's tap count (5.4e-05); reads 1.7e-06. Colour scales by the same factor.\n  m4b: the alpha-1 ramp (m3's rig, K=16), with and without the same card. On rows 126/130 -- the two rows whose arrival is below 1 (0.972), the rows the fill moves -- held/unheld is 0.5 at every pixel to 1.9e-06; reads exactly 0. That is the observable form of 'the fill multiplier is the same with and without the card'. On every OTHER row arrival exceeds 1 and the ratio is NOT 0.5: the unheld render clamps its surplus to alpha 1 while the held one, at half, never reaches the clamp and reads arrival/2 -- 0.6005 on rows 127/129, ~0.536 across the far field. The area model's saturation sets that, not the fill (which never engages where arrival > 1); it is pinned two-sided (+/- 0.004) as documented behaviour.\n\nFolding visibility into the arrival deposit instead reads a ratio of 1 on every one of these pixels: the holdout's attenuation renormalised straight back.\n\n  m5: the m1 halo and both m3 ramps are also written over this 16 px checkerboard to --out-dir (default ~/deepc-validation/over_checker_*.exr), to be compared by eye against a pre-fill build's files from the same command. Where the board shows through is where alpha is short; across the measured interior (rows/cols 66-189) it is hidden completely under the halo and the alpha-1 ramp on a build whose fill works, and shows through the halo band and rows 126/130 on the pre-fill build."
+ note_font_size 14
+ xpos 480
+ ypos 900
 }

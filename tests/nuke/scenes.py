@@ -8,15 +8,17 @@ with its magnitude and pixel population, never patched.
 """
 
 import math
+import os
 
 import nuke
 
+from exrio import readExr
 from harness import (
     FORMAT_H, FORMAT_W, RGBA, SKIP, Check,
-    boolCheck, channelStats, compareImages, constant2d, cropDeep, deepHoldout,
-    deepMerge, deepMergeHoldout, deepToImage, depthRampLayer, formatBox,
-    insetBox, makeDefocus, pointLayer, rectangle2d, render, resetScript,
-    rowMeans, slab, stepProfile, tolCheck,
+    boolCheck, channelStats, compareImages, constant2d, cropDeep,
+    currentFormat, deepHoldout, deepMerge, deepMergeHoldout, deepToImage,
+    depthRampLayer, formatBox, insetBox, makeDefocus, pointLayer, rectangle2d,
+    render, resetScript, rowMeans, saveRender, slab, stepProfile, tolCheck,
 )
 
 
@@ -3038,6 +3040,47 @@ def haloSparse():
                           % (inside, HALO_NEAR_Z, HALO_FAR_Z))
 
 
+# The commutation holdout: a HALF-transparent full-frame card in front of
+# EVERYTHING (z=2, nearer than the halo card at z=4 and than any point of
+# the ramp, which starts at z=5.7).  Every source fragment then meets a
+# transmittance of exactly 0.5 at every depth the holdout LUT is sampled at
+# -- log-chord interpolation between equal ends is the end -- so the held
+# render is, per deposit, the unheld one halved, and halving is EXACT in
+# float.  What is left to check is what the node does with those halves.
+HALO_HOLDOUT_Z = 2.0
+HALO_HOLDOUT_ALPHA = 0.5
+
+
+def haloHoldout():
+    return pointLayer(constant2d((0.0, 0.0, 0.0, HALO_HOLDOUT_ALPHA)),
+                      HALO_HOLDOUT_Z, keepZeroAlpha=False, premult=True)
+
+
+# The board m5 composites over: 16 px cells, dark 0.04 / light 0.85 -- the
+# same board the kernel bake-off eyeballed the near-focus ramp on, so its
+# frames and these read alike.
+CHECKER_CELL_PX = 16
+CHECKER_DARK, CHECKER_LIGHT = 0.04, 0.85
+
+
+def checkerBoard():
+    node = nuke.nodes.CheckerBoard2()
+    node["format"].setValue(currentFormat())
+    node["boxsize"].setValue(CHECKER_CELL_PX)
+    node["color0"].setValue([CHECKER_DARK] * 3 + [1.0])
+    node["color1"].setValue([CHECKER_LIGHT] * 3 + [1.0])
+    node["centerlinewidth"].setValue(0)
+    node["linewidth"].setValue(0)
+    return node
+
+
+def overChecker(node):
+    """``node`` (a flat RGBA image) over the board."""
+    merge = nuke.nodes.Merge2(inputs=[checkerBoard(), node])
+    merge["operation"].setValue("over")
+    return merge
+
+
 def _cropToDepth(source, zNear, zFar):
     """Keep only the samples whose depth lies in [zNear, zFar]: the way to
     ask a deep source which of its layers is actually present at a pixel."""
@@ -3125,6 +3168,17 @@ def sceneM(settings):
           field is flat (m3a); at alpha 0.9 no row reads short (m3b), and the
           near-focus SURPLUS that the deficit-only fill cannot touch, and
           was never meant to, is pinned where it stands (m3c).
+      m4  fill and holdout commute -- the fill divides by the RAW arrival,
+          deposited before holdout visibility is folded in, while every
+          colour and alpha deposit carries that visibility: a 0.5-alpha
+          card in front of everything halves the numerator and leaves the
+          divisor alone.  On a flat card (m4a) and on the ramp's two
+          deficit rows (m4b) the held render is exactly half the unheld
+          one, to float precision; on the ramp's SURPLUS rows it is not,
+          and the number it reads there is pinned so nobody mistakes it
+          for a fill regression.
+      m5  the m1 and m3 renders written over a checkerboard, to be looked
+          at rather than measured: the paths are in the check's note.
 
     Every pin here was measured on an independent probe of the same
     geometry, never read off the build under test, and every alpha assertion
@@ -3177,6 +3231,17 @@ def sceneM(settings):
         cell = cell or settings
         return makeDefocus(cell, source, size=HALO_SIZE,
                            focusDistance=HALO_FOCUS, cocMode="manual")
+
+    # m5 bookkeeping: (tag, path, the plain render the file was made from).
+    # The over-checkerboard file is written from the SAME graph the cell
+    # measured, right after its render, so what the eye sees at that path
+    # is what the numbers above it describe.
+    kept = []
+
+    def keepOverChecker(node, tag, plain):
+        path = os.path.join(settings.outDir, "over_checker_%s.exr" % tag)
+        saveRender(overChecker(node), path, box=box)
+        kept.append((tag, path, plain))
 
     # ------------------------------------------------------------------
     # m0: the occluded-samples-present control.
@@ -3261,7 +3326,9 @@ def sceneM(settings):
              "its occluded background"))
 
     resetScript()
-    halo = render(settings, defocus(haloSparse()), "m_halo", box=box)
+    haloNode = defocus(haloSparse())
+    halo = render(settings, haloNode, "m_halo", box=box)
+    keepOverChecker(haloNode, "m1_halo", halo)
     haloAnnulus = annulusStats(halo, "A")
     dipDepth = 1.0 - haloAnnulus.minimum
     haloRow = [halo.at("A", x, 128) for x in range(silhouette[0],
@@ -3434,17 +3501,20 @@ def sceneM(settings):
         x, y = (rampBox[0] + rampBox[2]) // 2, (rampBox[1] + rampBox[3]) // 2
         return flat.at("R", x, y) / flat.at("A", x, y)
 
-    def rampRender(alpha):
+    def rampRender(alpha, holdout=None):
+        """(image, node); ``holdout`` is a builder, called AFTER the reset."""
         resetScript()
-        return render(m3Cell,
-                      makeDefocus(m3Cell, rampSource(alpha), size=size,
-                                  focusDistance=GROUND_FOCUS,
-                                  cocMode="manual"),
-                      "m_ramp_alpha%g" % alpha)
+        node = makeDefocus(m3Cell, rampSource(alpha), size=size,
+                           focusDistance=GROUND_FOCUS, cocMode="manual",
+                           holdout=holdout() if holdout else None)
+        return render(m3Cell, node,
+                      "m_ramp_alpha%g%s" % (alpha, "_held" if holdout
+                                            else "")), node
 
     # --- m3a: alpha 1.
     redRatio = sourceRatio(1.0)
-    opaque = rampRender(1.0)
+    opaque, opaqueNode = rampRender(1.0)
+    keepOverChecker(opaqueNode, "m3_ramp_a1", opaque)
     opaqueRows = rowMeans(opaque, "A", rampBox)
     opaquePixels = channelStats(opaque, "A", rampBox)
     worstRow = max(abs(v - 1.0) for v in opaqueRows)
@@ -3476,7 +3546,8 @@ def sceneM(settings):
     # --- m3b / m3c: alpha 0.9.
     m3Alpha = 0.90
     redRatio = sourceRatio(m3Alpha)
-    fog = rampRender(m3Alpha)
+    fog, fogNode = rampRender(m3Alpha)
+    keepOverChecker(fogNode, "m3_ramp_a0.9", fog)
     fogRows = rowMeans(fog, "A", rampBox)
     nearBand = [(y, v) for y, v in zip(rampRows, fogRows) if abs(y - 128) <= 3]
     nearMinY, nearMin = min(nearBand, key=lambda t: t[1])
@@ -3547,6 +3618,307 @@ def sceneM(settings):
                "pin.  Fill forced off leaves this cell exactly where it is",
         expectedFailure=True, hardTol=M3C_BAND,
         hardValue=abs(surplus - M3C_PIN) if inRange else float("inf")))
+
+    # ------------------------------------------------------------------
+    # m4: fill and holdout commute.
+    # ------------------------------------------------------------------
+    # The fill divides by the RAW arrival -- each kernel row is deposited
+    # into the arrival plane BEFORE holdout visibility is folded into it --
+    # while every colour and alpha deposit carries the visibility.  A
+    # holdout in front of everything therefore scales the numerator per
+    # fragment and leaves the divisor alone, and the held render must be
+    # the unheld one times the holdout's transmittance wherever the
+    # composite is linear in that scale.  Were visibility folded into the
+    # arrival deposit instead, a held-out pixel's arrival would fall short
+    # of 1 by exactly the holdout's attenuation and the fill would put the
+    # attenuation straight back: a holdout that does not hold out.  That is
+    # the mutation both cells are built to catch (under it, m4a's card reads
+    # a ratio of 1 instead of 0.5, and so do m4b's deficit rows).
+    #
+    # WHAT "FLOAT PRECISION" MEANS HERE.  Visibility is exactly 0.5 (see
+    # haloHoldout), so every held deposit is the unheld one halved; halving
+    # is exact in float and a sum of exactly-halved terms is exactly half
+    # the sum, so the held bucket planes are the unheld planes halved bit
+    # for bit, and so is the composite wherever nothing saturates.  The
+    # divisor is the same float in both renders.  The ONLY step that can
+    # part the two is saturation: the unheld pixel lands on 1 from either
+    # side by its own accumulation rounding and is clamped down when it
+    # lands above, while the held pixel, at 0.5, never is.  The ratio can
+    # therefore differ from 0.5 by at most half the unheld sum's rounding
+    # excess over 1, which is bounded by that sum's term count n times the
+    # float half-ulp 2^-24 (scene (c)'s c4 idiom, the design's own term
+    # count).  n is the tap count of a 16 px disc for m4a and the few 3x3 /
+    # 5x5 taps that reach a near-focus row, both buckets, for m4b.  The
+    # tolerance is n * 2^-24, applied TWO-SIDED: a ratio above 0.5 is a
+    # held-out pixel renormalised back up, below it one attenuated twice.
+    HALF_ULP = 2.0 ** -24
+    M4A_TERMS = int(math.ceil(math.pi * (radius + 1.0) ** 2))        # 908
+    M4A_TOL = M4A_TERMS * HALF_ULP                                   # 5.4e-05
+    M4B_TERMS = 32
+    M4B_TOL = M4B_TERMS * HALF_ULP                                   # 1.9e-06
+
+    def ratioField(held, unheld, region, channel="A", floor=0.0):
+        """Worst |held/unheld - 0.5| over ``region`` on pixels whose unheld
+        value exceeds ``floor``.  (worst, (x, y), count)."""
+        x0, y0, x1, y1 = region
+        worst, worstAt, count = 0.0, (x0, y0), 0
+        for y in range(y0, y1):
+            hRow, uRow = held.row(channel, y), unheld.row(channel, y)
+            for x in range(x0, x1):
+                i = x - unheld.x0
+                if not (0 <= i < unheld.width) or not uRow[i] > floor:
+                    continue
+                count += 1
+                deviation = abs(hRow[i] / uRow[i] - HALO_HOLDOUT_ALPHA)
+                if deviation > worst:
+                    worst, worstAt = deviation, (x, y)
+        return worst, worstAt, count
+
+    def pairField(held, unheld, region, channel):
+        """Worst |c_held/c_unheld - a_held/a_unheld|: the colour must scale
+        by the SAME factor as the alpha, pixel for pixel.  Pixels with no
+        colour or no alpha in the unheld render are skipped."""
+        x0, y0, x1, y1 = region
+        worst, worstAt, count = 0.0, (x0, y0), 0
+        for y in range(y0, y1):
+            hc, uc = held.row(channel, y), unheld.row(channel, y)
+            ha, ua = held.row("A", y), unheld.row("A", y)
+            for x in range(x0, x1):
+                i = x - unheld.x0
+                if not (0 <= i < unheld.width) or not (uc[i] > 0.0
+                                                        and ua[i] > 0.0):
+                    continue
+                count += 1
+                deviation = abs(hc[i] / uc[i] - ha[i] / ua[i])
+                if deviation > worst:
+                    worst, worstAt = deviation, (x, y)
+        return worst, worstAt, count
+
+    # --- m4a: the flat card over nothing (m2's rig), K=16, with and
+    # without the card.  Single-depth, so arrival is 1 everywhere and never
+    # above it (m2): every pixel that carries alpha must read exactly half.
+    m4Cell = settings.derive(k=16)
+    resetScript()
+    unheldCard = render(m4Cell, defocus(haloForeground(), m4Cell),
+                        "m_card_unheld", box=box)
+    resetScript()
+    heldCard = render(m4Cell,
+                      makeDefocus(m4Cell, haloForeground(), size=HALO_SIZE,
+                                  focusDistance=HALO_FOCUS, cocMode="manual",
+                                  holdout=haloHoldout()),
+                      "m_card_held", box=box)
+    worstRatio, worstAt, ratioCount = ratioField(heldCard, unheldCard, box)
+    interiorHeld = channelStats(heldCard, "A", deep)
+    checks.append(boolCheck(
+        "m", "m4a K=16 flat card, 0.5-alpha holdout in front: held/unheld "
+             "alpha is 0.5 at EVERY pixel with alpha",
+        worstRatio <= M4A_TOL and abs(interiorHeld.maximum - 0.5) <= M4A_TOL
+        and abs(interiorHeld.minimum - 0.5) <= M4A_TOL,
+        "worst |ratio - 0.5| %.2e at (%d,%d); held interior %.7f..%.7f"
+        % (worstRatio, worstAt[0], worstAt[1], interiorHeld.minimum,
+           interiorHeld.maximum),
+        "<= %.1e two-sided (%d terms x 2^-24); interior 0.5 +/- same"
+        % (M4A_TOL, M4A_TERMS),
+        population="%d px with unheld alpha > 0 (silhouette + %d px bloom), "
+                   "one bucket" % (ratioCount, int(radius)),
+        note="the card at z=%g behind a full-frame 0.5-alpha card at z=%g: "
+             "visibility is exactly 0.5 for every fragment, arrival is the "
+             "same 1 with and without it, so the held render is the unheld "
+             "one halved -- the fill divides by what ARRIVED, not by what "
+             "was let through.  Folding visibility into the arrival deposit "
+             "reads a ratio of 1 across the card instead: the holdout's "
+             "attenuation renormalised straight back"
+             % (HALO_NEAR_Z, HALO_HOLDOUT_Z)))
+    worstPair, pairAt, pairCount = 0.0, None, 0
+    for channel in ("R", "G", "B"):
+        w, at, n = pairField(heldCard, unheldCard, box, channel)
+        pairCount = n
+        if w > worstPair or pairAt is None:
+            worstPair, pairAt = w, (channel,) + at
+    checks.append(tolCheck(
+        "m", "m4a ...and the colour scales by the same factor as the alpha "
+             "(R, G, B)",
+        worstPair, M4A_TOL,
+        population="%d px x 3 channels" % pairCount,
+        note="worst |c_held/c_unheld - a_held/a_unheld| at %s@(%d,%d); the "
+             "premultiplied pair moves together through the holdout, the "
+             "fill and the clamp alike" % pairAt))
+
+    # --- m4b: the ramp (m3's rig, alpha 1, K=16) with and without the same
+    # card.  The unheld render is m3a's.  Rows 126/130 are the two rows
+    # whose arrival is below 1 (0.972), the rows the fill moves: there the
+    # held render must be exactly half the unheld one, which is the
+    # observable form of "the fill multiplier is the same float with and
+    # without the card" -- held = 0.5 * A * s_held against unheld = A * s
+    # with A * s on 1 (m3a), so the ratio is 0.5 * s_held / s, and it is
+    # 0.5 if and only if the two multipliers agree.  m3a is what pins that
+    # the multiplier is ENGAGED on these rows (0.972 -> 1); this cell adds
+    # that the card leaves it alone.  (The multiplier itself is not an
+    # output of the node; the ratio is the only way to read it from the
+    # outside.)
+    held, heldNode = rampRender(1.0, holdout=haloHoldout)
+    deficitRows = (126, 130)
+    worstRatio, worstAt, ratioCount = 0.0, None, 0
+    for y in deficitRows:
+        w, at, n = ratioField(held, opaque, (rampBox[0], y, rampBox[2], y + 1))
+        ratioCount += n
+        if w > worstRatio or worstAt is None:
+            worstRatio, worstAt = w, at
+    unheldDeficit = min(opaqueRows[rampRows.index(y)] for y in deficitRows)
+    heldRows = rowMeans(held, "A", rampBox)
+    ratioRows = [h / u for h, u in zip(heldRows, opaqueRows)]
+    checks.append(boolCheck(
+        "m", "m4b K=16 alpha 1 ramp, the arrival < 1 rows (126/130): "
+             "held/unheld alpha is 0.5 at every pixel",
+        worstRatio <= M4B_TOL and unheldDeficit >= 1.0 - tol,
+        "worst |ratio - 0.5| %.2e at (%d,%d); unheld row min %.6f"
+        % (worstRatio, worstAt[0], worstAt[1], unheldDeficit),
+        "<= %.1e two-sided (%d terms x 2^-24); unheld >= 1 - 1/255"
+        % (M4B_TOL, M4B_TERMS),
+        population="%d px, rows 126 and 130 x %d px"
+                   % (ratioCount, rampBox[2] - rampBox[0]),
+        note="row ratios 126:%.7f 128:%.7f 130:%.7f; arrival 0.972 on 126 "
+             "and 130, so the fill multiplies by 1/0.972 in both renders and "
+             "the halved numerator comes out exactly halved.  Folding "
+             "visibility into the arrival deposit halves the divisor too: "
+             "the held rows then read 1, ratio 1.0, the attenuation "
+             "renormalised away.  Row 128 is the focal row (arrival 1, the "
+             "sharp path) and reads 0.5 as well; it is reported, not gated"
+             % (ratioRows[rampRows.index(126)], ratioRows[rampRows.index(128)],
+                ratioRows[rampRows.index(130)])))
+    worstPair, pairAt, pairCount = 0.0, None, 0
+    for y in deficitRows:
+        w, at, n = pairField(held, opaque, (rampBox[0], y, rampBox[2], y + 1),
+                             "R")
+        pairCount += n
+        if w > worstPair or pairAt is None:
+            worstPair, pairAt = w, at
+    checks.append(tolCheck(
+        "m", "m4b ...and the colour scales by the same factor as the alpha "
+             "(R), same rows",
+        worstPair, M4B_TOL,
+        population="%d px" % pairCount,
+        note="worst |R_held/R_unheld - A_held/A_unheld| at (%d,%d)" % pairAt))
+
+    # --- m4b, the other rows: where arrival is ABOVE 1 the ratio is NOT
+    # 0.5, and that is documented behaviour, not a fill regression.  The
+    # unheld render saturates there -- the area composite clamps a row whose
+    # discs deliver 1.201 (rows 127/129) or ~1.072 (the far field) down to
+    # alpha 1 -- while the held render, at half that, has nothing to clamp
+    # and reads 0.5 * arrival.  So the ratio is arrival / 2: 0.6005 on the
+    # r = 0.5 rows, ~0.536 across the far field.  The area model's
+    # saturation sets that number; the deficit-only fill never engages on
+    # these rows (m3c) and has no part in it.  Whether a holdout under a
+    # surplus SHOULD scale linearly is a question about the area model,
+    # parked, not answered here.  Pinned two-sided against an independent
+    # probe of the same ramp (row 127 0.6005, row 118 0.5409, row 100
+    # 0.5368, far-field arrival 1.07198 -> 0.5360), the house 0.004 band.
+    M4B_PINS = [(127, 0.6005), (129, 0.6005), (118, 0.5409), (100, 0.5368)]
+    M4B_FAR_PIN, M4B_BAND = 0.5360, 0.004
+    M4B_NOT_HALF = 0.51
+    pinned = [(y, ratioRows[rampRows.index(y)], pin) for y, pin in M4B_PINS]
+    worstPin = max(abs(v - pin) for _, v, pin in pinned)
+    farRows = [(y, v) for y, v in zip(rampRows, ratioRows) if abs(y - 128) > 6]
+    farMean = sum(v for _, v in farRows) / float(len(farRows))
+    surplusRows = [(y, v) for y, v in zip(rampRows, ratioRows)
+                   if y not in (126, 128, 130)]
+    lowestY, lowest = min(surplusRows, key=lambda t: t[1])
+    checks.append(boolCheck(
+        "m", "m4b K=16 alpha 1 ramp, the arrival > 1 rows: held/unheld is "
+             "arrival/2, NOT 0.5 (pinned, documented)",
+        worstPin <= M4B_BAND and abs(farMean - M4B_FAR_PIN) <= M4B_BAND
+        and lowest >= M4B_NOT_HALF,
+        "rows %s; far-field mean %.4f; lowest surplus row %.4f at y=%d"
+        % (" ".join("%d:%.4f" % (y, v) for y, v, _ in pinned), farMean,
+           lowest, lowestY),
+        "rows 127/129 0.6005, 118 0.5409, 100 0.5368, far mean %.4f, each "
+        "+/- %.3f; every other row >= %.2f" % (M4B_FAR_PIN, M4B_BAND,
+                                                M4B_NOT_HALF),
+        population="%d rows x %d px, rows %d-%d less 126/128/130"
+                   % (len(surplusRows), rampBox[2] - rampBox[0], rampRows[0],
+                      rampRows[-1]),
+        note="the unheld render clamps a 1.201 / ~1.072 arrival to alpha 1 "
+             "(the area model's saturation); the held one, at half that, "
+             "never reaches the clamp and reads arrival/2.  The fill is not "
+             "involved on any of these rows (arrival > 1, deficit-only), so "
+             "this is the composite's documented behaviour under a holdout, "
+             "not a fill regression -- a ratio of 0.5 HERE would mean the "
+             "surplus had gone, which is m3c's pin to move, not this one's"))
+
+    # ------------------------------------------------------------------
+    # m5: the m1 and m3 renders over a checkerboard, for the eye.
+    # ------------------------------------------------------------------
+    # Written by keepOverChecker() from the very graphs m1/m3a/m3b measured,
+    # to settings.outDir (--out-dir; outside the repo tree).  The check is
+    # that each file is there, reads back as a 256x256 RGBA float EXR, and
+    # IS the render over THIS board: over = render + (1 - alpha) * board at
+    # every pixel, against the board rendered on its own.  How much board
+    # shows is the render's alpha, which is the thing to look at: the
+    # alpha-0.9 ramp lets 10% through everywhere (the board is visible and
+    # non-constant by construction), while the halo and the alpha-1 ramp
+    # hide it completely on a build whose fill works -- the pre-fill build
+    # showed it through the halo band and through rows 126/130.  The note
+    # counts the pixels where it is visible (alpha short of 1 by more than
+    # 1/255) per file, over the measured interior (m3's rampBox, which
+    # also holds the halo's silhouette and annulus): the band inside one
+    # frame-edge CoC of the frame edge is short on every build, because
+    # the deep image ends at the frame and nothing scatters in from beyond
+    # it -- scene (g) excludes it for the same reason.
+    resetScript()
+    board = render(settings, checkerBoard(), "m_checker", box=box)
+    boardDark = channelStats(board, "R", box)
+    OVER_TOL = 1.0e-06
+    files = []
+    worstOver, worstOverAt, worstTag = 0.0, (0, 0), ""
+    allOk = (abs(boardDark.minimum - CHECKER_DARK) <= OVER_TOL
+             and abs(boardDark.maximum - CHECKER_LIGHT) <= OVER_TOL)
+    for tag, path, plain in kept:
+        ok = os.path.isfile(path)
+        image = readExr(path) if ok else None
+        ok = ok and image.width == FORMAT_W and image.height == FORMAT_H \
+            and all(c in image.planes for c in RGBA)
+        showing, worst, worstAt = 0, 0.0, (0, 0)
+        if ok:
+            for y in range(box[1], box[3]):
+                alphaRow = plain.row("A", y)
+                for channel in ("R", "G", "B"):
+                    oRow, pRow, bRow = (image.row(channel, y),
+                                        plain.row(channel, y),
+                                        board.row(channel, y))
+                    for x in range(box[0], box[2]):
+                        alpha = alphaRow[x - plain.x0]
+                        expected = (pRow[x - plain.x0]
+                                    + (1.0 - alpha) * bRow[x - board.x0])
+                        deviation = abs(oRow[x - image.x0] - expected)
+                        if deviation > worst:
+                            worst, worstAt = deviation, (x, y)
+                if rampBox[1] <= y < rampBox[3]:
+                    for x in range(rampBox[0], rampBox[2]):
+                        if alphaRow[x - plain.x0] < 1.0 - ratioTol:
+                            showing += 1
+            ok = worst <= OVER_TOL
+        allOk = allOk and ok
+        if worst > worstOver:
+            worstOver, worstOverAt, worstTag = worst, worstAt, tag
+        files.append("%s: %s (%s; board visible at %d interior px)"
+                     % (tag, path, "ok" if ok else "MISSING/BAD", showing))
+    checks.append(boolCheck(
+        "m", "m5 over-checkerboard EXRs of m1 and m3 written for the eye",
+        allOk,
+        "%d files; worst |over - (render + (1-a)*board)| %.2e (%s@(%d,%d))"
+        % (len(kept), worstOver, worstTag, worstOverAt[0], worstOverAt[1]),
+        "%d files readable, %dx%d RGBA, each == render over the board to "
+        "%.0e" % (len(kept), FORMAT_W, FORMAT_H, OVER_TOL),
+        population="%d px x 3 channels per file" % ((box[2] - box[0])
+                                                    * (box[3] - box[1])),
+        note="; ".join(files) + ".  'Visible' = alpha < 1 - 1/255 inside "
+             "rows/cols %d-%d (the frame-edge band outside it is short on "
+             "every build: nothing scatters in from beyond the frame).  "
+             "Board: %d px cells, %.2f / %.2f (the kernel bake-off's).  "
+             "Compare a pre-fill build's files against these from the same "
+             "command with --out-dir pointed elsewhere"
+             % (rampBox[0], rampBox[2] - 1, CHECKER_CELL_PX, CHECKER_DARK,
+                CHECKER_LIGHT)))
     return checks
 
 
