@@ -428,7 +428,7 @@ behaviour, with no legacy knob. The "honest dip" contract is retired; docs, vali
     source or scene file still asserts the retired contract.
   - size: L
 
-- [ ] M4.P3.T4 — Full validation suite
+- [x] M4.P3.T4 — Full validation suite
   - files: none — verification only; any fix lands in the task that owns the code
   - approach: run both doctest suites and the full a–l+m harness on a clean rebuild, with
     `DEEPC_PLUGIN_DIR` pinned to the fresh `build/local-17.0/src` and **never** the stale `-O3`
@@ -855,4 +855,28 @@ including.
   the pre-fill composite over-read). Every re-pin mutation-tested (fill off / alpha-only fill /
   perturbed pin). Oracle probe preserved at `~/deepc-baselines/M4-P3T3/`. Harness needs
   `hostguard.sh --mem-gb 6` — the 3.84 GB default kills c_fog.
+
+- 2026-09-11 — **P3.T4 full suite on a clean rebuild (`ee943f2`): doctests 2/2 (27 + 90 cases);
+  harness a–m `PASS=109 FAIL=2 XFAIL=11 SKIP=1`** against T0's `86/2/9/1` over a–l. Logs at
+  `~/deepc-validation/M4-P3T4/` (run as two foreground halves, a–f and g–m, `--mem-gb 5.5`: the
+  host's other load leaves ~6 GB and background runs were killed). Every delta from T0, row by row:
+  **(1)** scene (m) +19 rows, 18 PASS + m3c XFAIL, per P3.T1/T2. **(2)** the P3.T3 re-spec —
+  i2/i3/i4/i5 re-stated, i5b/l6b/l6c/l6d/f3g2/f3h2 new, l6 XFAIL → PASS 5.96e-8, f3g/f3h PASS →
+  XFAIL (bg-radius mismatch, pinned ±0.5 pt), c1 0 → 1.47e-5 and f3b → +0.002% inside their new
+  term-count gates, i7c/i7d and h3a re-worded for the blended kernel. **(3)** the kernel blend's
+  ulp-level movement, all PASS: g1–g3 ≤ 2.1e-6, h3c/h3d smaller, c2b/c3 ≤ 3.3e-5, f3c/f3d XFAIL
+  readings move in the 4th digit, g4 0.870724 → 0.870770, g5 +0.0706 → +0.0707 (α=0.01). **(4)**
+  the fill: l1/l2/l5 3.7e-3 → ≤ 1.6e-6, c4 1.397e-5 → 1.671e-5 (gate 1e-4). **(5)** **k5 was the
+  one true regression and it was the scene's premise**: pixel (128,128) on a 256 format is half a
+  pixel off-axis (`r_mm` 0.0994, factor 0.9999876, manual radius 5.0 → 5.000309 px); the old LUT
+  quantised both radii onto one entry and read 0, the blend resolves the shift at 3.77e-6 (LUT
+  alone predicts 3.758e-6). Re-specified against the analytic-Z oracle k3 already uses (reads 0);
+  new k5b pins the blend residual to the LUT prediction within 1e-7; mutations: factor-1 oracle
+  fails at 3.77e-6, k5b fails on the T0 `.so`. **(6)** f3e/f3f stay the documented plain FAILs
+  (M1.P3.T23's target); f3e +77.4% → +87.2% and f3f's worst cell +83.6% → +104.2% (now the
+  overlap-100% cell), the extra being the fill's background-radius mismatch f3g/f3h pin and the
+  node_help documents — flagged, not a gate. Must-hold gates (a) bit-exact, (c) 1.47e-5, (d), (e),
+  (h), (b)/(f) holdout parity, m4a/m4b all PASS; all 11 XFAILs carry hard bounds (f2, f3c, f3d,
+  f3g, f3h, g4, g5×4, m3c). Note for the Docker gate: `--clean-first --target DeepCDefocus` wipes
+  the tree's other plugins; rebuild the whole tree after any clean.
 
