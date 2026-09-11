@@ -22,7 +22,7 @@ Constraints from the board apply in full: no SIMD, `DEEPC_HD` header-only kernel
 
 ## Phase 5.1: Baseline, knobs, surface map
 
-- [ ] M5.P1.T1 — Preserve the M4-shipped `.so` as the `foreground` bit-identity oracle, and add a pure-python EXR diff
+- [x] M5.P1.T1 — Preserve the M4-shipped `.so` as the `foreground` bit-identity oracle, and add a pure-python EXR diff
   - files: `~/deepc-baselines/M5-T0/` (new, outside the repo), `tests/nuke/exrdiff.py` (new, ~25 lines on `tests/nuke/exrio.py`'s `readExr`)
   - approach: the tree is clean at `4be308c` and `build/local-17.0/src/DeepCDefocus.so` predates that commit by 11 minutes, so rebuild first to remove doubt: `cmake -S . -B build/local-17.0 -D Nuke_ROOT=/usr/local/Nuke17.0v3 -D DEEPC_BUILD_TESTS=ON` and `scripts/hostguard.sh -- cmake --build build/local-17.0 -j` (never `build/local-17.0-O3`). Copy `DeepCDefocus.so` to `~/deepc-baselines/M5-T0/` with `PROVENANCE.txt` (commit, date, SDK, build dir, `sha256sum`). Write `tests/nuke/exrdiff.py`: reads two EXRs with `exrio.readExr`, prints per-channel max |Δ| and max ulps over the intersection box, exits non-zero when any ulp differs — `harness.py` imports `nuke` so its `compareImages` cannot run outside Nuke. Then render scene (m)'s kept EXRs from this `.so`: `DEEPC_PLUGIN_DIR=$PWD/build/local-17.0/src scripts/hostguard.sh --mem-gb 6 -- tests/nuke/run_validation.sh --scenes a,m --out-dir ~/deepc-baselines/M5-T0/renders`. The full a–m tally is not re-run: `109/2/11/1` at `4be308c` is recorded in M4's decisions.
   - verify: the preserved `.so` loads in headless Nuke from its path; `--scenes a,m` reproduces `a` PASS and `m` `PASS=17 XFAIL=1`; `exrdiff.py` reports 0 ulps on a file against itself and non-zero on two different scene (m) EXRs; the three kept `over_checker_*.exr` and their paths are recorded in `## Decisions`.
@@ -97,4 +97,10 @@ Constraints from the board apply in full: no SIMD, `DEEPC_HD` header-only kernel
   `max_radius`, not pure 2D-nearest-any-surface** — beyond `fill_search` the nearest surface that is
   *behind* the hole; beyond `max_radius`, foreground colour as today. A pure 2D fallback would borrow a
   nearer object's colour into the hole beside it; n2 pins that this never happens at any distance.
+- 2026-09-11 — **P1.T1 landed (`a152241`).** Oracle `.so` at `~/deepc-baselines/M5-T0/DeepCDefocus.so`
+  (4be308c, sha256 `cf27bd0d…d5c74`, PROVENANCE.txt beside it); reference renders at
+  `~/deepc-baselines/M5-T0/renders/over_checker_{m1_halo,m3_ramp_a1,m3_ramp_a0.9}.exr` (only scene
+  (m)'s m5 writes to `--out-dir`; scene (a) keeps nothing — the cross-`.so` statement for (a) is its
+  in-Nuke bit-exact gate, re-run per build). `--scenes a,m` → `PASS=22 FAIL=0 XFAIL=1`.
+  `tests/nuke/exrdiff.py`: self-diff 0 ulps / exit 0, cross-diff 15.9M ulps / exit 1.
 
