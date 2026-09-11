@@ -378,7 +378,7 @@ behaviour, with no legacy knob. The "honest dip" contract is retired; docs, vali
     nobody has made fail proves nothing); the committed `.nk` reproduces each cell exactly.
   - size: L
 
-- [ ] M4.P3.T2 — Validation scene (m), cells m4 and m5
+- [x] M4.P3.T2 — Validation scene (m), cells m4 and m5
   - files: `tests/nuke/scenes.py`, `tests/nuke/scene_m_coverage_halo.nk`
   - approach: **m4 holdout commutation — RE-SPECIFIED 2026-09-11 (user ruling, see `## Decisions`):
     two cells.** "Ratio holds to float precision at every pixel" is false wherever arrival `D > 1`
@@ -826,3 +826,18 @@ including.
 - 2026-09-11 — **m3c's band is the XFAIL trigger; the `[0, +0.100]` range is the physical envelope**
   enforced additionally (`hardValue = inf` outside it) — g4's idiom. m2/m3 fix K=16 via
   `settings.derive(k=16)` because the pins are K-specific; m0/m1 run at the run's K.
+
+- 2026-09-11 — **Scene (m) complete (`e1cbbdc`): `PASS=17 FAIL=0 XFAIL=1`.** m4a worst |ratio−0.5|
+  1.73e-6 (bound 5.4e-5 from a 908-term sum — the unheld interior summed to 1.0000034 and was
+  clamped, the held one at 0.5 never is; that is the whole tolerance). m4b(1) bit-exact 0.5 on
+  rows 126/130 with the fill engaged; m4b(2) pins arrival/2 on the `D>1` rows (0.6005 / 0.5409 /
+  0.5368 / far 0.5360) matching `probe_hold.txt` row-for-row. Mutation (arrival from the vis-folded
+  row): m4a and m4b both fail by 0.500. On the T0 `.so` m4a passes trivially and m4b(1) fails its
+  "fill engaged" arm — the cell distinguishes "commutes because there is no fill" from "commutes
+  with the fill live".
+- 2026-09-11 — **The harness gained a kept output dir** (`Settings.outDir`, `--out-dir`, default
+  `~/deepc-validation`, `harness.saveRender()`) because it had none — `tmpDir` is deleted unless
+  `--keep-renders`. m5's EXRs: `over_checker_m1_halo.exr`, `over_checker_m3_ramp_a1.exr`,
+  `over_checker_m3_ramp_a0.9.exr`; on this build the board shows through 0 / 0 / 15376 interior px,
+  on T0 4864 / 248 / 15376. **P3.T5 runs `--scenes m --out-dir <dir>` once per `.so`** (T0 at
+  `~/deepc-baselines/M4-T0`) and puts the pairs in front of the user.
