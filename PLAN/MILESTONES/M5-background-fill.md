@@ -54,7 +54,7 @@ Constraints from the board apply in full: no SIMD, `DEEPC_HD` header-only kernel
   - verify: doctests — (1) **the twin identity**: a sparse card+BG stack flattened with the synthetic sample appended is **bit-identical** (SoA fragments, `residualT`, `residualRadiusPx`) to the same pixel flattened with the real hidden sample; (2) behind an opaque FG the synthetic's `share` is 0 and `residualT` stays 0; behind an α=0.5 FG its share is `0.5·α_Q` and `residualT` becomes `0.5·(1−α_Q)` at Q's radius; (3) end-to-end through `scatterBandCPU` + `scatterBackgroundCPU` + `resolveBandCPU` on a small halo rig: the vacated band reads alpha 1 and the FG:BG mix of the twin within 1e-6, and reads FG colour when synthesis is disabled — the mutation; (4) a holdout LUT at 0.5 halves the synthesized deposits exactly as it halves the twin's.
   - size: M
 
-- [ ] M5.P2.T3 — Decide the primary estimator from rendered pixels: nearest-only vs disc-average smear
+- [x] M5.P2.T3 — Decide the primary estimator from rendered pixels: nearest-only vs disc-average smear
   - files: `src/DeepCDefocusFill.h` (a temporary compile-time switch and the averaging variant: mean premultiplied channels and alpha over qualifying pixels within `fill_search`, stride-capped to ≤ ~800 reads, depth and radius from the nearest), a throwaway render script outside the repo tree
   - approach: build both behind the switch. Rig: the m1 halo with the BG replaced by an in-focus **textured** plane (`texturedLayer()` at `tests/nuke/scenes.py:27` or a checkerboard at z=20) and, second, a BG plane defocused at r≈4. Render `fill: background` under both estimators, 2× over the m5 checkerboard, and put the pairs in front of the user — this is judged visually and the user prefers prototyping both over a derivation. Record the choice, then delete the loser and the switch; no production code keeps it. If nearest-only wins, `fill_search` is documented as the reach and the fallback tier collapses into it (the knob still bounds the search, per the ruling); if the average wins, the two tiers stand as designed.
   - verify: both variants render; the user's call and the rendered evidence paths are in `## Decisions`; `grep -n` finds no trace of the switch; P2.T2's twin-identity doctest still passes (bit-exact under nearest-only; re-pinned at ≤ 1e-6 with a note if the average wins, since a mean of identical values is not bit-exact).
@@ -148,4 +148,9 @@ Constraints from the board apply in full: no SIMD, `DEEPC_HD` header-only kernel
   smear applies to the primary tier only, the fallback stays a verbatim nearest copy; the mean is
   accumulated in double so a uniform mean is bit-exact. The PM chose the default (on) — the user has
   not ruled on it; flag it at sign-off. P3.T1's scene (n) pins both paths; P3.T3 documents both.
+- 2026-09-11 — **P2.T3 landed (`d3ed568`); Phase 5.2 complete.** `fill_smear` reproduces the bake-off's A
+  and B EXRs at 0 ulps on rig1/rig3; textured-map doctest pins the mean to 0 ulps of an independent
+  double sum and the fallback tier verbatim; `fillAverageStride` never exceeds 800 reads up to
+  `max_radius` 500 (worst 793 at reach 95). Scene (n) must add a **textured-BG cell per estimator**
+  on top of the uniform-BG twin identity (which cannot tell them apart).
 
