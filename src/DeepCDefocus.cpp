@@ -528,7 +528,7 @@ public:
     }
 
     // No default substitute for either input: a disconnected input 0 means
-    // "no deep source" (an error the later _validate task handles) and a
+    // "no deep source" (_validate() produces an empty image) and a
     // disconnected input 1 means "no holdout" (a valid, zero-cost state).
     Op* default_input(int input) const override
     {

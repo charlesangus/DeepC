@@ -370,7 +370,7 @@ DEEPC_HD inline KernelGridBracket kernelGridBracket(float radiusPx)
 // minRadius kernel, so a LUT built over a measured [2, 40] answers a 0.25px
 // query with a 2px disc -- a visible error, not a rounding one. That is fine
 // only because the caller both (a) measures the range from the frame's own CoC
-// range, and (b) never reaches the sampler for radius < 0.5px -- the minimum
+// range, and (b) never reaches the sampler for radius <= 0.5px -- the minimum
 // kernel DIAMETER is 1px (`kSharpRadiusPx`), and everything at or below it is
 // served by the sharp single-pixel path instead. A caller that cannot
 // guarantee (b) must pass minRadius = 0. Above that floor a caller asks for

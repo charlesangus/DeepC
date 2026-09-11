@@ -305,7 +305,7 @@ constexpr double kRefKernelBlendCells = 1048576.0;      // 2^20
 
 std::int64_t refKernelBin(double radiusPx)
 {
-    if (!(radiusPx >= static_cast<double>(kSharpRadiusPx)))
+    if (!(radiusPx > static_cast<double>(kSharpRadiusPx)))
         return -1;
 
     // Bracket, then bisect, on the monotone node radii: afterwards
@@ -740,7 +740,7 @@ void scatterOnThread(const ScatterParams& sp, const SampleSoA& soa,
 // see DeepCDefocus.cpp's computeBand()).  `residual` defaults to nullptr so a
 // caller that does not model the virtual background gets NO background
 // deposit at all, not a silently-empty one: arrival then carries only the
-// fragments' own raw weight, exactly like the two-step pipeline before M4.
+// fragments' own raw weight, as a scatter with no virtual background would.
 void runBand(Band& band, const ScatterParams& sp, const SampleSoA& soa,
              const HoldoutSoA& holdout, const KernelSampler& kernel,
              bool useThread = true, const ResidualWindow* residual = nullptr)
@@ -1011,7 +1011,7 @@ void refRasterize(ExpectedPlanes& out, const ScatterParams& sp, const SampleSoA&
         // (pixel, weight) list for this fragment's whole footprint.
         std::vector<std::pair<std::ptrdiff_t, double>> touched;
 
-        if (!(radius >= sp.sharpRadiusPx)) {
+        if (!(radius > sp.sharpRadiusPx)) {
             // Sharp fast path: weight 1 into the fragment's own pixel.
             if (destX >= 0 && destX < out.W && destY >= 0 && destY < out.H)
                 touched.emplace_back(static_cast<std::ptrdiff_t>(destY) * out.W + destX, 1.0);
@@ -2132,6 +2132,111 @@ TEST_CASE("an empty pixel leaves residualT at 1 and does not touch residualRadiu
     }
 }
 
+TEST_CASE("a zero-alpha sample is not a surface: it sets neither a share nor the residual "
+          "radius, whether it is alone in the pixel or behind real content")
+{
+    // The residual is the pixel's virtual background, scattered at the CoC of
+    // the deepest surface ACTUALLY PRESENT so that the surface's own kernel
+    // and its residual's kernel tile and alpha / arrival recovers the true
+    // alpha.  An alpha-0 sample is invisible to the composite (the zero-alpha
+    // early-out, DeepToImage parity), carries no share (t * 0), and so is not
+    // a surface the residual could sit behind.  One rule covers both
+    // shapes: a pixel of nothing but alpha-0 samples IS an empty pixel, and an
+    // alpha-0 sample behind real content changes nothing about that content's
+    // flatten.  The alternative -- letting the alpha-0 sample's depth pick
+    // the residual radius -- is the mismatched-radius defect the per-pixel
+    // radius exists to avoid, and the last block measures it.
+    const CocParams    p  = makeStandardRig(10.0f);
+    const DepthBuckets bk = makeStandardBuckets(p, 16);
+    const FlattenParams fp = makeFlattenParams(p, 1, /*preMerge*/ true);
+    const float alpha = 0.9f, unpremult = 0.5f;
+    const float zNear = 5.0f, zFar = 60.0f;
+    const float rNear = radiusPixels(p, zNear);
+    const float rFar  = radiusPixels(p, zFar);
+    REQUIRE(rNear > 1.0f);
+    REQUIRE(rFar > 1.0f);
+    REQUIRE(std::fabs(rFar - rNear) > 0.3f);     // two genuinely different kernels
+
+    float tAlone = -1.0f, rAlone = -1.0f;
+    const SampleSoA alone = flattenOnePixel(fp, bk, 7, 7,
+        {makeSample(zNear, zNear, alpha, {alpha * unpremult})}, &tAlone, &rAlone);
+
+    float tBehind = -1.0f, rBehind = -1.0f;
+    const SampleSoA behind = flattenOnePixel(fp, bk, 7, 7,
+        {makeSample(zNear, zNear, alpha, {alpha * unpremult}),
+         makeSample(zFar, zFar, 0.0f, {0.3f})}, &tBehind, &rBehind);
+
+    // Same fragments, same partition, same residual radius: the alpha-0
+    // sample left no trace.
+    REQUIRE(alone.fragmentCount() == 1u);
+    REQUIRE(behind.fragmentCount() == 1u);
+    CHECK(behind.radius[0] == alone.radius[0]);
+    CHECK(behind.arrivalShare[0] == alone.arrivalShare[0]);
+    CHECK(behind.alpha[0] == alone.alpha[0]);
+    CHECK(behind.color[0] == alone.color[0]);
+    CHECK(tBehind == tAlone);
+    CHECK(rBehind == rAlone);
+    CHECK(rAlone == rNear);
+    CHECK(tAlone == 1.0f - alpha);
+
+    // ...and alone it is an empty pixel: T = 1, the caller's default radius
+    // kept, nothing staged.
+    float tOnly = -1.0f, rOnly = 12345.0f;
+    const SampleSoA only = flattenOnePixel(fp, bk, 7, 7,
+        {makeSample(zFar, zFar, 0.0f, {0.3f})}, &tOnly, &rOnly);
+    CHECK(only.fragmentCount() == 0u);
+    CHECK(tOnly == 1.0f);
+    CHECK(rOnly == 12345.0f);
+
+    // THE CONSEQUENCE, end to end.  With no field around it (every other
+    // pixel's claim zeroed, so the centre's arrival is the sample's own
+    // kernel plus its own residual's), the pixel with the alpha-0 sample
+    // behind it resolves to alpha 0.9 exactly, because its residual scatters
+    // at the surface's own radius.  Forcing that residual onto the alpha-0
+    // sample's radius instead is the mismatch: alpha / arrival drifts off 0.9
+    // by the difference in the two kernels' centre weights.
+    const int W = 60, H = 60;
+    DiscKernelLUT lut(0.0f, 30.0f, 1.0f, 1.0f);
+    auto resolveAt = [&](float residualRadius) {
+        Band band;
+        band.K = bk.bucketCount(); band.C = 1; band.W = W; band.H = H;
+        SampleSoA soa;
+        soa.begin(1, fp.groups);
+        FlattenScratch scratch;
+        ResidualWindow window;
+        window.allocate(0, 0, W, H, residualRadius);
+        flattenIntoWithResidual(fp, bk, 0, 0, W, H, soa, scratch, window,
+            [&](int x, int y) {
+                std::vector<SampleRecord> v;
+                if (x == W / 2 && y == H / 2) {
+                    v.push_back(makeSample(zNear, zNear, alpha, {alpha * unpremult}));
+                    v.push_back(makeSample(zFar, zFar, 0.0f, {0.3f}));
+                }
+                return v;
+            });
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x)
+                if (x != W / 2 || y != H / 2)
+                    window.setPixel(x, y, 0.0f, residualRadius);
+        const std::size_t centre = static_cast<std::size_t>(window.index(W / 2, H / 2));
+        REQUIRE(window.t[centre] == 1.0f - alpha);
+        REQUIRE(window.radiusPx[centre] == rNear);      // the flatten's own choice
+        window.radiusPx[centre] = residualRadius;
+        HoldoutSoA none;
+        runBand(band, makeScatterParams(W, H), soa, none, lut, false, &window);
+        return band.outAlpha(W / 2, H / 2);
+    };
+    const float own      = resolveAt(rNear);
+    const float deeper   = resolveAt(rFar);
+    const double wcNear  = refBlendedWeight(lut, rNear, 0, 0);
+    const double wcFar   = refBlendedWeight(lut, rFar, 0, 0);
+    const double wantDeeper = alpha * wcNear / (alpha * wcNear + (1.0 - alpha) * wcFar);
+    CAPTURE(rNear); CAPTURE(rFar); CAPTURE(own); CAPTURE(deeper);
+    CHECK(own == doctest::Approx(alpha).epsilon(1e-6));
+    CHECK(deeper == doctest::Approx(wantDeeper).epsilon(1e-4));
+    CHECK(std::fabs(deeper - alpha) > 0.005f);
+}
+
 TEST_CASE("residualWindowYRange clips the virtual-background window to the OUTPUT box, "
           "never to anything narrower")
 {
@@ -2232,9 +2337,9 @@ TEST_CASE("buildResidualWindow: fetch-window pixels inside the output box but ou
                       == TightSrcBoxRig::kSampleRadius);
                 ++insideChecked;
             } else {
-                // THE ASSERTION THIS TASK EXISTS FOR: every fetch-window pixel
-                // inside the output box but outside srcBox is a fully open
-                // virtual background, not a hard edge.
+                // THE ASSERTION THAT MATTERS: every fetch-window pixel inside
+                // the output box but outside srcBox is a fully open virtual
+                // background, not a hard edge.
                 CHECK(window.t[static_cast<std::size_t>(i)] == 1.0f);
                 CHECK(window.radiusPx[static_cast<std::size_t>(i)] == rig.backgroundRadiusPx);
                 ++outsideChecked;
@@ -2380,20 +2485,25 @@ TEST_CASE("scatterKernelBin mirrors the scatter's own two radius decisions, at t
     // survive a mutation set unless a case exercises them exactly.
     //
     // 1. THE SHARP THRESHOLD.  scatterBandCPU() takes the sharp path for
-    //    `!(radius >= sharpRadiusPx)`, so radius == kSharpRadiusPx exactly is a
-    //    DISC, not a sharp fragment -- a `>` here would call it sharp and then
-    //    refuse to merge it with the disc beside it that the scatter rasterises
-    //    identically.
-    CHECK(refKernelBin(kSharpRadiusPx) >= 0);
-    CHECK(scatterKernelBin(kSharpRadiusPx) == refKernelBin(kSharpRadiusPx));
+    //    `!(radius > sharpRadiusPx)`, so radius == kSharpRadiusPx exactly is
+    //    the sharp delta (the 1 px diameter IS the 1x1 kernel, whatever the
+    //    LUT's r=0.5 entry holds) -- a `>=` here would call it a disc and
+    //    refuse to merge it with the sharp fragment beside it that the
+    //    scatter deposits identically.
+    CHECK(refKernelBin(kSharpRadiusPx) == -1);
+    CHECK(scatterKernelBin(kSharpRadiusPx) == -1);
     CHECK(scatterKernelBin(std::nextafter(kSharpRadiusPx, 0.0f)) == -1);
     CHECK(scatterKernelBin(0.0f) == -1);
+    CHECK(sameScatterKernel(0.0f, kSharpRadiusPx));
     CHECK(sameScatterKernel(0.0f, std::nextafter(kSharpRadiusPx, 0.0f)));
-    // ...and the exactly-0.5 fragment is grid node 1, which the one a hair
-    // above it BLENDS with node 2 (0.5004888): they no longer rasterise the
-    // same kernel, so they must not merge.  0.6 is ~200 nodes away.
+    // ...and the first radius above the floor BLENDS grid node 0 with node 1
+    // (0.5004888): it no longer rasterises the delta, so it must not merge
+    // with the floor.  0.6 is ~200 nodes away.
+    const float aboveFloor = std::nextafter(kSharpRadiusPx, 1.0f);
+    CHECK(refKernelBin(aboveFloor) >= 0);
+    CHECK(scatterKernelBin(aboveFloor) == refKernelBin(aboveFloor));
     CHECK_FALSE(sameScatterKernel(kSharpRadiusPx, 0.50024f));
-    CHECK_FALSE(sameScatterKernel(kSharpRadiusPx, std::nextafter(kSharpRadiusPx, 1.0f)));
+    CHECK_FALSE(sameScatterKernel(kSharpRadiusPx, aboveFloor));
     CHECK_FALSE(sameScatterKernel(kSharpRadiusPx, 0.6f));
     CHECK_FALSE(sameScatterKernel(std::nextafter(kSharpRadiusPx, 0.0f), 0.50024f));
 
@@ -2420,7 +2530,8 @@ TEST_CASE("scatterKernelBin mirrors the scatter's own two radius decisions, at t
     //    with the neighbour and a different bin -- in BOTH regions, since the
     //    grid is piecewise -- and pairs the old nearest-node rule merged
     //    (5.16/5.19 on node 926, 20.10/20.20 on node 17) no longer do.
-    for (float node : {0.5f, 1.0f, 5.171717f, 16.0f, 20.0f, 39.5f}) {
+    //    Node 0 is the floor itself and belongs to the sharp bin (case 1).
+    for (float node : {1.0f, 5.171717f, 16.0f, 20.0f, 39.5f}) {
         CAPTURE(node);
         const float r = kernelGridRadius(kernelGridIndex(node));
         CHECK(sameScatterKernel(r, r));
@@ -2458,7 +2569,7 @@ void refKernelPlane(const DiscKernelLUT& lut, float radius, int R,
 {
     const int side = 2 * R + 1;
     plane.assign(static_cast<std::size_t>(side) * side, 0.0);
-    if (!(radius >= kSharpRadiusPx)) {
+    if (!(radius > kSharpRadiusPx)) {
         plane[static_cast<std::size_t>(R) * side + R] = 1.0;
         return;
     }
@@ -2571,7 +2682,7 @@ TEST_CASE("sameScatterKernel is never true for two radii that rasterise differen
     for (const auto& pr : pairs) {
         const float a = pr.first, b = pr.second;
         const bool same = sameScatterKernel(a, b);
-        const bool bothSharp = !(a >= kSharpRadiusPx) && !(b >= kSharpRadiusPx);
+        const bool bothSharp = !(a > kSharpRadiusPx) && !(b > kSharpRadiusPx);
         CAPTURE(a);
         CAPTURE(b);
         CHECK(same == (bothSharp || a == b));
@@ -4222,8 +4333,8 @@ TEST_CASE("no step at the sharp threshold: a 0-2px ramp over a two-layer flat fi
         const double v = band.outAlpha(W / 2, H / 2);
         worstError = std::max(worstError, std::fabs(v - truth));
 
-        const bool sharp1 = !(r1 >= kSharpRadiusPx);
-        const bool sharp2 = !(r2 >= kSharpRadiusPx);
+        const bool sharp1 = !(r1 > kSharpRadiusPx);
+        const bool sharp2 = !(r2 > kSharpRadiusPx);
         if (havePrev) {
             const double d = std::fabs(v - prev);
             if (sharp1 != prevSharp1 || sharp2 != prevSharp2)
@@ -4924,7 +5035,7 @@ TEST_CASE("BucketPlanes::zero() clears ALL FIVE planes, so a band loop may reuse
     // allocate() zero-fills, so a zero() that missed a plane was invisible --
     // and would show up in production as the previous band's area bleeding
     // into this one's composite.  Includes the fifth, K-independent `arrival`
-    // plane added for M4.
+    // plane.
     const int K = 4, C = 2, W = 10, H = 8;
     DiscKernelLUT lut(0.0f, 8.0f, 1.0f, 1.0f);
     const ScatterParams sp = makeScatterParams(W, H);
@@ -7564,7 +7675,8 @@ TEST_CASE("the holdout multiplies into the scatter's deposits, per DESTINATION p
         // pre-fill alpha was correctly anti-aliased (a small fraction of
         // 0.8). The fill overwrites that fraction with the full 0.8
         // everywhere, turning the disc's soft, anti-aliased edge into a hard
-        // one. See the task report for the general statement of this finding.
+        // one.  In general: wherever a pixel's arrival is exactly its own
+        // kernel weight, the division flattens the kernel's profile.
         CHECK(bandAlphaSum(band) == doctest::Approx(0.8).epsilon(1e-5));
     }
 }
@@ -7917,7 +8029,7 @@ TEST_CASE("planBands: shrink-to-fit floors at 1 row and the concurrent cap "
 }
 
 // ===========================================================================
-// scatterBackgroundCPU — the virtual background (M4.P1.T5)
+// scatterBackgroundCPU — the virtual background
 // ===========================================================================
 
 TEST_CASE("scatterBackgroundCPU: background deposits sum to T per source pixel, "
@@ -8076,13 +8188,12 @@ TEST_CASE("scatterBackgroundCPU: a pixel WITH samples uses its own residual radi
     CHECK(checkFootprint(bx, by, rGlobal,      kvBhi.radiusX + 1) > 0);
 }
 
-TEST_CASE("scatterBackgroundCPU: the per-pixel residual radius is what lets the future "
-          "composite division recover the true surface alpha -- the mutation test for "
-          "this task")
+TEST_CASE("scatterBackgroundCPU: the per-pixel residual radius is what lets the "
+          "composite division recover the true surface alpha")
 {
     // A single alpha=0.9 point sample and its own residual (T = 1 - 0.9 = 0.1)
     // at the SAME pixel.  This function does not itself divide anything --
-    // that is the next task -- but the arithmetic it must support is
+    // resolveBandCPU() does -- but the arithmetic it must support is
     // alpha / arrival, and this pins exactly that at the fragment's own
     // centre pixel:
     //
@@ -9162,6 +9273,93 @@ TEST_CASE("size-0 parity: every diameter at or below 1px rasterises bit-identica
     CHECK(worstColor <= 1e-06);
 }
 
+TEST_CASE("an exact 1 px diameter IS the sharp delta, at any edge_softness: fragments and "
+          "residual alike deposit bit-identically to the sharp path in every plane")
+{
+    // The minimum kernel diameter is 1 px, and the 1x1 kernel is the sharp
+    // path's own delta -- so radius == kSharpRadiusPx exactly must take the
+    // sharp path, not the LUT.  Below edge_softness 1 the LUT's r=0.5 entry
+    // happens to be a delta too and the distinction is invisible; above it
+    // that entry is a soft 3x3 (centre row [0.1301, 0.3903, 0.1301] at 2.0)
+    // and routing d = 1 through it would put a step at the very diameter the
+    // size-0 parity gate protects.  Colour, alpha and arrival all go through
+    // the same predicate at both deposit sites, and the residual's radius is
+    // forced to 0.5 as well so scatterBackgroundCPU() is under the same test.
+    const int C = 3, W = 40, H = 40, K = 16, spp = 4;
+
+    Lcg rng(0x5123u);
+    std::vector<std::vector<SampleRecord>> pixels(static_cast<std::size_t>(W) * H);
+    for (auto& v : pixels) {
+        if (rng.unit() < 0.15f)
+            continue;                               // some pixels stay empty
+        float z = rng.range(1.05f, 30.0f);
+        for (int s = 0; s < spp; ++s) {
+            const float a = rng.range(0.02f, 1.0f);
+            const float zb = (s % 2 == 0) ? z : z + rng.range(0.1f, 4.0f);
+            v.push_back(makeSample(z, zb, a, {a * rng.unit(), a * rng.unit(), a * rng.unit()}));
+            z = zb + rng.range(0.05f, 5.0f);
+        }
+    }
+
+    const CocParams p = makeCocParams(CocMode::Manual, 50.0f, 2.8f, 36.0f, 10.0f,
+                                      unitScale(WorldUnits::Meters), 1920.0f, 1.0f,
+                                      1.0f, 1.0f, 100.0f, 30.0f);
+    const DepthBuckets bk = makeBoundedDeltaCocBuckets(p, 1.0f, 100.0f, K);
+
+    auto run = [&](const DiscKernelLUT& lut, float forcedRadius, Band& band) {
+        const FlattenParams fp = makeFlattenParams(p, C, /*preMerge*/ false);
+        SampleSoA soa;
+        soa.begin(C, fp.groups);
+        FlattenScratch scratch;
+        ResidualWindow window;
+        window.allocate(0, 0, W, H, forcedRadius);
+        flattenIntoWithResidual(fp, bk, 0, 0, W, H, soa, scratch, window,
+            [&](int x, int y) { return pixels[static_cast<std::size_t>(y) * W + x]; });
+        for (std::size_t f = 0; f < soa.fragmentCount(); ++f)
+            soa.radius[f] = forcedRadius;
+        for (std::size_t i = 0; i < window.radiusPx.size(); ++i)
+            window.radiusPx[i] = forcedRadius;
+        band.K = K; band.C = C; band.W = W; band.H = H;
+        HoldoutSoA none;
+        runBand(band, makeScatterParams(W, H), soa, none, lut, false, &window);
+    };
+
+    auto diffs = [&](const PodBuffer<float>& x, const PodBuffer<float>& y) {
+        REQUIRE(x.size() == y.size());
+        std::size_t n = 0;
+        for (std::size_t i = 0; i < x.size(); ++i)
+            if (x[i] != y[i])
+                ++n;
+        return n;
+    };
+    auto outputDiffs = [&](const Band& a, const Band& b) {
+        std::size_t n = 0;
+        for (std::size_t i = 0; i < a.alpha.size(); ++i)
+            if (a.alpha[i] != b.alpha[i]) ++n;
+        for (std::size_t i = 0; i < a.color.size(); ++i)
+            if (a.color[i] != b.color[i]) ++n;
+        return n;
+    };
+
+    const float sharp = std::nextafter(kSharpRadiusPx, 0.0f);
+    for (float softness : {0.0f, 1.0f, 2.0f, 4.0f}) {
+        CAPTURE(softness);
+        // The LUT covers the boundary, so a radius that leaks into it comes
+        // back as the r=0.5 entry -- soft above edge_softness 1 -- not as a
+        // clamp artefact.
+        const DiscKernelLUT lut(kSharpRadiusPx, 20.0f, softness, 1.0f);
+        Band viaSharp, viaBoundary;
+        run(lut, sharp, viaSharp);
+        run(lut, kSharpRadiusPx, viaBoundary);
+        CHECK(diffs(viaSharp.planes.color,     viaBoundary.planes.color)     == 0);
+        CHECK(diffs(viaSharp.planes.alpha,     viaBoundary.planes.alpha)     == 0);
+        CHECK(diffs(viaSharp.planes.weight,    viaBoundary.planes.weight)    == 0);
+        CHECK(diffs(viaSharp.planes.colocated, viaBoundary.planes.colocated) == 0);
+        CHECK(diffs(viaSharp.planes.arrival,   viaBoundary.planes.arrival)   == 0);
+        CHECK(outputDiffs(viaSharp, viaBoundary) == 0);
+    }
+}
+
 TEST_CASE("an alpha 0.9 surface on a gentle ramp of fractional diameters reads 0.900 within "
           "1/255 -- the over-read deficit-only division cannot fix, and the nearest-node "
           "scatter's reading of the same rig is outside 1/255")
@@ -9462,7 +9660,7 @@ TEST_CASE("the share-side arrival identity at large CoC: a fully-covered field's
                     };
                     std::size_t sharpFragments = 0;
                     for (std::size_t f = 0; f < soa.fragmentCount(); ++f) {
-                        if (soa.radius[f] < kSharpRadiusPx)
+                        if (!(soa.radius[f] > kSharpRadiusPx))
                             ++sharpFragments;
                         if (soa.arrivalShare[f] != 0.0f)
                             addClaim(soa.radius[f], soa.arrivalShare[f], soa.x[f], soa.y[f]);

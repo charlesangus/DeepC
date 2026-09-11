@@ -684,7 +684,7 @@ void flattenPixelToSoA(const FlattenParams& params,
 
     // Caller-owned stack buffer for the span split: K+2 parts at the knob's
     // maximum K, ~2.6KB.  Declared once per pixel rather than per sample (same
-    // stack slot either way) and never heap-allocated, per the brief.
+    // stack slot either way) and never heap-allocated.
     SpanSplitPart parts[kMaxSpanSplitParts];
 
     // THE GATHER-SHARE PARTITION.  One running transmittance for the whole
@@ -707,6 +707,13 @@ void flattenPixelToSoA(const FlattenParams& params,
         // scattering its colour would be a visible divergence, not an ULP one.
         // The cost is that a purely emissive alpha-0 sample is invisible,
         // which is deliberate and matches the flatten path.
+        //
+        // It is skipped for the residual as well: its share would be t * 0,
+        // and the residual's radius is the deepest SURFACE's so that the
+        // surface's kernel and its residual's tile (alpha / arrival then
+        // recovers the true alpha).  An alpha-0 sample deeper than the content
+        // is not such a surface, and a pixel of nothing but alpha-0 samples is
+        // an empty pixel.
         if (!(s.alpha > 0.0f))
             continue;
 
@@ -1664,7 +1671,10 @@ void scatterBandCPU(const ScatterParams& params,
             const float radius = groupRadius(groups, g, baseRadius);
 
             // --- sharp fast path -------------------------------------------
-            if (!(radius >= sharpRadius)) {     // also catches NaN -> sharp
+            // AT the floor as well as below it: a 1 px diameter IS the sharp
+            // delta, and only that keeps d = 1 the same kernel for every
+            // edge_softness (above 1 the LUT's r=0.5 entry is not a delta).
+            if (!(radius > sharpRadius)) {      // also catches NaN -> sharp
                 touched += scatterFragmentSharp(view, vis, frag);
                 if (stats != nullptr && g == 0)
                     ++stats->sharpFragments;
@@ -1760,10 +1770,11 @@ void scatterBackgroundCPU(const ScatterParams&  params,
             const int   destX    = px - params.bandX;
             const float radiusPx = residual.radiusPx[i];
 
-            // Sharp fast path, same threshold the fragment scatter uses: a
-            // pixel this close to the focal plane deposits its own claim at
-            // its own pixel, no disc rasterised.
-            if (!(radiusPx >= sharpRadius)) {
+            // Sharp fast path, same predicate the fragment scatter uses (at
+            // the floor as well as below it): a pixel this close to the focal
+            // plane deposits its own claim at its own pixel, no disc
+            // rasterised.
+            if (!(radiusPx > sharpRadius)) {
                 if (destX < 0 || destX >= view.width
                  || destY < 0 || destY >= view.height)
                     continue;

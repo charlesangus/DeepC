@@ -20,6 +20,7 @@ import shlex
 import sys
 
 GUARD = "scripts/hostguard.sh"
+GUARD_NAME = os.path.basename(GUARD)
 
 # argv[0] basenames that are heavy enough to be worth a wrapper.  Single-file
 # compiles (g++ foo.cpp) and cmake CONFIGURE runs are cheap and stay off it.
@@ -35,7 +36,12 @@ ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 
 def heavyIn(segment):
-    """The heavy command in this segment, or None."""
+    """The heavy command in this segment, or None.
+
+    A segment whose executable IS the guard is exempt: whatever follows its
+    `--` runs under the caps.  Only that segment -- `echo hostguard; make`
+    still gets its `make` checked.
+    """
     try:
         words = shlex.split(segment)
     except ValueError:
@@ -45,6 +51,8 @@ def heavyIn(segment):
     if not words:
         return None
     base = os.path.basename(words[0].rstrip("\\"))
+    if base == GUARD_NAME:
+        return None
     if base == "cmake":
         return "cmake --build" if "--build" in words else None
     if base in HEAVY or NUKE.match(base):
@@ -57,7 +65,7 @@ def main():
     if payload.get("tool_name") != "Bash":
         return 0
     command = payload.get("tool_input", {}).get("command", "")
-    if not command or GUARD in command or "hostguard" in command:
+    if not command:
         return 0
 
     found = [h for h in (heavyIn(s) for s in SPLIT.split(command)) if h]

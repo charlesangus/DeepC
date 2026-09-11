@@ -496,18 +496,21 @@ DEEPC_HD inline bool fragmentDepositsArea1Of(std::uint8_t flags)
 // heap allocation.
 constexpr int kMaxSpanSplitParts = DepthBuckets::kMaxBoundaries + 1;
 
-// THE MINIMUM KERNEL DIAMETER IS 1 PIXEL, stated as its radius. Below it the
-// scatter takes the sharp fast path — the fragment composites into its own
-// pixel's bucket, which IS the 1x1 delta kernel — and at or above it the
+// THE MINIMUM KERNEL DIAMETER IS 1 PIXEL, stated as its radius. At or below
+// it the scatter takes the sharp fast path — the fragment composites into
+// its own pixel's bucket, which IS the 1x1 delta kernel — and above it the
 // scatter blends the two grid nodes bracketing the radius.
 // Defined here so the flatten, the scatter and the LUT's rMin contract all
 // read the same number; the flatten itself does not branch on it.
 //
 // The floor is FIXED at 0.5 px rather than tracking the LUT's own smallest
-// entry: at `edge_softness` above 1 the LUT's r=0.5 entry is not a delta
-// (at 2.0 its centre row is [0.1301, 0.3903, 0.1301]) while the sharp path
-// deposits a literal single pixel regardless, so the two disagree at d = 1.
-// That is a known, deliberately unhandled step above `edge_softness` 1.
+// entry, and the floor itself belongs to the sharp path: at `edge_softness`
+// above 1 the LUT's r=0.5 entry is not a delta (at 2.0 its centre row is
+// [0.1301, 0.3903, 0.1301]) while the sharp path deposits a literal single
+// pixel regardless.  Routing d = 1 through the sharp path keeps every
+// d <= 1 the same kernel at any softness; the step between the delta and
+// the first soft LUT entry just above d = 1 remains, a known limitation of
+// `edge_softness` above 1.
 constexpr float kSharpRadiusPx = 0.5f;
 
 // ---------------------------------------------------------------------------
@@ -530,9 +533,9 @@ constexpr float kSharpRadiusPx = 0.5f;
 // it may answer "different" for a pair that does not (two radii the LUT clamps
 // onto one entry, say), which costs an absorb and never correctness.
 //
-// Below kSharpRadiusPx — NaN included, exactly as the scatter tests it — the
-// kernel is one weight of 1.0 at the fragment's own pixel, so every sharp
-// radius is one bin.
+// At or below kSharpRadiusPx — NaN included, exactly as the scatter tests it
+// — the kernel is one weight of 1.0 at the fragment's own pixel, so every
+// sharp radius is one bin.
 //
 // `pre_merge` does not consult this predicate: it groups on `merge_tolerance`
 // (0.25 px by default) and rasterises the group at its front member's
@@ -548,7 +551,7 @@ constexpr int kScatterKernelBlendBits = 20;
 
 DEEPC_HD inline std::int64_t scatterKernelBin(float radiusPx)
 {
-    if (!(radiusPx >= kSharpRadiusPx))      // also catches NaN, as the scatter does
+    if (!(radiusPx > kSharpRadiusPx))       // also catches NaN, as the scatter does
         return -1;                          // the sharp one-pixel kernel
     const KernelGridBracket br    = kernelGridBracket(radiusPx);
     const float             cells = static_cast<float>(1 << kScatterKernelBlendBits);
@@ -1326,7 +1329,9 @@ DEEPC_HD inline float resolveBackgroundRadiusPx(float backgroundDepthKnob,
 // genuine per-in-flight-band resident cost and bandBudgetBytes() counts it
 // (bytesForWindow() below), not merely names it as an omission.
 //
-// Consumed by nothing yet — scatterBackgroundCPU() is a later change.
+// Consumed by scatterBackgroundCPU(), which walks every window pixel and
+// deposits its `t` into the arrival plane through a kernel at its own
+// `radiusPx` -- the virtual background's claim on the coverage denominator.
 // ---------------------------------------------------------------------------
 struct ResidualWindow {
     PodBuffer<float> t;         // residual transmittance, one per window pixel
@@ -1746,10 +1751,11 @@ struct ScatterParams {
     int bandWidth  = 0;
     int bandHeight = 0;
 
-    // Radius below which a fragment takes the sharp fast path: it deposits
-    // weight 1 into its OWN pixel's bucket instead of rasterising a disc.
-    // This is also what keeps DiscKernelLUT's documented caller contract
-    // ("never reaches the sampler for radius < 0.5px") true from this side.
+    // Radius at or below which a fragment takes the sharp fast path: it
+    // deposits weight 1 into its OWN pixel's bucket instead of rasterising a
+    // disc.  This is also what keeps DiscKernelLUT's documented caller
+    // contract ("never reaches the sampler for radius <= 0.5px") true from
+    // this side.
     float sharpRadiusPx = kSharpRadiusPx;
 };
 
@@ -2160,7 +2166,7 @@ DEEPC_HD inline std::size_t scatterFragmentSpans(const BucketPlaneView& planes,
 // ---------------------------------------------------------------------------
 // scatterFragmentSharp — the sharp fast path.  THE OTHER PER-FRAGMENT BODY.
 //
-// radius < sharpRadiusPx (0.5px): the fragment composites into its OWN
+// radius <= sharpRadiusPx (0.5px): the fragment composites into its OWN
 // pixel's bucket with weight 1 instead of rasterising a disc.  With the tidy
 // pre-pass in front of it this is what makes size-0 output a flatten of the
 // input rather than an approximation of one.
@@ -3330,10 +3336,9 @@ void scatterBandCPU(const ScatterParams& params,
 // on purpose -- see the skip in the body.
 //
 // DELIBERATELY NAIVE: pi*r^2 work per non-opaque source pixel, one full disc
-// rasterised per pixel with no sharing across pixels of the same radius.  Do
-// NOT optimize this -- profile first (a later task's job); the known
-// mitigation (bucket by kernel bin, convolve per bin) becomes a new task only
-// if the profile demands it.
+// rasterised per pixel with no sharing across pixels of the same radius.
+// Kept that simple until a profile shows it matters; the known mitigation is
+// to bucket pixels by kernel bin and convolve once per bin.
 // ---------------------------------------------------------------------------
 void scatterBackgroundCPU(const ScatterParams&  params,
                           const ResidualWindow&  residual,
