@@ -440,7 +440,7 @@ behaviour, with no legacy knob. The "honest dip" contract is retired; docs, vali
     from P1.T1's baseline explained in writing.
   - size: M
 
-- [ ] M4.P3.T5 — Visual and performance sign-off
+- [x] M4.P3.T5 — Visual and performance sign-off
   - files: `tests/nuke/run_profile.sh` (run, not edited); scratch renders outside the repo tree
   - approach: render m5's checkerboard outputs from P1.T1's preserved baseline `.so` and from the
     new one, and compare them by eye — **this pixel judgment is what the whole milestone is for**,
@@ -879,4 +879,19 @@ including.
   (h), (b)/(f) holdout parity, m4a/m4b all PASS; all 11 XFAILs carry hard bounds (f2, f3c, f3d,
   f3g, f3h, g4, g5×4, m3c). Note for the Docker gate: `--clean-first --target DeepCDefocus` wipes
   the tree's other plugins; rebuild the whole tree after any clean.
+
+- 2026-09-11 — **P3.T5: user signed off on the before/after renders** (m1 halo, m3 ramp at α=1 and
+  α=0.9, T0 `bb07e57` vs `ee943f2`, 2× over checkerboard; PNGs and EXRs at
+  `~/deepc-validation/M4-P3T5/`): the silhouette halo is filled with FG colour, the α=1 focal-line
+  band is gone, the α=0.9 near-focus surplus rows remain as m3c pins them (accepted per the m3
+  ruling). **Profile, 2K/20spp, `--threads 2`, 5 reps:** new `min=76.5 median=100.6 mean=97.8
+  max=114.4 s wall, cpuMedian=82.8`, peak RSS 1.80 GB; same-day T0 `min=43.1 median=59.5
+  mean=55.8 max=71.7, cpuMedian=59.1`, peak 1.57 GB; recorded T0 baseline (2026-09-10)
+  `median=70.4, cpuMedian=63.4`, peak 1.75 GB. **1.69× wall (1.43× vs the recorded baseline),
+  +15% RSS** — under the ~2× flag line, accepted; no optimisation task filed. Expected cost order
+  stands if it is revisited: per-radius virtual-background scatter (bucket residuals by kernel bin),
+  doubled raster near integer kernel sizes, then the arrival deposit. Scratch `COVERAGE-FILL-*.md`
+  copies deleted from the repo root (the `PLAN/REFERENCE/` copies are canonical; the only
+  difference was a de-localised path). The user asked for a **Codex review of the PR before
+  merge**, overriding this run's `--no-review`.
 
