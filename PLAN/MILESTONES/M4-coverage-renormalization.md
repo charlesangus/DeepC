@@ -303,7 +303,7 @@ behaviour, with no legacy knob. The "honest dip" contract is retired; docs, vali
     within 1/255 across the whole near-focus ramp — the case deficit-only division cannot fix.
   - size: L
 
-- [ ] M4.P2.T3 — Tighten the identical-rasterisation predicate
+- [x] M4.P2.T3 — Tighten the identical-rasterisation predicate
   - files: `src/DeepCDefocusScatter.h` (`scatterKernelBin()`:546, `sameScatterKernel()`:555, and
     the g4/g5 commentary block at ~2320–2410), `tests/test_defocus_scatter.cpp`,
     `tests/nuke/scenes.py` (i7 at :2385)
@@ -713,3 +713,29 @@ including.
   to half a bracket, and the comment block at `DeepCDefocusScatter.h:513–520` ("same node → same
   KernelView") is stale. Both are P2.T3's to re-derive; the tree is knowingly in this state between
   the two commits.
+
+- 2026-09-10 — **Under blending, the same-kernel predicate is effectively "same float radius"**
+  (M4.P2.T3). The key is `(indexA, floor(f · 2^20))`; equal keys bound the per-pixel kernel
+  difference below 2^-20 at any `edge_softness`, and no coarser cell is sound (at softness 0 the
+  nodes at 0.998/1.0 px differ by 0.8 in one weight). One radius ulp moves `f` by ≥ 2^-19 everywhere
+  on the grid, so two **distinct** radii never share a key. Consequence: the flatten's same-kernel
+  absorb now fires only through the `max_radius` clamp (or genuinely equal radii); the lossless
+  merge opportunity `pre_merge` used to exploit within a 0.5 px bin is gone. That is the truth of
+  the design's "lossless" requirement, not a choice hidden in an epsilon — but it removes a
+  fragment-count reduction, and **P3.T5's profile must look for it**. Reopen only if the profile
+  says the cost is real; the fix would then be a *deliberately lossy* absorb with a stated bound,
+  never a loosened predicate.
+- 2026-09-10 — **The claim/frontier site keeps an integer key, not a two-radius test** (M4.P2.T3):
+  `|Δf| < ε` is not transitive, so a stored-claimer comparison against it would be order-dependent.
+  `claimBin`/`runBin`/`frontierBin` widen to `int64` (the saturated node ≈ 2e6 × 2^20 needs 41 bits).
+- 2026-09-10 — **i7c/i7d are re-stated on the `max_radius` clamp** (M4.P2.T3): 17.0/17.2 px at
+  `max_radius = 17` both clamp to one kernel (reads 0, ≤ 1e-7); i7d's guard is 16.6/16.8 px under
+  the same settings, unclamped (0.0900 ± 1e-3, the a²/4 collision residual at a = 0.6). i7 itself
+  did not move (9.000e-02, now banded ± 1e-3). Note i7c's zero is a statement about the predicate,
+  not about the pre-merge path: an equal-radius pair collision-absorbs into one fragment with
+  `pre_merge` off too. i2/i3 remain red until P3.T3, as designed. Scene (h) h3a's note still
+  describes bins as `round(r/0.5)` — stale wording only; P3.T3 or P3.T4 should refresh it.
+- 2026-09-10 — **An end-to-end absorb oracle is only well-posed for volumetric fragments**
+  (M4.P2.T3): a point sample's two-bucket partition is not linear under `over`, so
+  absorb-vs-separate differ by a partition residual unrelated to the kernel. The absorb fuzz uses
+  whole-weight samples and says so.
