@@ -136,4 +136,16 @@ Constraints from the board apply in full: no SIMD, `DEEPC_HD` header-only kernel
   the budget term follows. Overlapping-span Q: the synthetic is Q's deepest raw sample and the twin
   stays bit-exact; only the map's `radiusPx` differs from the flatten's (0.261 vs 0.333, both inside
   the span's own range) and it feeds only the prune.
+- 2026-09-11 — **User ruling (P2.T3 bake-off): BOTH estimators ship, behind a knob** — overriding the
+  "no extra knob" part of the earlier ruling. Evidence at `~/deepc-validation/M5-P2T3/png/`
+  (`rig1_band_crop4x_A_B_twin.png`, `rig{1,3}_contact_A_B_foreground_twin.png`): on a uniform BG
+  nearest and average are both **0 ulps** against the DeepMerge twin, even with the BG defocused
+  (rig2 is degenerate — every hidden sample equals the real one); on a textured BG (band mean |ΔR|
+  vs twin) rig1 in-focus checker nearest 0.145 / average 0.087 / foreground 0.086, rig3 defocused
+  checker 0.072 / 0.036 / 0.065 — nearest shows Voronoi streaks, average a flat smear, neither
+  reproduces texture under the edge (only real hidden samples can). Exposed as **`fill_smear`
+  (Bool, default on = disc-average; off = nearest-only)**, effective only in `background` mode;
+  smear applies to the primary tier only, the fallback stays a verbatim nearest copy; the mean is
+  accumulated in double so a uniform mean is bit-exact. The PM chose the default (on) — the user has
+  not ruled on it; flag it at sign-off. P3.T1's scene (n) pins both paths; P3.T3 documents both.
 
