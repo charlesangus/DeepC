@@ -42,7 +42,7 @@ Constraints from the board apply in full: no SIMD, `DEEPC_HD` header-only kernel
 
 ## Phase 5.2: Search and synthesis
 
-- [ ] M5.P2.T1 — The depth-aware nearest-source search: predicate, slope rule, pyramid, fallback
+- [x] M5.P2.T1 — The depth-aware nearest-source search: predicate, slope rule, pyramid, fallback
   - files: `src/DeepCDefocusFill.h` (`qualifies(P, Q, d)`, `surfaceSlope(map, x, y)`, `MaxDepthPyramid` (`PodBuffer<float>` levels), `findBackgroundSource(map, pyramid, x, y, primaryReachPx, fallbackReachPx) -> {found, qx, qy, distance}` — iterative branch-and-bound with a fixed child order, no recursion), `tests/test_defocus_scatter.cpp`
   - approach: exactly the design's predicate and tiers. Threshold `zBack_P + max(kFillDepthTol·zBack_P, kFillSlope·g_P·d)`; prune a tile when its max `zFront` ≤ threshold at the tile's min distance or min distance ≥ best. Fixed constants `kFillDepthTol = 0.02f`, `kFillSlope = 4.0f` as named constexprs; **choose them by measurement**, not by taste: on the harness rigs (m1 halo, m3 α=0.9 ramp, and the near-card control from P3.T1's brief) record the margin by which each rig's intended accept/reject falls on the right side, and record the numbers in `## Decisions`. The post-check prune (opaque P and `radius_Q ≥ radius_P`) lives here as a separate predicate so the doctest can pin it alone.
   - verify: doctests — (1) a flat card over a flat BG far behind: every card pixel finds the nearest BG pixel, distance and identity checked against a brute-force scan; (2) a nearer card beside the hole is never chosen; (3) a receding plane (opaque and α=0.9, slope like m3's) finds **nothing** from any interior pixel, and **does** once `kFillSlope` is mutated to 0 — the mutation test; (4) the root prune: a uniform-depth field answers "none" without visiting any leaf (count visits); (5) fallback: with primary reach 2 and fallback reach 100 a pixel 10 px inside finds the BG, and with fallback reach 2 finds none; (6) band invariance: the same pixel queried from two maps windowed differently, both containing its full reach disc, gives the identical answer; (7) the opaque/larger-radius prune fires and does not fire on the two sides of `radius_Q == radius_P`.
@@ -113,4 +113,14 @@ Constraints from the board apply in full: no SIMD, `DEEPC_HD` header-only kernel
   is a marginal prune/qualify decision, not colour. P2.T2's twin-identity doctest should include one
   overlapping-span case to bound it. Background mode with nothing consuming the map is 0 ulps against
   its foreground render; budget rises 0.106 → 0.127 GB on the m1 rig at `fill_search=24`.
+- 2026-09-11 — **P2.T1 landed (`5218221`): constants stay at `kFillDepthTol = 0.02`, `kFillSlope = 4`,
+  chosen from a 3×3 sweep on three POD rigs** (halo card accept-BG, m3 ramp reject-self at α=1 and
+  0.9, near-card control): slope 2 is negative on the ramp (−10.1 — the ground plane's depth is
+  convex in y, so far rows outrun a 2× line), slope 4 clears every interior row (worst 0.115 at the
+  adjacent row, ≈3× the local step), slope 8 / tol 0.05 buy 0.1–0.2 that the rigs don't need at the
+  price of rejecting real backgrounds behind tilted surfaces. **Deviation accepted:** children are
+  pushed nearest-first rather than in scan order — the answer is order-independent under the exact
+  `(d², y, x)` tie rule, and it cuts the halo-card query from 38.6 tiles / 260 leaves to 16.3 / 16.3.
+  `FillPredicate{depthTol, slope}` is the mutation seam. Pyramid: 4×4 tiles, root prune answers a
+  uniform field in 1 tile / 0 leaves.
 
