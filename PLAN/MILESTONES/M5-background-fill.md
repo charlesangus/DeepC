@@ -34,7 +34,7 @@ Constraints from the board apply in full: no SIMD, `DEEPC_HD` header-only kernel
   - verify: doctest on `resolveFillSearchPx()` (auto, manual, clamp, NaN → auto); the two knobs appear under headless-Nuke script inspection with the stated defaults; build, render scene (m) kept EXRs, `exrdiff.py` against T0's — **0 ulps on all three**; `--scenes a` PASS.
   - size: S
 
-- [ ] M5.P1.T3 — `SurfaceMap`: the deepest-surface map over the extended window, and its budget line
+- [x] M5.P1.T3 — `SurfaceMap`: the deepest-surface map over the extended window, and its budget line
   - files: `src/DeepCDefocusFill.h` (new, header-only, `DEEPC_HD` bodies, `PodBuffer<float>` storage: `SurfaceMap` with `zFront/zBack/alpha/radiusPx/channels`, `index()/contains()/bytesForWindow()` modelled on `ResidualWindow` ~1336–1390), `src/DeepCDefocusScatter.h` (`bandBudgetBytes()` gains the map's term, gated on the mode — find it via the call at `src/DeepCDefocus.cpp:1515`), `src/DeepCDefocus.cpp` (`computeBand()` ~1753: pass 1 before `buildResidualWindow()`, `background` mode only; window rows `band ± (padY + reach)` clipped to `srcBox` rows for visiting and to the output box for extent, via a `buildSurfaceMap()` driver taking the same two-callback shape as `buildResidualWindow()` ~1408 so the doctest exercises the real code), `tests/test_defocus_scatter.cpp`
   - approach: a per-pixel `deepestSurface()` scan over a `DeepPixel`'s samples that applies the flatten's rules — `sanitizeSampleDepth`, `rayDepthScaleAt(params, x, y)`, back-before-front fixup, `alpha` clamped, `alpha > 0` only — and keeps the sample with the greatest `zBack` (ties → later index); stores premultiplied channels in the SoA channel order and `radiusPx = radiusPixels(coc, sampleMidDepth(zFront, zBack))`. Empties are marked with `zFront = -inf`. Do not build `SampleRecord` vectors in pass 1. Budget: `(C + 4)` floats per extended-window pixel, plus the pyramid's ~⅓ plane (P2.T1), only in `background` mode.
   - verify: doctest — over fuzzed stacks (point, volumetric, α=0 tails, coincident-free) `deepestSurface()`'s depth and radius equal `flattenPixelToSoA()`'s `residualRadiusPx` and last-staged depth **bit-exactly**; an all-α=0 pixel and an empty pixel both read empty; a pixel outside `srcBox` but inside the output box reads empty; `bytesForWindow` matches a hand computation; `foreground` mode allocates nothing (assert the map's size is 0 after a FG-mode band). Scene (m) EXRs still 0 ulps against T0.
@@ -103,4 +103,14 @@ Constraints from the board apply in full: no SIMD, `DEEPC_HD` header-only kernel
   (m)'s m5 writes to `--out-dir`; scene (a) keeps nothing — the cross-`.so` statement for (a) is its
   in-Nuke bit-exact gate, re-run per build). `--scenes a,m` → `PASS=22 FAIL=0 XFAIL=1`.
   `tests/nuke/exrdiff.py`: self-diff 0 ulps / exit 0, cross-diff 15.9M ulps / exit 1.
+- 2026-09-11 — **P1.T3 landed (`402b88a`); Phase 5.1 complete.** The map's radius must replay the
+  flatten's bucket split and same-bucket fold — a span crossing bucket boundaries stages its *tail
+  part's* radius, not the span-midpoint's; both shortcuts fail the fuzz (48 / 1 assertions).
+  **Known limit, recorded:** the identity is pinned over *tidy-disjoint* stacks; `deepestSurface()`
+  reads the raw pixel and does not reproduce `tidyOverlapping()`'s cuts, so on overlapping spans the
+  map's `zBack`/`radiusPx` may differ from the flatten's. Only the prune rule (`r_Q ≥ r_P`) and the
+  depth predicate consume those fields — the synthetic sample itself is re-flattened — so the effect
+  is a marginal prune/qualify decision, not colour. P2.T2's twin-identity doctest should include one
+  overlapping-span case to bound it. Background mode with nothing consuming the map is 0 ulps against
+  its foreground render; budget rises 0.106 → 0.127 GB on the m1 rig at `fill_search=24`.
 
