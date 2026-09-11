@@ -9266,3 +9266,236 @@ TEST_CASE("an alpha 0.9 surface on a gentle ramp of fractional diameters reads 0
         }
     }
 }
+
+TEST_CASE("the share-side arrival identity at large CoC: a fully-covered field's arrival "
+          "reads 1 to the float accumulation bound of the deposits the design specifies, "
+          "and those same deposits re-summed in double read 1 to 5e-7 -- node and "
+          "off-node radii, K = 4/8/16, alpha 1.0/0.9/0.5/0.2, point and split parents")
+{
+    // THE ARRIVAL PLANE IS ONE FLOAT PER PIXEL AND THE COMPOSITE DIVIDES BY IT,
+    // so its accuracy is the output's.  On a uniform fully-covered field every
+    // pixel's claims tile to exactly 1 in exact arithmetic (one share claim per
+    // parent at that parent's residual radius, plus the residual itself at the
+    // same radius), and what the plane actually holds is the naive float sum
+    // of those products in deposit order.  Two readings separate a weight bug
+    // from accumulation: the SAME float products re-summed in double must land
+    // on the target to the LUT's normalisation residual (~1e-7 per entry), and
+    // the float plane must land inside the recursive-summation bound
+    // n * 2^-24 for the n terms the DESIGN says the pixel receives -- counted
+    // from the residual radius and the LUT, never from the fragments that
+    // actually claimed.  The count is the load-bearing half: a 16-part parent
+    // whose deepest part sits near focus pools 114 terms per pixel, while its
+    // parts spread over their own radii sum 48564, and only the latter reads
+    // 1e-5..1e-4 off -- uniform across the interior, erratic in sign across
+    // alpha and K, vanishing below ~4 px.  Measured, pooled: worst 8.2e-5 at
+    // 33.3 px against a 7.1e-4 bound, and 3.2e-6 on the near-focus split
+    // parent against 7.3e-6..3.5e-5; unpooled, that parent reads 1.4e-4
+    // against 7.3e-6.
+    //
+    // Three modes per fixture: a single sample with its virtual background
+    // (arrival = share + residual = 1), the same with NO background (arrival =
+    // the share sum alone, 1 - T), and fog over an opaque sample (T = 0
+    // exactly, two claimants at two radii).  alpha 1.0 is the residual-free
+    // control in every mode.
+    constexpr double u = 5.9604644775390625e-08;   // 2^-24, float unit roundoff
+    const float F = 10.0f;
+    const int W = 12, H = 12;
+    const float unpremult = 0.6f;
+
+    struct Fixture { const char* name; float size; float zf, zb; bool onNode; };
+    const Fixture fixtures[] = {
+        {"point, fine node 512/43",   kernelGridRadius(kKernelFineOrigin - 43), 5.0f, 5.0f, true},
+        {"point, fine off-node 12",   12.0f,  5.0f, 5.0f,  false},
+        {"point, coarse node 20",     20.0f,  5.0f, 5.0f,  true},
+        {"point, coarse off-node 20.25", 20.25f, 5.0f, 5.0f, false},
+        {"point, coarse off-node 33.3",  33.3f,  5.0f, 5.0f, false},
+        {"split parent behind focus [15,40], 10..22.5 px", 30.0f, 15.0f, 40.0f, false},
+        {"split parent in front [4,6], 30..13.3 px",       20.0f, 4.0f,  6.0f,  false},
+        {"split parent up to near focus [4,9], 36..3.7 px",  24.0f, 4.0f,  9.0f,  false},
+    };
+
+    for (const Fixture& fx : fixtures) {
+        INFO("fixture: ", fx.name);
+        const bool volumetric = fx.zb > fx.zf;
+        const CocParams p = makeManualRig(fx.size, F);
+        const float rMax = std::max(radiusPixels(p, fx.zf), radiusPixels(p, fx.zb));
+        const int pad = static_cast<int>(std::ceil(rMax)) + 3;
+        DiscKernelLUT lut(2.0f, rMax + 2.0f, 1.0f, 1.0f);
+        REQUIRE(lut.minRadius() == 2.0f);
+        REQUIRE(rMax >= 11.0f);
+
+        // Non-zero weights over the bracket passes at `radius`: the term count
+        // one unit claim at that radius costs a destination pixel.
+        auto termCount = [&](float radius) {
+            long n = 0;
+            const KernelGridBracket br = kernelGridBracket(radius);
+            const int   idx[2] = { br.indexA, br.indexB };
+            const float bl[2]  = { 1.0f - br.frac, br.frac };
+            const int passes = (br.indexB != br.indexA) ? 2 : 1;
+            for (int q = 0; q < passes; ++q) {
+                if (bl[q] == 0.0f)
+                    continue;
+                const KernelView kv = lut.kernel(kernelGridRadius(idx[q]), 0, 0, 0.0f, 0);
+                REQUIRE(kv.valid());
+                for (int r = 0; r < kv.rowCount; ++r) {
+                    const RowSpan& span = kv.row(r);
+                    if (span.empty())
+                        continue;
+                    const float* w = kv.rowWeights(r);
+                    for (int i = 0; i <= span.xEnd - span.xStart; ++i)
+                        if (w[i] != 0.0f)
+                            ++n;
+                }
+            }
+            return n;
+        };
+
+        for (int K : {4, 8, 16}) {
+            CAPTURE(K);
+            const DepthBuckets bk = volumetric
+                ? makeBoundedDeltaCocBuckets(p, fx.zf, fx.zb, K)
+                : makeBoundedDeltaCocBuckets(p, 1.0f, 100.0f, K);
+            // The deepest staged fragment's own radius: the last split part's
+            // for a slab cut at the bucket boundaries, the sample's own for a
+            // point.
+            const float rDeepest = volumetric
+                ? radiusPixels(p, sampleMidDepth(bk.boundary(K - 1), fx.zb))
+                : fx.size;
+
+            for (float alpha : {1.0f, 0.9f, 0.5f, 0.2f}) {
+                CAPTURE(alpha);
+                for (int mode = 0; mode < 3; ++mode) {
+                    if (mode == 2 && volumetric)
+                        continue;
+                    CAPTURE(mode);
+                    const bool withBackground = (mode != 1);
+                    const bool fogOverOpaque  = (mode == 2);
+
+                    const FlattenParams fp = makeFlattenParams(p, 1, /*preMerge*/ true);
+                    SampleSoA soa;
+                    soa.begin(1, fp.groups);
+                    FlattenScratch scratch;
+                    ResidualWindow window;
+                    window.allocate(-pad, -pad, W + 2 * pad, H + 2 * pad, rMax);
+                    flattenIntoWithResidual(fp, bk, -pad, -pad, W + pad, H + pad,
+                                            soa, scratch, window,
+                        [&](int, int) -> std::vector<SampleRecord> {
+                            if (fogOverOpaque)
+                                return {makeSample(5.0f, 5.0f, alpha, {alpha * unpremult}),
+                                        makeSample(5.5f, 5.5f, 1.0f, {unpremult})};
+                            return {makeSample(fx.zf, fx.zb, alpha, {alpha * unpremult})};
+                        });
+
+                    const int cx = W / 2, cy = H / 2;
+                    const std::size_t ci = static_cast<std::size_t>(window.index(cx, cy));
+                    const float T = window.t[ci];
+                    const float rRes = window.radiusPx[ci];
+                    if (alpha == 1.0f || fogOverOpaque)
+                        REQUIRE(T == 0.0f);
+                    else
+                        REQUIRE(T == doctest::Approx(1.0f - alpha).epsilon(1e-6));
+                    REQUIRE(rRes == (fogOverOpaque ? radiusPixels(p, 5.5f) : rDeepest));
+                    REQUIRE(rRes >= lut.minRadius());
+                    const KernelGridBracket brOwn = kernelGridBracket(fogOverOpaque ? fx.size : rRes);
+                    if (fx.onNode)
+                        REQUIRE(brOwn.indexB == brOwn.indexA);
+                    else
+                        REQUIRE(brOwn.indexB != brOwn.indexA);
+                    if (fogOverOpaque) {
+                        const KernelGridBracket brRes = kernelGridBracket(rRes);
+                        REQUIRE(brRes.indexB != brRes.indexA);
+                    }
+
+                    // The design's term count at a pixel: the share claim at
+                    // the residual radius, the residual at the same radius when
+                    // it is non-zero, and the second parent's claim in mode 2.
+                    long nExpected = termCount(rRes);
+                    if (withBackground && T > kFillDeficitTol)
+                        nExpected += termCount(rRes);
+                    if (fogOverOpaque)
+                        nExpected += termCount(fx.size);
+                    const double target = withBackground ? 1.0 : 1.0 - static_cast<double>(T);
+                    const double arrivalBound = static_cast<double>(nExpected) * u + 5e-7;
+
+                    // The numerator's term count: every fragment of one source
+                    // pixel rasterises its own kernel into colour and alpha.
+                    long nNumerator = 0;
+                    for (std::size_t f = 0; f < soa.fragmentCount(); ++f)
+                        if (soa.x[f] == cx && soa.y[f] == cy)
+                            nNumerator += termCount(soa.radius[f]);
+                    REQUIRE(nNumerator > 0);
+
+                    Band band;
+                    band.K = K; band.C = 1; band.W = W; band.H = H;
+                    HoldoutSoA none;
+                    runBand(band, makeScatterParams(W, H), soa, none, lut, false,
+                            withBackground ? &window : nullptr);
+
+                    // The double oracle: the very float products the plane
+                    // received at the band centre, summed in double.
+                    double dsum = 0.0;
+                    auto addClaim = [&](float radius, float scale, int sx, int sy) {
+                        const KernelGridBracket br = kernelGridBracket(radius);
+                        const int   idx[2] = { br.indexA, br.indexB };
+                        const float bl[2]  = { 1.0f - br.frac, br.frac };
+                        const int passes = (br.indexB != br.indexA) ? 2 : 1;
+                        for (int q = 0; q < passes; ++q) {
+                            if (bl[q] == 0.0f)
+                                continue;
+                            const float s = scale * bl[q];
+                            const KernelView kv = lut.kernel(kernelGridRadius(idx[q]), 0, 0, 0.0f, 0);
+                            const int row = (cy - sy) + kv.radiusY;
+                            if (row < 0 || row >= kv.rowCount)
+                                continue;
+                            const RowSpan& span = kv.row(row);
+                            const int dx = cx - sx;
+                            if (span.empty() || dx < span.xStart || dx > span.xEnd)
+                                continue;
+                            dsum += static_cast<double>(kv.rowWeights(row)[dx - span.xStart] * s);
+                        }
+                    };
+                    std::size_t sharpFragments = 0;
+                    for (std::size_t f = 0; f < soa.fragmentCount(); ++f) {
+                        if (soa.radius[f] < kSharpRadiusPx)
+                            ++sharpFragments;
+                        if (soa.arrivalShare[f] != 0.0f)
+                            addClaim(soa.radius[f], soa.arrivalShare[f], soa.x[f], soa.y[f]);
+                    }
+                    REQUIRE(sharpFragments == 0u);
+                    if (withBackground)
+                        for (int y = 0; y < window.height; ++y)
+                            for (int x = 0; x < window.width; ++x) {
+                                const std::size_t i = static_cast<std::size_t>(
+                                    window.index(window.x + x, window.y + y));
+                                if (window.t[i] > kFillDeficitTol)
+                                    addClaim(window.radiusPx[i], window.t[i],
+                                             window.x + x, window.y + y);
+                            }
+                    CHECK(std::fabs(dsum - target) <= 5e-7);
+
+                    double worstArrival = 0.0, worstAlpha = 0.0, worstRatio = 0.0;
+                    for (int y = 0; y < H; ++y)
+                        for (int x = 0; x < W; ++x) {
+                            const double d = band.planes.arrival[static_cast<std::size_t>(y) * W + x];
+                            worstArrival = std::max(worstArrival, std::fabs(d - target));
+                            const double a = band.outAlpha(x, y);
+                            worstAlpha = std::max(worstAlpha, std::fabs(a - (fogOverOpaque ? 1.0 : alpha)));
+                            worstRatio = std::max(worstRatio,
+                                std::fabs(static_cast<double>(band.outColor(0, x, y)) / a - unpremult));
+                        }
+                    CAPTURE(nExpected); CAPTURE(nNumerator);
+                    CAPTURE(worstArrival); CAPTURE(worstAlpha); CAPTURE(worstRatio);
+
+                    CHECK(worstArrival <= arrivalBound);
+                    // Without the background the fill divides the share sum by
+                    // itself, so alpha reads 1 there by construction; the
+                    // numerator's own accumulation is what alpha carries in the
+                    // other two modes, on top of the arrival it divides by.
+                    if (withBackground)
+                        CHECK(worstAlpha <= static_cast<double>(nNumerator + nExpected) * u + 1e-6);
+                    CHECK(worstRatio <= unpremult * 2.0 * static_cast<double>(nNumerator) * u + 1e-6);
+                }
+            }
+        }
+    }
+}
