@@ -1,8 +1,8 @@
 ---
 title: DeepCDefocus — deep-input, flat-output defocus node
-status: paused
-current: null
-pm_heartbeat: 2026-09-11T09:00:13-04:00
+status: running
+current: M5.P1.T1
+pm_heartbeat: 2026-09-11T18:18:20-04:00
 ship: pr-per-milestone
 ---
 
@@ -107,9 +107,11 @@ Bokeh/pgBokeh don't exhibit; it runs before M2 because it rewrites the kernel st
 | M2 | DeepCKernelField + aberrations                       | todo   | [M2-kernelfield-aberrations.md](PLAN/MILESTONES/M2-kernelfield-aberrations.md) |
 | M3 | CUDA backend                                         | todo   | [M3-cuda-backend.md](PLAN/MILESTONES/M3-cuda-backend.md) |
 | M4 | Coverage renormalization (bands + halos)             | done   | [M4-coverage-renormalization.md](PLAN/MILESTONES/M4-coverage-renormalization.md) |
+| M5 | Background-coloured coverage fill (`fill: background`) | doing  | [M5-background-fill.md](PLAN/MILESTONES/M5-background-fill.md) |
 
-> **Execution order was M4 → M2 → M3**, not board order. M4 shipped 2026-09-11 as `c9a36d3` (PR #106);
-> next is M2, whose kernel-field node builds on the blended kernel step M4 left in place.
+> **Execution order is M4 → M5 → M2 → M3**, not board order. M4 shipped 2026-09-11 as `c9a36d3` (PR #106).
+> M5 (added 2026-09-11 at the user's request) is a small option on M4's fill and runs before M2, whose
+> kernel-field node builds on the blended kernel step M4 left in place.
 
 # Open questions
 
