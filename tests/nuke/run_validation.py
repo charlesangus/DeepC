@@ -19,13 +19,16 @@ INTEGER value (``--k=64``, ``--max-radius=40``), because Nuke's own terminal
 argument parser consumes a bare integer as a frame range and never forwards
 it to ``sys.argv``.
 
-    --scenes a,b,...,l      which scenes to run          (default: all)
+    --scenes a,b,...,m      which scenes to run          (default: all)
     --k N                   depth_layers                 (default: 16)
     --pre-merge on|off                                   (default: on)
     --merge-tolerance F                                  (default: 0.25)
     --max-radius N                                       (default: 100)
     --tmp-dir DIR           where renders go             (default: a temp dir)
     --keep-renders          do not delete the EXRs
+    --out-dir DIR           where renders meant to OUTLIVE the run go (scene
+                            (m)'s m5 over-checkerboard EXRs)
+                                                         (default: ~/deepc-validation)
     --full-sweep            widen scene (f)'s f3f unequal-density sweep to
                             the whole grid (~26s more; the default run keeps
                             representative cells on every axis)
@@ -55,13 +58,14 @@ from scenes import SCENES                                       # noqa: E402
 
 def parseArgs(argv):
     options = {
-        "scenes": "abcdefghijkl",
+        "scenes": "abcdefghijklm",
         "k": 16,
         "preMerge": True,
         "mergeTolerance": 0.25,
         "maxRadius": 100,
         "tmpDir": None,
         "keepRenders": False,
+        "outDir": None,
         "fullSweep": False,
         "strict": False,
         "list": False,
@@ -117,6 +121,10 @@ def parseArgs(argv):
             noValue()
             options["keepRenders"] = True
             i += 1
+        elif arg == "--out-dir":
+            options["outDir"] = os.path.abspath(
+                os.path.expanduser(nextValue()))
+            i += step
         elif arg == "--full-sweep":
             noValue()
             options["fullSweep"] = True
@@ -183,12 +191,15 @@ def main(argv):
                         mergeTolerance=options["mergeTolerance"],
                         maxRadius=options["maxRadius"],
                         tmpDir=tmpDir, keepRenders=options["keepRenders"],
-                        fullSweep=options["fullSweep"])
+                        fullSweep=options["fullSweep"],
+                        outDir=options["outDir"])
 
-    print("DeepCDefocus headless validation — scenes (a)-(l)")
+    print("DeepCDefocus headless validation — scenes (a)-(m)")
     print("settings: %s" % settings.describe())
     print("renders:  %s%s" % (tmpDir,
                               "" if options["keepRenders"] else " (deleted)"))
+    if "m" in options["scenes"]:
+        print("kept:     %s (scene (m) m5)" % settings.outDir)
     print("")
 
     checks = []

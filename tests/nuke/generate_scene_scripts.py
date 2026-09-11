@@ -1,6 +1,6 @@
 """Generates the committed validation-scene scripts under tests/nuke/*.nk.
 
-Each scene (a)-(l) is built with the SAME construction helpers scenes.py
+Each scene (a)-(m) is built with the SAME construction helpers scenes.py
 renders through (harness.py's makeDefocus/deepMerge/pointLayer/... and a
 handful of scenes.py's own builders), so a script opened in the GUI shows
 exactly the graph the headless harness measures — not a hand-drawn
@@ -32,8 +32,11 @@ from harness import (                                            # noqa: E402
     resetScript, slab,
 )
 from scenes import (                                              # noqa: E402
-    GROUND_COLOR, GROUND_FOCUS, UNEQ_CARD_A, UNEQ_CARD_B, _uneqAnchor,
-    _uneqCard, groundPlane, stripSource, texturedLayer,
+    CHECKER_CELL_PX, GROUND_COLOR, GROUND_FOCUS, HALO_BG, HALO_FG, HALO_FOCUS,
+    HALO_HOLDOUT_ALPHA, HALO_HOLDOUT_Z, HALO_NEAR_Z, HALO_RADIUS, HALO_SIZE,
+    UNEQ_CARD_A, UNEQ_CARD_B,
+    _uneqAnchor, _uneqCard, groundPlane, haloBackground, haloForeground,
+    haloHoldout, haloSparse, overChecker, stripSource, texturedLayer,
 )
 
 OUT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -115,8 +118,10 @@ CHECK_F = (
     "The bottom row pins the harness's f3e, which FAILS -- see its own note. "
     "The harness's other scene-(f) rows are not reproduced here: f2 (opaque-"
     "holdout erasure onset, XFAIL), f3/f3b (equal-density fog density, PASS), "
-    "f3c/f3d (equal-density overlapping slabs, XFAIL) and f3f-f3i (the rest of "
-    "the unequal-density family; f3f FAILS)."
+    "f3c/f3d (equal-density overlapping slabs, XFAIL), f3f (the unequal-"
+    "density sweep; FAILS), f3g/f3h (pinned XFAILs: the coverage fill's "
+    "background-radius mismatch, with f3g2/f3h2 as the background_depth "
+    "controls that return them to exact) and f3i."
 )
 
 CHECK_F3E = (
@@ -124,9 +129,11 @@ CHECK_F3E = (
     "Two 40x40 cards 8 px apart, depth spans [8,12] at alpha 0.99 and [9,13] "
     "at alpha 0.10, defocused at size=14. Below saturation the node's area "
     "model is additive, so the merged render must equal the sum of the two "
-    "cards rendered SEPARATELY. It does not: the harness reads +77.411% high "
-    "on the worst probed pixel against a 0.5% gate, i.e. the node INVENTS "
-    "alpha, the one direction the honest-alpha contract forbids.\n\n"
+    "cards rendered SEPARATELY. It does not: the harness reads +87.2% high "
+    "on the worst probed pixel against a 0.5% gate (+77.4% before the "
+    "coverage fill; the extra is the fill's background-radius mismatch, "
+    "which f3g/f3h isolate), i.e. the node INVENTS alpha -- more than the "
+    "two cards deposited.\n\n"
     "'soloA + soloB' is that oracle and 'oracle vs merged' is the error. The "
     "faint corner card is the RANGE ANCHOR: every branch here must measure the "
     "same depth range, or solo and merged would be bucketed differently and "
@@ -150,7 +157,9 @@ CHECK_G = (
     "resolves.\n\n"
     "Bottom row: the SAME ramp at alpha < 1, which is where the residual is. "
     "Both branches are documented XFAILs in the harness and neither reads its "
-    "input alpha back -- see their own note."
+    "input alpha back -- see their own note. The coverage fill does not reach "
+    "them: it divides only where less than unit weight arrives, and on this "
+    "ramp's interior the arrival is 1.06-1.09 everywhere."
 )
 
 CHECK_G_ALPHA = (
@@ -158,13 +167,16 @@ CHECK_G_ALPHA = (
     "Identical rig to the opaque branches above, at K=16, with the plane's "
     "premultiplied colour scaled to alpha 0.90 and alpha 0.10. The correct "
     "interior flat field is the input alpha exactly. It is not:\n\n"
-    "  alpha 0.90 (g4): reads 0.8707, a 3.25% DEFICIT\n"
+    "  alpha 0.90 (g4): reads 0.8708, a 3.25% DEFICIT\n"
     "  alpha 0.10 (g5): reads 0.1059, a 5.93% OVER-READ\n\n"
-    "The over-read is in the direction the honest-alpha contract forbids and "
-    "it grows as alpha falls (the harness also pins alpha 0.30 at +3.40% and "
-    "alpha 0.01 at +7.06%, not reproduced here). Both are one bucket pooling a "
-    "head and a rear at unequal per-unit opacity -- accumulation-time "
-    "information loss, which no per-bucket composite rule can undo.\n\n"
+    "The over-read grows as alpha falls (the harness also pins alpha 0.30 at "
+    "+3.40% and alpha 0.01 at +7.07%, not reproduced here): it is the "
+    "scatter's own over-delivery on this steep CoC slope, attenuated by "
+    "(1 - alpha). The deficit is one bucket pooling a head and a rear at "
+    "unequal per-unit opacity -- accumulation-time information loss, which "
+    "no per-bucket composite rule can undo. Neither is a shortfall of "
+    "ARRIVAL: the arrival plane reads 1.06-1.09 across this interior, so the "
+    "deficit-only coverage fill never engages here, and cannot.\n\n"
     "Both harness checks are pinned BANDS around their reading, so any change "
     "to these numbers -- an improvement included -- must re-pin them."
 )
@@ -182,16 +194,19 @@ CHECK_H = (
 )
 
 CHECK_I = (
-    "Scene (i) -- sparse reveal / coverage deficit\n\n"
+    "Scene (i) -- sparse reveal / coverage fill\n\n"
     "Check: an opaque near card over a distant card, built with exactly one "
-    "sample per pixel (no hidden data anywhere), must show a documented "
-    "alpha dip inside the silhouette when the near card is defocused -- and "
-    "no fabricated colour behind that dip.\n\n"
-    "Two branches: 'sparse' (one sample per pixel; must dip) and 'DeepMerge "
-    "twin' (the same visible content but with the occluded far card's "
-    "samples kept; must NOT dip). Agreement of the two confirms the dip is "
-    "the missing hidden data, not a node artefact. The harness's pre_merge "
-    "reachability sweep (i6/i7) is not reproduced here."
+    "sample per pixel (no hidden data anywhere), used to show an alpha dip "
+    "about one CoC wide inside the silhouette when the near card is "
+    "defocused (0.51 at its deepest). The coverage fill now closes it: the "
+    "edge band must read alpha 1, filled with the NEAR card's own colour "
+    "ratio and no fabricated colour from the far card.\n\n"
+    "Two branches: 'sparse' (one sample per pixel; filled to 1 by the node) "
+    "and 'DeepMerge twin' (the same visible content but with the occluded "
+    "far card's samples kept; alpha 1 by data, and the far card's BLUE "
+    "showing through the defocused edge, which the sparse branch must NOT "
+    "reproduce). The harness's pre_merge reachability sweep (i6/i7) is not "
+    "reproduced here."
 )
 
 CHECK_J = (
@@ -207,7 +222,9 @@ CHECK_J = (
 CHECK_K = (
     "Scene (k) -- proxy + ray-distance\n\n"
     "Check: depth_is_ray_distance on a wide-FOV corner pixel must reproduce "
-    "ground-truth Z (and be a no-op at the optical centre); separately, "
+    "ground-truth Z (and at the centre pixel apply exactly its near-unity "
+    "factor, 1 - 1.24e-5: that pixel's centre is half a pixel off the axis); "
+    "separately, "
     "proxy 0.5 must halve the render's radii, not double the blur.\n\n"
     "Pinned here: the ray-distance check only (a 20mm lens on a 36mm "
     "filmback, corner pixel at (8,8)). Three branches at the same pixel: "
@@ -227,6 +244,103 @@ CHECK_L = (
     "default) -- a bucket-composite artefact moves with K, a sharp-path/LUT "
     "artefact does not. The radial/diagonal ramp variants and the CoC-"
     "field-extremum check are not reproduced here."
+)
+
+CHECK_M = (
+    "Scene (m) -- coverage fill: the silhouette halo\n\n"
+    "Check: a defocused opaque card in front of the focal plane must keep "
+    "alpha 1 across its silhouette whether or not the renderer wrote "
+    "occluded samples behind it, and the coverage the node fills in must "
+    "carry the FOREGROUND's colour.\n\n"
+    "The card is 96x96 at z=%g with focus at z=%g and size %g, i.e. a CoC "
+    "radius of %g px exactly; the background sits ON the focal plane, so it "
+    "cannot scatter inward and any background colour inside the silhouette "
+    "would be invented. FG and BG share G and B and differ only in R (FG "
+    "%.2f, BG %.2f), so G/A and B/A are known analytically everywhere and "
+    "R/A reads the FG:BG mix.\n\n"
+    "Three branches:\n"
+    "  control (m0): DeepMerge2 of card over background -- occluded samples "
+    "PRESENT. Alpha 1 across the silhouette, colour ratio the source's; "
+    "in the edge band the fill overshoots and the clamp brings the "
+    "premultiplied pair back down together.\n"
+    "  halo (m1): ONE sample per pixel, no background behind the card. Used "
+    "to read alpha 0.27 at the card's corner and 0.52 at its edge (a 16 px "
+    "halo); must now read 1 to within 1/255, and the filled band is FG "
+    "colour (R/A 0.80).\n"
+    "  card over nothing (m2): the bloom must be UNCHANGED by the fill -- "
+    "pinned two-sided against the pre-fill plugin's profile across the "
+    "right edge on y=128 (-1: 0.5199, 0: 0.4801, +7: 0.2130, +14: 0.0170, "
+    "+16: exactly 0). This holds only because the scene is single-depth: "
+    "the empty pixels' virtual background scatters at the farthest measured "
+    "depth's CoC, which for one object is its own."
+    % (HALO_NEAR_Z, HALO_FOCUS, HALO_SIZE, HALO_RADIUS, HALO_FG[0],
+       HALO_BG[0])
+)
+
+CHECK_M_RAMP = (
+    "Scene (m) -- coverage fill: the bands either side of the focal line "
+    "(m3)\n\n"
+    "Scene (g)'s ground plane at scene (g)'s own steep slope (size 86, focus "
+    "10: 0.5 CoC px per scanline, 64 px at the frame edges), depth_layers "
+    "16, read over EVERY interior row (66-189) INCLUDING the near-focus "
+    "rows scene (g) excludes -- those are the rows this fill is for.\n\n"
+    "  alpha 1 (m3a, must hold): every row mean and every pixel within "
+    "1/255 of 1. Rows 126/130 -- the only rows whose arrival falls below 1 "
+    "on this ramp (0.972) -- read 0.9723 before the fill and 1 now.\n"
+    "  alpha 0.9 (m3b, must hold; one-sided): no row within 3 of focus "
+    "reads below 0.9 - 1/255. Rows 126/130 read 0.874 before the fill, "
+    "0.899 now.\n"
+    "  alpha 0.9 (m3c, XFAIL band pin): the worst row within 8 of focus "
+    "reads +0.0734 +/- 0.004 ABOVE 0.9 (rows 127/129, arrival 1.201). That "
+    "surplus is the scatter's own over-delivery on a steep CoC gradient -- "
+    "scene (g)'s g5 arm -- which a deficit-only fill never touches, by "
+    "design. Physical range [0, +0.100], the alpha-clamp ceiling. The far "
+    "field's -0.030 is g4's and keeps g4's pin; it is not re-pinned here.\n\n"
+    "Colour:alpha ratio is asserted beside every alpha reading. Note that "
+    "at alpha 0.9 the sample's own unpremultiplied red is 0.36, not 0.40: "
+    "DeepFromImage premultiplies the plane's already-premultiplied colour "
+    "once more, and the harness reads the source's ratio from a stock "
+    "flatten rather than assuming it."
+)
+
+CHECK_M_HOLDOUT = (
+    "Scene (m) -- coverage fill: fill and holdout commute (m4), and the "
+    "renders for the eye (m5)\n\n"
+    "The fill divides by the RAW arrival -- deposited before holdout "
+    "visibility is folded in -- while every colour and alpha deposit "
+    "carries that visibility. A full-frame %.1f-alpha card at z=%g, in "
+    "front of everything, therefore halves the numerator and leaves the "
+    "divisor alone: visibility is exactly %.1f at every depth, halving is "
+    "exact in float, so the held render must be the unheld one halved "
+    "wherever nothing saturates.\n\n"
+    "  m4a: the flat card over nothing (m2's rig, K=16), with and without "
+    "the holdout. Arrival is 1 everywhere, so held/unheld alpha is 0.5 at "
+    "EVERY pixel that carries alpha, to n x 2^-24 with n the disc's tap "
+    "count (5.4e-05); reads 1.7e-06. Colour scales by the same factor.\n"
+    "  m4b: the alpha-1 ramp (m3's rig, K=16), with and without the same "
+    "card. On rows 126/130 -- the two rows whose arrival is below 1 (0.972), "
+    "the rows the fill moves -- held/unheld is 0.5 at every pixel to "
+    "1.9e-06; reads exactly 0. That is the observable form of 'the fill "
+    "multiplier is the same with and without the card'. On every OTHER "
+    "row arrival exceeds 1 and the ratio is NOT 0.5: the unheld render "
+    "clamps its surplus to alpha 1 while the held one, at half, never "
+    "reaches the clamp and reads arrival/2 -- 0.6005 on rows 127/129, "
+    "~0.536 across the far field. The area model's saturation sets that, "
+    "not the fill (which never engages where arrival > 1); it is pinned "
+    "two-sided (+/- 0.004) as documented behaviour.\n\n"
+    "Folding visibility into the arrival deposit instead reads a ratio of "
+    "1 on every one of these pixels: the holdout's attenuation "
+    "renormalised straight back.\n\n"
+    "  m5: the m1 halo and both m3 ramps are also written over this %d px "
+    "checkerboard to --out-dir (default ~/deepc-validation/"
+    "over_checker_*.exr), to be compared by eye against a pre-fill build's "
+    "files from the same command. Where the board shows through is where "
+    "alpha is short; across the measured interior (rows/cols 66-189) it is "
+    "hidden completely under the halo and the alpha-1 ramp on a build "
+    "whose fill works, and shows through the halo band and rows 126/130 on "
+    "the pre-fill build."
+    % (HALO_HOLDOUT_ALPHA, HALO_HOLDOUT_Z, HALO_HOLDOUT_ALPHA,
+       CHECKER_CELL_PX)
 )
 
 
@@ -461,12 +575,13 @@ def buildSceneI(settings):
     sparseNode = makeDefocus(settings, sparseSource, size=size,
                              focusDistance=focus, cocMode="manual")
     sparseNode.setXYpos(-160, 180)
-    sparseNode["label"].setValue("must show the honest alpha dip")
+    sparseNode["label"].setValue("edge band filled to alpha 1, FG colour")
 
     mergedNode = makeDefocus(settings, mergedSource, size=size,
                              focusDistance=focus, cocMode="manual")
     mergedNode.setXYpos(140, 180)
-    mergedNode["label"].setValue("must NOT dip (hidden samples present)")
+    mergedNode["label"].setValue("alpha 1 by data; far card's blue shows "
+                                 "through the edge")
 
     stickyNote(CHECK_I, 340, 0)
 
@@ -550,6 +665,95 @@ def buildSceneL(settings):
     stickyNote(CHECK_L, 300, 0)
 
 
+def buildSceneM(settings):
+    resetScript()
+    # The halo family: three branches off the same foreground card.
+    fg = haloForeground()
+    fg.setXYpos(-330, 0)
+    fg["label"].setValue("FG card, z=%g, CoC radius %g px" % (HALO_NEAR_Z,
+                                                              HALO_RADIUS))
+    bg = haloBackground()
+    bg.setXYpos(-170, 0)
+    bg["label"].setValue("BG, full frame, ON the focal plane")
+    control = deepMerge([fg, bg])
+    control.setXYpos(-250, 100)
+    control["label"].setValue("control: occluded BG samples PRESENT")
+    controlNode = makeDefocus(settings, control, size=HALO_SIZE,
+                              focusDistance=HALO_FOCUS, cocMode="manual")
+    controlNode.setXYpos(-250, 220)
+    controlNode["label"].setValue("m0: alpha 1 across the silhouette, "
+                                  "source colour ratio")
+
+    sparse = haloSparse()
+    sparse.setXYpos(0, 100)
+    sparse["label"].setValue("halo: ONE sample per pixel, no BG behind "
+                             "the card")
+    haloNode = makeDefocus(settings, sparse, size=HALO_SIZE,
+                           focusDistance=HALO_FOCUS, cocMode="manual")
+    haloNode.setXYpos(0, 220)
+    haloNode["label"].setValue("m1: NO dip (was 0.27-0.52 deep), filled "
+                               "band is FG colour")
+    haloBoard = overChecker(haloNode)
+    haloBoard.setXYpos(0, 320)
+    haloBoard["label"].setValue("m5: the halo over the board (for the eye)")
+
+    alone = haloForeground()
+    alone.setXYpos(250, 100)
+    alone["label"].setValue("the same card over NOTHING")
+    bloomCell = settings.derive(k=16)
+    bloomNode = makeDefocus(bloomCell, alone, size=HALO_SIZE,
+                            focusDistance=HALO_FOCUS, cocMode="manual")
+    bloomNode.setXYpos(250, 220)
+    bloomNode["label"].setValue("m2: bloom UNCHANGED by the fill (pinned "
+                                "profile, K=16)")
+    stickyNote(CHECK_M, 480, 0)
+
+    # m4a: the same card over nothing, held out by the half-alpha card.
+    holdout = haloHoldout()
+    holdout.setXYpos(-170, 320)
+    holdout["label"].setValue("m4 holdout: full-frame alpha %.1f card at "
+                              "z=%g, in front of everything"
+                              % (HALO_HOLDOUT_ALPHA, HALO_HOLDOUT_Z))
+    heldCard = makeDefocus(bloomCell, alone, size=HALO_SIZE,
+                           focusDistance=HALO_FOCUS, cocMode="manual",
+                           holdout=holdout)
+    heldCard.setXYpos(250, 320)
+    heldCard["label"].setValue("m4a: exactly half of m2 at every pixel "
+                               "(arrival 1 everywhere)")
+
+    # The ramp: scene (g)'s rig, both alphas, K=16.
+    rampCell = settings.derive(k=16)
+    rampNodes = {}
+    for alpha, xpos, label in (
+            (1.0, -170, "m3a: EVERY interior row within 1/255 of 1"),
+            (0.90, 90, "m3b: no near-focus row short of 0.9 - 1/255; "
+                       "m3c: near-focus surplus pinned +0.0734")):
+        colour = tuple(c * alpha for c in GROUND_COLOR[:3]) + (alpha,)
+        ramp = groundPlane(color=colour)
+        ramp.setXYpos(xpos, 420)
+        ramp["label"].setValue("scene (g)'s ramp, alpha %.2f" % alpha)
+        node = makeDefocus(rampCell, ramp, size=86.0,
+                           focusDistance=GROUND_FOCUS, cocMode="manual")
+        node.setXYpos(xpos, 540)
+        node["label"].setValue("K=16; " + label)
+        rampNodes[alpha] = (ramp, node)
+        board = overChecker(node)
+        board.setXYpos(xpos, 640)
+        board["label"].setValue("m5: alpha %.2f ramp over the board (for "
+                                "the eye)" % alpha)
+    stickyNote(CHECK_M_RAMP, 480, 420)
+
+    # m4b: the alpha-1 ramp held out by the same card.
+    heldRamp = makeDefocus(rampCell, rampNodes[1.0][0], size=86.0,
+                           focusDistance=GROUND_FOCUS, cocMode="manual",
+                           holdout=holdout)
+    heldRamp.setXYpos(-330, 540)
+    heldRamp["label"].setValue("m4b: half of m3a on rows 126/130 (arrival "
+                               "0.972); arrival/2 elsewhere (0.6005 at "
+                               "127/129)")
+    stickyNote(CHECK_M_HOLDOUT, 480, 900)
+
+
 SCENE_BUILDERS = [
     ("a", "scene_a_size0_parity.nk", buildSceneA),
     ("b", "scene_b_holdout_in_focus.nk", buildSceneB),
@@ -563,6 +767,7 @@ SCENE_BUILDERS = [
     ("j", "scene_j_anamorphic.nk", buildSceneJ),
     ("k", "scene_k_proxy_ray_distance.nk", buildSceneK),
     ("l", "scene_l_small_coc_transition.nk", buildSceneL),
+    ("m", "scene_m_coverage_halo.nk", buildSceneM),
 ]
 
 

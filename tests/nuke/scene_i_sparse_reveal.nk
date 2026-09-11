@@ -45,7 +45,7 @@ DeepCDefocus {
  focus_distance 20
  size 6
  name DeepCDefocus1
- label "must show the honest alpha dip"
+ label "edge band filled to alpha 1, FG colour"
  xpos -160
  ypos 180
 }
@@ -92,14 +92,14 @@ DeepCDefocus {
  focus_distance 20
  size 6
  name DeepCDefocus2
- label "must NOT dip (hidden samples present)"
+ label "alpha 1 by data; far card's blue shows through the edge"
  xpos 140
  ypos 180
 }
 StickyNote {
  inputs 0
  name StickyNote1
- label "Scene (i) -- sparse reveal / coverage deficit\n\nCheck: an opaque near card over a distant card, built with exactly one sample per pixel (no hidden data anywhere), must show a documented alpha dip inside the silhouette when the near card is defocused -- and no fabricated colour behind that dip.\n\nTwo branches: 'sparse' (one sample per pixel; must dip) and 'DeepMerge twin' (the same visible content but with the occluded far card's samples kept; must NOT dip). Agreement of the two confirms the dip is the missing hidden data, not a node artefact. The harness's pre_merge reachability sweep (i6/i7) is not reproduced here."
+ label "Scene (i) -- sparse reveal / coverage fill\n\nCheck: an opaque near card over a distant card, built with exactly one sample per pixel (no hidden data anywhere), used to show an alpha dip about one CoC wide inside the silhouette when the near card is defocused (0.51 at its deepest). The coverage fill now closes it: the edge band must read alpha 1, filled with the NEAR card's own colour ratio and no fabricated colour from the far card.\n\nTwo branches: 'sparse' (one sample per pixel; filled to 1 by the node) and 'DeepMerge twin' (the same visible content but with the occluded far card's samples kept; alpha 1 by data, and the far card's BLUE showing through the defocused edge, which the sparse branch must NOT reproduce). The harness's pre_merge reachability sweep (i6/i7) is not reproduced here."
  note_font_size 14
  xpos 340
 }

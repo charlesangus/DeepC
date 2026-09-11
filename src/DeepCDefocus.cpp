@@ -122,31 +122,56 @@ static const char* const HELP =
     "With input 1 disconnected, or outside the holdout's bounding box, "
     "visibility is 1 and costs nothing.\n"
     "\n"
-    "COVERAGE DEFICIT (specified behaviour, not a bug)\n"
+    "COVERAGE FILL\n"
     "\n"
     "A defocused foreground scatters outward off its own silhouette. The "
     "pixels it vacates need whatever was behind it, and a deep image only "
     "contains that if the renderer wrote the samples hidden behind the "
     "foreground. Most renderers stop a ray at the first opaque hit and write "
-    "nothing behind it.\n"
+    "nothing behind it. Without a fill that leaves an alpha dip roughly one "
+    "circle of confusion wide just inside the silhouette, and the same "
+    "shortfall appears as bands of reduced opacity either side of the focal "
+    "line on a surface receding through focus, where neighbouring scanlines "
+    "scatter different-sized discs.\n"
     "\n"
-    "Where that information is missing you get an alpha dip roughly one "
-    "circle of confusion wide, just inside the foreground silhouette. This "
-    "node leaves that dip alone. It never scales alpha up to hide it: the "
-    "overlap saturation rule only ever scales down. That is the correct "
-    "result for the comp-over-a-plate and holdout workflows this node is "
-    "built for, because the missing coverage is real and filling it would "
-    "invent colour.\n"
+    "This node fills both, the way a 2D defocus of a flat image does "
+    "implicitly. Every source pixel's unit area is partitioned over its "
+    "samples front to back (each sample claims its alpha of what is left, "
+    "and the remainder is a virtual background that carries no colour and "
+    "no alpha), each claim is scattered with its owner's disc into an "
+    "ARRIVAL plane, and a destination pixel whose arrival falls short of 1 "
+    "has its premultiplied colour and alpha scaled up together by "
+    "1/arrival. The fill only ever restores a shortfall; where more than "
+    "unit weight arrives, the overlap saturation rule scales down as "
+    "before.\n"
     "\n"
-    "The fix is upstream in the renderer, not here. Deep output has to be "
-    "configured to keep samples behind opaque surfaces -- the setting is "
-    "usually named for hidden surfaces, for storing all ray hits or all "
-    "layers, or as an opacity/transparency threshold that has to be lowered "
-    "so the ray does not terminate at the first opaque hit; raising the deep "
-    "sample count helps too. The more of the occluded volume the render "
-    "keeps, the smaller the dip. Elements combined with DeepMerge carry full "
-    "occluded information and rarely show it. A disocclusion fill and an "
-    "alpha-renormalise option are deliberately not in this version.\n"
+    "What the fill invents is FOREGROUND-coloured coverage, only where the "
+    "renderer wrote none: it scales the samples that did arrive at a pixel "
+    "to full coverage and adds nothing of its own, so it never invents "
+    "background colour and never guesses at what an occluded surface would "
+    "have looked like. Elements combined with DeepMerge carry their "
+    "occluded samples and show through the defocused edge in their own "
+    "colour; a sparse render is filled with the foreground's colour "
+    "instead.\n"
+    "\n"
+    "The fill divides by the UN-HELD-OUT arrival: the arrival plane is "
+    "deposited before holdout visibility is applied, while every colour and "
+    "alpha deposit carries it, so holdout attenuation is preserved exactly "
+    "and the fill and the holdout commute -- a holdout applied before the "
+    "fill gives the same result as one applied after.\n"
+    "\n"
+    "'background depth' sets the defocus radius, in pixels, of the invented "
+    "coverage for pixels the deep image left completely EMPTY. 0 (the "
+    "default) is auto: the circle of confusion at the frame's farthest "
+    "measured depth. Coverage behind a pixel's OWN samples always takes that "
+    "pixel's deepest sample's defocus and ignores this knob. The knob "
+    "matters when an isolated element sits far from the frame's farthest "
+    "depth: its fringe over emptiness is then divided by a background "
+    "scattered at a different radius than its own, and reads boosted where "
+    "its disc is smaller than the background's and cut where it is larger "
+    "-- tens of percent on a small element whose radius is more than twice "
+    "the background's. Setting 'background depth' to the element's own "
+    "radius removes that; the shortfall it fills is the same either way.\n"
     "\n"
     "LINEAR LIGHT, NO BLOOM\n"
     "\n"
@@ -198,15 +223,20 @@ static const char* const HELP =
     "\n"
     "1. Alpha reads high on semi-transparent content whose blur radius "
     "changes steeply across the frame. Each disc is normalised over its own "
-    "footprint and nothing renormalises per destination pixel, so where the "
-    "circle of confusion changes fast a destination pixel receives slightly "
-    "more than unit weight. Measured on a ground plane receding through "
-    "focus at 0.5 circle-of-confusion pixels per scanline: interior alpha "
-    "reads +5.9% high at alpha 0.10 and +3.4% high at alpha 0.30 at the "
-    "default 16 depth layers, +6.5% at 4 depth layers, and +7.1% as alpha "
-    "approaches 0. It is worst at low alpha and disappears at alpha 1, where "
-    "the saturation clamp absorbs it. It tracks the blur gradient rather "
-    "than the depth layer count: at a quarter of that slope the same "
+    "footprint, and where the circle of confusion changes fast a "
+    "destination pixel receives MORE than unit weight from its neighbours. "
+    "The coverage fill corrects only shortfalls of arrival, deliberately: "
+    "dividing surpluses out as well was built and measured, and the arrival "
+    "plane cannot tell a continuous surface's over-delivery from a "
+    "defocused neighbour legitimately overlapping an occluder, so it "
+    "punched holes in opaque geometry instead. Measured on a ground plane "
+    "receding through focus at 0.5 circle-of-confusion pixels per scanline: "
+    "interior alpha reads +5.9% high at alpha 0.10 and +3.4% high at alpha "
+    "0.30 at the default 16 depth layers, +6.5% at 4 depth layers, and "
+    "+7.1% as alpha approaches 0; at alpha 0.9 the rows nearest focus read "
+    "up to +0.073. It is worst at low alpha and disappears at alpha 1, "
+    "where the saturation clamp absorbs it. It tracks the blur gradient "
+    "rather than the depth layer count: at a quarter of that slope the same "
     "measurement reads +0.34%. Ordinary content has far gentler gradients "
     "and sits orders of magnitude below these figures.\n"
     "\n"
@@ -218,7 +248,11 @@ static const char* const HELP =
     "discs overlap, read 0.432 where the sum of the two rendered separately "
     "is 0.252, i.e. +71%; an equal-density pair of the same shape reads "
     "+1.5%. The information is lost when the fragments are accumulated, so "
-    "no later compositing rule can recover it.\n"
+    "no later compositing rule can recover it. With the coverage fill live "
+    "the same measurement reads +87%: the extra is the fill's background-"
+    "radius mismatch described under 'background depth' (two cards at "
+    "different depths pool onto different radii, so no one knob value "
+    "removes it), not more lost information.\n"
     "\n"
     "3. A holdout erases unoccluded geometry for one depth bracket in front "
     "of itself. Holdout visibility is interpolated between per-pixel "
@@ -248,8 +282,8 @@ static const char* const HELP =
     "\n"
     "NOT IN THIS VERSION\n"
     "\n"
-    "Highlight and bloom controls; disocclusion fill; lens aberrations and "
-    "shaped irises; GPU acceleration. This node is CPU only, and is built "
+    "Highlight and bloom controls; lens aberrations and shaped irises; GPU "
+    "acceleration. This node is CPU only, and is built "
     "for Linux only -- it is excluded from the Windows build.\n"
     "\n"
     "Part of the DeepC plugin collection.";
@@ -286,6 +320,7 @@ class DeepCDefocus : public DD::Image::Iop
     float _frontCocMult;         // Float, default 1.0, 0-4
     float _backCocMult;          // Float, default 1.0, 0-4
     float _edgeSoftness;         // Float px, default 1.0, 0-4
+    float _backgroundDepth;      // Float px, default 0.0 = auto, 0-500
 
     // --- Output ------------------------------------------------------------
     ChannelSet _channels;        // Input_ChannelSet, default rgba
@@ -397,6 +432,7 @@ class DeepCDefocus : public DD::Image::Iop
         int  alphaPlane       = -1;
         int  mattePlane       = -1;
         int  padY             = 0;
+        float backgroundRadiusPx = 0.0f;   // resolveBackgroundRadiusPx(), see frameSetup()
         int  bandHeight       = 1;    // never < 1
         int  bandCount        = 0;
         int  maxInFlight      = 1;    // memory-limit cap, floor 1
@@ -442,6 +478,7 @@ public:
         _frontCocMult(1.0f),
         _backCocMult(1.0f),
         _edgeSoftness(1.0f),
+        _backgroundDepth(0.0f),
         _channels(Mask_RGBA),
         _outputHoldoutMatte(false),
         _holdoutMatteChannel(Chan_Black),
@@ -491,7 +528,7 @@ public:
     }
 
     // No default substitute for either input: a disconnected input 0 means
-    // "no deep source" (an error the later _validate task handles) and a
+    // "no deep source" (_validate() produces an empty image) and a
     // disconnected input 1 means "no holdout" (a valid, zero-cost state).
     Op* default_input(int input) const override
     {
@@ -594,6 +631,14 @@ public:
 
         Float_knob(f, &_edgeSoftness, IRange(0.0, 4.0), "edge_softness", "edge softness");
         Tooltip(f, "Width, in pixels, of the anti-aliased disc-edge falloff band.");
+
+        Float_knob(f, &_backgroundDepth, IRange(0.0, 500.0), "background_depth", "background depth");
+        Tooltip(f, "Defocus radius, in pixels, of the invented coverage that fills in "
+                    "behind pixels the deep image left completely empty.\n\n"
+                    "0 = auto: the CoC at the frame's farthest measured depth. A manual "
+                    "value is clamped to the frame's own measured radius range.\n\n"
+                    "Has no effect on any pixel with at least one sample — those always "
+                    "borrow their own deepest sample's defocus instead.");
 
         // --- Output ----------------------------------------------------------
         Divider(f, "Output");
@@ -698,6 +743,15 @@ public:
     {
         const float t = (_mergeTolerance > 0.0f) ? std::min(_mergeTolerance, 16.0f) : 0.0f;
         return t * _proxyScale;
+    }
+
+    // background_depth, a radius in pixels like max_radius, so it is
+    // proxy-scaled here rather than by applyProxyScale() — CocParams does not
+    // carry it, same reasoning as clampedMergeTolerancePx() above. <= 0 is
+    // left as-is (deepc::resolveBackgroundRadiusPx() reads that as "auto").
+    float clampedBackgroundDepthPx() const
+    {
+        return (_backgroundDepth > 0.0f) ? _backgroundDepth * _proxyScale : 0.0f;
     }
 
     // memory_limit, in bytes. Soft range 1-64 GB; the floor is deliberately
@@ -1128,6 +1182,7 @@ private:
         job->alphaPlane        = _shared.alphaPlane;
         job->mattePlane        = _shared.mattePlane;
         job->padY              = _shared.padY;
+        job->backgroundRadiusPx = _shared.backgroundRadiusPx;
         job->sp                = _shared.spBase;
         return job;
     }
@@ -1192,6 +1247,7 @@ private:
         int alphaPlane = -1;
         int mattePlane = -1;
         int padY       = 0;
+        float backgroundRadiusPx = 0.0f;   // see FrameShared::backgroundRadiusPx
 
         // bandY / bandHeight are filled per band; everything else (origin,
         // width, sharp threshold) is set once, explicitly, from the knobs.
@@ -1201,6 +1257,7 @@ private:
         deepc::FlattenScratch   flattenScratch;
         deepc::ScatterScratch   scatterScratch;
         deepc::BucketPlanes     planes;
+        deepc::ResidualWindow   residual;   // virtual-background T/radius, full fetch window
         deepc::HoldoutSampleSoA holdoutSamples;
         deepc::HoldoutLut       holdoutLut;
 
@@ -1339,6 +1396,15 @@ private:
         // sampler will actually hand back.
         rMax = std::min(rMax, deepc::DiscKernelLUT::kMaxSupportedRadius);
 
+        // background_depth: 0 (auto) resolves to the CoC at the frame's
+        // farthest measured depth; a manual value is clamped to rMax. Passed
+        // through explicitly (this file's convention — see BandJob) rather
+        // than read as a member from inside computeBand()'s residual-map
+        // build, which is the only consumer for now.
+        const float cocAtDepthMax = deepc::radiusPixels(fp.coc, buckets.depthMax());
+        _shared.backgroundRadiusPx = deepc::resolveBackgroundRadiusPx(
+            clampedBackgroundDepthPx(), cocAtDepthMax, rMax);
+
         // edge_softness is proxy-scaled HERE. applyProxyScale() deliberately
         // does not touch it — CocParams does not carry it — so the LUT build
         // is where it lands.
@@ -1398,6 +1464,9 @@ private:
         // CLAMPED values, never raw knob values.
         //
         // The budget is a COMBINED figure: bucket planes K*W*B*(C+3)*4, PLUS
+        // the virtual-background window 2*W*(B+2*padY)*4 (ResidualWindow —
+        // it is owned per-BandJob exactly like the bucket planes, so `padY`
+        // is passed through here rather than left at the default 0), PLUS
         // the holdout LUT (K+1)*W*B*4 (measured 17.0 MB per 4096x64 band at
         // K=16), PLUS the SoA fragment stream at ~100 B/fragment RESIDENT
         // (61 B logical), which is the DOMINANT term at 4K (~1.49GB against
@@ -1434,7 +1503,7 @@ private:
 
         const deepc::BandPlan plan = deepc::planBands(
             memoryLimitBytes(), fc.box.h(), K, C, W, holdoutConnected,
-            initialBandHeight, worstBandFragments);
+            initialBandHeight, worstBandFragments, padY);
 
         _shared.bandHeight   = plan.bandHeight;
         _shared.bandCount    = plan.bandCount;
@@ -1444,7 +1513,7 @@ private:
         if (_debugBands) {
             const double fragments = worstBandFragments(plan.bandHeight);
             const double perBand = deepc::bandBudgetBytes(
-                K, C, W, plan.bandHeight, holdoutConnected, fragments);
+                K, C, W, plan.bandHeight, holdoutConnected, fragments, padY);
             std::fprintf(stderr,
                          "DeepCDefocus: budget limitGB %.3f bandGB %.3f "
                          "maxInFlight %d promisedGB %.3f fragments %.0f\n",
@@ -1695,34 +1764,45 @@ private:
         const std::ptrdiff_t px = static_cast<std::ptrdiff_t>(W) * h;
 
         // --- source fetch: band +/- padY, clipped to the source bbox -------
+        // Also builds the virtual-background window: T = 1 (and the
+        // background radius) for every fetch-window pixel inside the OUTPUT
+        // box, whether or not it lies in `srcBox` — see
+        // deepc::buildResidualWindow(). A deep input whose bbox is tight
+        // around its content still needs a virtual background on every bloom
+        // pixel outside that bbox, or arrival there equals the bloom's own
+        // weight and a soft edge divides to a hard disc.
         job.soa.begin(C, job.fp->groups);
-
-        const int fy0 = std::max(job.srcBox.y(), y0 - job.padY);
-        const int fy1 = std::min(job.srcBox.t(), y1 + job.padY);
 
         const ChannelSet need = neededDeepChannels();
 
+        DeepPlane deepRow;   // captured by both callbacks below
         const auto fetchStart = std::chrono::steady_clock::now();
-        for (int y = fy0; y < fy1; ++y) {
-            if (aborted())
-                return false;
-
-            DeepPlane deepRow;
-            if (!job.src->deepEngine(y, job.srcBox.x(), job.srcBox.r(), need, deepRow)) {
-                Iop::abort();
-                return false;
-            }
-
-            for (int x = job.srcBox.x(); x < job.srcBox.r(); ++x) {
+        const bool fetchOk = deepc::buildResidualWindow(
+            job.residual,
+            fc.box.x(), fc.box.r(), fc.box.y(), fc.box.t(),
+            job.srcBox.x(), job.srcBox.r(), job.srcBox.y(), job.srcBox.t(),
+            y0, y1, job.padY, job.backgroundRadiusPx,
+            [&](int y) -> bool {
+                if (aborted())
+                    return false;
+                if (!job.src->deepEngine(y, job.srcBox.x(), job.srcBox.r(), need, deepRow)) {
+                    Iop::abort();
+                    return false;
+                }
+                return true;
+            },
+            [&](int x, int y, float& residualT, float& residualRadiusPx) -> bool {
                 if (!fillSampleRecords(deepRow.getPixel(y, x), *job.colorChannels,
                                        job.samples))
-                    continue;
-
+                    return false;
                 deepc::flattenPixelToSoA(*job.fp, *job.buckets, x, y,
                                          job.samples, job.flattenScratch,
-                                         job.soa, nullptr);
-            }
-        }
+                                         job.soa, nullptr,
+                                         &residualT, &residualRadiusPx);
+                return true;
+            });
+        if (!fetchOk)
+            return false;
         if (fetchMs) {
             *fetchMs = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - fetchStart).count();
@@ -1867,6 +1947,15 @@ private:
                          y0, y1, stats.fragments, stats.sharpFragments,
                          stats.culled, stats.rowSpans, stats.pixelDeposits);
         }
+
+        // The virtual background: `arrival` only, never color/alpha/weight/
+        // colocated -- see scatterBackgroundCPU(). It has to run between the
+        // fragment scatter and the resolve, because the resolve divides by the
+        // finished `arrival` and a residual missing from it reads as a
+        // coverage deficit that is not there.
+        deepc::scatterBackgroundCPU(job.sp, job.residual, *job.kernel,
+                                    job.planes);
+
         deepc::resolveBandCPU(job.sp, job.planes,
                               job.bandColor.data(), job.bandAlpha.data());
 

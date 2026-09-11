@@ -63,6 +63,12 @@ def currentFormat():
     return _currentFormat
 
 
+def defaultOutDir():
+    """Where persistent renders go when --out-dir is not given: a fixed
+    directory under the user's home, never inside the repository."""
+    return os.path.join(os.path.expanduser("~"), "deepc-validation")
+
+
 class Settings(object):
     """Harness-wide knob settings. T16/T17/T18 drove the same scenes through
     different values of these; nothing here is allowed to be implicit."""
@@ -70,7 +76,7 @@ class Settings(object):
     def __init__(self, k=16,
                  preMerge=True, mergeTolerance=0.25, maxRadius=100,
                  tmpDir=None, keepRenders=False, verbose=False,
-                 fullSweep=False):
+                 fullSweep=False, outDir=None):
         self.k = int(k)
         self.preMerge = bool(preMerge)
         self.mergeTolerance = float(mergeTolerance)
@@ -78,6 +84,12 @@ class Settings(object):
         self.tmpDir = tmpDir
         self.keepRenders = keepRenders
         self.verbose = verbose
+        # NOT a knob either: where a scene puts a render that is meant to
+        # OUTLIVE the run (scene (m)'s m5 over-checkerboard EXRs, written
+        # for a before/after look rather than for a number).  ``tmpDir`` is
+        # deleted with the run unless --keep-renders, so it cannot serve;
+        # this is a deterministic directory outside the repo tree.
+        self.outDir = outDir or defaultOutDir()
         # NOT a knob: a run-scope option (--full-sweep) that widens scene
         # (f)'s f3f sweep from its representative cells to the whole grid
         # M1.P3.T22 measured.  It is carried on Settings rather than passed
@@ -100,7 +112,8 @@ class Settings(object):
                          mergeTolerance=self.mergeTolerance,
                          maxRadius=self.maxRadius,
                          tmpDir=self.tmpDir, keepRenders=self.keepRenders,
-                         verbose=self.verbose, fullSweep=self.fullSweep)
+                         verbose=self.verbose, fullSweep=self.fullSweep,
+                         outDir=self.outDir)
         for key, value in overrides.items():
             if key == "k":
                 clone.k = int(value)
@@ -315,6 +328,40 @@ def render(settings, node, tag, channels="rgba", box=None):
         except OSError:
             pass
     return image
+
+
+def saveRender(node, path, channels="rgba", box=None):
+    """``render()``'s Write, to a caller-chosen path that OUTLIVES the run.
+
+    Same file settings as ``render()`` (32-bit float, uncompressed, raw) so
+    ``readExr()`` reads it back, but nothing is deleted and no temp name is
+    minted: the caller owns the path.  Used for renders meant to be looked
+    at (scene (m)'s m5) rather than measured and discarded.  Returns the
+    path.
+    """
+    if box is None:
+        box = formatBox()
+    directory = os.path.dirname(path)
+    if directory and not os.path.isdir(directory):
+        os.makedirs(directory)
+
+    crop = nuke.nodes.Crop(inputs=[node])
+    crop["box"].setValue([float(v) for v in box])
+    crop["reformat"].setValue(False)
+    crop["intersect"].setValue(False)
+    crop["crop"].setValue(True)
+
+    write = nuke.nodes.Write(inputs=[crop])
+    write["file"].setValue(path)
+    write["file_type"].setValue("exr")
+    write["channels"].setValue(channels)
+    write["datatype"].setValue("32 bit float")
+    write["compression"].setValue("none")
+    write["autocrop"].setValue(False)
+    write["raw"].setValue(True)
+    write["proxy"].setValue(path)
+    nuke.execute(write, 1, 1)
+    return path
 
 
 # --- deep source builders ----------------------------------------------------

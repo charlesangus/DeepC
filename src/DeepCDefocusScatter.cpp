@@ -30,6 +30,7 @@ std::size_t SampleSoA::sizeBytes() const
 {
     return x.sizeBytes() + y.sizeBytes()
          + radius.sizeBytes() + depth.sizeBytes() + alpha.sizeBytes()
+         + arrivalShare.sizeBytes()
          + bucketIndex0.sizeBytes() + bucketIndex1.sizeBytes()
          + bucketAlpha0.sizeBytes() + bucketAlpha1.sizeBytes()
          + colorScale0.sizeBytes() + colorScale1.sizeBytes()
@@ -43,6 +44,7 @@ void SampleSoA::clear()
     radius.clear();
     depth.clear();
     alpha.clear();
+    arrivalShare.clear();
     bucketIndex0.clear();
     bucketIndex1.clear();
     bucketAlpha0.clear();
@@ -60,6 +62,7 @@ void SampleSoA::release()
     radius.release();
     depth.release();
     alpha.release();
+    arrivalShare.release();
     bucketIndex0.release();
     bucketIndex1.release();
     bucketAlpha0.release();
@@ -84,6 +87,7 @@ void SampleSoA::reserveFragments(std::size_t count)
     radius.reserve(count);
     depth.reserve(count);
     alpha.reserve(count);
+    arrivalShare.reserve(count);
     bucketIndex0.reserve(count);
     bucketIndex1.reserve(count);
     bucketAlpha0.reserve(count);
@@ -106,6 +110,7 @@ void SampleSoA::appendFragment(const FragmentRecord& f, const float* __restrict_
     radius.growForAppend(next);
     depth.growForAppend(next);
     alpha.growForAppend(next);
+    arrivalShare.growForAppend(next);
     bucketIndex0.growForAppend(next);
     bucketIndex1.growForAppend(next);
     bucketAlpha0.growForAppend(next);
@@ -120,6 +125,7 @@ void SampleSoA::appendFragment(const FragmentRecord& f, const float* __restrict_
     radius.resize(next);
     depth.resize(next);
     alpha.resize(next);
+    arrivalShare.resize(next);
     bucketIndex0.resize(next);
     bucketIndex1.resize(next);
     bucketAlpha0.resize(next);
@@ -134,6 +140,7 @@ void SampleSoA::appendFragment(const FragmentRecord& f, const float* __restrict_
     radius[n]        = f.radius;
     depth[n]         = f.depth;
     alpha[n]         = f.alpha;
+    arrivalShare[n]  = f.share;
     bucketIndex0[n]  = static_cast<std::int32_t>(f.deposit.index0);
     bucketIndex1[n]  = static_cast<std::int32_t>(f.deposit.index1);
     bucketAlpha0[n]  = f.deposit.alpha0;
@@ -276,6 +283,10 @@ struct PendingGroup {
     float        radius         = 0.0f;
     BucketWeight bw             = {};
     int          holdoutBracket = 0;
+
+    // See FragmentRecord::share.  A sum of member shares, never rescaled by
+    // the collision merge's attenuation below.
+    float        share          = 0.0f;
 };
 
 // The holdout LUT's bracket index for a depth, or 0 when no holdout is
@@ -376,7 +387,7 @@ inline bool depositsCollide(const BucketWeight& a, const BucketWeight& b)
 // The state is stamped, not cleared (`claimStamp[k] == claimEpoch` means
 // "touched during the current pixel"), so a pixel costs no reset.  The
 // attenuation's memory cost is the THREE `run*` arrays, not one float:
-// 12 B/bucket, i.e. 1.5 KB per thread at K=128, which is what the node's band
+// 16 B/bucket, i.e. 2 KB per thread at K=128, which is what the node's band
 // budget has to size on; see FlattenScratch.
 // ------------------------------------------------------------------------
 enum class BucketVisit {
@@ -415,7 +426,7 @@ inline void ensureBucketScratch(FlattenScratch& scratch, int bucketCount)
 // pixel at radii 23.3px and 8.5px band-sum to 1.000000 with this and 2.000000
 // without it.
 inline bool claimNewArea(FlattenScratch& scratch, int bucketCount, int bucket,
-                         int kernelBin)
+                         std::int64_t kernelBin)
 {
     if (bucket < 0 || bucket >= bucketCount)
         return true;                            // never index out of range
@@ -430,7 +441,7 @@ inline bool claimNewArea(FlattenScratch& scratch, int bucketCount, int bucket,
 }
 
 inline BucketVisit visitBucket(FlattenScratch& scratch, int bucketCount,
-                               int kernelBin, int bucket,
+                               std::int64_t kernelBin, int bucket,
                                float& alpha, float& colorScale)
 {
     if (bucket < 0 || bucket >= bucketCount)
@@ -471,8 +482,12 @@ inline void emitPending(FlattenScratch&      scratch,
     f.radius = g.radius;
     f.alpha  = clampf(g.alpha, 0.0f, 1.0f);
     f.kind   = g.kind;
+    // Carried straight through: the collision attenuation below rescales
+    // alpha/colorScale ONLY, never share, or the gather-share partition would
+    // stop summing to 1.
+    f.share  = g.share;
 
-    const int kernelBin = scatterKernelBin(g.radius);
+    const std::int64_t kernelBin = scatterKernelBin(g.radius);
 
     // --- THE MONOTONE BUCKET FRONTIER ------------------------------------
     // The bucket composite is front-to-back over the PLANES: everything in
@@ -578,7 +593,9 @@ void flattenPixelToSoA(const FlattenParams& params,
                        std::vector<SampleRecord>& samples,
                        FlattenScratch&      scratch,
                        SampleSoA&           out,
-                       FlattenStats*        stats)
+                       FlattenStats*        stats,
+                       float*               residualT,
+                       float*               residualRadiusPx)
 {
     // The SoA's own channel count is authoritative, NOT params.channelCount.
     // appendFragment() copies exactly out.channelCount floats out of the
@@ -590,8 +607,13 @@ void flattenPixelToSoA(const FlattenParams& params,
     // should of course be set from the same place; this is the safety net.
     const int nChan = (out.channelCount > 0) ? out.channelCount : 0;
 
-    if (samples.empty())
+    if (samples.empty()) {
+        // No sample to take a residual radius from; the caller's own
+        // "empty pixel" default is left in place.
+        if (residualT != nullptr)
+            *residualT = 1.0f;
         return;
+    }
 
     if (stats != nullptr) {
         ++stats->pixels;
@@ -662,8 +684,19 @@ void flattenPixelToSoA(const FlattenParams& params,
 
     // Caller-owned stack buffer for the span split: K+2 parts at the knob's
     // maximum K, ~2.6KB.  Declared once per pixel rather than per sample (same
-    // stack slot either way) and never heap-allocated, per the brief.
+    // stack slot either way) and never heap-allocated.
     SpanSplitPart parts[kMaxSpanSplitParts];
+
+    // THE GATHER-SHARE PARTITION.  One running transmittance for the whole
+    // pixel, decremented front-to-back as every fragment (point sample or
+    // split part, whichever this loop is staging) takes its slice:
+    // share = t * alpha; t *= (1 - alpha).  By construction the shares of
+    // every fragment staged below plus the value `arrivalT` holds once the
+    // loop ends sum to exactly 1 — that final value IS the residual (the
+    // virtual background's claim).  Untouched by pre-merge (which only sums
+    // shares) and by the deposit-collision merge (see PendingGroup::share);
+    // this is the one place the partition is computed.
+    float arrivalT = 1.0f;
 
     for (std::size_t i = 0; i < samples.size(); ++i) {
         const SampleRecord& s = samples[i];
@@ -674,6 +707,13 @@ void flattenPixelToSoA(const FlattenParams& params,
         // scattering its colour would be a visible divergence, not an ULP one.
         // The cost is that a purely emissive alpha-0 sample is invisible,
         // which is deliberate and matches the flatten path.
+        //
+        // It is skipped for the residual as well: its share would be t * 0,
+        // and the residual's radius is the deepest SURFACE's so that the
+        // surface's kernel and its residual's tile (alpha / arrival then
+        // recovers the true alpha).  An alpha-0 sample deeper than the content
+        // is not such a surface, and a pixel of nothing but alpha-0 samples is
+        // an empty pixel.
         if (!(s.alpha > 0.0f))
             continue;
 
@@ -702,6 +742,8 @@ void flattenPixelToSoA(const FlattenParams& params,
             st.depth  = sampleMidDepth(st.zFront, st.zBack);
             st.radius = radiusPixels(params.coc, st.depth);
             st.bucket = containingBucket(buckets, st.depth);
+            st.share  = arrivalT * s.alpha;
+            arrivalT *= (1.0f - s.alpha);
             continue;
         }
 
@@ -736,6 +778,9 @@ void flattenPixelToSoA(const FlattenParams& params,
         // measured range.
         bool haveParentPart = false;
 
+        const std::size_t parentFirstStaged = scratch.stagedCount;
+        float             parentShare       = 0.0f;
+
         for (int p = 0; p < nParts; ++p) {
             const SpanSplitPart& part = parts[p];
 
@@ -747,6 +792,16 @@ void flattenPixelToSoA(const FlattenParams& params,
 
             const float partDepth  = sampleMidDepth(part.zFront, part.zBack);
             const int   partBucket = containingBucket(buckets, partDepth);
+
+            // Each part consumes its own slice of the pixel's running
+            // transmittance, in the same front-to-back order it is staged —
+            // regardless of whether it ends up folded into `prev` (the
+            // same-bucket over-composite just above) or starting a fresh
+            // Staged entry: either way the pixel's unit area has one fewer
+            // part's worth of transmittance left after it.
+            const float partShare = arrivalT * part.alpha;
+            arrivalT *= (1.0f - part.alpha);
+            parentShare += partShare;
 
             if (haveParentPart) {
                 FlattenScratch::Staged& prev = scratch.staged[scratch.stagedCount - 1];
@@ -760,6 +815,7 @@ void flattenPixelToSoA(const FlattenParams& params,
                     prev.depth  = sampleMidDepth(prev.zFront, prev.zBack);
                     prev.radius = radiusPixels(params.coc, prev.depth);
                     prev.bucket = containingBucket(buckets, prev.depth);
+                    prev.share += partShare;
                     continue;
                 }
             }
@@ -769,6 +825,7 @@ void flattenPixelToSoA(const FlattenParams& params,
             st.zBack  = part.zBack;
             st.alpha  = part.alpha;
             st.kind   = kind;
+            st.share  = partShare;
 
             // THE COVERAGE HEAD.  One split parent covers its
             // kernel's area ONCE, so exactly one of its parts deposits into
@@ -794,13 +851,36 @@ void flattenPixelToSoA(const FlattenParams& params,
             st.bucket = partBucket;
             haveParentPart = true;
         }
+
+        // The split is an artefact of K and must not move where the parent
+        // claims arrival: spread over the parts' own radii, a wide-to-narrow
+        // parent claims far less at its own pixel than the unit background
+        // kernel its neighbours deposit, and the deficit division fires on it.
+        if (scratch.stagedCount > parentFirstStaged) {
+            for (std::size_t k = parentFirstStaged; k + 1 < scratch.stagedCount; ++k)
+                scratch.staged[k].share = 0.0f;
+            scratch.staged[scratch.stagedCount - 1].share = parentShare;
+        }
     }
 
     const std::size_t staged = scratch.stagedCount;
     if (stats != nullptr)
         stats->stagedFragments += staged;
-    if (staged == 0)
+    if (staged == 0) {
+        // Every sample failed the zero-alpha early-out: nothing was staged,
+        // so there is no "deepest sample" to take a residual radius from —
+        // same convention as the samples.empty() early-out above.
+        if (residualT != nullptr)
+            *residualT = 1.0f;
         return;
+    }
+
+    // The deepest staged fragment's radius, AFTER the same-bucket split-merge
+    // above has folded any trailing parts into it — captured now, before
+    // pre-merge/collision-merge regroup the staged list for the SoA, because
+    // "deepest sample" means the last one staged front-to-back, not whatever
+    // fragment a later grouping pass happens to emit last.
+    const float deepestRadius = scratch.staged[staged - 1].radius;
 
     // --- 5/6. pre-merge, then append -------------------------------------
     //
@@ -999,6 +1079,15 @@ void flattenPixelToSoA(const FlattenParams& params,
         cand.kind         = head.kind;
         cand.coverageHead = groupHead;
         cand.alpha        = 0.0f;
+        cand.share        = 0.0f;
+
+        // A pre-merge group's share is the plain sum of its members' — every
+        // one of them, independent of the alpha/colour over-composite below,
+        // which may stop early (`w <= 0.0f`) once the group is opaque.  Each
+        // member's share was already committed at staging time, whether or
+        // not the group's own alpha bookkeeping still has use for it.
+        for (std::size_t s = i; s < j; ++s)
+            cand.share += scratch.staged[s].share;
 
         float zf = head.zFront;
         float zb = head.zBack;
@@ -1043,6 +1132,11 @@ void flattenPixelToSoA(const FlattenParams& params,
                 pending.alpha += cand.alpha * w;
             }
             pending.coverageHead = pending.coverageHead || cand.coverageHead;
+            // Unconditional, unlike alpha/colour above: the collision merge
+            // must NOT attenuate share (see FragmentRecord::share), so the
+            // held-back group's share is a plain sum regardless of whether it
+            // is already opaque.
+            pending.share += cand.share;
         } else {
             if (pending.valid)
                 emitPending(scratch, buckets.bucketCount(), x, y, pending,
@@ -1055,6 +1149,16 @@ void flattenPixelToSoA(const FlattenParams& params,
     if (pending.valid)
         emitPending(scratch, buckets.bucketCount(), x, y, pending,
                     scratch.pendingAccum.data(), out, stats);
+
+    // `arrivalT` is the running transmittance after every staged fragment's
+    // share was taken in step 4, above — untouched by pre-merge or the
+    // collision merge, which only regroup already-committed shares, never
+    // recompute the partition.  It is therefore the virtual background's
+    // claim on this pixel: shares + *residualT sum to exactly 1.
+    if (residualT != nullptr)
+        *residualT = arrivalT;
+    if (residualRadiusPx != nullptr)
+        *residualRadiusPx = deepestRadius;
 }
 
 // ---------------------------------------------------------------------------
@@ -1358,6 +1462,7 @@ void BucketPlanes::allocate(int bucketCountIn, int channelCountIn,
     alpha.assign(plane, 0.0f);
     weight.assign(plane, 0.0f);
     colocated.assign(plane, 0.0f);
+    arrival.assign(px, 0.0f);   // K-independent: one per pixel, not per bucket
 }
 
 void BucketPlanes::zero()
@@ -1368,6 +1473,7 @@ void BucketPlanes::zero()
     alpha.assign(alpha.size(), 0.0f);
     weight.assign(weight.size(), 0.0f);
     colocated.assign(colocated.size(), 0.0f);
+    arrival.assign(arrival.size(), 0.0f);
 }
 
 void BucketPlanes::release()
@@ -1376,6 +1482,7 @@ void BucketPlanes::release()
     alpha.release();
     weight.release();
     colocated.release();
+    arrival.release();
     bucketCount  = 0;
     channelCount = 0;
     width        = 0;
@@ -1386,7 +1493,7 @@ void BucketPlanes::release()
 std::size_t BucketPlanes::sizeBytes() const
 {
     return color.sizeBytes() + alpha.sizeBytes() + weight.sizeBytes()
-         + colocated.sizeBytes();
+         + colocated.sizeBytes() + arrival.sizeBytes();
 }
 
 BucketPlaneView BucketPlanes::view()
@@ -1396,6 +1503,7 @@ BucketPlaneView BucketPlanes::view()
     v.alpha        = alpha.data();
     v.weight       = weight.data();
     v.colocated    = colocated.data();
+    v.arrival      = arrival.data();
     v.bucketCount  = bucketCount;
     v.channelCount = channelCount;
     v.width        = width;
@@ -1485,6 +1593,7 @@ void scatterBandCPU(const ScatterParams& params,
         frag.alpha1      = samples.bucketAlpha1[f];
         frag.colorScale0 = samples.colorScale0[f];
         frag.colorScale1 = samples.colorScale1[f];
+        frag.share       = samples.arrivalShare[f];
 
         frag.color = samples.colorOf(f);
 
@@ -1562,38 +1671,172 @@ void scatterBandCPU(const ScatterParams& params,
             const float radius = groupRadius(groups, g, baseRadius);
 
             // --- sharp fast path -------------------------------------------
-            if (!(radius >= sharpRadius)) {     // also catches NaN -> sharp
+            // AT the floor as well as below it: a 1 px diameter IS the sharp
+            // delta, and only that keeps d = 1 the same kernel for every
+            // edge_softness (above 1 the LUT's r=0.5 entry is not a delta).
+            if (!(radius > sharpRadius)) {      // also catches NaN -> sharp
                 touched += scatterFragmentSharp(view, vis, frag);
                 if (stats != nullptr && g == 0)
                     ++stats->sharpFragments;
                 continue;
             }
 
-            // DiscKernelLUT ignores destX/destY/depth/channelGroup; they are
-            // passed anyway because that unused-ness IS the sampler seam.
-            const KernelView kv = kernel.kernel(radius, frag.destX, frag.destY,
-                                                depth, g);
-            if (!kv.valid())
-                continue;
+            // --- the bracketing-kernel blend --------------------------------
+            // The radius picks the two grid nodes around it, not the nearest
+            // one, and the fragment rasterises both at (1 - f) and f.  Every
+            // deposit is linear in the weight, so the pair is exactly one pass
+            // over the blended row.  On a node the bracket collapses to a
+            // single pass at weight 1, which needs no scratch row and deposits
+            // the raw kernel row unchanged.
+            const KernelGridBracket br = kernelGridBracket(radius);
+            const int   nodeIndex[2] = { br.indexA, br.indexB };
+            const float nodeBlend[2] = { 1.0f - br.frac, br.frac };
+            const int   passes       = (br.indexB != br.indexA) ? 2 : 1;
 
-            float* rowScratch = nullptr;
-            if (useHoldout) {
-                // The widest span a kernel row can have, before clipping.
-                scratch.ensureRow(static_cast<std::size_t>(2 * kv.radiusX + 1));
-                rowScratch = scratch.rowWeights.data();
+            for (int p = 0; p < passes; ++p) {
+                if (nodeBlend[p] == 0.0f)
+                    continue;
+
+                // DiscKernelLUT ignores destX/destY/depth/channelGroup; they
+                // are passed anyway because that unused-ness IS the sampler
+                // seam.
+                const KernelView kv = kernel.kernel(kernelGridRadius(nodeIndex[p]),
+                                                    frag.destX, frag.destY,
+                                                    depth, g);
+                if (!kv.valid())
+                    continue;
+
+                float* rowScratch = nullptr;
+                if (useHoldout || nodeBlend[p] != 1.0f) {
+                    // The widest span a kernel row can have, before clipping.
+                    scratch.ensureRow(static_cast<std::size_t>(2 * kv.radiusX + 1));
+                    rowScratch = scratch.rowWeights.data();
+                }
+
+                std::size_t rows = 0;
+                touched += scatterFragmentSpans(view, vis, kv, frag,
+                                                nodeBlend[p], rowScratch, &rows);
+                if (stats != nullptr)
+                    stats->rowSpans += rows;
             }
-
-            std::size_t rows = 0;
-            touched += scatterFragmentSpans(view, vis, kv, frag,
-                                            rowScratch, &rows);
-            if (stats != nullptr)
-                stats->rowSpans += rows;
         }
 
         if (stats != nullptr) {
             stats->pixelDeposits += touched;
             if (touched == 0)
                 ++stats->culled;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// scatterBackgroundCPU
+// ---------------------------------------------------------------------------
+
+void scatterBackgroundCPU(const ScatterParams&  params,
+                          const ResidualWindow&  residual,
+                          const KernelSampler&   kernel,
+                          BucketPlanes&          planes)
+{
+    const BucketPlaneView view = planes.view();
+    if (!view.valid())
+        return;
+    if (view.width != params.bandWidth || view.height != params.bandHeight)
+        return;
+
+    const float sharpRadius = clampf(params.sharpRadiusPx, 0.0f, 1e6f);
+
+    for (int wy = 0; wy < residual.height; ++wy) {
+        const int py    = residual.y + wy;
+        const int destY = py - params.bandY;
+
+        for (int wx = 0; wx < residual.width; ++wx) {
+            const int px = residual.x + wx;
+            const std::size_t i =
+                static_cast<std::size_t>(residual.index(px, py));
+            // The skip floor IS the fill's deficit tolerance, and the two
+            // cannot be set independently: whatever this drops is missing from
+            // the divisor the fill later measures against 1.  Each dropped
+            // pixel withholds at most kFillDeficitTol of a unit kernel, so the
+            // whole dropped field costs arrival at most kFillDeficitTol and
+            // the fill still reads that pixel as full.  Drop at a looser floor
+            // than the fill's and a genuinely non-opaque pixel divides by an
+            // arrival short by more than the tolerance, which pulls it to
+            // alpha 1 -- the error is exactly the residual that was withheld.
+            const float T = residual.t[i];
+            if (!(T > kFillDeficitTol))
+                continue;
+
+            const int   destX    = px - params.bandX;
+            const float radiusPx = residual.radiusPx[i];
+
+            // Sharp fast path, same predicate the fragment scatter uses (at
+            // the floor as well as below it): a pixel this close to the focal
+            // plane deposits its own claim at its own pixel, no disc
+            // rasterised.
+            if (!(radiusPx > sharpRadius)) {
+                if (destX < 0 || destX >= view.width
+                 || destY < 0 || destY >= view.height)
+                    continue;
+                const std::ptrdiff_t dstOffset =
+                    static_cast<std::ptrdiff_t>(destY) * view.width + destX;
+                view.arrival[dstOffset] += T;
+                continue;
+            }
+
+            // The per-pixel kernel lookup, through the same bracketing blend
+            // the fragment scatter uses: this pixel's OWN residual radius --
+            // not a single frame-wide one -- picks the pair of grid nodes, and
+            // the claim splits across them.  See the header doc: a mismatched
+            // radius is a measured artifact, not a rounding difference, and
+            // snapping the residual to the nearest node while fragments blend
+            // is the same mismatch one grid step wide.
+            const KernelGridBracket br = kernelGridBracket(radiusPx);
+            const int   nodeIndex[2] = { br.indexA, br.indexB };
+            const float nodeBlend[2] = { 1.0f - br.frac, br.frac };
+            const int   passes       = (br.indexB != br.indexA) ? 2 : 1;
+
+            for (int p = 0; p < passes; ++p) {
+                const float claim = T * nodeBlend[p];
+                if (claim == 0.0f)
+                    continue;
+
+                const KernelView kv = kernel.kernel(kernelGridRadius(nodeIndex[p]),
+                                                    destX, destY, 0.0f, 0);
+                if (!kv.valid())
+                    continue;
+
+                for (int row = 0; row < kv.rowCount; ++row) {
+                    const RowSpan& span = kv.row(row);
+                    if (span.empty())
+                        continue;
+
+                    const int dy = destY + kv.rowY(row);
+                    if (dy < 0 || dy >= view.height)
+                        continue;
+
+                    int xs = destX + span.xStart;
+                    int xe = destX + span.xEnd;
+                    int skip = 0;
+                    if (xs < 0) {
+                        skip = -xs;
+                        xs   = 0;
+                    }
+                    if (xe >= view.width)
+                        xe = view.width - 1;
+                    if (xe < xs)
+                        continue;
+
+                    const int count = xe - xs + 1;
+                    const std::ptrdiff_t dstOffset =
+                        static_cast<std::ptrdiff_t>(dy) * view.width + xs;
+                    const float* w = kv.rowWeights(row) + skip;
+
+                    float* __restrict__ arrivalDst = view.arrival + dstOffset;
+                    for (int k = 0; k < count; ++k)
+                        arrivalDst[k] += w[k] * claim;
+                }
+            }
         }
     }
 }
@@ -1639,7 +1882,8 @@ void resolveBandCPU(const ScatterParams& params,
                                         view.channelCount,
                                         view.pixelCount,
                                         outColor + i,
-                                        outAlpha + i);
+                                        outAlpha + i,
+                                        view.arrival[i]);
     }
 }
 

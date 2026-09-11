@@ -30,7 +30,7 @@ DeepFromImage {
  name DeepFromImage1
  xpos 0
 }
-set N195a8030 [stack 0]
+set N29a329b0 [stack 0]
 DeepCDefocus {
  coc_mode Manual
  size 86
@@ -40,7 +40,7 @@ DeepCDefocus {
  xpos -220
  ypos 140
 }
-push $N195a8030
+push $N29a329b0
 DeepCDefocus {
  coc_mode Manual
  size 86
@@ -49,7 +49,7 @@ DeepCDefocus {
  xpos 0
  ypos 140
 }
-push $N195a8030
+push $N29a329b0
 DeepCDefocus {
  coc_mode Manual
  size 86
@@ -62,7 +62,7 @@ DeepCDefocus {
 StickyNote {
  inputs 0
  name StickyNote1
- label "Scene (g) -- banding on a receding ground plane\n\nCheck: an opaque ground plane receding continuously through focus must show no visible seams at bucket boundaries at K=16; compare K=8 vs K=64.\n\nTop row: three DeepCDefocus branches off the same OPAQUE ground-plane source, depth_layers=8/16/64 (16 is the shipping default). That is the harness's g1/g2/g3 and the scene's own stated criterion, and it PASSES -- the worst row-to-row seam is 3.9e-05 against the 1/255 an 8-bit view resolves.\n\nBottom row: the SAME ramp at alpha < 1, which is where the residual is. Both branches are documented XFAILs in the harness and neither reads its input alpha back -- see their own note."
+ label "Scene (g) -- banding on a receding ground plane\n\nCheck: an opaque ground plane receding continuously through focus must show no visible seams at bucket boundaries at K=16; compare K=8 vs K=64.\n\nTop row: three DeepCDefocus branches off the same OPAQUE ground-plane source, depth_layers=8/16/64 (16 is the shipping default). That is the harness's g1/g2/g3 and the scene's own stated criterion, and it PASSES -- the worst row-to-row seam is 3.9e-05 against the 1/255 an 8-bit view resolves.\n\nBottom row: the SAME ramp at alpha < 1, which is where the residual is. Both branches are documented XFAILs in the harness and neither reads its input alpha back -- see their own note. The coverage fill does not reach them: it divides only where less than unit weight arrives, and on this ramp's interior the arrival is 1.06-1.09 everywhere."
  note_font_size 14
  xpos 300
 }
@@ -119,7 +119,7 @@ DeepCDefocus {
 StickyNote {
  inputs 0
  name StickyNote2
- label "The alpha<1 arms of the same ramp (harness g4 and g5) -- both XFAIL\n\nIdentical rig to the opaque branches above, at K=16, with the plane's premultiplied colour scaled to alpha 0.90 and alpha 0.10. The correct interior flat field is the input alpha exactly. It is not:\n\n  alpha 0.90 (g4): reads 0.8707, a 3.25% DEFICIT\n  alpha 0.10 (g5): reads 0.1059, a 5.93% OVER-READ\n\nThe over-read is in the direction the honest-alpha contract forbids and it grows as alpha falls (the harness also pins alpha 0.30 at +3.40% and alpha 0.01 at +7.06%, not reproduced here). Both are one bucket pooling a head and a rear at unequal per-unit opacity -- accumulation-time information loss, which no per-bucket composite rule can undo.\n\nBoth harness checks are pinned BANDS around their reading, so any change to these numbers -- an improvement included -- must re-pin them."
+ label "The alpha<1 arms of the same ramp (harness g4 and g5) -- both XFAIL\n\nIdentical rig to the opaque branches above, at K=16, with the plane's premultiplied colour scaled to alpha 0.90 and alpha 0.10. The correct interior flat field is the input alpha exactly. It is not:\n\n  alpha 0.90 (g4): reads 0.8708, a 3.25% DEFICIT\n  alpha 0.10 (g5): reads 0.1059, a 5.93% OVER-READ\n\nThe over-read grows as alpha falls (the harness also pins alpha 0.30 at +3.40% and alpha 0.01 at +7.07%, not reproduced here): it is the scatter's own over-delivery on this steep CoC slope, attenuated by (1 - alpha). The deficit is one bucket pooling a head and a rear at unequal per-unit opacity -- accumulation-time information loss, which no per-bucket composite rule can undo. Neither is a shortfall of ARRIVAL: the arrival plane reads 1.06-1.09 across this interior, so the deficit-only coverage fill never engages here, and cannot.\n\nBoth harness checks are pinned BANDS around their reading, so any change to these numbers -- an improvement included -- must re-pin them."
  note_font_size 14
  xpos 300
  ypos 320

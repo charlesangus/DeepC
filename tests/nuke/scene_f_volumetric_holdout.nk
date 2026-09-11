@@ -156,7 +156,7 @@ DeepMerge2 {
  name DeepMerge1
  xpos 0
 }
-set N1946e770 [stack 0]
+set N298f6eb0 [stack 0]
 DeepCDefocus {
  coc_mode Manual
  size 0
@@ -177,7 +177,7 @@ DeepCConstant {
  label "fog holdout, alpha 0.90, z=\[5, 25]"
  xpos 200
 }
-push $N1946e770
+push $N298f6eb0
 DeepCDefocus {
  inputs 2
  coc_mode Manual
@@ -190,7 +190,7 @@ DeepCDefocus {
 StickyNote {
  inputs 0
  name StickyNote1
- label "Scene (f) -- volumetric holdout\n\nCheck: a partial-alpha fog-slab holdout must attenuate a depth-graded series of probe strips by the analytic (1-alpha)^t, t the fractional depth across the fog span.\n\nPinned here (top row): fog slab alpha 0.90 spanning z=\[5, 25] at size=0, against the same probe strips rendered with no holdout for comparison. That is the harness's f1, and it PASSES (4.4e-08 against a 1e-06 gate).\n\nThe bottom row pins the harness's f3e, which FAILS -- see its own note. The harness's other scene-(f) rows are not reproduced here: f2 (opaque-holdout erasure onset, XFAIL), f3/f3b (equal-density fog density, PASS), f3c/f3d (equal-density overlapping slabs, XFAIL) and f3f-f3i (the rest of the unequal-density family; f3f FAILS)."
+ label "Scene (f) -- volumetric holdout\n\nCheck: a partial-alpha fog-slab holdout must attenuate a depth-graded series of probe strips by the analytic (1-alpha)^t, t the fractional depth across the fog span.\n\nPinned here (top row): fog slab alpha 0.90 spanning z=\[5, 25] at size=0, against the same probe strips rendered with no holdout for comparison. That is the harness's f1, and it PASSES (4.4e-08 against a 1e-06 gate).\n\nThe bottom row pins the harness's f3e, which FAILS -- see its own note. The harness's other scene-(f) rows are not reproduced here: f2 (opaque-holdout erasure onset, XFAIL), f3/f3b (equal-density fog density, PASS), f3c/f3d (equal-density overlapping slabs, XFAIL), f3f (the unequal-density sweep; FAILS), f3g/f3h (pinned XFAILs: the coverage fill's background-radius mismatch, with f3g2/f3h2 as the background_depth controls that return them to exact) and f3i."
  note_font_size 14
  xpos 340
 }
@@ -213,7 +213,7 @@ DeepCrop {
  xpos 20
  ypos 320
 }
-set N194f5b30 [stack 0]
+set N2997f560 [stack 0]
 DeepCDefocus {
  coc_mode Manual
  focus_distance 30
@@ -223,7 +223,7 @@ DeepCDefocus {
  xpos -300
  ypos 460
 }
-push $N194f5b30
+push $N2997f560
 DeepCConstant {
  inputs 0
  color_front {0.03 0.05 0.07 0.1}
@@ -243,7 +243,7 @@ DeepCrop {
  xpos -140
  ypos 320
 }
-set N194db430 [stack 0]
+set N29964bd0 [stack 0]
 DeepCConstant {
  inputs 0
  color_front {0.693 0.495 0.297 0.99}
@@ -263,7 +263,7 @@ DeepCrop {
  xpos -300
  ypos 320
 }
-set N194c1390 [stack 0]
+set N2994ab30 [stack 0]
 DeepMerge2 {
  inputs 3
  name DeepMerge4
@@ -277,8 +277,8 @@ DeepCDefocus {
  xpos 180
  ypos 460
 }
-push $N194f5b30
-push $N194db430
+push $N2997f560
+push $N29964bd0
 DeepMerge2 {
  inputs 2
  name DeepMerge3
@@ -292,8 +292,8 @@ DeepCDefocus {
  xpos 20
  ypos 460
 }
-push $N194f5b30
-push $N194c1390
+push $N2997f560
+push $N2994ab30
 DeepMerge2 {
  inputs 2
  name DeepMerge2
@@ -326,7 +326,7 @@ Merge2 {
 StickyNote {
  inputs 0
  name StickyNote2
- label "f3e -- unequal-density over-read (a PLAIN FAIL, not an xfail)\n\nTwo 40x40 cards 8 px apart, depth spans \[8,12] at alpha 0.99 and \[9,13] at alpha 0.10, defocused at size=14. Below saturation the node's area model is additive, so the merged render must equal the sum of the two cards rendered SEPARATELY. It does not: the harness reads +77.411% high on the worst probed pixel against a 0.5% gate, i.e. the node INVENTS alpha, the one direction the honest-alpha contract forbids.\n\n'soloA + soloB' is that oracle and 'oracle vs merged' is the error. The faint corner card is the RANGE ANCHOR: every branch here must measure the same depth range, or solo and merged would be bucketed differently and the identity would not be exact. Pixels its own blur reaches are excluded from the harness's reading, which is what the 'anchor alone' branch is for.\n\nThe harness's percentage is over a filtered pixel set (anchor-free, both cards present, estimated coverage <= 0.90) and is not what the difference node displays; the difference node shows WHERE the over-read is."
+ label "f3e -- unequal-density over-read (a PLAIN FAIL, not an xfail)\n\nTwo 40x40 cards 8 px apart, depth spans \[8,12] at alpha 0.99 and \[9,13] at alpha 0.10, defocused at size=14. Below saturation the node's area model is additive, so the merged render must equal the sum of the two cards rendered SEPARATELY. It does not: the harness reads +87.2% high on the worst probed pixel against a 0.5% gate (+77.4% before the coverage fill; the extra is the fill's background-radius mismatch, which f3g/f3h isolate), i.e. the node INVENTS alpha -- more than the two cards deposited.\n\n'soloA + soloB' is that oracle and 'oracle vs merged' is the error. The faint corner card is the RANGE ANCHOR: every branch here must measure the same depth range, or solo and merged would be bucketed differently and the identity would not be exact. Pixels its own blur reaches are excluded from the harness's reading, which is what the 'anchor alone' branch is for.\n\nThe harness's percentage is over a filtered pixel set (anchor-free, both cards present, estimated coverage <= 0.90) and is not what the difference node displays; the difference node shows WHERE the over-read is."
  note_font_size 14
  xpos 340
  ypos 320

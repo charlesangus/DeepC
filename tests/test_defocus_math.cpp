@@ -1134,7 +1134,7 @@ TEST_CASE("saturateBucketPixel: alpha>1 saturates to exactly 1 with colour/alpha
         }
     }
 
-    SUBCASE("honest coverage deficit (alpha < 1) is left strictly alone -- never scaled up")
+    SUBCASE("a coverage deficit (alpha < 1) is left strictly alone by this pass -- never scaled up here")
     {
         float color[3] = {0.15f, 0.10f, 0.05f};
         float alpha = 0.5f;
@@ -1214,7 +1214,7 @@ TEST_CASE("saturateBucketPlanes: the whole-band driver indexes the documented pl
                     CHECK(std::fabs(colorAt(k, c, static_cast<int>(i)) - unpremult[c])
                           <= 1e-6f * unpremult[c]);
             } else {
-                // Never scaled up: honest coverage deficit left strictly alone.
+                // Never scaled up here: a deficit is the composite's fill to restore.
                 CHECK(alphaAt(k, static_cast<int>(i)) == in);
                 for (int c = 0; c < channelCount; ++c)
                     CHECK(colorAt(k, c, static_cast<int>(i)) == in * unpremult[c]);

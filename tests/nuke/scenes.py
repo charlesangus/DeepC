@@ -1,4 +1,5 @@
-"""Validation scenes (a)-(l) from the M1 Design reference's scene list.
+"""Validation scenes (a)-(l) from the M1 Design reference's scene list,
+plus (m), the coverage fill.
 
 Every scene builds its graph from Python nodes (no committed ``.nk`` — that is
 M1.P5.T3's job), renders through ``harness.render()`` and reports a number.
@@ -7,15 +8,17 @@ with its magnitude and pixel population, never patched.
 """
 
 import math
+import os
 
 import nuke
 
+from exrio import readExr
 from harness import (
     FORMAT_H, FORMAT_W, RGBA, SKIP, Check,
-    boolCheck, channelStats, compareImages, constant2d, cropDeep, deepHoldout,
-    deepMerge, deepMergeHoldout, deepToImage, depthRampLayer, formatBox,
-    insetBox, makeDefocus, pointLayer, rectangle2d, render, resetScript,
-    rowMeans, slab, stepProfile, tolCheck,
+    boolCheck, channelStats, compareImages, constant2d, cropDeep,
+    currentFormat, deepHoldout, deepMerge, deepMergeHoldout, deepToImage,
+    depthRampLayer, formatBox, insetBox, makeDefocus, pointLayer, rectangle2d,
+    render, resetScript, rowMeans, saveRender, slab, stepProfile, tolCheck,
 )
 
 
@@ -233,15 +236,39 @@ def sceneC(settings):
     interior = insetBox(formatBox(), inset)
 
     alpha = channelStats(image, "A", interior)
+    # THE GATE IS THE FLOAT ACCUMULATION BOUND OF THE HEAD BUCKET'S SUM, not
+    # 1e-6.  An opaque slab's output alpha is the head bucket's coverage sum
+    # (the composite reads `fit * local` with local == 1 exactly, because the
+    # alpha and coverage planes receive the identical products in the identical
+    # order), and that sum is a naive float accumulation of one term per
+    # non-zero kernel tap that reaches the pixel: the head part sits at 27.93
+    # px, rasterised as the blend of the 27.5 and 28.0 px grid nodes, whose
+    # discs carry 5010 non-zero taps between them (counted from
+    # DiscKernelLUT).  Recursive summation of n terms of total 1 is exact to
+    # n * 2^-24, so that is the gate; it is derived from the geometry and the
+    # LUT, never from a reading.  The old 1e-6 gate held only because alpha
+    # used to over-read here (the nearest-node kernel delivered slightly more
+    # than unit weight) and the clamp hid the accumulation error under an
+    # exact 1; the blended kernel delivers unit weight and the same error now
+    # shows through with the other sign.  The arrival plane reads 1 + 1.3e-06
+    # here, so the fill never engages: this cell measures the scatter and the
+    # composite, not the fill.  A plain PASS gate rather than an XFAIL on
+    # purpose -- nothing here is deficient, the previous gate was fiction.
+    C1_TERMS = 5010
+    C1_TOL = C1_TERMS * 2.0 ** -24                              # 2.99e-04
     checks.append(tolCheck("c", "c1 flat-field alpha, opaque slab |a-1|",
                            max(abs(alpha.minimum - 1.0),
                                abs(alpha.maximum - 1.0)),
-                           1.0e-06,
+                           C1_TOL,
                            population="interior %dx%d px"
                                       % (interior[2] - interior[0],
                                          interior[3] - interior[1]),
-                           note="min %.7f max %.7f" % (alpha.minimum,
-                                                       alpha.maximum)))
+                           note="min %.7f max %.7f; gate is %d taps * 2^-24, "
+                                "the float accumulation bound of the head "
+                                "bucket's coverage sum (27.93 px disc blended "
+                                "from the 27.5/28.0 px nodes); the colour "
+                                "arms are c2/c2b"
+                                % (alpha.minimum, alpha.maximum, C1_TERMS)))
     red = channelStats(image, "R", interior)
     checks.append(tolCheck("c", "c2 flat-field colour spread (red)",
                            red.spread, 1.0e-06,
@@ -471,7 +498,8 @@ def sceneF(settings):
     still erases genuinely-unoccluded source geometry for ~depthRange/K in
     front of it; M1.P3.T18 judged that residual in its interpolant bake-off
     and KEPT it (the log chord won — the deleted alternates leaked source
-    through dense volumetric holdouts instead, the forbidden direction), so
+    through dense volumetric holdouts instead, an over-read no rule of the
+    node licenses), so
     this stays a bounded XFAIL, reported here, not fixed.
     f3 is the fog-density reading against M1.P3.T8's coverage-head fix.
     """
@@ -680,11 +708,27 @@ def sceneF(settings):
     #   K=4/8/16/64/128).
     F3C_HARD = 2.0e-02
     F3D_HARD = 5.0e-02
+    # f3b's gate is the float accumulation bound of the ARRIVAL plane, not
+    # 1e-5.  Two fog layers over the whole frame make shares + residual sum to
+    # exactly 1 in exact arithmetic, so the fill is meant to be inert here;
+    # in float the arrival plane is a naive sum of one term per non-zero
+    # kernel tap that reaches the pixel -- the [6,10] slab's pooled claim at
+    # its deepest part's 24 px disc, the [12,16] slab's at 11.6 px, and the
+    # 0.25 residual at 11.6 px, 5630 taps between them (counted from
+    # DiscKernelLUT) -- and lands 1.6e-05 under 1, past the fill's 1e-05
+    # deficit tolerance, so the pair is divided by it: 0.75 comes out
+    # +1.6e-05 high.  Recursive summation of n terms is exact to n * 2^-24,
+    # so that is the gate.  Derived from the geometry and the LUT, never from
+    # a reading; a plain gate, not an XFAIL, because the identity holds to
+    # the precision the arithmetic has.  (The kernel-independent version of
+    # the same identity is f3 at size 0, still 1e-5.)
+    F3B_TERMS = 5630
+    F3B_TOL = F3B_TERMS * 2.0 ** -24                            # 3.36e-04
     densityRows = [
         ("f3  fog density, size=0, separated slabs", separatedSlabs, 0.0,
          1.0e-05, 8, False, None),
         ("f3b fog density, defocused, separated slabs", separatedSlabs, 12.0,
-         1.0e-05, settings.maxRadius + 4, False, None),
+         F3B_TOL, settings.maxRadius + 4, False, None),
         ("f3c fog density, defocused, overlapping slabs", overlappingSlabs,
          12.0, 1.0e-05, settings.maxRadius + 4, True, F3C_HARD),
         ("f3d fog density, defocused, span + point (shared bucket, "
@@ -698,7 +742,7 @@ def sceneF(settings):
         img = render(settings, node, "f_density", box=formatBox())
         stats = channelStats(img, "A", insetBox(formatBox(), inset))
         loss = (exact - stats.mean) / exact * 100.0
-        gate = "0.75 +/- %.0e" % tol
+        gate = "0.75 +/- %.1e" % tol
         if hardPct is not None:
             gate += " (xfail < %.1f%% loss)" % (100.0 * hardPct)
         checks.append(boolCheck(
@@ -711,10 +755,13 @@ def sceneF(settings):
             # candidate (-0.113%/-1.675% under the shipped composite against
             # +0.074%/+0.967% under the one M1.P3.T17 deleted), which is why
             # T17 weighed it as evidence rather than as a common-mode term.
-            note="documented different-split-fraction residual (Decisions "
-                 "2026-07-26); signed, and NOT candidate-independent as that "
-                 "entry states — see the T12 review and M1.P3.T17"
-                 if documented else "",
+            note=("documented different-split-fraction residual (Decisions "
+                  "2026-07-26); signed, and NOT candidate-independent as that "
+                  "entry states — see the T12 review and M1.P3.T17"
+                  if documented else
+                  ("gate is %d taps * 2^-24, the float accumulation bound of "
+                   "the arrival plane the fill divides by" % F3B_TERMS
+                   if tol == F3B_TOL else "")),
             expectedFailure=documented,
             hardTol=hardPct,
             hardValue=(abs(loss) / 100.0) if hardPct is not None else None))
@@ -729,9 +776,10 @@ def sceneF(settings):
 # overlapping depth content, and BOTH pin EQUAL density — the one arrangement
 # the bucket composite is nearly exact on.  Two cards at DIFFERENT densities
 # whose depth spans overlap (a dense fog card beside a thin one) read tens of
-# percent HIGH, i.e. the node invents alpha, which is the direction the
-# Design reference's coverage-deficit spec explicitly forbids ("the saturation
-# rule never scales alpha up to hide this").  Nothing in this harness saw that
+# percent HIGH, i.e. the node reports more alpha than the two cards deposited
+# -- an over-read no rule of this node licenses: the saturation rule only
+# ever scales down, and the coverage fill only ever restores a shortfall of
+# arrival, never a surplus.  Nothing in this harness saw that
 # until this task; f3e/f3f are the gate M1.P3.T23 has to close, and f3g/f3h
 # are the controls that say what the gate is actually measuring.
 #
@@ -803,9 +851,11 @@ def sceneF(settings):
 # AND IS UNEQ_COVER_MAX HONEST?  The worry is the mirror image of the confound:
 # a coverage guard set too loose would admit pixels where the composite
 # genuinely (and correctly) occludes, and report that as defect.  It does not,
-# and the two controls are what prove it: f3g and f3h probe up to the SAME
-# coverage 0.90 and read -0.003% and -0.000%.  If additivity broke at high
-# coverage as such, they would show it too.  Confirmed from the other side by
+# and the two controls are what prove it: f3g2 and f3h2 (the controls with
+# `background_depth` at the cards' own claiming radius, where the coverage
+# fill is inert) probe up to the SAME coverage 0.90 and read -0.003% and
+# -0.000%.  If additivity broke at high coverage as such, they would show it
+# too.  Confirmed from the other side by
 # the tHeadIn=1 mutation in the table below, which takes f3e's LOW arm to
 # -0.001%: a saturation artefact would survive that perturbation, an occlusion
 # term cannot.  Every reading in this family, both arms, is the composite.
@@ -867,8 +917,9 @@ def sceneF(settings):
 # +0.000% high and -3.278% low, i.e. all deficit and no over-read at all.  That
 # term is a residual whose own disc OVERHANGS the head tile it belongs to
 # spilling onto a FOREIGN parent's tile and being occluded by it, which needs
-# only a shared tile stack and not a shared bucket; it is in the direction the
-# honest-alpha contract PERMITS, and it was unmeasured before this task.  So
+# only a shared tile stack and not a shared bucket; it is a deficit, the
+# direction the composite's own rules err in, and it was unmeasured before
+# this task.  So
 # closing the +77% alone leaves f3e RED on the low arm.  The |deviation| gate is
 # still the right one — it is what stops the over-read being traded for a
 # deficit — but "f3e is still FAIL" is not by itself evidence that the target
@@ -953,7 +1004,21 @@ def sceneF(settings):
 # the fit/claim path rather than the residual.  That IS its finding (the
 # over-read needs the residual chain that spreads a parent across buckets, and
 # is not about the density ratio as such), but it provides no detection, and
-# saying so is the point.
+# saying so is the point.  What DOES move it is the coverage fill's divisor,
+# which is not on the composite side at all: see the f3g/f3h block below for
+# the radius mismatch it reads at the default `background_depth`, and the
+# f3g2/f3h2 controls that remove it.
+#
+# THE FILL SITS UNDER EVERY READING IN THIS FAMILY.  Each render is divided by
+# its own arrival, and a card's pixels claim arrival at the card's radius
+# while empty pixels claim at the auto background radius (12.25 px on this
+# range-anchored frame), so the divisor differs between a solo render and the
+# merged one wherever the other card's kernel reaches.  f3g/f3h measure that
+# term in isolation; f3e/f3f carry it on top of the composite over-read they
+# were built for (f3e +77.4% -> +87.2% high at the default knob), and no one
+# knob value removes it there, because the two cards pool onto different
+# radii.  Read f3e/f3f as bounding the over-read at the shipping defaults; the
+# composite term alone is the pre-fill figure quoted in their notes.
 
 UNEQ_CARD_A = (84, 108, 124, 148)       # 40x40, 8 px apart in x
 UNEQ_CARD_B = (132, 108, 172, 148)
@@ -987,18 +1052,21 @@ def _uneqAnchor():
                      UNEQ_ANCHOR_ALPHA, (0.5, 0.5, 0.5))
 
 
-def _uneqRender(settings, size, builders, tag):
+def _uneqRender(settings, size, builders, tag, overrides=None):
     """Render one arrangement.  ``builders`` are called AFTER resetScript(),
-    so every render of a cell builds its own graph from scratch."""
+    so every render of a cell builds its own graph from scratch.
+    ``overrides`` are extra DeepCDefocus knobs by name (the f3g/f3h controls
+    set ``background_depth``)."""
     resetScript()
     layers = [build() for build in builders]
     source = deepMerge(layers) if len(layers) > 1 else layers[0]
     node = makeDefocus(settings, source, size=size, focusDistance=30.0,
-                       cocMode="manual")
+                       cocMode="manual", **(overrides or {}))
     return render(settings, node, tag, box=formatBox())
 
 
-def unequalDensityCell(settings, size, alphaA, alphaB, zA, zB, step=2):
+def unequalDensityCell(settings, size, alphaA, alphaB, zA, zB, step=2,
+                       overrides=None):
     """merged vs soloA+soloB for one (density, overlap, size, K) cell."""
     def A():
         return _uneqCard(UNEQ_CARD_A, zA[0], zA[1], alphaA, (0.7, 0.5, 0.3))
@@ -1010,14 +1078,17 @@ def unequalDensityCell(settings, size, alphaA, alphaB, zA, zB, step=2):
     # shared across the cells of a sweep rather than re-rendered per cell.
     # describe() rather than settings.k: the cache must not survive a change
     # to pre_merge/max_radius either.
-    key = (settings.describe(), size)
+    key = (settings.describe(), size, tuple(sorted((overrides or {}).items())))
     if key not in _uneqAnchorCache:
         _uneqAnchorCache[key] = _uneqRender(settings, size, [_uneqAnchor],
-                                            "f_uneq_anchor")
+                                            "f_uneq_anchor", overrides)
     imgN = _uneqAnchorCache[key]
-    imgA = _uneqRender(settings, size, [A, _uneqAnchor], "f_uneq_soloA")
-    imgB = _uneqRender(settings, size, [B, _uneqAnchor], "f_uneq_soloB")
-    imgM = _uneqRender(settings, size, [A, B, _uneqAnchor], "f_uneq_merged")
+    imgA = _uneqRender(settings, size, [A, _uneqAnchor], "f_uneq_soloA",
+                       overrides)
+    imgB = _uneqRender(settings, size, [B, _uneqAnchor], "f_uneq_soloB",
+                       overrides)
+    imgM = _uneqRender(settings, size, [A, B, _uneqAnchor], "f_uneq_merged",
+                       overrides)
 
     x0, y0, x1, y1 = formatBox()
     high, highAt, highTriple = 0.0, None, None
@@ -1120,9 +1191,11 @@ def unequalDensityChecks(settings):
         _uneqMeasured(base), gate,
         population=_uneqPopulation(base),
         note="M1.P3.T22's gate, and M1.P3.T23's target — a PLAIN FAIL, not an "
-             "xfail: alpha is INVENTED here, which the coverage-deficit spec "
-             "forbids ('the saturation rule never scales alpha up to hide "
-             "this'). Two 40x40 cards 8 px apart, spans [8,12] and [9,13], "
+             "xfail: alpha is INVENTED here -- more than the two cards "
+             "deposited, which the down-only saturation rule cannot produce "
+             "and the coverage fill's radius mismatch (f3g/f3h) accounts for "
+             "only part of (+77.4% before the fill existed). Two 40x40 "
+             "cards 8 px apart, spans [8,12] and [9,13], "
              "range-anchored so solo and merged share one bucket set and one "
              "kernel LUT (see the header above). Gated on |deviation| in BOTH "
              "directions: a conservative rule that occludes every residual by "
@@ -1150,8 +1223,8 @@ def unequalDensityChecks(settings):
         # ADDED AT THIS TASK'S REVIEW, and it is the cell that says the defect
         # is not confined to unequal density: two IDENTICAL alpha-0.99 fog
         # cards whose spans are staggered by one unit — as ordinary as comp
-        # content gets — read +8.373% high on 641 of 1076 px, in the forbidden
-        # direction.  It is measured here rather than only described in f3h's
+        # content gets — read +8.373% high on 641 of 1076 px, an over-read.
+        # It is measured here rather than only described in f3h's
         # note because it is the SAME composite-side term as the rest of this
         # sweep (mutation-measured: tHeadIn=1 takes it to +0.0001%), not
         # f3c/f3d's accumulation-time term, which no composite rule can move.
@@ -1256,55 +1329,151 @@ def unequalDensityChecks(settings):
              "TRACKS the defect as M1.P3.T23 moves it — the four axes are the "
              "ones it is known to depend on. Cells: " + "; ".join(details)))
 
-    # --- f3g/f3h: the two controls that attribute f3e/f3f.  Neither of them
-    # may be quietly relaxed: each states an arrangement the composite is
-    # EXACT on, and they are what proves the rig (the range anchor, the
-    # additive oracle) is sound rather than the measurement being of the
-    # harness itself.  WHAT THEY DO NOT SAY (corrected at this task's review):
-    # they do NOT establish that the over-read needs UNEQUAL density.  f3h
-    # pins COINCIDENT spans; stagger the same two equal-density cards by one
-    # depth unit and the over-read is back at +8.373% (f3f's `ratio 1.00`
-    # cell).  What the pair does establish is that it needs a MULTI-PART
-    # parent whose residual chain meets another parent's deposits — f3g,
-    # single-bucket, is exact at a 10x density ratio.
-    thin = unequalDensityCell(settings, 14.0, 0.99, 0.10,
-                              (10.0, 10.05), (10.0, 10.05))
-    checks.append(boolCheck(
-        "f", "f3g control: unequal density, single-bucket cards (no residual "
-             "chain)",
-        max(thin["high"], -thin["low"]) <= UNEQ_TOL,
-        _uneqMeasured(thin), gate,
-        population=_uneqPopulation(thin),
-        note="unequal density ALONE is not the trigger: two thin cards at one "
-             "depth are one head deposit each, and the composite is exact on "
-             "them. So f3e/f3f measure the pooling of a multi-part parent's "
-             "residual chain with another parent's deposits, not the alpha "
-             "ratio as such"))
+    # --- f3g/f3h: the two controls that attribute f3e/f3f.  Each states an
+    # arrangement the bucket COMPOSITE is exact on, and they are what proves
+    # the rig (the range anchor, the additive oracle) is sound rather than the
+    # measurement being of the harness itself.  WHAT THEY DO NOT SAY
+    # (corrected at this task's review): they do NOT establish that the
+    # over-read needs UNEQUAL density.  f3h pins COINCIDENT spans; stagger the
+    # same two equal-density cards by one depth unit and the over-read is back
+    # at +8.373% (f3f's `ratio 1.00` cell).  What the pair does establish is
+    # that it needs a MULTI-PART parent whose residual chain meets another
+    # parent's deposits — f3g, single-bucket, is exact at a 10x density ratio.
+    #
+    # UNDER THE COVERAGE FILL EACH IS TWO CELLS.  The fill divides every pixel
+    # by its ARRIVAL: each source pixel's unit area, scattered at that pixel's
+    # own deepest sample's radius, plus -- for a pixel with NO samples -- a
+    # virtual background scattered at the auto `background_depth` radius, the
+    # CoC at the frame's farthest measured depth.  This family's frame is
+    # range-anchored to [8,16], so every empty pixel claims at r(16) = 12.25
+    # px, while the cards claim at their own radius: f3g's thin cards at
+    # 27.90 px, f3h's [8,12] cards pooled at their deepest part's 21.54 px.
+    # Around a card the two kernels do not tile to 1 (D runs 0.63..1.22 over
+    # f3g's probed pixels, 0.68..1.17 over f3h's), and D differs between the
+    # solo and the merged render because the OTHER card's pixels are empty in
+    # one and claiming at 27.9 px in the other.  The numerators stay additive;
+    # the divisors do not, and this ratio oracle reads exactly that.  It is
+    # the design's documented CONDITIONAL, not a composite defect: a near
+    # object's fringe over emptiness is boosted where its kernel is smaller
+    # than the background's (and cut where it is larger), and an empty pixel
+    # has no depth of its own to borrow.
+    #
+    # SO THE DEFAULT-KNOB READING IS PINNED, AND THE MECHANISM IS PINNED
+    # BESIDE IT.  The pin comes from an independent oracle, NOT from this
+    # build: a kernel-geometry model (disc convolutions of the card masks at
+    # the card and background radii, D = 1 + sum over card pixels of
+    # (K_card - K_bg), numerators additive by construction, the harness's own
+    # probe filters) predicts f3g +14.928% / -20.389% and f3h +5.441% /
+    # -10.791%; the plugin reads +14.926% / -20.390% and +5.442% / -10.789%.
+    # Banded +/- 0.5 points, two-sided (the family's own 0.5% gate), hard
+    # bound the band: a reading outside it has moved and must be re-pinned.
+    # The control sub-cell sets `background_depth` to the card's own claiming
+    # radius, which makes D == 1 everywhere (the model reads +0.000% /
+    # -0.000% for both) and returns each control to its pre-fill reading
+    # (f3g +0.000% / -0.003%, f3h +0.078% / -0.000%); the control passes the
+    # plain gate, so the mechanism is pinned, not merely tolerated.  K is
+    # fixed at 16 for all four: f3h's part radii, and with them its pooled
+    # radius and its pin, are K-dependent.
+    #
+    # f3g's radius is the thin card's own: size * |1 - 30/10.025|.  f3h's is
+    # its deepest part's midpoint radius under 16 bounded-delta-CoC buckets
+    # over [8,16]: boundaries uniform in CoC from r(8) = 38.5 to r(16) = 12.25
+    # px, step 1.640625, so the deepest part is [z(22.09375 px), 12] =
+    # [11.6355, 12], midpoint 11.8177, radius 21.5385 px.
+    # THESE TWO CHECKS CANNOT PASS, BY CONSTRUCTION: each is a band around a
+    # residual, exactly as g4/g5/m3c are, so an "improvement" -- the fill
+    # forced off returns both to additive -- turns them FAIL (excursion 14.9
+    # and 5.4 points against a 0.5 band) instead of quietly passing.  Whoever
+    # moves either must re-pin it in the same commit.
+    F3GH_BAND = 0.50                                   # percentage points
+    F3G_PIN = (+14.93, -20.39)                          # (% high, % low)
+    F3H_PIN = (+5.44, -10.79)
+    F3G_RADIUS = 14.0 * abs(1.0 - 30.0 / 10.025)       # 27.895 px
+    F3H_POOLED_RADIUS = 21.53846
+    f3ghCell = settings.derive(k=16)
 
-    equal = unequalDensityCell(settings, 14.0, 0.99, 0.99,
-                               (8.0, 12.0), (8.0, 12.0))
+    def pinnedControl(name, cell, pin, radius, note):
+        high, low = 100.0 * cell["high"], 100.0 * cell["low"]
+        excursion = max(abs(high - pin[0]), abs(low - pin[1]))
+        return boolCheck(
+            "f", name,
+            False,
+            _uneqMeasured(cell),
+            gate + " (xfail %+.2f%% high / %+.2f%% low, +/- %.2f points)"
+            % (pin[0], pin[1], F3GH_BAND),
+            population=_uneqPopulation(cell),
+            note=note + "; the cards claim arrival at %.3f px, the empty "
+                 "pixels at the auto background radius 12.25 px, and the "
+                 "fill divides by the mismatch -- the design's conditional, "
+                 "pinned at the kernel-geometry model's prediction" % radius,
+            expectedFailure=True, hardTol=F3GH_BAND, hardValue=excursion)
+
+    thin = unequalDensityCell(f3ghCell, 14.0, 0.99, 0.10,
+                              (10.0, 10.05), (10.0, 10.05))
+    checks.append(pinnedControl(
+        "f3g control: unequal density, single-bucket cards (no residual "
+        "chain), K=16, auto background_depth",
+        thin, F3G_PIN, F3G_RADIUS,
+        "unequal density ALONE is not the trigger: two thin cards at one "
+        "depth are one head deposit each, and the composite is exact on "
+        "them. So f3e/f3f measure the pooling of a multi-part parent's "
+        "residual chain with another parent's deposits, not the alpha "
+        "ratio as such"))
+    thinExact = unequalDensityCell(f3ghCell, 14.0, 0.99, 0.10,
+                                   (10.0, 10.05), (10.0, 10.05),
+                                   overrides=dict(background_depth=F3G_RADIUS))
     checks.append(boolCheck(
-        "f", "f3h control: EQUAL density, overlapping spans (f3c/f3d's own "
-             "case)",
-        max(equal["high"], -equal["low"]) <= UNEQ_TOL,
-        _uneqMeasured(equal), gate,
-        population=_uneqPopulation(equal),
-        note="the arrangement f3c/f3d pin, measured through THIS oracle: "
-             "overlapping multi-part spans alone are not the trigger either. "
-             "NOTE WHAT IT DOES NOT SAY: the spans here COINCIDE, and equal "
-             "density is exact only then — the same two cards at alpha 0.99 "
-             "with STAGGERED spans [8,12]/[9,13] read +8.373% high on 641 of "
-             "1076 px (alpha 0.50 twins read +2.931%), in the forbidden "
-             "direction. MECHANISM CORRECTED AT THIS TASK'S REVIEW: M1.P3.T22 "
-             "attributed that to f3c/f3d's accumulation-time pooling and "
-             "deferred it on that basis, but it is NOT that term — it is the "
-             "same composite-side tile allocation as f3e's over-read. "
-             "Mutation-measured: tHeadIn=1 takes the staggered cell to "
-             "+0.0001% (f3c/f3d do NOT go to zero under it, they go to "
-             "+33.333%), and the pooled-tClaimed and whole-mosaic rules move "
-             "it to +7.058% and +4.731%. So it is reachable by a composite "
-             "rule, it is ordinary content, and it belongs in M1.P3.T23's "
-             "scope; it is now measured every run as f3f's 'ratio 1.00' cell"))
+        "f", "f3g2 ...and is additive again with background_depth at the "
+             "cards' own radius (the mechanism, pinned)",
+        max(thinExact["high"], -thinExact["low"]) <= UNEQ_TOL,
+        _uneqMeasured(thinExact), gate,
+        population=_uneqPopulation(thinExact),
+        note="background_depth %.3f px: every pixel, card or empty, now "
+             "claims arrival at one radius, the kernels tile to exactly 1, "
+             "the fill is inert and the composite's own additivity shows "
+             "through (pre-fill reading +0.000%% / -0.003%%).  What f3g "
+             "reads at the default knob is therefore the fill's radius "
+             "mismatch and nothing else" % F3G_RADIUS))
+
+    equal = unequalDensityCell(f3ghCell, 14.0, 0.99, 0.99,
+                               (8.0, 12.0), (8.0, 12.0))
+    checks.append(pinnedControl(
+        "f3h control: EQUAL density, overlapping spans (f3c/f3d's own case), "
+        "K=16, auto background_depth",
+        equal, F3H_PIN, F3H_POOLED_RADIUS,
+        "the arrangement f3c/f3d pin, measured through THIS oracle: "
+        "overlapping multi-part spans alone are not the trigger either. "
+        "NOTE WHAT IT DOES NOT SAY: the spans here COINCIDE, and equal "
+        "density is exact only then — the same two cards at alpha 0.99 "
+        "with STAGGERED spans [8,12]/[9,13] read +8.373% high on 641 of "
+        "1076 px (alpha 0.50 twins read +2.931%), an over-read. MECHANISM "
+        "CORRECTED AT THIS TASK'S REVIEW: M1.P3.T22 attributed that to "
+        "f3c/f3d's accumulation-time pooling and deferred it on that basis, "
+        "but it is NOT that term — it is the same composite-side tile "
+        "allocation as f3e's over-read. Mutation-measured: tHeadIn=1 takes "
+        "the staggered cell to +0.0001% (f3c/f3d do NOT go to zero under "
+        "it, they go to +33.333%), and the pooled-tClaimed and whole-mosaic "
+        "rules move it to +7.058% and +4.731%. So it is reachable by a "
+        "composite rule, it is ordinary content, and it belongs in "
+        "M1.P3.T23's scope; it is now measured every run as f3f's 'ratio "
+        "1.00' cell"))
+    equalExact = unequalDensityCell(
+        f3ghCell, 14.0, 0.99, 0.99, (8.0, 12.0), (8.0, 12.0),
+        overrides=dict(background_depth=F3H_POOLED_RADIUS))
+    checks.append(boolCheck(
+        "f", "f3h2 ...and is additive again with background_depth at the "
+             "cards' pooled (deepest-part) radius (the mechanism, pinned)",
+        max(equalExact["high"], -equalExact["low"]) <= UNEQ_TOL,
+        _uneqMeasured(equalExact), gate,
+        population=_uneqPopulation(equalExact),
+        note="background_depth %.5f px, the radius a [8,12] card's whole "
+             "arrival claim is pooled onto (its deepest part's): the empty "
+             "pixels then claim at the same radius, the kernels tile to "
+             "exactly 1, the fill is inert and the reading is the pre-fill "
+             "one (+0.078%% / -0.000%%).  It needs the pooling: with each "
+             "part claiming at its own radius no single knob value can "
+             "tile the card's claim, since a 37.7 px head and a 21.5 px "
+             "tail cannot both match one background" % F3H_POOLED_RADIUS))
 
     # --- f3i: the oracle's own premise, and the family's non-degeneracy
     # guard.  Without it, a composite that simply never occludes a co-located
@@ -1709,7 +1878,7 @@ def sceneG(settings):
     #
     # RE-PINNED AT M1.P3.T21, 0.0543 -> 0.0325.  T20 bought the ramp with an
     # upward error on staggered multi-part parents (up to +21.1% on hand-built
-    # planes, the honest-alpha contract's forbidden direction) because it
+    # planes, an over-read) because it
     # carried ONE head tile and had to discard one whenever a bucket both
     # claimed area and continued a chain.  T21 carries a STACK of them
     # (kCompositeHeadTiles = 16) and allocates a residual across it by area from
@@ -1784,7 +1953,7 @@ def sceneG(settings):
     # behind-focus residue, is the OTHER formulation the source names: scaling
     # `resLocal` by the covered share instead of splitting (61.00% -> 70.53%).
     # The unguarded direction is DOWNWARD (the whole-tile branch over-occludes
-    # the uncovered ring), which the honest-alpha contract permits, so this is a
+    # the uncovered ring), a deficit rather than an over-read, so this is a
     # gap in coverage rather than an unbounded hazard -- but it is a gap, and
     # "caught by 1 assertion" was not measured.
     #
@@ -1797,6 +1966,18 @@ def sceneG(settings):
     # Re-run at the review it is also caught by g1 (9.980e-03 against a
     # 1.0e-03 gate), g2 (4.906e-02) and g3 (3.191e-02) -- four rendered checks,
     # not one.  It does still survive the whole unit suite.)
+    #
+    # THE COVERAGE FILL DOES NOT REACH THIS CELL, AND THE PIN IS UNCHANGED.
+    # The fill divides a pixel by its arrival only where that arrival falls
+    # short of 1, and on this ramp's interior it never does: the arrival plane
+    # reads 1.060..1.092 on every interior row (min 1.0602, mean 1.0719 --
+    # the POD rig's readout of the same geometry; the near-focus rows 126/130
+    # are the only ones under 1, and they are excluded here and pinned by
+    # scene (m)).  Deficit-only division is inert at D > 1 by construction,
+    # so this reading is the composite's bucket pooling exactly as before,
+    # and the same rig resolved with the fill forced off reads the identical
+    # 0.870770.  What changed under it is nothing: 0.870724 -> 0.870770 is
+    # the blended kernel, 5e-05 inside a 4e-03 band.
     #
     # THIS CHECK CANNOT PASS, BY CONSTRUCTION: it is a band around a residual,
     # so any change to the reading -- an improvement included -- turns it FAIL.
@@ -1829,7 +2010,10 @@ def sceneG(settings):
         note="min %.6f (y=%d) max %.6f; the opaque twin (g1, same rig, K=%d) "
              "reads %+.3f%% — what is left is ONE BUCKET POOLING A HEAD AND A "
              "REAR AT UNEQUAL PER-UNIT OPACITY (f3c/f3d's mechanism; any split "
-             "fraction but 0.5), not the tClaimed mosaic term M1.P3.T20 removed"
+             "fraction but 0.5), not the tClaimed mosaic term M1.P3.T20 "
+             "removed. Arrival is 1.06..1.09 on every interior row, so the "
+             "deficit-only coverage fill never engages here and cannot: this "
+             "is not a coverage shortfall"
              % (min(fogProfile),
                 profileRow(fogProfile.index(min(fogProfile))),
                 max(fogProfile), g4K,
@@ -1839,7 +2023,7 @@ def sceneG(settings):
 
     # --- g5: THE LOW-ALPHA ARM OF THE SAME RAMP (M1.P3.T24).  g4 pins one
     # alpha (0.90, a DEFICIT); below alpha ~0.5 the SAME rig reads HIGH --
-    # invented alpha, the forbidden direction, at the shipping default K --
+    # a surplus of alpha, at the shipping default K --
     # and until this check existed nothing bounded it.  ALL FIGURES HERE ARE
     # g4-RIG FIGURES (this scene's ground ramp), NOT the f3e/f3f two-card
     # family: M1.P3.T23 read this arm against that other rig, got +0.370%,
@@ -1874,8 +2058,8 @@ def sceneG(settings):
     # reproduces sum(w) - 1 to 0.1 points at every K, and RENORMALISING the
     # weights per pixel flips every low-alpha cell to a small DEFICIT
     # (alpha 0.10: -0.25/-0.70/-0.87% at K=4/16/64), i.e. the composite's own
-    # low-alpha term is in the PERMITTED direction and the whole forbidden-
-    # direction excursion enters at scatter time.
+    # low-alpha term is a small deficit and the whole surplus enters at
+    # scatter time.
     #
     # WHY IT IS ACCEPTED RATHER THAN FIXED, said with numbers:
     #   * no composite rule, at ANY plane count, can reach it: the same
@@ -1886,13 +2070,28 @@ def sceneG(settings):
     #     second-moment plane included, computed from the same deposits) can
     #     be right on both.  "One receding surface" vs "many overlapping
     #     surfaces" is parent identity, which the planes do not carry.
-    #   * the scatter-side fix is per-destination-pixel weight
-    #     renormalisation, and that breaks content the node is exact on: two
-    #     full-coverage fog layers at alpha 0.5 read exactly 0.75 today
-    #     (f3h, and the `two 50% fog layers` identity) and 0.50 renormalised,
-    #     because sum(w) = 2 there is GENUINE overlap.  Distinguishing the
-    #     two needs the same parent identity.  A direction-gated version is
-    #     the design's own deferred v2 `alpha-renormalize` toggle.
+    #   * the node's coverage fill IS per-destination-pixel renormalisation,
+    #     and it is deliberately DEFICIT-ONLY: a pixel is divided by its
+    #     arrival (each source pixel's unit area, kernel-weighted, shares
+    #     plus virtual background) only where that arrival falls short of
+    #     1.  On this ramp's interior the arrival reads 1.060..1.092 (POD
+    #     readout, min 1.0602, mean 1.0719), so the fill never engages and
+    #     these cells are resolved exactly as they were before it existed
+    #     -- the same rig with the fill forced off reads the identical
+    #     numbers.  Dividing at D > 1 as well was built and measured and is
+    #     REJECTED: the raw arrival cannot tell a continuous surface's
+    #     over-delivery from a defocused neighbour legitimately overlapping
+    #     an occluder, so it double-corrects against the area model's
+    #     saturation (an alpha-1 version of this ramp reads 0.833 at focus,
+    #     an in-focus opaque card beside a defocused opaque background bleeds
+    #     28% background, an alpha-0.5 bloom over an opaque background
+    #     punches it to 0.859) and it worsens g4 (-0.030 -> -0.044) by
+    #     removing the surplus that cancels part of its pooling deficit.
+    #     Two full-coverage fog layers at alpha 0.5 still read exactly 0.75
+    #     under the fill (f3b, and the `two 50% fog layers` identity),
+    #     because their shares and residual sum to exactly 1 -- the fill
+    #     divides by a partition of source area, not by the kernel-weight
+    #     sum, which is what lets it leave genuine overlap alone.
     #   * it is content-driven, scaling with the CoC gradient: RENDERED at
     #     alpha 0.01 / K=16 this ramp reads +7.06% at slope 0.5, +1.54% at
     #     slope 0.25 (size 43) and +0.34% at slope 0.125 (size 21.5),
@@ -1927,6 +2126,19 @@ def sceneG(settings):
     #   band, i.e. it bounds exactly the uniform-scaling class the
     #   f3e/f3f ratio oracle is structurally invariant to.
     #
+    # RE-DERIVED UNDER THE COVERAGE FILL AND THE BLENDED KERNEL, from the POD
+    # rig rather than from this plugin's output: the same ramp flattened,
+    # scattered and composited in the unit-test rig (4 px wide, the harness's
+    # own interior rows) reads +0.05929 / +0.03403 / +0.06529 / +0.07066 for
+    # the four cells with the fill live and, to the digit, the SAME four with
+    # the fill forced off -- because arrival is 1.060..1.092 on every interior
+    # row and deficit-only division never engages.  The alpha-0.01 control
+    # moved +0.0706 -> +0.0707 under the blended kernel (6e-05 in excursion,
+    # 1e-06 in alpha) and is re-pinned at the POD value; the other three are
+    # unchanged to four decimals.  These are the scatter's over-delivery
+    # attenuated by (1 - alpha), exactly as the table above describes, and
+    # the fill neither adds to them nor could remove them.
+    #
     # THIS CHECK CANNOT PASS, BY CONSTRUCTION (a band around a residual);
     # whoever moves any of these readings must RE-PIN in the same commit,
     # exactly as g4's history demands.
@@ -1936,7 +2148,7 @@ def sceneG(settings):
         (0.10, 16, +0.0593, "the shipping default K"),
         (0.30, 16, +0.0340, "the alpha the record left ungated"),
         (0.10, 4,  +0.0653, "the sweep's worst corner"),
-        (0.01, 16, +0.0706, "mechanism control: reads sum(w)-1, the "
+        (0.01, 16, +0.0707, "mechanism control: reads sum(w)-1, the "
                             "scatter's own over-delivery, K-flat"),
     ]
     for g5Alpha, g5K, g5Pin, g5Role in g5Cells:
@@ -1962,10 +2174,12 @@ def sceneG(settings):
             "0.0000 (xfail %+.4f +/- %.4f)" % (g5Pin, G5_BAND),
             population="%d/%d interior rows over A/255 HIGH" % (g5High,
                                                                 rowCount),
-            note="%s; min %.6f max %.6f (y=%d); POSITIVE is the forbidden "
-                 "direction -- invented alpha, the scatter's weight "
-                 "over-delivery on this rig's steep CoC slope, accepted and "
-                 "bounded at M1.P3.T24 (see the block above)"
+            note="%s; min %.6f max %.6f (y=%d); POSITIVE is a surplus -- the "
+                 "scatter's weight over-delivery on this rig's steep CoC "
+                 "slope, accepted and bounded at M1.P3.T24 (see the block "
+                 "above); arrival is 1.06..1.09 on every interior row, so the "
+                 "deficit-only coverage fill is inert here by construction "
+                 "and the fill forced off reads the identical number"
                  % (g5Role, min(g5Profile), max(g5Profile),
                     profileRow(g5Profile.index(max(g5Profile)))),
             expectedFailure=True, hardTol=G5_BAND,
@@ -2104,22 +2318,25 @@ def sceneH(settings):
     # --- h3: the overlap the design's saturation rule is actually about — two
     # opaque surfaces overlapping in screen space that the scatter must see as
     # TWO deposits.  Different depths give them different CoC radii, hence
-    # different DiscKernelLUT bins, which is the one predicate that defeats both
-    # the tidy pre-pass (different z) and M1.P3.T13's collision merge
+    # different kernels, which is the one predicate that defeats both the tidy
+    # pre-pass (different z) and M1.P3.T13's collision merge
     # (`sameScatterKernel`), so both discs really are laid down and the bucket's
-    # area planes really do have to resolve the double claim.
+    # area planes really do have to resolve the double claim.  A radius is
+    # rasterised as the blend of its two bracketing kernel-grid nodes at a
+    # fraction the radius fixes, so two radii rasterise one kernel only when
+    # they share the bracket AND the fraction -- in effect only when they are
+    # equal; 12 and 9 px are not.
     farZ = 20.0
     radiusNear = size * abs(1.0 - focus / cardZ)        # 12 px
     radiusFar = size * abs(1.0 - focus / farZ)          # 9 px
     checks.append(boolCheck(
-        "h", "h3a the two cards land in DIFFERENT kernel bins",
-        round(radiusNear / 0.5) != round(radiusFar / 0.5),
-        "r %.2f (bin %.1f) vs r %.2f (bin %.1f)"
-        % (radiusNear, round(radiusNear / 0.5) * 0.5,
-           radiusFar, round(radiusFar / 0.5) * 0.5), "different bins",
-        note="same bin satisfies `sameScatterKernel`, which makes the pair "
-             "eligible for M1.P3.T13's always-on collision merge; h3b-h3d "
-             "would then be measuring a single deposit again"))
+        "h", "h3a the two cards rasterise DIFFERENT kernels",
+        radiusNear != radiusFar,
+        "r %.2f vs r %.2f" % (radiusNear, radiusFar), "distinct radii",
+        note="equal radii (same bracketing nodes, same blend fraction) "
+             "satisfy `sameScatterKernel`, which makes the pair eligible for "
+             "M1.P3.T13's always-on collision merge; h3b-h3d would then be "
+             "measuring a single deposit again"))
 
     resetScript()
     mixed = deepMerge([layer(cardA, cardZ), layer(cardB, farZ)])
@@ -2162,20 +2379,34 @@ def sceneH(settings):
 # --- scene (i) ---------------------------------------------------------------
 
 def sceneI(settings):
-    """Sparse reveal / coverage deficit.
+    """Sparse reveal / coverage fill.
 
     NOT built with DeepMerge, deliberately: a DeepMerge of two full cards
     carries the occluded card's samples everywhere, so the defocused near card
-    always has something behind it and the deficit can never appear.  Here a
+    always has something behind it and nothing is ever missing.  Here a
     single ``DeepFromImage`` over a per-pixel depth gives EXACTLY ONE sample per
     pixel — near inside the silhouette, far outside, nothing hidden — which is
     what a renderer that terminates opaque hits actually emits.
 
-    The expected result is the DOCUMENTED honest alpha dip, so the scene passes
-    by matching the spec: the dip must be present (i2), confined to about one
-    CoC radius inside the silhouette (i3), free of fabricated colour (i4), and
-    absent from the DeepMerge-built twin (i5) — that last one is what proves the
-    dip comes from the missing hidden samples rather than from the node.
+    A defocused foreground scatters outward off its own silhouette, and the
+    pixels it vacates have nothing behind them: the node used to leave an
+    alpha dip about one CoC wide just inside the silhouette (0.51 at its
+    deepest on this scene).  It now FILLS it: every fragment's share of its
+    source pixel's unit area is deposited, kernel-weighted, into an arrival
+    plane, and a destination pixel whose arrival falls short of 1 has its
+    premultiplied colour and alpha scaled up together by 1/arrival -- the
+    foreground that did arrive is scaled to full coverage, like a 2D defocus
+    of a flat image, and nothing is invented behind it.  The scene passes by
+    matching that: the edge band reads alpha 1 (i2), the filled band carries
+    the FOREGROUND's colour ratio (i3), nothing of the background's colour
+    appears inside the silhouette (i4, with i5b as its non-vacuity guard),
+    the interior beyond one CoC is untouched (i3b), and the DeepMerge twin --
+    which never dipped, because its occluded samples were there to show
+    through -- reads the same alpha but a DIFFERENT colour there (i5/i5b):
+    the fill reproduces what the missing samples would have given in
+    coverage, and deliberately not in colour.  Scene (m) states the same
+    property on its own halo geometry; this scene keeps its original rig
+    (24 px CoC, focus on the far card) so the two are independent readings.
     """
     checks = []
     silhouette = (64, 64, 192, 192)
@@ -2228,8 +2459,11 @@ def sceneI(settings):
                                    focusDistance=focus, cocMode="manual"),
                        "i_%s" % name, box=box)
         deep = insetBox(silhouette, int(math.ceil(radius)) + 3)
-        edgeBand = channelStats(image, "A", (silhouette[0], deep[1],
-                                             deep[0], deep[3]))
+        # The edge band: the left strip of the silhouette, from its edge to
+        # one CoC (+3 px) inward, over the rows the deep interior spans --
+        # the band the dip used to occupy.
+        bandBox = (silhouette[0], deep[1], deep[0], deep[3])
+        edgeBand = channelStats(image, "A", bandBox)
         core = channelStats(image, "A", deep)
         scanY = (silhouette[1] + silhouette[3]) // 2
         profile = [image.at("A", x, scanY)
@@ -2239,38 +2473,54 @@ def sceneI(settings):
             if value >= 0.999:
                 break
             dipWidth += 1
-        # Blue is measured over the EDGE BAND — the band the dip occupies —
+        # Blue is measured over the EDGE BAND — the band the dip occupied —
         # not over the deep interior.  Measured at M1.P3.T16's review: with the
         # far card given a CoC so it really can scatter inward, the dip band
         # reads 2.86e-01 of invented blue while the deep interior still reads
         # exactly 0, i.e. the interior-scoped form of this check survives the
         # one mutation it exists to catch.
-        blue = channelStats(image, "B", (silhouette[0], deep[1],
-                                         deep[0], deep[3]))
-        dips[name] = (edgeBand, core, dipWidth, blue, image)
+        blue = channelStats(image, "B", bandBox)
+        # The foreground's own colour ratio over the same band: R/A against
+        # the near card's 0.80.  Alpha 1 in the source, so DeepFromImage's
+        # premultiply is a no-op and the plane colour IS the sample's ratio.
+        redRatio = _worstUnpremult(image, "R", nearColour, bandBox)
+        dips[name] = (edgeBand, core, dipWidth, blue, redRatio, image)
 
-    sparseEdge, sparseCore, sparseWidth, sparseBlue, _ = dips["sparse"]
-    mergedEdge, mergedCore, mergedWidth, _, _ = dips["DeepMerge"]
+    sparseEdge, sparseCore, sparseWidth, sparseBlue, sparseRatio, _ = \
+        dips["sparse"]
+    mergedEdge, mergedCore, mergedWidth, mergedBlue, _, _ = dips["DeepMerge"]
+    tol = 1.0 / 255.0
 
-    # --- i2: the honest dip is PRESENT.
-    checks.append(boolCheck(
-        "i", "i2 honest alpha dip inside the silhouette (specified behaviour)",
-        sparseEdge.minimum < 0.99,
-        "min alpha %.6f" % sparseEdge.minimum, "< 0.99 (dip present)",
-        population="edge band %d px wide inside the silhouette"
-                   % (int(math.ceil(radius)) + 3),
-        note="the design's honest-alpha rule: the node must NOT scale alpha up "
-             "to hide a coverage deficit"))
+    # --- i2: the dip is FILLED.  The near card's own bloom scatters outward
+    # and leaves its inner edge band short of unit arrival; the fill divides
+    # by that arrival and the band reads 1.  The same source on the pre-fill
+    # node read 0.513 at the band's minimum -- the number this check is built
+    # to reject (forcing the fill off returns it exactly).
+    checks.append(tolCheck(
+        "i", "i2 the coverage the renderer left empty is FILLED: edge-band "
+             "alpha dip (1 - min alpha)",
+        1.0 - sparseEdge.minimum, tol,
+        population="edge band %d px wide inside the silhouette, %d px"
+                   % (int(math.ceil(radius)) + 3, sparseEdge.count),
+        note="min alpha %.6f at %s, max %.6f; dip width on y=%d from the "
+             "edge inward %d px (CoC radius %.0f px; the pre-fill node read "
+             "min 0.513 and a 24 px dip here)"
+             % (sparseEdge.minimum, sparseEdge.minAt, sparseEdge.maximum,
+                scanY, sparseWidth, radius)))
 
-    # --- i3: and it is ~one CoC wide, not the whole card.
-    checks.append(boolCheck(
-        "i", "i3 dip width matches the CoC radius",
-        abs(sparseWidth - radius) <= 3.0,
-        "%d px" % sparseWidth, "%.1f +/- 3 px" % radius,
-        population="scanline y=%d, from the silhouette edge inward"
-                   % ((silhouette[1] + silhouette[3]) // 2),
-        note="deep interior alpha min %.6f mean %.6f (must be back at 1)"
-             % (sparseCore.minimum, sparseCore.mean)))
+    # --- i3: and what filled it is the FOREGROUND, scaled -- not anything
+    # invented.  The premultiplied pair is scaled together, so R/A over the
+    # filled band is the near card's 0.80 exactly; a fill that touched alpha
+    # alone would read 0.80 * arrival (0.41 at the band's deepest point).
+    checks.append(tolCheck(
+        "i", "i3 ...and the filled band carries the FOREGROUND's colour ratio "
+             "(R/A vs 0.80)",
+        sparseRatio[0], tol,
+        population="%d px, the edge band" % sparseRatio[2],
+        note="worst at (%d,%d); deep interior alpha min %.6f mean %.6f (must "
+             "be at 1 without any fill: arrival is 1 there)"
+             % (sparseRatio[1][0], sparseRatio[1][1], sparseCore.minimum,
+                sparseCore.mean)))
     # 1e-04, not 1e-06: the DiscKernelLUT's per-entry normalisation residual is
     # ~5e-08 (milestone Decisions) and a radius-24 disc interior sums ~pi*r^2 =
     # 1810 of them, so ~9e-05 is the floor here and a tighter gate would be
@@ -2287,23 +2537,47 @@ def sceneI(settings):
     # --- i4: no fabricated colour. The far card is exactly in focus, so it
     # never scatters; every blue pixel inside the silhouette would be invented.
     checks.append(tolCheck(
-        "i", "i4 no fabricated colour behind the dip (max blue in the dip band)",
+        "i", "i4 no fabricated colour in the filled band (max blue)",
         sparseBlue.maximum, 1.0e-06,
-        population="%d px in the dip band" % sparseBlue.count,
+        population="%d px in the filled band" % sparseBlue.count,
         note="the far card is in focus and cannot scatter inward, and the "
              "silhouette has no hidden samples, so every blue pixel here would "
-             "be invented exactly where the alpha dipped"))
+             "be invented exactly where the fill engaged; i5b is the guard "
+             "that the band CAN carry blue when the data is there"))
 
-    # --- i5: THE DISCRIMINATOR. The DeepMerge twin, which carries the occluded
-    # samples, must NOT dip — otherwise the dip is a node artefact, not the
-    # specified coverage deficit.
+    # --- i5: THE CONTROL. The DeepMerge twin carries the occluded far samples,
+    # so its edge band never dipped and the fill has nothing to do there
+    # (arrival is 1: the far card's pixels claim their own unit area in
+    # focus).  It reads the same alpha as the filled sparse render...
     checks.append(boolCheck(
-        "i", "i5 DeepMerge twin (hidden samples present) shows NO dip",
+        "i", "i5 DeepMerge twin (hidden samples present) reads alpha 1 "
+             "unaided",
         mergedEdge.minimum > 0.999,
         "min alpha %.6f" % mergedEdge.minimum, "> 0.999",
-        population="same edge band; sparse reads %.6f there"
+        population="same edge band; the filled sparse render reads %.6f there"
                    % sparseEdge.minimum,
-        note="proves the dip is the missing hidden samples, not the node"))
+        note="the twin's occluded samples supply the coverage the sparse "
+             "source lacks; both read 1, one by data, one by the fill"))
+    # ...but NOT the same colour: through the near card's soft inner edge the
+    # twin's far samples show as BLUE, while the sparse render's fill is
+    # foreground-coloured (i3) and carries no blue at all (i4).  This is what
+    # makes i4 a statement about the fill rather than about the geometry --
+    # without it, "no blue in the band" would hold for a band nothing could
+    # have coloured.  The in-focus far card cannot scatter, so any blue here
+    # is the twin's own hidden data showing through, not bloom.
+    checks.append(boolCheck(
+        "i", "i5b ...but shows the far card's BLUE through the edge, which "
+             "the fill must not reproduce",
+        mergedBlue.maximum > 0.05 and sparseBlue.maximum <= 1.0e-06,
+        "twin max blue %.4f, sparse max blue %.1e"
+        % (mergedBlue.maximum, sparseBlue.maximum),
+        "twin > 0.05, sparse <= 1e-06",
+        population="%d px, the edge band" % mergedBlue.count,
+        note="twin blue max at %s; the fill invents foreground-coloured "
+             "coverage where the renderer wrote none, never background "
+             "colour -- the twin is what the background would have looked "
+             "like, and the sparse render must not guess at it"
+             % (mergedBlue.maxAt,)))
 
     # --- i6/i7: pre_merge, set EXPLICITLY both ways on this scene.
     deltas = {}
@@ -2336,20 +2610,35 @@ def sceneI(settings):
     # The pre-merge groups adjacent same-pixel fragments when they share a
     # containing bucket, a FragmentKind and a holdout bracket, and their radii
     # are within merge_tolerance; the group then rasterises ONE disc, at its
-    # front member's radius.  So the merge is lossless exactly when the grouped
-    # radii round to the same DiscKernelLUT bin, and lossy when they do not —
-    # which the 0.25px DEFAULT tolerance permits, because the bins are 0.5px
-    # wide and their edges sit at n*0.5 + 0.25, so a pair 0.2px apart can still
-    # straddle one.  (M1.P3.T16's first pass asserted the opposite — "anything
-    # grouped at 0.25px rasterises the same disc, so the default is exactly
-    # lossless" — and gated it on a pair 1.47px apart, which the default
-    # tolerance never groups at all: the check read 0 because nothing merged,
-    # not because merging was free.  Measured here instead.)
+    # front member's radius.  The scatter rasterises a radius as a blend of the
+    # two kernel-grid nodes bracketing it, so two radii rasterise one kernel
+    # only when they are EQUAL (`sameScatterKernel`), and the merge is lossy
+    # whenever the grouped radii differ at all -- which the 0.25px DEFAULT
+    # tolerance permits.  (M1.P3.T16's first pass asserted the opposite --
+    # "anything grouped at 0.25px rasterises the same disc, so the default is
+    # exactly lossless" -- and gated it on a pair 1.47px apart, which the
+    # default tolerance never groups at all: the check read 0 because nothing
+    # merged, not because merging was free.  Measured here instead.)
     #
-    # Both layers are full-frame, so every pixel carries the pair; a corner
-    # element at z=3 widens the frame's measured CoC range so the pair still
-    # shares one containing ΔCoC bucket.
+    # WHAT THE DELTA IS.  Both layers are full-frame constants at alpha 0.6, so
+    # the interior reads the same alpha whatever disc it is scattered with,
+    # and the pre_merge on/off difference is not a bokeh-size effect: with
+    # pre_merge OFF the pair lands in one bucket as two DIFFERENT-kernel
+    # deposits, whose co-located area split falls a^2/4 short of the `over`
+    # (the collision residual the header documents: two opaque layers read
+    # 0.75 against 1) -- 0.09 at a = 0.6.  A pair the predicate calls one
+    # kernel is instead `over`-composited whether or not it pre-merges, and
+    # reads 0.  So the delta is a^2/4 with the kernels distinguished and
+    # exactly 0 with them identified, and both halves are pinned below.
+    #
+    # A corner element at z=3 widens the frame's measured CoC range so the pair
+    # still shares one containing ΔCoC bucket.
     SIZE, FOCUS = 20.0, 10.0
+    LAYER_ALPHA = 0.60
+    collisionResidual = LAYER_ALPHA * LAYER_ALPHA / 4.0     # 0.09
+    # a^2/4 is the co-location term alone; two distinct discs add a kernel-
+    # shape term of a few 1e-5 near the corner element, and the band admits it.
+    residualBand = 1.0e-03
 
     def zForRadius(radiusPx):
         """Behind focus: r = size*(1 - focus/z)."""
@@ -2357,16 +2646,19 @@ def sceneI(settings):
 
     reachBox = (32, 32, 224, 224)
 
-    def reachability(radiusA, radiusB, tolerance):
+    def reachability(radiusA, radiusB, tolerance, maxRadius=None):
         rendered = []
         for preMerge in (True, False):
-            cell = settings.derive(preMerge=preMerge, mergeTolerance=tolerance)
+            overrides = dict(preMerge=preMerge, mergeTolerance=tolerance)
+            if maxRadius is not None:
+                overrides["maxRadius"] = maxRadius
+            cell = settings.derive(**overrides)
             resetScript()
             source = deepMerge([
-                pointLayer(constant2d((0.30, 0.30, 0.30, 0.60)),
+                pointLayer(constant2d((0.30, 0.30, 0.30, LAYER_ALPHA)),
                            zForRadius(radiusA), keepZeroAlpha=False,
                            premult=False),
-                pointLayer(constant2d((0.30, 0.30, 0.30, 0.60)),
+                pointLayer(constant2d((0.30, 0.30, 0.30, LAYER_ALPHA)),
                            zForRadius(radiusB), keepZeroAlpha=False,
                            premult=False),
                 pointLayer(rectangle2d((0, 0, 24, 24), (0.5, 0.5, 0.5, 1.0)),
@@ -2374,23 +2666,26 @@ def sceneI(settings):
             rendered.append(render(
                 cell, makeDefocus(cell, source, size=SIZE,
                                   focusDistance=FOCUS, cocMode="manual"),
-                "i_reach_%s_%g_%g" % (preMerge, radiusB - radiusA, tolerance),
+                "i_reach_%s_%g_%g_%s" % (preMerge, radiusB - radiusA,
+                                         tolerance, maxRadius),
                 box=reachBox))
         return compareImages(rendered[0], rendered[1], box=reachBox)
 
     # 1.2 and 1.4 CoC px: 0.20 apart, i.e. inside the SHIPPING DEFAULT
-    # tolerance, but on opposite sides of the 1.25 bin edge (bins 1.0 and 1.5).
+    # tolerance, and two different kernels.
     atDefault = reachability(1.2, 1.4, settings.mergeTolerance)
     checks.append(boolCheck(
         "i", "i7 pre_merge reaches the render at the DEFAULT merge_tolerance",
-        atDefault.maxAbs > 1.0e-02,
+        abs(atDefault.maxAbs - collisionResidual) <= residualBand,
         "%.4e" % atDefault.maxAbs,
-        "> 1e-02 at merge_tolerance %.2f" % settings.mergeTolerance,
+        "%.4f +/- %.0e at merge_tolerance %.2f"
+        % (collisionResidual, residualBand, settings.mergeTolerance),
         population=atDefault.population(),
-        note="two full-frame same-pixel layers at CoC radius 1.2 and 1.4 px — "
-             "0.20 px apart, so within tolerance, but straddling the 1.25 px "
-             "kernel-bin edge, so the group rasterises a different disc than "
-             "the pair would"))
+        note="two full-frame same-pixel layers at CoC radius 1.2 and 1.4 px -- "
+             "0.20 px apart, so within tolerance, but different kernels, so "
+             "the group rasterises a different disc than the pair would; the "
+             "delta is the pair's collision residual a^2/4 = %.4f at a = %.2f"
+             % (collisionResidual, LAYER_ALPHA)))
     # The control: identical content, tolerance 0, so nothing may group. It is
     # what makes i7 a statement about the merge rather than about the geometry.
     noGrouping = reachability(1.2, 1.4, 0.0)
@@ -2400,37 +2695,39 @@ def sceneI(settings):
         note="pre_merge on vs off with nothing eligible to group; a non-zero "
              "reading here would mean i7's delta is not the merge"))
     # And the lossless half of the predicate, stated where it is actually true:
-    # a pair inside the SAME bin.
-    #
-    # M1.P3.T19 MOVED THIS PAIR.  It used to be 5.0 and 5.2 px, which shared
-    # bin 5.0 on the old uniform 0.5px grid; on the refined grid the nodes are
-    # ~0.05px apart there (5.019608 and 5.224490), so that pair straddles four
-    # of them and reads 9.0e-02 — a real reading of a real loss, but no longer a
-    # reading of the LOSSLESS case this check exists for. Moved to 17.0/17.2,
-    # which sit above kKernelCoarseFromPx where the grid is still the uniform
-    # 0.5px one, both inside the [16.75, 17.25] bin.
-    sameBin = reachability(17.0, 17.2, settings.mergeTolerance)
+    # a pair that rasterises ONE kernel, i.e. two EQUAL radii.  Two samples
+    # at distinct depths only share a radius through the max_radius clamp, so
+    # the pair sits 0.20 px apart in unclamped CoC like i7 and max_radius is
+    # lowered onto the front member: both then scatter at exactly 17.0 px.
+    SAME_KERNEL_CLAMP = 17
+    sameKernel = reachability(17.0, 17.2, settings.mergeTolerance,
+                              maxRadius=SAME_KERNEL_CLAMP)
     checks.append(tolCheck(
-        "i", "i7c ...and is lossless when the grouped radii share a kernel bin",
-        sameBin.maxAbs, 1.0e-07, population=sameBin.population(),
-        note="CoC radius 17.0 and 17.2 px: 0.20 apart like i7, but both inside "
-             "the [16.75, 17.25] bin, so the grouped disc IS the pair's disc. "
-             "i7d is the non-vacuity guard"))
+        "i", "i7c ...and is lossless when the grouped radii rasterise one kernel",
+        sameKernel.maxAbs, 1.0e-07, population=sameKernel.population(),
+        note="CoC radius 17.0 and 17.2 px at max_radius %d: 0.20 apart like "
+             "i7, but both clamp to 17.0 px, and equal radii are one kernel "
+             "under `sameScatterKernel`, so the grouped disc IS the pair's "
+             "disc. i7d is the non-vacuity guard" % SAME_KERNEL_CLAMP))
     # ...and the guard that keeps i7c from passing because nothing GROUPED.
     # A lossless merge is unobservable by construction, so eligibility has to
     # be shown on a pair that is identical in every respect the pre-merge
-    # tests -- same radius scale, same 0.20px separation, same tolerance,
-    # same content -- and differs only in straddling a bin edge.
-    straddle = reachability(17.2, 17.4, settings.mergeTolerance)
+    # tests -- same radius scale, same 0.20px separation, same tolerance, same
+    # max_radius, same content -- and differs only in sitting just UNDER the
+    # clamp, so its two radii stay distinct.
+    straddle = reachability(16.6, 16.8, settings.mergeTolerance,
+                            maxRadius=SAME_KERNEL_CLAMP)
     checks.append(boolCheck(
-        "i", "i7d guard: the same pair 0.2px higher, straddling a bin edge, DOES move",
-        straddle.maxAbs > 1.0e-02,
-        "%.4e" % straddle.maxAbs, "> 1e-02",
+        "i", "i7d guard: the same pair 0.4px under the clamp, two kernels, DOES move",
+        abs(straddle.maxAbs - collisionResidual) <= residualBand,
+        "%.4e" % straddle.maxAbs,
+        "%.4f +/- %.0e" % (collisionResidual, residualBand),
         population=straddle.population(),
-        note="17.2 and 17.4 px straddle the 17.25 px edge (bins 17.0 and "
-             "17.5), so this content at this tolerance really is eligible to "
-             "group -- which is what makes i7c's zero a statement about "
-             "losslessness rather than about nothing having merged"))
+        note="16.6 and 16.8 px at max_radius %d are unclamped and distinct, "
+             "so two kernels: this content at this tolerance really is "
+             "eligible to group and reads the collision residual -- which is "
+             "what makes i7c's zero a statement about losslessness rather "
+             "than about nothing having merged" % SAME_KERNEL_CLAMP))
     return checks
 
 
@@ -2533,7 +2830,10 @@ def sceneK(settings):
     k1/k2: proxy 0.5 must halve the radius AND the max_radius clamp, so the
     proxy render is the same image at half scale rather than twice as blurred.
     k3-k5: ``depth_is_ray_distance`` on a wide-FOV corner pixel must reproduce
-    the ground-truth Z exactly, and must be a no-op at the optical centre.
+    the ground-truth Z exactly, and at the centre pixel must apply exactly its
+    near-unity factor (the pixel centre is half a pixel off the axis, so the
+    factor is 1 - 1.24e-5 rather than 1; k5b pins the toggle's whole effect
+    there to the kernel blend's response to that 3.1e-4 px radius shift).
     """
     checks = []
 
@@ -2642,16 +2942,48 @@ def sceneK(settings):
              % (manualSize * abs(1.0 - manualFocus / cornerZ),
                 manualSize * abs(1.0 - manualFocus / rayDistance))))
 
+    # On an even format the centre pixel's centre is half a pixel off the
+    # optical axis, so its factor is 1 - 1.24e-5, not 1: the toggle moves the
+    # radius 5.0 -> 5.000309 px, and the bracketing-kernel blend resolves that
+    # where the quantised LUT before it did not.  Gate on the analytic Z, as k3.
     centreX, centreY = FORMAT_W // 2, FORMAT_H // 2
+    centreZ = zAt(centreX, centreY)
     centreOn = rayRender(centreX, centreY, rayDistance, True, "k_ray_centre_on")
+    centreTruth = rayRender(centreX, centreY, centreZ, False,
+                            "k_ray_centre_truth")
     centreOff = rayRender(centreX, centreY, rayDistance, False,
                           "k_ray_centre_off")
-    centreDiff = compareImages(centreOn, centreOff, box=box)
+    centreDiff = compareImages(centreOn, centreTruth, box=box)
+    centreNaive = compareImages(centreOn, centreOff, box=box)
+    centreRadius = manualSize * abs(1.0 - manualFocus / centreZ)
     checks.append(tolCheck(
-        "k", "k5 ray-distance is a no-op at the optical centre",
+        "k", "k5 ray-distance at the centre pixel applies exactly its "
+             "near-unity factor",
         centreDiff.maxAbs, 1.0e-06, population=centreDiff.population(),
-        note="r_mm ~ 0 there, so the factor is 1; this is what makes k3 a test "
-             "of the RADIAL term and not of a constant scale"))
+        note="factor %.7f at pixel (%d,%d): Z %.7f, radius %.6f px vs 5.0 "
+             "uncorrected; worst %s; with k3's 0.667 at the corner this is what "
+             "makes k3 a test of the RADIAL term and not of a constant scale; "
+             "discrimination floor: gating on the uncorrected depth instead "
+             "(factor 1) reads %.3e here, k5b"
+             % (centreZ / rayDistance, centreX, centreY, centreZ, centreRadius,
+                centreDiff.where(), centreNaive.maxAbs)))
+    # Predicted from the LUT alone (edge_softness 1): radius 5.0 and 5.000309
+    # px both bracket grid nodes 4.970874 / 5.019608 px, at blend fractions
+    # 0.597654 and 0.603994, and the largest |df * (K[B] - K[A])| over the
+    # disc is 3.7584e-06, at offset (-2,-5) from the source pixel.
+    blendPredicted = 3.7584e-06
+    checks.append(tolCheck(
+        "k", "k5b ...and the toggle's whole effect there is that radius "
+             "shift's kernel-blend response",
+        abs(centreNaive.maxAbs - blendPredicted), 1.0e-07,
+        population=centreNaive.population(),
+        note="on vs off reads %.4e at %s against %.4e predicted from the LUT "
+             "alone at offset (-2,-5), i.e. pixel (%d,%d); a plugin that "
+             "quantised both radii onto one LUT entry reads 0 here and would "
+             "FAIL, as would anything else the toggle moved (the auto "
+             "background radius pinned to 5 px changes this by 1.6e-07)"
+             % (centreNaive.maxAbs, centreNaive.where(), blendPredicted,
+                centreX - 2, centreY - 5)))
     return checks
 
 
@@ -2696,6 +3028,14 @@ def sceneL(settings):
         K-dependent, so it is the composite, not the kernel; l3 is where it is
         tracked, and M1.P3.T17 owns it.
       * the CoC field's own extremum — l6.
+
+    UNDER THE COVERAGE FILL all three read within a few ulp of 1 on an opaque
+    ramp (l1 1.2e-07, l5 1.6e-06, l6 6.0e-08): each was a shortfall of the
+    weight ARRIVING at a pixel, the fill divides the pair by that arrival,
+    and an opaque field's numerator and arrival are the same sums.  The gates
+    above are left where they were -- they bound the mechanisms the fill
+    would expose again if it ever stopped engaging -- and l6, the only cell
+    the fill moved out of XFAIL, is gated at the float bound of the two sums.
     """
     checks = []
     size = 3.36
@@ -2849,7 +3189,8 @@ def sceneL(settings):
     # under-delivers at such a point by construction, over a neighbourhood
     # about one CoC radius wide, and that is a different mechanism from the bin
     # quantisation this scene was built for — so it is measured by l6 instead
-    # of being averaged in here.  It is EXCLUDED, never discarded.
+    # of being averaged in here, where the coverage fill's restoration of it
+    # is what gets checked.  It is EXCLUDED, never discarded.
     apexX, apexY = FORMAT_W // 2, FORMAT_H // 2
     apexPad = int(math.ceil(edgeRadius)) + 1        # ~one CoC radius, + a pixel
 
@@ -2859,6 +3200,7 @@ def sceneL(settings):
 
     worstShape = None
     apexStats = None
+    radialImage = None
     for label, expr, isRadial in (
             ("y ramp (l1)", "%.6f/(%.1f-y)" % (GROUND_C, GROUND_Y_HORIZON),
              False),
@@ -2881,6 +3223,7 @@ def sceneL(settings):
             apexStats = channelStats(
                 image, "A", interior,
                 exclude=lambda x, y: not _inApex(x, y))
+            radialImage = image
         if worstShape is None or stats.minimum < worstShape[1]:
             worstShape = (label, stats.minimum, stats.maximum, stats.minAt,
                           stats.count)
@@ -2891,19 +3234,22 @@ def sceneL(settings):
                    % (worstShape[4], worstShape[0], worstShape[3]),
         note="alpha min %.6f max %.6f; the radial ramp is measured OUTSIDE a "
              "%d px disc at its own field extremum (%d,%d), which l6 measures "
-             "instead — see l6 for why that is a different mechanism, and note "
-             "that WITHOUT that exclusion this check reads 9.937e-03 and FAILs "
-             "on l6's residual. The worst reading here is the disc family's C1 "
-             "kink at r=0.5 (radius 0.530 px at the reported pixel), not bin "
-             "quantisation."
+             "instead — see l6 for why that is a different mechanism (the "
+             "scatter's under-delivery at a field maximum, which the coverage "
+             "fill now restores; before the fill this check read 9.937e-03 "
+             "without the exclusion, and the exclusion is kept so this stays "
+             "a reading of the transition). The worst pre-fill reading here "
+             "was the disc family's C1 kink at r=0.5 (radius 0.530 px), not "
+             "bin quantisation."
              % (worstShape[1], worstShape[2], apexPad, apexX, apexY)))
 
-    # --- l6: the CoC field's own extremum, on the radial ramp.
+    # --- l6: the CoC field's own extremum, on the radial ramp -- the one place
+    # on this scene where the coverage fill engages, and it closes the reading.
     #
-    # Two measurements make this a DIFFERENT mechanism from the bin trough
+    # Two measurements made this a DIFFERENT mechanism from the bin trough
     # rather than an assertion that it is:
-    #   * it is not the bucket composite either: a kernel-only model with NO
-    #     buckets at all reproduces this reading exactly (0.990063), and the
+    #   * it is not the bucket composite: a kernel-only model with NO buckets
+    #     at all reproduced the pre-fill reading exactly (0.990063), and the
     #     rendered value did not move between the two `combine` candidates
     #     (9.937e-03 under both, against l3's 5.226e-03 / 2.186e-04 split) —
     #     re-confirmed at M1.P3.T17, which is why the deletion left it alone;
@@ -2914,21 +3260,40 @@ def sceneL(settings):
     #     different part of the kernel grid.  The control render below measures
     #     exactly that.
     #
-    # WHERE IT COMES FROM, stated exactly, because the old grid DID read 1.0
-    # here and this reading is therefore worse in absolute terms at these 49
-    # pixels.  An EXACT per-radius kernel — no grid at all — gives 0.989234
-    # here, and the shipped grid gives 0.990063: the dip is what a scatter with
-    # a normalised, spatially varying kernel does at a maximum of the radius
-    # field, not something quantisation adds.  (Continuum check: a cone of
-    # slope `a` under-delivers `1 - 2a/3` at its tip; a = 0.01953 here gives
-    # 0.9870, and doubling `size` to a = 0.03907 predicts 0.9740 against the
-    # 0.970847 the control render below measures.)  The old grid read exactly
-    # 1.0 only because it rasterised the whole extremum neighbourhood (radius
-    # 2.40..2.50 px) with ONE disc — it flattened the field instead of tracking
-    # it, and paid 2.009e-01 for that ninety scanlines away.  So this is a
-    # residual T19 EXPOSED, not one it introduced, and it is accepted rather
-    # than fixed: it will show up wherever a CoC field has an interior
-    # extremum, at roughly 2/3 of the field's slope there.
+    # WHERE IT CAME FROM, stated exactly.  A scatter with a normalised,
+    # spatially varying kernel under-delivers at a maximum of the radius field:
+    # an EXACT per-radius kernel gives 0.989234 at the apex, and the blended
+    # kernel grid 0.989225 -- the weight ARRIVING at the tip, read straight off
+    # the arrival plane (the continuum check: a cone of slope `a` under-
+    # delivers `1 - 2a/3` at its tip; a = 0.01953 here gives 0.9870, and
+    # doubling `size` to a = 0.03907 predicts 0.9740 against the 0.974741 the
+    # arrival plane reads on the control).  The old uniform grid read exactly
+    # 1.0 here only because it rasterised the whole extremum neighbourhood
+    # (radius 2.40..2.50 px) with ONE disc — it flattened the field instead of
+    # tracking it, and paid 2.009e-01 for that ninety scanlines away.
+    #
+    # WHAT THE FILL DOES WITH IT.  The apex is opaque and its arrival is short
+    # of 1 by exactly that under-delivery, so the fill divides the pair by it
+    # and the tip reads 1: a and D are the SAME float products summed (opaque,
+    # share 1, no residual), so a/D is 1 to the accumulation error of two
+    # n-term sums.  The gate is that bound and nothing looser: over the 4 px
+    # apex disc a pixel receives at most 110 non-zero kernel taps between its
+    # numerator and its arrival (counted from DiscKernelLUT over the radial
+    # field, 55 + 55 at the worst pixel), so |a - 1| <= 110 * 2^-24.  Derived
+    # from the geometry and the LUT, not from a reading; a plain gate, no
+    # longer an XFAIL, because the residual it pinned is gone.  MUTATION:
+    # forcing the fill off returns the pre-fill 1.08e-02 (blended kernel;
+    # 9.937e-03 on the old nearest-node grid) and fails this by four decades.
+    # The colour arm reads the same two sums through R (0.4 * w) and A (w),
+    # so its bound is one n-term accumulation on each side, 2 * 110 * 2^-24.
+    # The doubled-size control receives up to 428 taps (214 + 214) and is
+    # gated the same way: the fill must close the extremum wherever it sits,
+    # not only at one radius.
+    L6_TERMS, L6_DOUBLE_TERMS = 110, 428
+    L6_TOL = L6_TERMS * 2.0 ** -24                                # 6.56e-06
+    L6_RATIO_TOL = 2.0 * L6_TERMS * 2.0 ** -24                    # 1.31e-05
+    L6_DOUBLE_TOL = L6_DOUBLE_TERMS * 2.0 ** -24                  # 2.55e-05
+    L6_DOUBLE_RATIO_TOL = 2.0 * L6_DOUBLE_TERMS * 2.0 ** -24      # 5.10e-05
     resetScript()
     doubleImage = render(settings,
                          makeDefocus(settings,
@@ -2946,20 +3311,986 @@ def sceneL(settings):
     doubleApex = channelStats(
         doubleImage, "A", doubleInterior,
         exclude=lambda x, y: ((x - apexX) ** 2 + (y - apexY) ** 2
-                              > doublePad * doublePad))
+                              > apexPad * apexPad))
     checks.append(tolCheck(
-        "l", "l6 the CoC field's own extremum (scatter, not quantisation)",
-        abs(apexStats.minimum - 1.0), 1.0 / 255.0,
-        expectedFailure=True, hardTol=1.5e-02,
+        "l", "l6 the CoC field's own extremum is FILLED to alpha 1 (scatter "
+             "under-delivery, restored)",
+        abs(apexStats.minimum - 1.0), L6_TOL,
         population="%d px inside the %d px extremum disc at (%d,%d)"
                    % (apexStats.count, apexPad, apexX, apexY),
-        note="alpha min %.6f at %s; at size %.2f (extremum radius %.2f px "
-             "instead of %.2f) the dip is still AT THE EXTREMUM and reads "
-             "%.6f at %s — it tracks the field, not the kernel grid"
-             % (apexStats.minimum, apexStats.minAt, 2.0 * size,
-                2.0 * edgeRadius, edgeRadius, doubleApex.minimum,
-                doubleApex.minAt)))
+        note="alpha min %.7f at %s; gate is %d taps * 2^-24, the float "
+             "accumulation bound of the two sums the fill divides; arrival at "
+             "the tip is 0.989 (the pre-fill reading, 9.937e-03 short on the "
+             "old grid, 1.08e-02 on the blended one) and the fill closes it"
+             % (apexStats.minimum, apexStats.minAt, L6_TERMS)))
+    apexRatio = _worstUnpremult(
+        radialImage, "R", GROUND_COLOR[0],
+        (apexX - apexPad, apexY - apexPad, apexX + apexPad + 1,
+         apexY + apexPad + 1))
+    checks.append(tolCheck(
+        "l", "l6b ...and the pair moved together: colour:alpha ratio at the "
+             "extremum (R/A vs 0.40)",
+        apexRatio[0], L6_RATIO_TOL,
+        population="%d px, the extremum's bounding square" % apexRatio[2],
+        note="worst at (%d,%d); an alpha-only fill would read 0.40 * 0.989 "
+             "here" % apexRatio[1]))
+    checks.append(tolCheck(
+        "l", "l6c control: size doubled, the extremum (now 5.0 px) is filled "
+             "too",
+        abs(doubleApex.minimum - 1.0), L6_DOUBLE_TOL,
+        population="%d px inside the same %d px disc at (%d,%d)"
+                   % (doubleApex.count, apexPad, apexX, apexY),
+        note="alpha min %.7f at %s; arrival at the tip 0.975 (a cone twice as "
+             "steep under-delivers twice as much), gate %d taps * 2^-24 -- "
+             "the dip tracked the field, not the kernel grid, and the fill "
+             "tracks the dip"
+             % (doubleApex.minimum, doubleApex.minAt, L6_DOUBLE_TERMS)))
+    doubleRatio = _worstUnpremult(
+        doubleImage, "R", GROUND_COLOR[0],
+        (apexX - apexPad, apexY - apexPad, apexX + apexPad + 1,
+         apexY + apexPad + 1))
+    checks.append(tolCheck(
+        "l", "l6d ...with the pair moved together there as well (R/A vs 0.40)",
+        doubleRatio[0], L6_DOUBLE_RATIO_TOL,
+        population="%d px, the extremum's bounding square" % doubleRatio[2],
+        note="worst at (%d,%d); an alpha-only fill would read 0.40 * 0.975 "
+             "here" % doubleRatio[1]))
     return checks
+
+
+# --- scene (m) ---------------------------------------------------------------
+
+# The halo family (m0/m1/m2) shares ONE foreground card: an opaque 96x96 card
+# at z=4 in front of a focal plane at z=20, so its CoC radius is
+# size * |1 - focus/z| = 4 * 4 = 16 px EXACTLY -- a node of the kernel grid
+# (512/32), so the bloom pinned in m2 is the disc at that node with no blend
+# term, and the same numbers describe it whichever way fractional radii are
+# rasterised.  The background sits ON the focal plane: it cannot scatter at
+# all, so every pixel inside the silhouette is fed by the foreground alone and
+# any background colour inside it would have to be invented.
+HALO_SILHOUETTE = (80, 80, 176, 176)
+HALO_NEAR_Z, HALO_FAR_Z = 4.0, 20.0
+HALO_FOCUS, HALO_SIZE = 20.0, 4.0
+HALO_RADIUS = HALO_SIZE * abs(1.0 - HALO_FOCUS / HALO_NEAR_Z)      # 16 px
+# The two cards share G and B and differ ONLY in R.  G/A and B/A are then
+# known analytically at every pixel whatever the FG:BG mix -- the colour:alpha
+# assertion beside every alpha assertion below is stated on those two -- while
+# R/A reads the mix itself: 0.80 is pure foreground, 0.20 pure background.
+HALO_FG = (0.80, 0.55, 0.30)
+HALO_BG = (0.20, 0.55, 0.30)
+
+
+def haloForeground():
+    """The defocused card alone: one opaque point sample per pixel inside
+    the silhouette, nothing anywhere else."""
+    return pointLayer(rectangle2d(HALO_SILHOUETTE, HALO_FG + (1.0,)),
+                      HALO_NEAR_Z, keepZeroAlpha=False, premult=True)
+
+
+def haloBackground():
+    """A full-frame opaque card on the focal plane."""
+    return pointLayer(constant2d(HALO_BG + (1.0,)), HALO_FAR_Z,
+                      keepZeroAlpha=False, premult=True)
+
+
+def haloSparse():
+    """The same visible content with EXACTLY ONE sample per pixel: foreground
+    inside the silhouette, background outside, and no background sample
+    behind the card anywhere -- what a renderer that terminates opaque hits
+    emits, and the content the halo appears on.  (Scene (i) builds its
+    sparse source the same way; ``depthRampLayer()`` documents why a single
+    ``DeepFromImage`` over a per-pixel depth is the only builder that can.)"""
+    x0, y0, x1, y1 = HALO_SILHOUETTE
+    inside = "(x>=%d && x<%d && y>=%d && y<%d)" % (x0, x1, y0, y1)
+    image = nuke.nodes.Expression(inputs=[constant2d((0.0, 0.0, 0.0, 0.0))])
+    for index, (fg, bg) in enumerate(zip(HALO_FG, HALO_BG)):
+        image["expr%d" % index].setValue("%s ? %g : %g" % (inside, fg, bg))
+    image["expr3"].setValue("1.0")
+    return depthRampLayer(image, "%s ? %g : %g"
+                          % (inside, HALO_NEAR_Z, HALO_FAR_Z))
+
+
+# The commutation holdout: a HALF-transparent full-frame card in front of
+# EVERYTHING (z=2, nearer than the halo card at z=4 and than any point of
+# the ramp, which starts at z=5.7).  Every source fragment then meets a
+# transmittance of exactly 0.5 at every depth the holdout LUT is sampled at
+# -- log-chord interpolation between equal ends is the end -- so the held
+# render is, per deposit, the unheld one halved, and halving is EXACT in
+# float.  What is left to check is what the node does with those halves.
+HALO_HOLDOUT_Z = 2.0
+HALO_HOLDOUT_ALPHA = 0.5
+
+
+def haloHoldout():
+    return pointLayer(constant2d((0.0, 0.0, 0.0, HALO_HOLDOUT_ALPHA)),
+                      HALO_HOLDOUT_Z, keepZeroAlpha=False, premult=True)
+
+
+# The board m5 composites over: 16 px cells, dark 0.04 / light 0.85 -- the
+# same board the kernel bake-off eyeballed the near-focus ramp on, so its
+# frames and these read alike.
+CHECKER_CELL_PX = 16
+CHECKER_DARK, CHECKER_LIGHT = 0.04, 0.85
+
+
+def checkerBoard():
+    node = nuke.nodes.CheckerBoard2()
+    node["format"].setValue(currentFormat())
+    node["boxsize"].setValue(CHECKER_CELL_PX)
+    node["color0"].setValue([CHECKER_DARK] * 3 + [1.0])
+    node["color1"].setValue([CHECKER_LIGHT] * 3 + [1.0])
+    node["centerlinewidth"].setValue(0)
+    node["linewidth"].setValue(0)
+    return node
+
+
+def overChecker(node):
+    """``node`` (a flat RGBA image) over the board."""
+    merge = nuke.nodes.Merge2(inputs=[checkerBoard(), node])
+    merge["operation"].setValue("over")
+    return merge
+
+
+def _cropToDepth(source, zNear, zFar):
+    """Keep only the samples whose depth lies in [zNear, zFar]: the way to
+    ask a deep source which of its layers is actually present at a pixel."""
+    node = nuke.nodes.DeepCrop(inputs=[source])
+    node["use_bbox"].setValue(False)
+    node["use_znear"].setValue(True)
+    node["use_zfar"].setValue(True)
+    node["znear"].setValue(float(zNear))
+    node["zfar"].setValue(float(zFar))
+    return node
+
+
+def _worstUnpremult(image, channel, target, box, floor=1.0e-03):
+    """Worst |channel/A - target| over ``box``, skipping pixels whose alpha is
+    below ``floor`` (an unpremultiplied ratio means nothing there).  Returns
+    (worst, (x, y), pixels measured)."""
+    x0, y0, x1, y1 = box
+    worst, worstAt, count = 0.0, (x0, y0), 0
+    for y in range(y0, y1):
+        alphaRow = image.row("A", y)
+        colourRow = image.row(channel, y)
+        for x in range(x0, x1):
+            i = x - image.x0
+            if not (0 <= i < image.width):
+                continue
+            alpha = alphaRow[i]
+            if alpha < floor:
+                continue
+            count += 1
+            deviation = abs(colourRow[i] / alpha - target)
+            if deviation > worst:
+                worst, worstAt = deviation, (x, y)
+    return worst, worstAt, count
+
+
+def _outsetBox(box, outset):
+    return insetBox(box, -outset)
+
+
+def sceneM(settings):
+    """Coverage fill: the silhouette halo, and the bands either side of focus.
+
+    The node is a SCATTER: each source fragment spreads a unit disc, and where
+    the CoC varies across a destination pixel's neighbourhood the weight that
+    ARRIVES there does not sum to 1.  A defocused foreground scatters off its
+    own silhouette, and the pixels it vacates have nothing behind them unless
+    the renderer wrote occluded samples there -- which a renderer that
+    terminates opaque hits never does -- so the silhouette used to carry a
+    reduced-opacity halo about one CoC wide (scene (i) once pinned it as the
+    specified "honest dip").  A plane receding through focus at 0.5 CoC px per
+    scanline loses weight on the rows either side of the focal line for the
+    same reason: adjacent scanlines genuinely rasterise different discs.  2D
+    defocus nodes show neither, because a flat image has a source pixel under
+    every output pixel and their weight sums are ~1 everywhere.
+
+    The node now fills both: every fragment's share of its source pixel's unit
+    area is deposited, kernel-weighted, into an ARRIVAL plane; the pixel's
+    un-covered residual (1 for an empty pixel) is deposited too, as a virtual
+    background that carries no colour; and a destination pixel whose arrival
+    falls short of 1 has its premultiplied pair scaled up by 1/arrival, never
+    down.  This scene is the acceptance check for that fill, stated on the
+    two reported artifacts:
+
+      m0  the control -- the SAME silhouette with the occluded background
+          samples present (a DeepMerge) must be untouched: alpha 1 and the
+          source's colour:alpha ratio, INCLUDING the edge band where those
+          occluded samples enter the numerator but not the divisor, the fill
+          pushes alpha past 1 and the clamp has to bring the pair back down
+          TOGETHER.
+      m1  the halo -- one sample per pixel, no background behind the card:
+          the dip is gone, and the filled band is FOREGROUND colour.  The
+          fill scales what arrived; it invents no background.
+      m2  the same card over NOTHING -- the bloom must be UNCHANGED, pinned
+          as a two-sided profile.  This holds only because the scene is
+          single-depth: the empty pixels' virtual background scatters at the
+          farthest measured depth's CoC, which for one object IS its own
+          CoC, so the object's disc and its neighbours' residual discs tile
+          to exactly 1 and the fill never engages.  With far geometry
+          elsewhere in the frame an object's fringe over emptiness CAN be
+          boosted where its kernel is smaller than the background's; that
+          case is documented, not pinned here.
+      m3  the ramp -- scene (g)'s ground plane at its own deliberately steep
+          slope (0.5 CoC px per scanline), read over EVERY interior row
+          including the near-focus ones scene (g) excludes: at alpha 1 the
+          field is flat (m3a); at alpha 0.9 no row reads short (m3b), and the
+          near-focus SURPLUS that the deficit-only fill cannot touch, and
+          was never meant to, is pinned where it stands (m3c).
+      m4  fill and holdout commute -- the fill divides by the RAW arrival,
+          deposited before holdout visibility is folded in, while every
+          colour and alpha deposit carries that visibility: a 0.5-alpha
+          card in front of everything halves the numerator and leaves the
+          divisor alone.  On a flat card (m4a) and on the ramp's two
+          deficit rows (m4b) the held render is exactly half the unheld
+          one, to float precision; on the ramp's SURPLUS rows it is not,
+          and the number it reads there is pinned so nobody mistakes it
+          for a fill regression.
+      m5  the m1 and m3 renders written over a checkerboard, to be looked
+          at rather than measured: the paths are in the check's note.
+
+    Every pin here was measured on an independent probe of the same
+    geometry, never read off the build under test, and every alpha assertion
+    carries a colour:alpha assertion beside it: "clamp one of a premultiplied
+    pair and not the other" has appeared three times in this node.
+    """
+    checks = []
+    box = formatBox()
+    silhouette = HALO_SILHOUETTE
+    radius = HALO_RADIUS
+    reach = int(math.ceil(radius)) + 3
+    # Inside band: from the silhouette edge to one CoC (+3 px) inward -- the
+    # band the halo occupies.  Outside band: the same width outward, where the
+    # foreground bloom lands over the background.  The annulus is both.
+    deep = insetBox(silhouette, reach)
+    wide = _outsetBox(silhouette, reach)
+    ratioTol = 1.0 / 255.0
+
+    def annulusStats(image, channel):
+        """min/max/mean over the annulus |edge distance| <= reach."""
+        x0, y0, x1, y1 = deep
+
+        def inDeep(x, y):
+            return x0 <= x < x1 and y0 <= y < y1
+        return channelStats(image, channel, wide, exclude=inDeep)
+
+    def insideBandStats(image, channel):
+        x0, y0, x1, y1 = deep
+
+        def inDeep(x, y):
+            return x0 <= x < x1 and y0 <= y < y1
+        return channelStats(image, channel, silhouette, exclude=inDeep)
+
+    def insideBandRatio(image, channel, target):
+        """Worst unpremultiplied deviation over the inside band only."""
+        x0, y0, x1, y1 = deep
+        strips = [(silhouette[0], silhouette[1], silhouette[2], y0),
+                  (silhouette[0], y1, silhouette[2], silhouette[3]),
+                  (silhouette[0], y0, x0, y1),
+                  (x1, y0, silhouette[2], y1)]
+        worst, worstAt, count = 0.0, None, 0
+        for strip in strips:
+            w, at, n = _worstUnpremult(image, channel, target, strip)
+            count += n
+            if w > worst or worstAt is None:
+                worst, worstAt = w, at
+        return worst, worstAt, count
+
+    def defocus(source, cell=None):
+        cell = cell or settings
+        return makeDefocus(cell, source, size=HALO_SIZE,
+                           focusDistance=HALO_FOCUS, cocMode="manual")
+
+    # m5 bookkeeping: (tag, path, the plain render the file was made from).
+    # The over-checkerboard file is written from the SAME graph the cell
+    # measured, right after its render, so what the eye sees at that path
+    # is what the numbers above it describe.
+    kept = []
+
+    def keepOverChecker(node, tag, plain):
+        path = os.path.join(settings.outDir, "over_checker_%s.exr" % tag)
+        saveRender(overChecker(node), path, box=box)
+        kept.append((tag, path, plain))
+
+    # ------------------------------------------------------------------
+    # m0: the occluded-samples-present control.
+    # ------------------------------------------------------------------
+    resetScript()
+    control = render(settings, defocus(deepMerge([haloForeground(),
+                                                  haloBackground()])),
+                     "m_control", box=box)
+    controlAlpha = channelStats(control, "A", silhouette)
+    checks.append(tolCheck(
+        "m", "m0 occluded samples present: silhouette alpha |a-1|",
+        max(abs(controlAlpha.minimum - 1.0), abs(controlAlpha.maximum - 1.0)),
+        1.0 / 255.0,
+        population="%d px, the whole silhouette incl. the %d px edge band"
+                   % (controlAlpha.count, reach),
+        note="min %.7f at %s max %.7f; an opaque background behind an opaque "
+             "card is alpha 1 by construction -- this is the control for m1, "
+             "and where the edge band's occluded samples are scattered into "
+             "the numerator but not the divisor the fill overshoots and the "
+             "clamp must bring the pair back down together (m0b)"
+             % (controlAlpha.minimum, controlAlpha.minAt,
+                controlAlpha.maximum)))
+    worstRatio, worstAt, ratioCount = 0.0, None, 0
+    for channel, target in (("G", HALO_FG[1]), ("B", HALO_FG[2])):
+        w, at, n = _worstUnpremult(control, channel, target, silhouette)
+        ratioCount = n
+        if w > worstRatio or worstAt is None:
+            worstRatio, worstAt = w, (channel,) + at
+    # The occluded background REALLY shows through the defocused edge: R/A
+    # on the last foreground column at mid-height is the FG:BG mix at the
+    # bloom's half-way point, not 0.80.  Without this the ratio check above
+    # would be satisfied by a card with nothing behind it.
+    edgeMix = (control.at("R", silhouette[2] - 1, 128)
+               / control.at("A", silhouette[2] - 1, 128))
+    checks.append(boolCheck(
+        "m", "m0b ...and the colour:alpha ratio is the source's (G/A, B/A)",
+        worstRatio <= ratioTol and HALO_BG[0] + 0.1 < edgeMix < HALO_FG[0] - 0.1,
+        "worst |c/a - src| %.2e (%s@(%d,%d)); edge mix R/A %.4f"
+        % (worstRatio, worstAt[0], worstAt[1], worstAt[2], edgeMix),
+        "<= %.1e; edge R/A in (%.2f, %.2f)"
+        % (ratioTol, HALO_BG[0] + 0.1, HALO_FG[0] - 0.1),
+        population="%d px x 2 channels" % ratioCount,
+        note="FG and BG share G and B, so both ratios are known at every "
+             "pixel whatever the mix; R/A at the silhouette's last column "
+             "reads the mix itself (0.80 pure FG, 0.20 pure BG) and proves "
+             "the occluded background is present and visible through the "
+             "defocused edge"))
+
+    # ------------------------------------------------------------------
+    # m1: the halo.
+    # ------------------------------------------------------------------
+    # m1a: the sparse source really is sparse -- crop each source to the
+    # background's depth and flatten: the sparse one must have NO sample
+    # there inside the silhouette, the DeepMerge twin must have its full
+    # background.  Without this, "the dip is gone" proves nothing about the
+    # fill, because a source with hidden samples never dipped (m0).
+    resetScript()
+    sparseBg = render(settings,
+                      deepToImage(_cropToDepth(haloSparse(), HALO_FAR_Z - 5.0,
+                                               HALO_FAR_Z + 5.0)),
+                      "m_sparse_bg_only", box=box)
+    resetScript()
+    mergedBg = render(settings,
+                      deepToImage(_cropToDepth(
+                          deepMerge([haloForeground(), haloBackground()]),
+                          HALO_FAR_Z - 5.0, HALO_FAR_Z + 5.0)),
+                      "m_merged_bg_only", box=box)
+    sparseHidden = channelStats(sparseBg, "A", silhouette)
+    mergedHidden = channelStats(mergedBg, "A", silhouette)
+    sparseOutside = channelStats(sparseBg, "A", (0, 0, FORMAT_W, silhouette[1]))
+    checks.append(boolCheck(
+        "m", "m1a guard: the sparse source has NO background behind the card",
+        sparseHidden.maximum == 0.0 and mergedHidden.minimum == 1.0
+        and sparseOutside.minimum == 1.0,
+        "sparse %.1f, DeepMerge twin %.1f behind the card; sparse %.1f outside"
+        % (sparseHidden.maximum, mergedHidden.minimum, sparseOutside.minimum),
+        "0 / 1 / 1",
+        population="%d px behind the card" % sparseHidden.count,
+        note="both sources DeepCrop'd to the background depth and flattened: "
+             "the sparse one has exactly one sample per pixel, so nothing "
+             "survives the crop inside the silhouette, while the twin keeps "
+             "its occluded background"))
+
+    resetScript()
+    haloNode = defocus(haloSparse())
+    halo = render(settings, haloNode, "m_halo", box=box)
+    keepOverChecker(haloNode, "m1_halo", halo)
+    haloAnnulus = annulusStats(halo, "A")
+    dipDepth = 1.0 - haloAnnulus.minimum
+    haloRow = [halo.at("A", x, 128) for x in range(silhouette[0],
+                                                     silhouette[2])]
+    dipWidth = 0
+    for value in haloRow:
+        if value >= 0.999:
+            break
+        dipWidth += 1
+    checks.append(tolCheck(
+        "m", "m1 the halo: alpha dip around the silhouette (1 - min alpha)",
+        dipDepth, 1.0 / 255.0,
+        population="%d px, |edge distance| <= %d px, both sides"
+                   % (haloAnnulus.count, reach),
+        note="min %.7f at %s max %.7f; dip width on y=128 from the edge "
+             "inward %d px (CoC radius %.0f px).  The SAME source on the "
+             "pre-fill plugin read min 0.2702 at the card's corner, 0.5199 "
+             "on this scanline's last foreground column and a 16 px dip "
+             "width -- the halo the fill exists to remove"
+             % (haloAnnulus.minimum, haloAnnulus.minAt, haloAnnulus.maximum,
+                dipWidth, radius)))
+    worstRatio, worstAt, ratioCount = 0.0, None, 0
+    for channel, target in (("R", HALO_FG[0]), ("G", HALO_FG[1]),
+                            ("B", HALO_FG[2])):
+        w, at, n = insideBandRatio(halo, channel, target)
+        ratioCount = n
+        if w > worstRatio or worstAt is None:
+            worstRatio, worstAt = w, (channel,) + at
+    checks.append(tolCheck(
+        "m", "m1b ...and the filled band is FOREGROUND colour (R/A, G/A, B/A)",
+        worstRatio, ratioTol,
+        population="%d px x 3 channels, the inside band" % ratioCount,
+        note="worst %s@(%d,%d); R separates the two cards (FG 0.80, BG 0.20) "
+             "and the background is ON the focal plane, so it cannot scatter "
+             "inward: every unit of background colour inside the silhouette "
+             "would be invented.  The fill scales the foreground that arrived "
+             "and adds nothing of its own"
+             % worstAt))
+
+    # ------------------------------------------------------------------
+    # m2: the same card over nothing -- the bloom, pinned.
+    # ------------------------------------------------------------------
+    # Pinned at the PRE-FILL plugin's reading of this exact rig (the
+    # preserved baseline, K=16), NOT at this build's: the property is that
+    # the fill leaves a single-depth bloom alone, so the oracle is the render
+    # that had no fill.  Two-sided on purpose -- a boosted fringe and a
+    # flattened one are both wrong.  The band is 1e-3: the arrival plane
+    # accumulates ~pi*r^2 = 800 float terms per pixel here and lands within
+    # 3.1e-5 of the baseline on the inside points (bit-identical outside),
+    # while the nearest fill mutation that reaches this rig -- a 10%
+    # under-claim by the virtual background -- moves the edge pixel by
+    # +0.026 and the -8 / +7 px points by +0.017 / +0.018.  (Forcing the
+    # fill OFF leaves every point bit-identical to its pin, which is the
+    # other half of the statement: the pins ARE the no-fill numbers.)
+    #
+    # The card's own pre-fill reading and this build's differ in NO other
+    # way: the flat interior, the 16 px extent and the colour ratio are all
+    # the same numbers on both.
+    M2_BAND = 1.0e-03
+    m2Cell = settings.derive(k=16)
+    resetScript()
+    bloom = render(m2Cell, defocus(haloForeground(), m2Cell), "m_bloom",
+                   box=box)
+    edge = silhouette[2]                    # first column OUTSIDE the card
+    # (offset from that column, baseline alpha): the last foreground pixel
+    # is -1, the first empty one 0; +15 is the last pixel the 16 px disc
+    # reaches and +16 must be exactly 0.
+    M2_PROFILE = [
+        (-15, 0.983015), (-12, 0.914358), (-8, 0.787027), (-4, 0.638170),
+        (-1, 0.519894), (0, 0.480109), (3, 0.361833), (7, 0.212976),
+        (11, 0.085645), (14, 0.016988),
+    ]
+    worstDelta, worstOffset = 0.0, M2_PROFILE[0][0]
+    profileText = []
+    for offset, pin in M2_PROFILE:
+        value = bloom.at("A", edge + offset, 128)
+        profileText.append("%+d:%.6f" % (offset, value))
+        if abs(value - pin) > worstDelta:
+            worstDelta, worstOffset = abs(value - pin), offset
+    beyond = bloom.at("A", edge + 16, 128)
+    last = bloom.at("A", edge + 15, 128)
+    checks.append(boolCheck(
+        "m", "m2 K=16 card over nothing: bloom profile across the edge (y=128)",
+        worstDelta <= M2_BAND and beyond == 0.0 and last > 0.0,
+        "worst |a - pin| %.2e at %+d px; +15: %.6f, +16: %.7f"
+        % (worstDelta, worstOffset, last, beyond),
+        "each of %d points within +/- %.0e of its pin; +16 exactly 0"
+        % (len(M2_PROFILE), M2_BAND),
+        population="offsets %s from the card's right edge"
+                   % ",".join("%+d" % o for o, _ in M2_PROFILE),
+        note="reads " + " ".join(profileText) + "; pins are the pre-fill "
+             "plugin's reading of this rig, K=16, and the bloom is unchanged "
+             "ONLY because the scene is single-depth (the empty pixels' "
+             "virtual background scatters at this card's own CoC, so the "
+             "discs tile to exactly 1); a near object with far geometry "
+             "elsewhere in the frame is documented, not pinned"))
+    worstRatio, worstAt, ratioCount = 0.0, None, 0
+    for channel, target in (("R", HALO_FG[0]), ("G", HALO_FG[1]),
+                            ("B", HALO_FG[2])):
+        w, at, n = _worstUnpremult(bloom, channel, target, wide)
+        ratioCount = n
+        if w > worstRatio or worstAt is None:
+            worstRatio, worstAt = w, (channel,) + at
+    checks.append(tolCheck(
+        "m", "m2b ...and the bloom's colour:alpha ratio is the card's",
+        worstRatio, ratioTol,
+        population="%d px with alpha >= 1e-3, silhouette + %d px" % (ratioCount,
+                                                                     reach),
+        note="worst %s@(%d,%d); one colour in, so every pixel that carries any "
+             "alpha must carry it at exactly the card's ratio" % worstAt))
+
+    # ------------------------------------------------------------------
+    # m3: the ramp, every interior row, near-focus rows included.
+    # ------------------------------------------------------------------
+    # Scene (g)'s rig exactly -- size 86 at focus 10 is 0.5 CoC px per
+    # scanline, 64 px at the frame edges -- and scene (g)'s interior bound,
+    # but WITHOUT its near-focus exclusion: the rows it excludes are the ones
+    # this fill is for.  K is fixed at 16 like g4/g5, so the pins compare
+    # across runs whatever --k says.
+    #
+    # WHAT THE FILL DID HERE, AND WHAT IT DID NOT (the decomposition that
+    # split this into three cells).  Arrival on this ramp at K=16 reads
+    # 1.201 at the two r=0.5 rows either side of focus (the row's own
+    # delta share plus its neighbours' discs), ~1.07 across the far field,
+    # and BELOW 1 on exactly two rows -- 126 and 130, at 0.972.  Those two
+    # are the rows the fill moves: 0.972 -> 1 at alpha 1, 0.874 -> 0.899 at
+    # alpha 0.9.  Every other row carries a SURPLUS, which deficit-only
+    # division leaves alone by construction: at alpha 1 the clamp absorbs it
+    # (g1 reads 1e-08 on the same weights); at alpha 0.9 it is visible --
+    # +0.073 on the r=0.5 rows (g5's over-read arm: un-pooled it reads the
+    # +0.100 alpha-clamp ceiling, and K=16's bucket pooling masks 0.027 of
+    # it) and -0.030 across the far field (g4's head-and-rear pooling,
+    # 0.0328 here against g4's 0.0325 pin).  Both pre-date the fill, both
+    # are K- and kernel-independent, and neither is the fill's to fix -- a
+    # symmetric 1/D was tried and rejected: post-composite it double-corrects
+    # against the area model's saturation (alpha 1 reads 0.833 at focus),
+    # pre-composite it cannot tell a continuous surface's adjoint surplus
+    # from a defocused neighbour legitimately overlapping an occluder.
+    #
+    # So: m3a and m3b are MUST-HOLD, m3c is a band pin.  m3b is one-sided
+    # because the deficit is the artifact and the surplus is m3c's.  m3c
+    # does NOT re-pin the far field: that is g4, and g4 keeps its own pin.
+    #
+    # MUTATION (fill forced off, arrival = 1): rows 126/130 read 0.9723 at
+    # alpha 1 and 0.874 at alpha 0.9 -- m3a fails by 0.028, m3b by 0.025;
+    # m3c does not move, as it must not (its rows have D > 1).
+    size = 86.0
+    slope = groundSlope(size)
+    edgeRadius = slope * GROUND_Y_FOCUS
+    bound = int(math.ceil(edgeRadius)) + 2                       # 66
+    rampBox = (bound, bound, FORMAT_W - bound, FORMAT_H - bound)
+    rampRows = list(range(rampBox[1], rampBox[3]))
+    m3Cell = settings.derive(k=16)
+    tol = 1.0 / 255.0
+
+    def rampSource(alpha):
+        colour = tuple(c * alpha for c in GROUND_COLOR[:3]) + (alpha,)
+        return groundPlane(color=colour)
+
+    def sourceRatio(alpha):
+        """The source's OWN unpremultiplied red, read from a stock flatten.
+        ``groundPlane()`` hands DeepFromImage a colour that is already
+        premultiplied and it premultiplies once more, so at alpha < 1 the
+        sample's ratio is GROUND_COLOR * alpha, not GROUND_COLOR -- the
+        reference is whatever the source really carries, not what the
+        constant says."""
+        resetScript()
+        flat = render(m3Cell, deepToImage(rampSource(alpha)),
+                      "m_ramp_source_alpha%g" % alpha, box=rampBox)
+        x, y = (rampBox[0] + rampBox[2]) // 2, (rampBox[1] + rampBox[3]) // 2
+        return flat.at("R", x, y) / flat.at("A", x, y)
+
+    def rampRender(alpha, holdout=None):
+        """(image, node); ``holdout`` is a builder, called AFTER the reset."""
+        resetScript()
+        node = makeDefocus(m3Cell, rampSource(alpha), size=size,
+                           focusDistance=GROUND_FOCUS, cocMode="manual",
+                           holdout=holdout() if holdout else None)
+        return render(m3Cell, node,
+                      "m_ramp_alpha%g%s" % (alpha, "_held" if holdout
+                                            else "")), node
+
+    # --- m3a: alpha 1.
+    redRatio = sourceRatio(1.0)
+    opaque, opaqueNode = rampRender(1.0)
+    keepOverChecker(opaqueNode, "m3_ramp_a1", opaque)
+    opaqueRows = rowMeans(opaque, "A", rampBox)
+    opaquePixels = channelStats(opaque, "A", rampBox)
+    worstRow = max(abs(v - 1.0) for v in opaqueRows)
+    worstRowY = rampRows[[abs(v - 1.0) for v in opaqueRows].index(worstRow)]
+    worstPixel = max(abs(opaquePixels.minimum - 1.0),
+                     abs(opaquePixels.maximum - 1.0))
+    checks.append(tolCheck(
+        "m", "m3a K=16 alpha 1 ramp, EVERY interior row incl. near focus: "
+             "|a-1|",
+        max(worstRow, worstPixel), tol,
+        population="%d rows x %d px, rows %d-%d, near-focus rows INCLUDED"
+                   % (len(rampRows), rampBox[2] - rampBox[0], rampRows[0],
+                      rampRows[-1]),
+        note="worst row mean |a-1| %.2e at y=%d, worst pixel %.2e (min "
+             "%.6f at %s); rows 126/130 read 0.9723 before the fill and "
+             "read 1 now -- the reported band artifact, at the one alpha "
+             "where the clamp hides every surplus"
+             % (worstRow, worstRowY, worstPixel, opaquePixels.minimum,
+                opaquePixels.minAt)))
+    worstRatio, worstAt, ratioCount = _worstUnpremult(opaque, "R", redRatio,
+                                                      rampBox)
+    checks.append(tolCheck(
+        "m", "m3a ...and colour:alpha ratio vs the source (R/A)",
+        worstRatio, tol,
+        population="%d px" % ratioCount,
+        note="source R/A %.4f (stock flatten); worst at (%d,%d)"
+             % ((redRatio,) + worstAt)))
+
+    # --- m3b / m3c: alpha 0.9.
+    m3Alpha = 0.90
+    redRatio = sourceRatio(m3Alpha)
+    fog, fogNode = rampRender(m3Alpha)
+    keepOverChecker(fogNode, "m3_ramp_a0.9", fog)
+    fogRows = rowMeans(fog, "A", rampBox)
+    nearBand = [(y, v) for y, v in zip(rampRows, fogRows) if abs(y - 128) <= 3]
+    nearMinY, nearMin = min(nearBand, key=lambda t: t[1])
+    floorAlpha = m3Alpha - tol
+    checks.append(boolCheck(
+        "m", "m3b K=16 alpha 0.9 ramp, near-focus rows |y-128| <= 3: no row "
+             "reads short",
+        nearMin >= floorAlpha,
+        "min row mean %.5f at y=%d (%+.5f)" % (nearMin, nearMinY,
+                                                nearMin - m3Alpha),
+        ">= %.5f (alpha - 1/255)" % floorAlpha,
+        population="%d rows x %d px" % (len(nearBand),
+                                        rampBox[2] - rampBox[0]),
+        note="rows: " + " ".join("%d:%.5f" % (y, v) for y, v in nearBand)
+             + "; ONE-SIDED by design -- the deficit is the artifact, the "
+               "surplus on the other rows is m3c's.  Rows 126/130 are the "
+               "only rows with arrival < 1 on this ramp (0.972); they read "
+               "0.8743 before the fill"))
+    nearBox = (rampBox[0], 128 - 3, rampBox[2], 128 + 4)
+    worstRatio, worstAt, ratioCount = _worstUnpremult(fog, "R", redRatio,
+                                                      nearBox)
+    checks.append(tolCheck(
+        "m", "m3b ...and colour:alpha ratio vs the source (R/A), same rows",
+        worstRatio, tol,
+        population="%d px" % ratioCount,
+        note="source R/A %.4f (stock flatten; the plane's premultiplied "
+             "colour is premultiplied again by DeepFromImage, so it is "
+             "0.40 * 0.90); worst at (%d,%d)" % ((redRatio,) + worstAt)))
+
+    # --- m3c: the near-focus SURPLUS, pinned two-sided.
+    # +0.0734 is the reading at the r=0.5 rows (127/129) at K=16 on the
+    # independent probe (and the pre-fill plugin reads +0.0734 on the same
+    # row: the fill did not touch it).  Band 0.004, the house width for a
+    # residual pin.  [0, +0.100] is the PHYSICAL range of this residual:
+    # +0.100 is the alpha-clamp ceiling at alpha 0.9 (read directly at K=128
+    # and under whole-bucket assignment), and a reading below 0 is a
+    # deficit, which would be a different mechanism altogether -- a reading
+    # outside the band but inside the range has moved and must be re-pinned;
+    # one outside the range is not this residual at all.
+    #
+    # THIS CHECK CANNOT PASS, BY CONSTRUCTION: it is a band around a
+    # residual.  Whoever moves it must re-pin it in the same commit.
+    M3C_PIN, M3C_BAND = +0.0734, 0.004
+    M3C_RANGE = (0.0, +0.100)
+    wideBand = [(y, v) for y, v in zip(rampRows, fogRows) if abs(y - 128) <= 8]
+    surplusY, surplusValue = max(wideBand, key=lambda t: abs(t[1] - m3Alpha))
+    surplus = surplusValue - m3Alpha
+    inRange = M3C_RANGE[0] <= surplus <= M3C_RANGE[1]
+    checks.append(boolCheck(
+        "m", "m3c K=16 alpha 0.9 ramp, worst row |y-128| <= 8: the near-focus "
+             "surplus (pinned)",
+        False,
+        "%+.4f (%.5f vs %.2f) at y=%d%s"
+        % (surplus, surplusValue, m3Alpha, surplusY,
+           "" if inRange else "; OUTSIDE the physical range"),
+        "0.0000 (xfail %+.4f +/- %.4f; range [%+.3f, %+.3f])"
+        % (M3C_PIN, M3C_BAND, M3C_RANGE[0], M3C_RANGE[1]),
+        population="%d rows x %d px" % (len(wideBand),
+                                        rampBox[2] - rampBox[0]),
+        note="rows 120-136: " + " ".join("%d:%.4f" % (y, v)
+                                         for y, v in wideBand)
+             + "; arrival is 1.201 at rows 127/129, K- and "
+               "kernel-independent, so deficit-only division never engages "
+               "there -- this is the scatter's own over-delivery on a steep "
+               "CoC gradient (g5's arm; un-pooled it reads the +0.100 clamp "
+               "ceiling, K=16 bucket pooling masks 0.027).  The far field's "
+               "-0.030 is NOT pinned here: it is g4, which keeps its own "
+               "pin.  Fill forced off leaves this cell exactly where it is",
+        expectedFailure=True, hardTol=M3C_BAND,
+        hardValue=abs(surplus - M3C_PIN) if inRange else float("inf")))
+
+    # ------------------------------------------------------------------
+    # m4: fill and holdout commute.
+    # ------------------------------------------------------------------
+    # The fill divides by the RAW arrival -- each kernel row is deposited
+    # into the arrival plane BEFORE holdout visibility is folded into it --
+    # while every colour and alpha deposit carries the visibility.  A
+    # holdout in front of everything therefore scales the numerator per
+    # fragment and leaves the divisor alone, and the held render must be
+    # the unheld one times the holdout's transmittance wherever the
+    # composite is linear in that scale.  Were visibility folded into the
+    # arrival deposit instead, a held-out pixel's arrival would fall short
+    # of 1 by exactly the holdout's attenuation and the fill would put the
+    # attenuation straight back: a holdout that does not hold out.  That is
+    # the mutation both cells are built to catch (under it, m4a's card reads
+    # a ratio of 1 instead of 0.5, and so do m4b's deficit rows).
+    #
+    # WHAT "FLOAT PRECISION" MEANS HERE.  Visibility is exactly 0.5 (see
+    # haloHoldout), so every held deposit is the unheld one halved; halving
+    # is exact in float and a sum of exactly-halved terms is exactly half
+    # the sum, so the held bucket planes are the unheld planes halved bit
+    # for bit, and so is the composite wherever nothing saturates.  The
+    # divisor is the same float in both renders.  The ONLY step that can
+    # part the two is saturation: the unheld pixel lands on 1 from either
+    # side by its own accumulation rounding and is clamped down when it
+    # lands above, while the held pixel, at 0.5, never is.  The ratio can
+    # therefore differ from 0.5 by at most half the unheld sum's rounding
+    # excess over 1, which is bounded by that sum's term count n times the
+    # float half-ulp 2^-24 (scene (c)'s c4 idiom, the design's own term
+    # count).  n is the tap count of a 16 px disc for m4a and the few 3x3 /
+    # 5x5 taps that reach a near-focus row, both buckets, for m4b.  The
+    # tolerance is n * 2^-24, applied TWO-SIDED: a ratio above 0.5 is a
+    # held-out pixel renormalised back up, below it one attenuated twice.
+    HALF_ULP = 2.0 ** -24
+    M4A_TERMS = int(math.ceil(math.pi * (radius + 1.0) ** 2))        # 908
+    M4A_TOL = M4A_TERMS * HALF_ULP                                   # 5.4e-05
+    M4B_TERMS = 32
+    M4B_TOL = M4B_TERMS * HALF_ULP                                   # 1.9e-06
+
+    def ratioField(held, unheld, region, channel="A", floor=0.0):
+        """Worst |held/unheld - 0.5| over ``region`` on pixels whose unheld
+        value exceeds ``floor``.  (worst, (x, y), count)."""
+        x0, y0, x1, y1 = region
+        worst, worstAt, count = 0.0, (x0, y0), 0
+        for y in range(y0, y1):
+            hRow, uRow = held.row(channel, y), unheld.row(channel, y)
+            for x in range(x0, x1):
+                i = x - unheld.x0
+                if not (0 <= i < unheld.width) or not uRow[i] > floor:
+                    continue
+                count += 1
+                deviation = abs(hRow[i] / uRow[i] - HALO_HOLDOUT_ALPHA)
+                if deviation > worst:
+                    worst, worstAt = deviation, (x, y)
+        return worst, worstAt, count
+
+    def pairField(held, unheld, region, channel):
+        """Worst |c_held/c_unheld - a_held/a_unheld|: the colour must scale
+        by the SAME factor as the alpha, pixel for pixel.  Pixels with no
+        colour or no alpha in the unheld render are skipped."""
+        x0, y0, x1, y1 = region
+        worst, worstAt, count = 0.0, (x0, y0), 0
+        for y in range(y0, y1):
+            hc, uc = held.row(channel, y), unheld.row(channel, y)
+            ha, ua = held.row("A", y), unheld.row("A", y)
+            for x in range(x0, x1):
+                i = x - unheld.x0
+                if not (0 <= i < unheld.width) or not (uc[i] > 0.0
+                                                        and ua[i] > 0.0):
+                    continue
+                count += 1
+                deviation = abs(hc[i] / uc[i] - ha[i] / ua[i])
+                if deviation > worst:
+                    worst, worstAt = deviation, (x, y)
+        return worst, worstAt, count
+
+    # --- m4a: the flat card over nothing (m2's rig), K=16, with and
+    # without the card.  Single-depth, so arrival is 1 everywhere and never
+    # above it (m2): every pixel that carries alpha must read exactly half.
+    m4Cell = settings.derive(k=16)
+    resetScript()
+    unheldCard = render(m4Cell, defocus(haloForeground(), m4Cell),
+                        "m_card_unheld", box=box)
+    resetScript()
+    heldCard = render(m4Cell,
+                      makeDefocus(m4Cell, haloForeground(), size=HALO_SIZE,
+                                  focusDistance=HALO_FOCUS, cocMode="manual",
+                                  holdout=haloHoldout()),
+                      "m_card_held", box=box)
+    worstRatio, worstAt, ratioCount = ratioField(heldCard, unheldCard, box)
+    interiorHeld = channelStats(heldCard, "A", deep)
+    checks.append(boolCheck(
+        "m", "m4a K=16 flat card, 0.5-alpha holdout in front: held/unheld "
+             "alpha is 0.5 at EVERY pixel with alpha",
+        worstRatio <= M4A_TOL and abs(interiorHeld.maximum - 0.5) <= M4A_TOL
+        and abs(interiorHeld.minimum - 0.5) <= M4A_TOL,
+        "worst |ratio - 0.5| %.2e at (%d,%d); held interior %.7f..%.7f"
+        % (worstRatio, worstAt[0], worstAt[1], interiorHeld.minimum,
+           interiorHeld.maximum),
+        "<= %.1e two-sided (%d terms x 2^-24); interior 0.5 +/- same"
+        % (M4A_TOL, M4A_TERMS),
+        population="%d px with unheld alpha > 0 (silhouette + %d px bloom), "
+                   "one bucket" % (ratioCount, int(radius)),
+        note="the card at z=%g behind a full-frame 0.5-alpha card at z=%g: "
+             "visibility is exactly 0.5 for every fragment, arrival is the "
+             "same 1 with and without it, so the held render is the unheld "
+             "one halved -- the fill divides by what ARRIVED, not by what "
+             "was let through.  Folding visibility into the arrival deposit "
+             "reads a ratio of 1 across the card instead: the holdout's "
+             "attenuation renormalised straight back"
+             % (HALO_NEAR_Z, HALO_HOLDOUT_Z)))
+    worstPair, pairAt, pairCount = 0.0, None, 0
+    for channel in ("R", "G", "B"):
+        w, at, n = pairField(heldCard, unheldCard, box, channel)
+        pairCount = n
+        if w > worstPair or pairAt is None:
+            worstPair, pairAt = w, (channel,) + at
+    checks.append(tolCheck(
+        "m", "m4a ...and the colour scales by the same factor as the alpha "
+             "(R, G, B)",
+        worstPair, M4A_TOL,
+        population="%d px x 3 channels" % pairCount,
+        note="worst |c_held/c_unheld - a_held/a_unheld| at %s@(%d,%d); the "
+             "premultiplied pair moves together through the holdout, the "
+             "fill and the clamp alike" % pairAt))
+
+    # --- m4b: the ramp (m3's rig, alpha 1, K=16) with and without the same
+    # card.  The unheld render is m3a's.  Rows 126/130 are the two rows
+    # whose arrival is below 1 (0.972), the rows the fill moves: there the
+    # held render must be exactly half the unheld one, which is the
+    # observable form of "the fill multiplier is the same float with and
+    # without the card" -- held = 0.5 * A * s_held against unheld = A * s
+    # with A * s on 1 (m3a), so the ratio is 0.5 * s_held / s, and it is
+    # 0.5 if and only if the two multipliers agree.  m3a is what pins that
+    # the multiplier is ENGAGED on these rows (0.972 -> 1); this cell adds
+    # that the card leaves it alone.  (The multiplier itself is not an
+    # output of the node; the ratio is the only way to read it from the
+    # outside.)
+    held, heldNode = rampRender(1.0, holdout=haloHoldout)
+    deficitRows = (126, 130)
+    worstRatio, worstAt, ratioCount = 0.0, None, 0
+    for y in deficitRows:
+        w, at, n = ratioField(held, opaque, (rampBox[0], y, rampBox[2], y + 1))
+        ratioCount += n
+        if w > worstRatio or worstAt is None:
+            worstRatio, worstAt = w, at
+    unheldDeficit = min(opaqueRows[rampRows.index(y)] for y in deficitRows)
+    heldRows = rowMeans(held, "A", rampBox)
+    ratioRows = [h / u for h, u in zip(heldRows, opaqueRows)]
+    checks.append(boolCheck(
+        "m", "m4b K=16 alpha 1 ramp, the arrival < 1 rows (126/130): "
+             "held/unheld alpha is 0.5 at every pixel",
+        worstRatio <= M4B_TOL and unheldDeficit >= 1.0 - tol,
+        "worst |ratio - 0.5| %.2e at (%d,%d); unheld row min %.6f"
+        % (worstRatio, worstAt[0], worstAt[1], unheldDeficit),
+        "<= %.1e two-sided (%d terms x 2^-24); unheld >= 1 - 1/255"
+        % (M4B_TOL, M4B_TERMS),
+        population="%d px, rows 126 and 130 x %d px"
+                   % (ratioCount, rampBox[2] - rampBox[0]),
+        note="row ratios 126:%.7f 128:%.7f 130:%.7f; arrival 0.972 on 126 "
+             "and 130, so the fill multiplies by 1/0.972 in both renders and "
+             "the halved numerator comes out exactly halved.  Folding "
+             "visibility into the arrival deposit halves the divisor too: "
+             "the held rows then read 1, ratio 1.0, the attenuation "
+             "renormalised away.  Row 128 is the focal row (arrival 1, the "
+             "sharp path) and reads 0.5 as well; it is reported, not gated"
+             % (ratioRows[rampRows.index(126)], ratioRows[rampRows.index(128)],
+                ratioRows[rampRows.index(130)])))
+    worstPair, pairAt, pairCount = 0.0, None, 0
+    for y in deficitRows:
+        w, at, n = pairField(held, opaque, (rampBox[0], y, rampBox[2], y + 1),
+                             "R")
+        pairCount += n
+        if w > worstPair or pairAt is None:
+            worstPair, pairAt = w, at
+    checks.append(tolCheck(
+        "m", "m4b ...and the colour scales by the same factor as the alpha "
+             "(R), same rows",
+        worstPair, M4B_TOL,
+        population="%d px" % pairCount,
+        note="worst |R_held/R_unheld - A_held/A_unheld| at (%d,%d)" % pairAt))
+
+    # --- m4b, the other rows: where arrival is ABOVE 1 the ratio is NOT
+    # 0.5, and that is documented behaviour, not a fill regression.  The
+    # unheld render saturates there -- the area composite clamps a row whose
+    # discs deliver 1.201 (rows 127/129) or ~1.072 (the far field) down to
+    # alpha 1 -- while the held render, at half that, has nothing to clamp
+    # and reads 0.5 * arrival.  So the ratio is arrival / 2: 0.6005 on the
+    # r = 0.5 rows, ~0.536 across the far field.  The area model's
+    # saturation sets that number; the deficit-only fill never engages on
+    # these rows (m3c) and has no part in it.  Whether a holdout under a
+    # surplus SHOULD scale linearly is a question about the area model,
+    # parked, not answered here.  Pinned two-sided against an independent
+    # probe of the same ramp (row 127 0.6005, row 118 0.5409, row 100
+    # 0.5368, far-field arrival 1.07198 -> 0.5360), the house 0.004 band.
+    M4B_PINS = [(127, 0.6005), (129, 0.6005), (118, 0.5409), (100, 0.5368)]
+    M4B_FAR_PIN, M4B_BAND = 0.5360, 0.004
+    M4B_NOT_HALF = 0.51
+    pinned = [(y, ratioRows[rampRows.index(y)], pin) for y, pin in M4B_PINS]
+    worstPin = max(abs(v - pin) for _, v, pin in pinned)
+    farRows = [(y, v) for y, v in zip(rampRows, ratioRows) if abs(y - 128) > 6]
+    farMean = sum(v for _, v in farRows) / float(len(farRows))
+    surplusRows = [(y, v) for y, v in zip(rampRows, ratioRows)
+                   if y not in (126, 128, 130)]
+    lowestY, lowest = min(surplusRows, key=lambda t: t[1])
+    checks.append(boolCheck(
+        "m", "m4b K=16 alpha 1 ramp, the arrival > 1 rows: held/unheld is "
+             "arrival/2, NOT 0.5 (pinned, documented)",
+        worstPin <= M4B_BAND and abs(farMean - M4B_FAR_PIN) <= M4B_BAND
+        and lowest >= M4B_NOT_HALF,
+        "rows %s; far-field mean %.4f; lowest surplus row %.4f at y=%d"
+        % (" ".join("%d:%.4f" % (y, v) for y, v, _ in pinned), farMean,
+           lowest, lowestY),
+        "rows 127/129 0.6005, 118 0.5409, 100 0.5368, far mean %.4f, each "
+        "+/- %.3f; every other row >= %.2f" % (M4B_FAR_PIN, M4B_BAND,
+                                                M4B_NOT_HALF),
+        population="%d rows x %d px, rows %d-%d less 126/128/130"
+                   % (len(surplusRows), rampBox[2] - rampBox[0], rampRows[0],
+                      rampRows[-1]),
+        note="the unheld render clamps a 1.201 / ~1.072 arrival to alpha 1 "
+             "(the area model's saturation); the held one, at half that, "
+             "never reaches the clamp and reads arrival/2.  The fill is not "
+             "involved on any of these rows (arrival > 1, deficit-only), so "
+             "this is the composite's documented behaviour under a holdout, "
+             "not a fill regression -- a ratio of 0.5 HERE would mean the "
+             "surplus had gone, which is m3c's pin to move, not this one's"))
+
+    # ------------------------------------------------------------------
+    # m5: the m1 and m3 renders over a checkerboard, for the eye.
+    # ------------------------------------------------------------------
+    # Written by keepOverChecker() from the very graphs m1/m3a/m3b measured,
+    # to settings.outDir (--out-dir; outside the repo tree).  The check is
+    # that each file is there, reads back as a 256x256 RGBA float EXR, and
+    # IS the render over THIS board: over = render + (1 - alpha) * board at
+    # every pixel, against the board rendered on its own.  How much board
+    # shows is the render's alpha, which is the thing to look at: the
+    # alpha-0.9 ramp lets 10% through everywhere (the board is visible and
+    # non-constant by construction), while the halo and the alpha-1 ramp
+    # hide it completely on a build whose fill works -- the pre-fill build
+    # showed it through the halo band and through rows 126/130.  The note
+    # counts the pixels where it is visible (alpha short of 1 by more than
+    # 1/255) per file, over the measured interior (m3's rampBox, which
+    # also holds the halo's silhouette and annulus): the band inside one
+    # frame-edge CoC of the frame edge is short on every build, because
+    # the deep image ends at the frame and nothing scatters in from beyond
+    # it -- scene (g) excludes it for the same reason.
+    resetScript()
+    board = render(settings, checkerBoard(), "m_checker", box=box)
+    boardDark = channelStats(board, "R", box)
+    OVER_TOL = 1.0e-06
+    files = []
+    worstOver, worstOverAt, worstTag = 0.0, (0, 0), ""
+    allOk = (abs(boardDark.minimum - CHECKER_DARK) <= OVER_TOL
+             and abs(boardDark.maximum - CHECKER_LIGHT) <= OVER_TOL)
+    for tag, path, plain in kept:
+        ok = os.path.isfile(path)
+        image = readExr(path) if ok else None
+        ok = ok and image.width == FORMAT_W and image.height == FORMAT_H \
+            and all(c in image.planes for c in RGBA)
+        showing, worst, worstAt = 0, 0.0, (0, 0)
+        if ok:
+            for y in range(box[1], box[3]):
+                alphaRow = plain.row("A", y)
+                for channel in ("R", "G", "B"):
+                    oRow, pRow, bRow = (image.row(channel, y),
+                                        plain.row(channel, y),
+                                        board.row(channel, y))
+                    for x in range(box[0], box[2]):
+                        alpha = alphaRow[x - plain.x0]
+                        expected = (pRow[x - plain.x0]
+                                    + (1.0 - alpha) * bRow[x - board.x0])
+                        deviation = abs(oRow[x - image.x0] - expected)
+                        if deviation > worst:
+                            worst, worstAt = deviation, (x, y)
+                if rampBox[1] <= y < rampBox[3]:
+                    for x in range(rampBox[0], rampBox[2]):
+                        if alphaRow[x - plain.x0] < 1.0 - ratioTol:
+                            showing += 1
+            ok = worst <= OVER_TOL
+        allOk = allOk and ok
+        if worst > worstOver:
+            worstOver, worstOverAt, worstTag = worst, worstAt, tag
+        files.append("%s: %s (%s; board visible at %d interior px)"
+                     % (tag, path, "ok" if ok else "MISSING/BAD", showing))
+    checks.append(boolCheck(
+        "m", "m5 over-checkerboard EXRs of m1 and m3 written for the eye",
+        allOk,
+        "%d files; worst |over - (render + (1-a)*board)| %.2e (%s@(%d,%d))"
+        % (len(kept), worstOver, worstTag, worstOverAt[0], worstOverAt[1]),
+        "%d files readable, %dx%d RGBA, each == render over the board to "
+        "%.0e" % (len(kept), FORMAT_W, FORMAT_H, OVER_TOL),
+        population="%d px x 3 channels per file" % ((box[2] - box[0])
+                                                    * (box[3] - box[1])),
+        note="; ".join(files) + ".  'Visible' = alpha < 1 - 1/255 inside "
+             "rows/cols %d-%d (the frame-edge band outside it is short on "
+             "every build: nothing scatters in from beyond the frame).  "
+             "Board: %d px cells, %.2f / %.2f (the kernel bake-off's).  "
+             "Compare a pre-fill build's files against these from the same "
+             "command with --out-dir pointed elsewhere"
+             % (rampBox[0], rampBox[2] - 1, CHECKER_CELL_PX, CHECKER_DARK,
+                CHECKER_LIGHT)))
+    return checks
+
 
 
 SCENES = {
@@ -2975,4 +4306,5 @@ SCENES = {
     "j": ("anamorphic pixel aspect", sceneJ),
     "k": ("proxy + ray-distance", sceneK),
     "l": ("small-CoC transition", sceneL),
+    "m": ("coverage fill: silhouette halo, focal-line bands", sceneM),
 }
