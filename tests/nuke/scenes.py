@@ -2830,7 +2830,10 @@ def sceneK(settings):
     k1/k2: proxy 0.5 must halve the radius AND the max_radius clamp, so the
     proxy render is the same image at half scale rather than twice as blurred.
     k3-k5: ``depth_is_ray_distance`` on a wide-FOV corner pixel must reproduce
-    the ground-truth Z exactly, and must be a no-op at the optical centre.
+    the ground-truth Z exactly, and at the centre pixel must apply exactly its
+    near-unity factor (the pixel centre is half a pixel off the axis, so the
+    factor is 1 - 1.24e-5 rather than 1; k5b pins the toggle's whole effect
+    there to the kernel blend's response to that 3.1e-4 px radius shift).
     """
     checks = []
 
@@ -2939,16 +2942,48 @@ def sceneK(settings):
              % (manualSize * abs(1.0 - manualFocus / cornerZ),
                 manualSize * abs(1.0 - manualFocus / rayDistance))))
 
+    # On an even format the centre pixel's centre is half a pixel off the
+    # optical axis, so its factor is 1 - 1.24e-5, not 1: the toggle moves the
+    # radius 5.0 -> 5.000309 px, and the bracketing-kernel blend resolves that
+    # where the quantised LUT before it did not.  Gate on the analytic Z, as k3.
     centreX, centreY = FORMAT_W // 2, FORMAT_H // 2
+    centreZ = zAt(centreX, centreY)
     centreOn = rayRender(centreX, centreY, rayDistance, True, "k_ray_centre_on")
+    centreTruth = rayRender(centreX, centreY, centreZ, False,
+                            "k_ray_centre_truth")
     centreOff = rayRender(centreX, centreY, rayDistance, False,
                           "k_ray_centre_off")
-    centreDiff = compareImages(centreOn, centreOff, box=box)
+    centreDiff = compareImages(centreOn, centreTruth, box=box)
+    centreNaive = compareImages(centreOn, centreOff, box=box)
+    centreRadius = manualSize * abs(1.0 - manualFocus / centreZ)
     checks.append(tolCheck(
-        "k", "k5 ray-distance is a no-op at the optical centre",
+        "k", "k5 ray-distance at the centre pixel applies exactly its "
+             "near-unity factor",
         centreDiff.maxAbs, 1.0e-06, population=centreDiff.population(),
-        note="r_mm ~ 0 there, so the factor is 1; this is what makes k3 a test "
-             "of the RADIAL term and not of a constant scale"))
+        note="factor %.7f at pixel (%d,%d): Z %.7f, radius %.6f px vs 5.0 "
+             "uncorrected; worst %s; with k3's 0.667 at the corner this is what "
+             "makes k3 a test of the RADIAL term and not of a constant scale; "
+             "discrimination floor: gating on the uncorrected depth instead "
+             "(factor 1) reads %.3e here, k5b"
+             % (centreZ / rayDistance, centreX, centreY, centreZ, centreRadius,
+                centreDiff.where(), centreNaive.maxAbs)))
+    # Predicted from the LUT alone (edge_softness 1): radius 5.0 and 5.000309
+    # px both bracket grid nodes 4.970874 / 5.019608 px, at blend fractions
+    # 0.597654 and 0.603994, and the largest |df * (K[B] - K[A])| over the
+    # disc is 3.7584e-06, at offset (-2,-5) from the source pixel.
+    blendPredicted = 3.7584e-06
+    checks.append(tolCheck(
+        "k", "k5b ...and the toggle's whole effect there is that radius "
+             "shift's kernel-blend response",
+        abs(centreNaive.maxAbs - blendPredicted), 1.0e-07,
+        population=centreNaive.population(),
+        note="on vs off reads %.4e at %s against %.4e predicted from the LUT "
+             "alone at offset (-2,-5), i.e. pixel (%d,%d); a plugin that "
+             "quantised both radii onto one LUT entry reads 0 here and would "
+             "FAIL, as would anything else the toggle moved (the auto "
+             "background radius pinned to 5 px changes this by 1.6e-07)"
+             % (centreNaive.maxAbs, centreNaive.where(), blendPredicted,
+                centreX - 2, centreY - 5)))
     return checks
 
 

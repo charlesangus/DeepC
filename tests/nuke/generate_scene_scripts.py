@@ -222,7 +222,9 @@ CHECK_J = (
 CHECK_K = (
     "Scene (k) -- proxy + ray-distance\n\n"
     "Check: depth_is_ray_distance on a wide-FOV corner pixel must reproduce "
-    "ground-truth Z (and be a no-op at the optical centre); separately, "
+    "ground-truth Z (and at the centre pixel apply exactly its near-unity "
+    "factor, 1 - 1.24e-5: that pixel's centre is half a pixel off the axis); "
+    "separately, "
     "proxy 0.5 must halve the render's radii, not double the blur.\n\n"
     "Pinned here: the ray-distance check only (a 20mm lens on a 36mm "
     "filmback, corner pixel at (8,8)). Three branches at the same pixel: "
