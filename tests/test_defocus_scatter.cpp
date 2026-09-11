@@ -53,6 +53,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <functional>
 #include <limits>
 #include <mutex>
@@ -2639,7 +2640,8 @@ TEST_CASE("deepestSurface: an all-alpha-0 pixel and an empty pixel both read emp
 }
 
 TEST_CASE("SurfaceMap: bytesForWindow is (C+4) floats per pixel, and bandBudgetBytes carries "
-          "it in background mode only, over the window extended by the search reach")
+          "it and its pyramid in background mode only, over the window extended by the "
+          "search reach")
 {
     CHECK(SurfaceMap::bytesForWindow(4096, 64 + 2 * (101 + 33), 4) == 8u * 4096u * 332u * 4u);
     CHECK(SurfaceMap::bytesForWindow(4096, 64 + 2 * (101 + 33), 4) == 43515904u);
@@ -2650,12 +2652,17 @@ TEST_CASE("SurfaceMap: bytesForWindow is (C+4) floats per pixel, and bandBudgetB
 
     const double fg = bandBudgetBytes(16, 4, 4096, 64, false, 0.0, 101);
     CHECK(fg == bandBudgetBytes(16, 4, 4096, 64, false, 0.0, 101, FillMode::Foreground, 33));
+    const double pyramid332 = static_cast<double>(MaxDepthPyramid::bytesForWindow(4096, 332));
+    const double pyramid266 = static_cast<double>(MaxDepthPyramid::bytesForWindow(4096, 266));
+    CHECK(pyramid332 == (1024.0 * 83.0 + 256.0 * 21.0 + 64.0 * 6.0 + 16.0 * 2.0 + 4.0 + 1.0) * 4.0);
+    CHECK(pyramid332 == static_cast<double>(maxDepthPyramidBytesForWindow(4096, 332)));
+    CHECK(pyramid332 < 43515904.0 / 8.0 / 14.0);
     CHECK(bandBudgetBytes(16, 4, 4096, 64, false, 0.0, 101, FillMode::Background, 33) - fg
-          == doctest::Approx(43515904.0));
+          == doctest::Approx(43515904.0 + pyramid332));
     CHECK(bandBudgetBytes(16, 4, 4096, 64, false, 0.0, 101, FillMode::Background, 0) - fg
-          == doctest::Approx(8.0 * 4096.0 * 266.0 * 4.0));
+          == doctest::Approx(8.0 * 4096.0 * 266.0 * 4.0 + pyramid266));
     CHECK(bandBudgetBytes(16, 4, 4096, 64, false, 0.0, 101, FillMode::Background, -5) - fg
-          == doctest::Approx(8.0 * 4096.0 * 266.0 * 4.0));
+          == doctest::Approx(8.0 * 4096.0 * 266.0 * 4.0 + pyramid266));
 
     CHECK(fillReachPx(0.0f) == 0);
     CHECK(fillReachPx(-2.0f) == 0);
@@ -3344,6 +3351,607 @@ TEST_CASE("pruneSynthesis: an opaque P is pruned iff the source's disc is at lea
         CHECK(!pruneSynthesis(t, rP, rP));
         CHECK(!pruneSynthesis(t, rP, rP + 100.0f));
         CHECK(!pruneSynthesis(t, rP, 0.0f));
+    }
+}
+
+// ===========================================================================
+// The synthesised hidden sample
+// ===========================================================================
+
+namespace {
+
+// Scene (m)'s halo card at r = 8: a manual rig focused on the background
+// plane, so the card at kSynthCardZ blurs by exactly 8 px and the plane by 0.
+constexpr float kSynthCardZ  = 4.0f;
+constexpr float kSynthPlaneZ = 20.0f;
+constexpr float kSynthCardC  = 0.8f;
+constexpr float kSynthPlaneC = 0.2f;
+
+struct SynthRig {
+    CocParams     coc;
+    DepthBuckets  buckets;
+    FlattenParams fp;
+};
+
+SynthRig makeSynthRig(bool rayDistance = false)
+{
+    SynthRig r;
+    r.coc     = makeManualRig(2.0f, kSynthPlaneZ);
+    r.buckets = makeBoundedDeltaCocBuckets(r.coc, 1.0f, kSynthPlaneZ, 16);
+    r.fp      = makeFlattenParams(r.coc, 1, true);
+    r.fp.depthIsRayDistance = rayDistance;
+    r.fp.formatHeightPx     = 1080.0f;
+    return r;
+}
+
+std::vector<SampleRecord> cardSample(float alpha)
+{
+    return {makeSample(kSynthCardZ, kSynthCardZ, alpha, {kSynthCardC * alpha})};
+}
+
+std::vector<SampleRecord> planeSample(float alpha = 1.0f, float rawScale = 1.0f)
+{
+    return {makeSample(kSynthPlaneZ / rawScale, kSynthPlaneZ / rawScale, alpha,
+                       {kSynthPlaneC * alpha})};
+}
+
+// A map over [x0, x1) x [y0, y1) from a per-pixel stack supplier, with its
+// pyramid -- one call per rig so every case below drives buildSurfaceMap().
+template <typename StackFn>
+void buildSynthMap(SurfaceMap& map, MaxDepthPyramid& pyramid, const SynthRig& rig,
+                   int x0, int x1, int y0, int y1, StackFn&& stackAt)
+{
+    std::vector<SampleRecord> row;
+    const bool ok = buildSurfaceMap(
+        map, rig.fp, rig.buckets,
+        x0, x1, y0, y1,
+        x0, x1, y0, y1,
+        y0, y1, 0, 0, 1,
+        [](int) { return true; },
+        [&](int x, int y) -> VectorSamples {
+            row = stackAt(x, y);
+            return VectorSamples{&row};
+        });
+    REQUIRE(ok);
+    pyramid.build(map);
+}
+
+int floatUlps(float a, float b)
+{
+    if (a == b)
+        return 0;
+    std::int32_t ia, ib;
+    std::memcpy(&ia, &a, sizeof ia);
+    std::memcpy(&ib, &b, sizeof ib);
+    if (ia < 0) ia = std::numeric_limits<std::int32_t>::min() - ia;
+    if (ib < 0) ib = std::numeric_limits<std::int32_t>::min() - ib;
+    const std::int64_t d = static_cast<std::int64_t>(ia) - ib;
+    return static_cast<int>(d < 0 ? -d : d);
+}
+
+// Field-by-field comparison of two SoAs, in ulps: the worst over every float
+// field, with the integer and flag fields required to match outright.
+struct SoADiff {
+    bool sameShape = true;
+    int  worstUlps = 0;
+};
+
+SoADiff compareSoA(const SampleSoA& a, const SampleSoA& b)
+{
+    SoADiff d;
+    if (a.fragmentCount() != b.fragmentCount() || a.channelCount != b.channelCount) {
+        d.sameShape = false;
+        return d;
+    }
+    auto ints = [&](const PodBuffer<std::int32_t>& x, const PodBuffer<std::int32_t>& y) {
+        for (std::size_t i = 0; i < x.size(); ++i)
+            if (x[i] != y[i]) d.sameShape = false;
+    };
+    auto floats = [&](const PodBuffer<float>& x, const PodBuffer<float>& y) {
+        for (std::size_t i = 0; i < x.size(); ++i)
+            d.worstUlps = std::max(d.worstUlps, floatUlps(x[i], y[i]));
+    };
+    ints(a.x, b.x);
+    ints(a.y, b.y);
+    ints(a.bucketIndex0, b.bucketIndex0);
+    ints(a.bucketIndex1, b.bucketIndex1);
+    for (std::size_t i = 0; i < a.flags.size(); ++i)
+        if (a.flags[i] != b.flags[i]) d.sameShape = false;
+    floats(a.radius, b.radius);
+    floats(a.depth, b.depth);
+    floats(a.alpha, b.alpha);
+    floats(a.arrivalShare, b.arrivalShare);
+    floats(a.bucketAlpha0, b.bucketAlpha0);
+    floats(a.bucketAlpha1, b.bucketAlpha1);
+    floats(a.colorScale0, b.colorScale0);
+    floats(a.colorScale1, b.colorScale1);
+    floats(a.color, b.color);
+    return d;
+}
+
+// The halo rig end to end -- flatten (with or without the synthesis, with or
+// without the real hidden sample), scatter, virtual background, resolve --
+// the doctest-side computeBand() for a W x W frame holding an opaque card
+// [c0, c1)^2 over the plane.
+constexpr int kSynthW    = 64;
+constexpr int kSynthCard0 = 20;
+constexpr int kSynthCard1 = 44;
+
+bool inSynthCard(int x, int y)
+{
+    return x >= kSynthCard0 && x < kSynthCard1 && y >= kSynthCard0 && y < kSynthCard1;
+}
+
+struct SynthRender {
+    Band      band;
+    SampleSoA soa;
+    int       appended = 0;
+    ResidualWindow window;
+};
+
+void renderSynthRig(SynthRender& out, const SynthRig& rig, bool synthesize, bool twin,
+                    float cardAlpha, const HoldoutSoA& holdout)
+{
+    const int W = kSynthW, pad = 10;
+    auto stackAt = [&](int x, int y) -> std::vector<SampleRecord> {
+        if (!inSynthCard(x, y))
+            return planeSample();
+        std::vector<SampleRecord> v = cardSample(cardAlpha);
+        if (twin)
+            v.push_back(planeSample()[0]);
+        return v;
+    };
+
+    SurfaceMap map;
+    MaxDepthPyramid pyramid;
+    buildSynthMap(map, pyramid, rig, -pad, W + pad, -pad, W + pad, stackAt);
+
+    out.soa.begin(1, rig.fp.groups);
+    FlattenScratch scratch;
+    out.window.allocate(-pad, -pad, W + 2 * pad, W + 2 * pad,
+                        autoBackgroundRadiusPx(rig.coc, rig.buckets));
+    out.appended = 0;
+    for (int y = -pad; y < W + pad; ++y) {
+        for (int x = -pad; x < W + pad; ++x) {
+            std::vector<SampleRecord> v = stackAt(x, y);
+            if (synthesize && appendHiddenBackground(map, pyramid, rig.fp, x, y, 0.0f, 100.0f, v))
+                ++out.appended;
+            const std::size_t i = static_cast<std::size_t>(out.window.index(x, y));
+            float residualT = 1.0f;
+            float residualR = out.window.radiusPx[i];
+            flattenPixelToSoA(rig.fp, rig.buckets, x, y, v, scratch, out.soa, nullptr,
+                              &residualT, &residualR);
+            out.window.setPixel(x, y, residualT, residualR);
+        }
+    }
+
+    out.band.K = rig.buckets.bucketCount();
+    out.band.C = 1;
+    out.band.W = W;
+    out.band.H = W;
+    DiscKernelLUT kernel(0.0f, 8.0f, 1.0f, 1.0f);
+    runBand(out.band, makeScatterParams(W, W), out.soa, holdout, kernel, false, &out.window);
+}
+
+} // namespace
+
+TEST_CASE("the synthesised hidden sample flattens bit-identically to the real one a DeepMerge "
+          "would have supplied: fragments, residualT and residualRadiusPx")
+{
+    const SynthRig rig = makeSynthRig();
+    const int x0 = 0, x1 = 24, y0 = 0, y1 = 24;
+
+    // A 24 x 24 field: card over [8, 16)^2, plane elsewhere.  Every card pixel
+    // is within 8 px of the plane, so the primary reach (2 * 8 + 1) finds it.
+    auto sparse = [](int x, int y) -> std::vector<SampleRecord> {
+        const bool card = (x >= 8 && x < 16 && y >= 8 && y < 16);
+        return card ? cardSample(1.0f) : planeSample();
+    };
+
+    SUBCASE("opaque card, on axis: T_P is 0, the synthetic's share is 0, residualT stays 0")
+    {
+        SurfaceMap map;
+        MaxDepthPyramid pyramid;
+        buildSynthMap(map, pyramid, rig, x0, x1, y0, y1, sparse);
+
+        int checked = 0;
+        for (int y = 8; y < 16; ++y) {
+            for (int x = 8; x < 16; ++x) {
+                CAPTURE(x);
+                CAPTURE(y);
+                std::vector<SampleRecord> synth = cardSample(1.0f);
+                REQUIRE(appendHiddenBackground(map, pyramid, rig.fp, x, y, 0.0f, 100.0f, synth));
+                REQUIRE(synth.size() == 2u);
+                CHECK(synth[1].zFront == kSynthPlaneZ);
+                CHECK(synth[1].zBack  == kSynthPlaneZ);
+                CHECK(synth[1].alpha  == 1.0f);
+                CHECK(synth[1].channels.size() == 1u);
+                CHECK(synth[1].channels[0] == kSynthPlaneC);
+
+                std::vector<SampleRecord> twin = cardSample(1.0f);
+                twin.push_back(planeSample()[0]);
+
+                float tS = -1.0f, rS = -1.0f, tT = -1.0f, rT = -1.0f;
+                const SampleSoA a = flattenOnePixel(rig.fp, rig.buckets, x, y, synth, &tS, &rS);
+                const SampleSoA b = flattenOnePixel(rig.fp, rig.buckets, x, y, twin,  &tT, &rT);
+                const SoADiff d = compareSoA(a, b);
+                CHECK(d.sameShape);
+                CHECK(d.worstUlps == 0);
+                CHECK(tS == tT);
+                CHECK(rS == rT);
+                CHECK(tS == 0.0f);
+                CHECK(rS == 0.0f);
+                REQUIRE(a.fragmentCount() == 2u);
+                CHECK(a.arrivalShare[0] == 1.0f);
+                CHECK(a.arrivalShare[1] == 0.0f);
+                CHECK(a.radius[0] == 8.0f);
+                CHECK(a.radius[1] == 0.0f);
+                CHECK(a.color[1] == kSynthPlaneC);
+                ++checked;
+            }
+        }
+        CHECK(checked == 64);
+    }
+
+    SUBCASE("alpha 0.5 card: the synthetic's share is 0.5 * alpha_Q and residualT becomes "
+            "0.5 * (1 - alpha_Q) at Q's radius")
+    {
+        const float alphaQ = 0.8f;
+        auto field = [&](int x, int y) -> std::vector<SampleRecord> {
+            const bool card = (x >= 8 && x < 16 && y >= 8 && y < 16);
+            return card ? cardSample(0.5f) : planeSample(alphaQ);
+        };
+        SurfaceMap map;
+        MaxDepthPyramid pyramid;
+        buildSynthMap(map, pyramid, rig, x0, x1, y0, y1, field);
+
+        std::vector<SampleRecord> synth = cardSample(0.5f);
+        REQUIRE(appendHiddenBackground(map, pyramid, rig.fp, 12, 12, 0.0f, 100.0f, synth));
+        std::vector<SampleRecord> twin = cardSample(0.5f);
+        twin.push_back(planeSample(alphaQ)[0]);
+
+        float tS = -1.0f, rS = -1.0f, tT = -1.0f, rT = -1.0f;
+        const SampleSoA a = flattenOnePixel(rig.fp, rig.buckets, 12, 12, synth, &tS, &rS);
+        const SampleSoA b = flattenOnePixel(rig.fp, rig.buckets, 12, 12, twin,  &tT, &rT);
+        const SoADiff d = compareSoA(a, b);
+        CHECK(d.sameShape);
+        CHECK(d.worstUlps == 0);
+        CHECK(tS == tT);
+        CHECK(rS == rT);
+        REQUIRE(a.fragmentCount() == 2u);
+        CHECK(a.arrivalShare[0] == 0.5f);
+        CHECK(a.arrivalShare[1] == 0.5f * alphaQ);
+        CHECK(tS == doctest::Approx(0.5f * (1.0f - alphaQ)).epsilon(1e-6));
+        CHECK(rS == radiusPixels(rig.coc, kSynthPlaneZ));
+        CHECK(rS == 0.0f);
+        CHECK(a.color[1] == kSynthPlaneC * alphaQ);
+    }
+
+    SUBCASE("off axis with depth_is_ray_distance: the raw depth is pre-divided by P's own "
+            "factor and lands back on Q's camera depth within 1 ulp")
+    {
+        const SynthRig ray = makeSynthRig(true);
+        const int ox = 1800, oy = 1000;
+        // The plane's own ray-distance sample at each pixel: camera depth
+        // kSynthPlaneZ, raw depth kSynthPlaneZ / scale(pixel).
+        auto field = [&](int x, int y) -> std::vector<SampleRecord> {
+            const bool card = (x >= ox + 8 && x < ox + 16 && y >= oy + 8 && y < oy + 16);
+            if (card)
+                return cardSample(1.0f);
+            return planeSample(1.0f, rayDepthScaleAt(ray.fp, x, y));
+        };
+        SurfaceMap map;
+        MaxDepthPyramid pyramid;
+        buildSynthMap(map, pyramid, ray, ox, ox + 24, oy, oy + 24, field);
+
+        int worstRoundTrip = 0, worstSoA = 0, exact = 0, checked = 0;
+        for (int y = oy + 8; y < oy + 16; ++y) {
+            for (int x = ox + 8; x < ox + 16; ++x) {
+                CAPTURE(x);
+                CAPTURE(y);
+                const float sP = rayDepthScaleAt(ray.fp, x, y);
+                REQUIRE(sP < 1.0f);
+
+                std::vector<SampleRecord> synth = cardSample(1.0f);
+                REQUIRE(appendHiddenBackground(map, pyramid, ray.fp, x, y, 0.0f, 100.0f, synth));
+                REQUIRE(synth.size() == 2u);
+                // Q's camera depth as the map holds it, after P's own
+                // correction is applied to the synthetic.
+                const BackgroundSource q = findBackgroundSource(map, pyramid, x, y, 17, 100);
+                REQUIRE(q.found);
+                const float zCamQ = map.plane(SurfaceMap::kZFront)[map.index(q.qx, q.qy)];
+                const int rt = floatUlps(synth[1].zFront * sP, zCamQ);
+                worstRoundTrip = std::max(worstRoundTrip, rt);
+                CHECK(rt <= 1);
+
+                std::vector<SampleRecord> twin = cardSample(1.0f);
+                twin.push_back(planeSample(1.0f, sP)[0]);
+                float tS = -1.0f, rS = -1.0f, tT = -1.0f, rT = -1.0f;
+                const SampleSoA a = flattenOnePixel(ray.fp, ray.buckets, x, y, synth, &tS, &rS);
+                const SampleSoA b = flattenOnePixel(ray.fp, ray.buckets, x, y, twin,  &tT, &rT);
+                const SoADiff d = compareSoA(a, b);
+                CHECK(d.sameShape);
+                // Q's plane sample was itself rounded once at Q (raw * sQ),
+                // then once more here (/ sP * sP): two roundings against the
+                // twin's one, so the staged depth may sit 2 ulps off and the
+                // radius derived from it a few more.
+                CHECK(d.worstUlps <= 4);
+                worstSoA = std::max(worstSoA, d.worstUlps);
+                if (d.worstUlps == 0)
+                    ++exact;
+                CHECK(tS == tT);
+                CHECK(floatUlps(rS, rT) <= 4);
+                CHECK(tS == 0.0f);
+                ++checked;
+            }
+        }
+        std::printf("\noff-axis synthesis: %d pixels, worst round-trip %d ulp, worst SoA "
+                    "field %d ulp, %d bit-exact\n", checked, worstRoundTrip, worstSoA, exact);
+        CHECK(checked == 64);
+    }
+
+    SUBCASE("Q's surface is an overlapping-span stack: the synthetic is Q's deepest RAW "
+            "sample, and the map's radius sits within the span's own radius range of "
+            "the flatten's residual radius")
+    {
+        // Two overlapping spans behind the card's depth.  The map carries the
+        // raw span with the greatest zBack; the flatten at Q first cuts the
+        // overlap and stages the tail piece, whose midpoint is deeper.
+        const SampleRecord spanA = makeSample(kSynthPlaneZ - 2.0f, kSynthPlaneZ + 2.0f, 0.5f, {0.1f});
+        const SampleRecord spanB = makeSample(kSynthPlaneZ,        kSynthPlaneZ + 6.0f, 0.4f, {0.08f});
+        auto field = [&](int x, int y) -> std::vector<SampleRecord> {
+            const bool card = (x >= 8 && x < 16 && y >= 8 && y < 16);
+            return card ? cardSample(1.0f) : std::vector<SampleRecord>{spanA, spanB};
+        };
+        SynthRig wide = rig;
+        wide.buckets = makeBoundedDeltaCocBuckets(wide.coc, 1.0f, kSynthPlaneZ + 6.0f, 16);
+        SurfaceMap map;
+        MaxDepthPyramid pyramid;
+        buildSynthMap(map, pyramid, wide, x0, x1, y0, y1, field);
+
+        std::vector<SampleRecord> synth = cardSample(1.0f);
+        REQUIRE(appendHiddenBackground(map, pyramid, wide.fp, 12, 12, 0.0f, 100.0f, synth));
+        REQUIRE(synth.size() == 2u);
+        CHECK(synth[1].zFront == spanB.zFront);
+        CHECK(synth[1].zBack  == spanB.zBack);
+        CHECK(synth[1].alpha  == spanB.alpha);
+        CHECK(synth[1].channels[0] == spanB.channels[0]);
+
+        std::vector<SampleRecord> twin = cardSample(1.0f);
+        twin.push_back(spanB);
+        float tS = -1.0f, rS = -1.0f, tT = -1.0f, rT = -1.0f;
+        const SampleSoA a = flattenOnePixel(wide.fp, wide.buckets, 12, 12, synth, &tS, &rS);
+        const SampleSoA b = flattenOnePixel(wide.fp, wide.buckets, 12, 12, twin,  &tT, &rT);
+        const SoADiff d = compareSoA(a, b);
+        CHECK(d.sameShape);
+        CHECK(d.worstUlps == 0);
+        CHECK(tS == tT);
+        CHECK(rS == rT);
+
+        const BackgroundSource q = findBackgroundSource(map, pyramid, 12, 12, 17, 100);
+        REQUIRE(q.found);
+        const float mapRadiusQ = map.plane(SurfaceMap::kRadius)[map.index(q.qx, q.qy)];
+        float tQ = -1.0f, rQ = -1.0f;
+        flattenOnePixel(wide.fp, wide.buckets, q.qx, q.qy, {spanA, spanB}, &tQ, &rQ);
+        const float rangeLo = radiusPixels(wide.coc, spanB.zFront);
+        const float rangeHi = radiusPixels(wide.coc, spanB.zBack);
+        CHECK(mapRadiusQ != rQ);
+        CHECK(std::fabs(mapRadiusQ - rQ) <= std::fabs(rangeHi - rangeLo));
+        CHECK(mapRadiusQ >= std::min(rangeLo, rangeHi));
+        CHECK(mapRadiusQ <= std::max(rangeLo, rangeHi));
+        CHECK(rQ >= std::min(rangeLo, rangeHi));
+        CHECK(rQ <= std::max(rangeLo, rangeHi));
+        std::printf("\noverlapping-span Q: map radius %.5f, flatten residual radius %.5f, "
+                    "span radius range [%.5f, %.5f]\n", mapRadiusQ, rQ, rangeLo, rangeHi);
+    }
+}
+
+TEST_CASE("residualTransmittance agrees with flattenPixelToSoA's residualT over fuzzed "
+          "stacks of points, spans and overlaps, far inside kFillDeficitTol")
+{
+    Lcg rng(0xF111u);
+    const CocParams     p  = makeStandardRig(10.0f);
+    const DepthBuckets  bk = makeStandardBuckets(p, 16);
+    const FlattenParams fp = makeFlattenParams(p, 2, true);
+
+    float worst = 0.0f;
+    for (int iter = 0; iter < 800; ++iter) {
+        CAPTURE(iter);
+        std::vector<SampleRecord> v = fuzzDisjointStack(rng, rng.intRange(1, 6), rng.intRange(0, 2), 2);
+        if (rng.unit() < 0.5f) {
+            const SampleRecord& base = v[0];
+            v.push_back(makeSample(base.zFront + 0.1f, base.zBack + 2.0f, rng.range(0.01f, 0.9f),
+                                   {0.0f, 0.0f}));
+        }
+        if (rng.unit() < 0.2f)
+            v.push_back(makeSample(3.0f, 3.0f, std::numeric_limits<float>::quiet_NaN(), {0.0f, 0.0f}));
+        const float helper = residualTransmittance(v);
+        float tF = -1.0f;
+        flattenOnePixel(fp, bk, 0, 0, v, &tF, nullptr);
+        worst = std::max(worst, std::fabs(helper - tF));
+        CHECK(helper == doctest::Approx(tF).epsilon(2e-6));
+    }
+    CHECK(worst < kFillDeficitTol * 0.1f);
+    CHECK(residualTransmittance({}) == 1.0f);
+    CHECK(residualTransmittance(cardSample(1.0f)) == 0.0f);
+    CHECK(residualTransmittance(cardSample(0.5f)) == 0.5f);
+}
+
+TEST_CASE("appendHiddenBackground: the per-pixel auto reach is 2 * r_P + 1 at P's own "
+          "radius; the prune drops an opaque P whose source disc is at least its own; an "
+          "empty pixel or one with no source appends nothing")
+{
+    const SynthRig rig = makeSynthRig();
+
+    SUBCASE("prune: opaque P at r = 0 over a source at r = 0 appends nothing; alpha 0.5 P does")
+    {
+        // A near plane at the focus depth (r = 0) with a hole where a deeper
+        // plane shows, so radius_Q >= radius_P for every hole-adjacent P.
+        auto field = [](int x, int y) -> std::vector<SampleRecord> {
+            const bool hole = (x >= 8 && x < 16 && y >= 8 && y < 16);
+            if (hole)
+                return {makeSample(kSynthPlaneZ + 10.0f, kSynthPlaneZ + 10.0f, 1.0f, {0.3f})};
+            return planeSample();
+        };
+        SynthRig wide = rig;
+        wide.buckets = makeBoundedDeltaCocBuckets(wide.coc, 1.0f, kSynthPlaneZ + 10.0f, 16);
+        SurfaceMap map;
+        MaxDepthPyramid pyramid;
+        buildSynthMap(map, pyramid, wide, 0, 24, 0, 24, field);
+
+        std::vector<SampleRecord> opaque = planeSample(1.0f);
+        CHECK(findBackgroundSource(map, pyramid, 7, 12, 1, 100).found);
+        CHECK(!appendHiddenBackground(map, pyramid, wide.fp, 7, 12, 0.0f, 100.0f, opaque));
+        CHECK(opaque.size() == 1u);
+
+        std::vector<SampleRecord> half = planeSample(0.5f);
+        CHECK(appendHiddenBackground(map, pyramid, wide.fp, 7, 12, 0.0f, 100.0f, half));
+        CHECK(half.size() == 2u);
+        CHECK(half[1].zFront == kSynthPlaneZ + 10.0f);
+    }
+
+    SUBCASE("auto reach: a card pixel 20 px from the plane is found at r_P = 8 (reach 17) "
+            "only through the fallback, which max_radius bounds")
+    {
+        auto field = [](int x, int y) -> std::vector<SampleRecord> {
+            const bool card = (x >= 4 && x < 44 && y >= 4 && y < 44);
+            return card ? cardSample(1.0f) : planeSample();
+        };
+        SurfaceMap map;
+        MaxDepthPyramid pyramid;
+        buildSynthMap(map, pyramid, rig, 0, 48, 0, 48, field);
+        REQUIRE(map.plane(SurfaceMap::kRadius)[map.index(24, 24)] == 8.0f);
+
+        FillSearchStats withFallback, primaryOnly, manual;
+        std::vector<SampleRecord> a = cardSample(1.0f);
+        CHECK(appendHiddenBackground(map, pyramid, rig.fp, 24, 24, 0.0f, 100.0f, a, &withFallback));
+        std::vector<SampleRecord> b = cardSample(1.0f);
+        CHECK(!appendHiddenBackground(map, pyramid, rig.fp, 24, 24, 0.0f, 17.0f, b, &primaryOnly));
+        CHECK(b.size() == 1u);
+        std::vector<SampleRecord> c = cardSample(1.0f);
+        CHECK(appendHiddenBackground(map, pyramid, rig.fp, 24, 24, 20.0f, 20.0f, c, &manual));
+        CHECK(c.size() == 2u);
+        std::vector<SampleRecord> e = cardSample(1.0f);
+        CHECK(!appendHiddenBackground(map, pyramid, rig.fp, 24, 24, 19.0f, 19.0f, e));
+        CHECK(!appendHiddenBackground(map, pyramid, rig.fp, 24, 24, 100.0f, 19.0f, e));
+        CHECK(e.size() == 1u);
+        CHECK(appendHiddenBackground(map, pyramid, rig.fp, 12, 24, 0.0f, 17.0f, e));
+        CHECK(e.size() == 2u);
+        CHECK(withFallback.tilesVisited > primaryOnly.tilesVisited);
+    }
+
+    SUBCASE("an empty pixel, an alpha-0 pixel and a plane pixel append nothing")
+    {
+        auto field = [](int x, int y) -> std::vector<SampleRecord> {
+            const bool card = (x >= 8 && x < 16 && y >= 8 && y < 16);
+            return card ? cardSample(1.0f) : planeSample();
+        };
+        SurfaceMap map;
+        MaxDepthPyramid pyramid;
+        buildSynthMap(map, pyramid, rig, 0, 24, 0, 24, field);
+        std::vector<SampleRecord> none;
+        CHECK(!appendHiddenBackground(map, pyramid, rig.fp, 30, 30, 0.0f, 100.0f, none));
+        CHECK(!appendHiddenBackground(map, pyramid, rig.fp, 2, 2, 0.0f, 100.0f, none));
+        CHECK(none.empty());
+        std::vector<SampleRecord> plane = planeSample();
+        CHECK(!appendHiddenBackground(map, pyramid, rig.fp, 2, 2, 0.0f, 100.0f, plane));
+        CHECK(plane.size() == 1u);
+    }
+}
+
+TEST_CASE("end to end on the halo rig: synthesis reads the twin's FG:BG mix in the vacated "
+          "band within 1e-6, the foreground mode reads the card's own colour there, and a "
+          "holdout at 0.5 halves the synthesised deposits exactly as it halves the twin's")
+{
+    const SynthRig rig = makeSynthRig();
+    const HoldoutSoA none;
+    SynthRender synth, twin, foreground;
+    renderSynthRig(synth,      rig, true,  false, 1.0f, none);
+    renderSynthRig(twin,       rig, false, true,  1.0f, none);
+    renderSynthRig(foreground, rig, false, false, 1.0f, none);
+    CHECK(synth.appended == (kSynthCard1 - kSynthCard0) * (kSynthCard1 - kSynthCard0));
+    CHECK(foreground.appended == 0);
+
+    const SoADiff d = compareSoA(synth.soa, twin.soa);
+    CHECK(d.sameShape);
+    CHECK(d.worstUlps == 0);
+
+    // Just inside the silhouette, where the card's own disc reaches out of
+    // the card and its arrival falls short of one.
+    const int probes[][2] = {{kSynthCard0 + 1, 32}, {kSynthCard0 + 3, 32}, {kSynthCard0 + 6, 32},
+                             {32, kSynthCard1 - 2}, {kSynthCard1 - 4, kSynthCard0 + 4}};
+    std::printf("\nhalo rig, vacated band (x, y): synth R/A  twin R/A  foreground R/A\n");
+    double worstVsTwin = 0.0, worstVsForeground = 0.0;
+    for (const auto& pr : probes) {
+        const int x = pr[0], y = pr[1];
+        const float aS = synth.band.outAlpha(x, y),      rS = synth.band.outColor(0, x, y);
+        const float aT = twin.band.outAlpha(x, y),       rT = twin.band.outColor(0, x, y);
+        const float aF = foreground.band.outAlpha(x, y), rF = foreground.band.outColor(0, x, y);
+        std::printf("  (%2d, %2d): %.6f/%.6f  %.6f/%.6f  %.6f/%.6f\n",
+                    x, y, rS, aS, rT, aT, rF, aF);
+        CHECK(aS == doctest::Approx(1.0f).epsilon(1e-6));
+        CHECK(aF == doctest::Approx(1.0f).epsilon(1e-6));
+        CHECK(rF == doctest::Approx(kSynthCardC).epsilon(1e-5));
+        CHECK(rS < kSynthCardC);
+        CHECK(rS > kSynthPlaneC);
+        worstVsTwin       = std::max(worstVsTwin, std::fabs(static_cast<double>(rS) - rT));
+        worstVsTwin       = std::max(worstVsTwin, std::fabs(static_cast<double>(aS) - aT));
+        worstVsForeground = std::max(worstVsForeground, std::fabs(static_cast<double>(rS) - rF));
+    }
+    CHECK(worstVsTwin <= 1e-6);
+    CHECK(worstVsForeground > 1e-2);
+
+    int differing = 0;
+    for (std::size_t i = 0; i < synth.band.color.size(); ++i)
+        if (synth.band.color[i] != twin.band.color[i] || synth.band.alpha[i] != twin.band.alpha[i])
+            ++differing;
+    CHECK(differing == 0);
+
+    SUBCASE("a holdout at 0.5 everywhere")
+    {
+        HoldoutSampleSoA hs;
+        HoldoutLut       lut;
+        hs.begin(static_cast<std::ptrdiff_t>(kSynthW) * kSynthW);
+        for (std::ptrdiff_t i = 0; i < static_cast<std::ptrdiff_t>(kSynthW) * kSynthW; ++i) {
+            std::vector<SampleRecord> hv{makeSample(0.5f, 0.5f, 0.5f, {})};
+            hs.appendPixel(hv, 1.0f);
+        }
+        lut.build(hs, makeUniformHoldoutBoundaries(rig.buckets));
+        const HoldoutSoA half = lut.view();
+        REQUIRE(half.enabled());
+
+        SynthRender synthH, twinH;
+        renderSynthRig(synthH, rig, true,  false, 1.0f, half);
+        renderSynthRig(twinH,  rig, false, true,  1.0f, half);
+
+        int differingH = 0;
+        for (std::size_t i = 0; i < synthH.band.planes.color.size(); ++i)
+            if (synthH.band.planes.color[i] != twinH.band.planes.color[i])
+                ++differingH;
+        for (std::size_t i = 0; i < synthH.band.planes.alpha.size(); ++i)
+            if (synthH.band.planes.alpha[i] != twinH.band.planes.alpha[i])
+                ++differingH;
+        for (std::size_t i = 0; i < synthH.band.color.size(); ++i)
+            if (synthH.band.color[i] != twinH.band.color[i] || synthH.band.alpha[i] != twinH.band.alpha[i])
+                ++differingH;
+        CHECK(differingH == 0);
+
+        // The plane's bucket at a card pixel holds only synthesised deposits
+        // (the plane's own r = 0 disc never leaves its pixel): halved exactly.
+        const int kQ = rig.buckets.bucketOfContaining(kSynthPlaneZ).index;
+        const std::ptrdiff_t px = synth.band.pixels();
+        double full = 0.0, halved = 0.0;
+        for (int y = kSynthCard0; y < kSynthCard1; ++y) {
+            for (int x = kSynthCard0; x < kSynthCard1; ++x) {
+                const std::size_t i = static_cast<std::size_t>(kQ) * px + static_cast<std::size_t>(y) * kSynthW + x;
+                full   += synth.band.planes.color[i];
+                halved += synthH.band.planes.color[i];
+                CHECK(synthH.band.planes.color[i] == 0.5f * synth.band.planes.color[i]);
+                CHECK(synthH.band.planes.alpha[i] == 0.5f * synth.band.planes.alpha[i]);
+            }
+        }
+        CHECK(full > 0.0);
+        CHECK(halved == doctest::Approx(0.5 * full));
     }
 }
 

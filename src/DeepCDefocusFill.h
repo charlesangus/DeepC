@@ -22,6 +22,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <vector>
 
 #include "DeepCDefocusMath.h"
 #include "DeepCDefocusScatter.h"
@@ -388,9 +389,9 @@ DEEPC_HD inline bool pruneSynthesis(float residualTP, float radiusPxP, float rad
 // never lifts a tile's max and an all-empty tile stays -inf.
 // ---------------------------------------------------------------------------
 struct MaxDepthPyramid {
-    static constexpr int kTileShift = 2;
+    static constexpr int kTileShift = kMaxDepthPyramidTileShift;
     static constexpr int kTile      = 1 << kTileShift;
-    static constexpr int kMaxLevels = 12;
+    static constexpr int kMaxLevels = kMaxDepthPyramidMaxLevels;
 
     PodBuffer<float> _tiles;
     std::ptrdiff_t   _offset[kMaxLevels + 1] = {};
@@ -413,29 +414,12 @@ struct MaxDepthPyramid {
 
     static int levelsForWindow(int width, int height)
     {
-        if (width <= 0 || height <= 0)
-            return 0;
-        int levels = 0;
-        int w = width, h = height;
-        do {
-            w = (w + kTile - 1) / kTile;
-            h = (h + kTile - 1) / kTile;
-            ++levels;
-        } while ((w > 1 || h > 1) && levels < kMaxLevels);
-        return levels;
+        return maxDepthPyramidLevels(width, height);
     }
 
     static std::size_t bytesForWindow(int width, int height)
     {
-        const int levels = levelsForWindow(width, height);
-        std::size_t n = 0;
-        int w = width, h = height;
-        for (int l = 1; l <= levels; ++l) {
-            w = (w + kTile - 1) / kTile;
-            h = (h + kTile - 1) / kTile;
-            n += static_cast<std::size_t>(w) * static_cast<std::size_t>(h);
-        }
-        return n * sizeof(float);
+        return maxDepthPyramidBytesForWindow(width, height);
     }
 
     void build(const SurfaceMap& map)
@@ -662,6 +646,87 @@ DEEPC_HD inline BackgroundSource findBackgroundSource(const SurfaceMap&      map
         r = nearestBackground(map, pyramid, pred, px, py, zBackP, stepP,
                               fallbackReachPx, stats);
     return r;
+}
+
+// ---------------------------------------------------------------------------
+// residualTransmittance — the pixel's virtual-background claim BEFORE any
+// synthesis, from its raw samples: the product of (1 - alpha) over the
+// samples the flatten stages, with its alpha sanitising.  The flatten's own
+// residualT is the same product taken over the tidied, bucket-split parts,
+// which agrees with this to rounding (the split's parts multiply back to
+// their parent's transmittance); it is only compared against
+// kFillDeficitTol, so a flatten is not spent on it.
+// ---------------------------------------------------------------------------
+inline float residualTransmittance(const std::vector<SampleRecord>& samples)
+{
+    float t = 1.0f;
+    for (const SampleRecord& s : samples) {
+        const float a = clampf(s.alpha, 0.0f, 1.0f);
+        if (a > 0.0f)
+            t *= (1.0f - a);
+    }
+    return t;
+}
+
+// ---------------------------------------------------------------------------
+// synthesizeHiddenSample — Q's surface as a raw SampleRecord for pixel P
+//
+// The map holds sanitised CAMERA-SPACE depths; flattenPixelToSoA() will
+// multiply P's samples by P's own ray-distance factor, so the depths are
+// written pre-divided by it and land back on Q's camera depth (bit-exact at
+// factor 1, within 1 ulp otherwise).  Channels are the map's, premultiplied,
+// in the SoA's channel order.
+// ---------------------------------------------------------------------------
+inline void synthesizeHiddenSample(const SurfaceMap& map, int qx, int qy,
+                                   float rayScaleP, SampleRecord& out)
+{
+    const std::ptrdiff_t q = map.index(qx, qy);
+    out.zFront = map.plane(SurfaceMap::kZFront)[q] / rayScaleP;
+    out.zBack  = map.plane(SurfaceMap::kZBack)[q]  / rayScaleP;
+    out.alpha  = map.plane(SurfaceMap::kAlpha)[q];
+    out.channels.resize(static_cast<std::size_t>(map.channelCount));
+    for (int c = 0; c < map.channelCount; ++c)
+        out.channels[static_cast<std::size_t>(c)] = map.plane(SurfaceMap::kChannel0 + c)[q];
+}
+
+// ---------------------------------------------------------------------------
+// appendHiddenBackground — the whole per-pixel synthesis for pixel P, run on
+// P's real samples just before they are flattened: search, prune, and append
+// ONE synthetic sample (Q's surface) to `samples`.  Returns whether one was
+// appended.  `fillSearchPx` is the knob's clamped value (<= 0 = auto, resolved
+// per pixel against P's own staged radius); `maxRadiusPx` is both the
+// fallback reach and the reach the map was extended by.
+// ---------------------------------------------------------------------------
+inline bool appendHiddenBackground(const SurfaceMap&      map,
+                                   const MaxDepthPyramid& pyramid,
+                                   const FlattenParams&   params,
+                                   int x, int y,
+                                   float fillSearchPx, float maxRadiusPx,
+                                   std::vector<SampleRecord>& samples,
+                                   FillSearchStats* stats = nullptr)
+{
+    if (!map.contains(x, y))
+        return false;
+    const std::ptrdiff_t iP = map.index(x, y);
+    if (map.empty(iP))
+        return false;
+
+    const float radiusP  = map.plane(SurfaceMap::kRadius)[iP];
+    const int   primary  = fillReachPx(resolveFillSearchPx(fillSearchPx, radiusP, maxRadiusPx));
+    const int   fallback = fillReachPx(maxRadiusPx);
+
+    const BackgroundSource q = findBackgroundSource(map, pyramid, x, y, primary, fallback,
+                                                    FillPredicate(), stats);
+    if (!q.found)
+        return false;
+
+    const float radiusQ = map.plane(SurfaceMap::kRadius)[map.index(q.qx, q.qy)];
+    if (pruneSynthesis(residualTransmittance(samples), radiusP, radiusQ))
+        return false;
+
+    samples.resize(samples.size() + 1);
+    synthesizeHiddenSample(map, q.qx, q.qy, rayDepthScaleAt(params, x, y), samples.back());
+    return true;
 }
 
 } // namespace deepc

@@ -441,7 +441,8 @@ class DeepCDefocus : public DD::Image::Iop
         int  padY             = 0;
         float backgroundRadiusPx = 0.0f;   // resolveBackgroundRadiusPx(), see frameSetup()
         deepc::FillMode fillMode = deepc::FillMode::Foreground;   // resolvedFillMode()
-        float fillSearchPx   = 0.0f;   // resolveFillSearchPx(), see frameSetup()
+        float fillSearchPx    = 0.0f;   // clampedFillSearchPx(); <= 0 is auto
+        float fillMaxRadiusPx = 0.0f;   // clampedMaxRadius(): fallback reach and map extension
         int  bandHeight       = 1;    // never < 1
         int  bandCount        = 0;
         int  maxInFlight      = 1;    // memory-limit cap, floor 1
@@ -1222,6 +1223,7 @@ private:
         job->backgroundRadiusPx = _shared.backgroundRadiusPx;
         job->fillMode           = _shared.fillMode;
         job->fillSearchPx       = _shared.fillSearchPx;
+        job->fillMaxRadiusPx    = _shared.fillMaxRadiusPx;
         job->sp                = _shared.spBase;
         return job;
     }
@@ -1288,7 +1290,8 @@ private:
         int padY       = 0;
         float backgroundRadiusPx = 0.0f;   // see FrameShared::backgroundRadiusPx
         deepc::FillMode fillMode = deepc::FillMode::Foreground;   // see FrameShared::fillMode
-        float fillSearchPx   = 0.0f;   // see FrameShared::fillSearchPx
+        float fillSearchPx    = 0.0f;   // see FrameShared::fillSearchPx
+        float fillMaxRadiusPx = 0.0f;   // see FrameShared::fillMaxRadiusPx
 
         // bandY / bandHeight are filled per band; everything else (origin,
         // width, sharp threshold) is set once, explicitly, from the knobs.
@@ -1300,6 +1303,7 @@ private:
         deepc::BucketPlanes     planes;
         deepc::ResidualWindow   residual;   // virtual-background T/radius, full fetch window
         deepc::SurfaceMap       surfaces;   // fill: background only; size 0 otherwise
+        deepc::MaxDepthPyramid  pyramid;    // over `surfaces`, same lifetime
         deepc::HoldoutSampleSoA holdoutSamples;
         deepc::HoldoutLut       holdoutLut;
 
@@ -1448,11 +1452,13 @@ private:
             clampedBackgroundDepthPx(), cocAtDepthMax, rMax);
 
         // fill / fill_search: carried through explicitly, same convention as
-        // background_depth above. Read by nothing else yet.
-        _shared.fillMode = resolvedFillMode();
-        _shared.fillSearchPx = deepc::resolveFillSearchPx(
-            clampedFillSearchPx(), _shared.backgroundRadiusPx,
-            static_cast<float>(clampedMaxRadius()));
+        // background_depth above.  The knob is resolved per PIXEL (auto is
+        // 2*r + 1 at that pixel's own radius), so the clamped knob value goes
+        // through unresolved; max_radius is the fallback reach and the reach
+        // the surface map is extended by, so every query sees its whole disc.
+        _shared.fillMode        = resolvedFillMode();
+        _shared.fillSearchPx    = clampedFillSearchPx();
+        _shared.fillMaxRadiusPx = static_cast<float>(clampedMaxRadius());
 
         // edge_softness is proxy-scaled HERE. applyProxyScale() deliberately
         // does not touch it — CocParams does not carry it — so the LUT build
@@ -1550,7 +1556,7 @@ private:
             deepc::clampi(static_cast<int>(std::ceil(2.0f * rMax)), 32, 256),
             fc.box.h());
 
-        const int fillReachPx = deepc::fillReachPx(_shared.fillSearchPx);
+        const int fillReachPx = deepc::fillReachPx(_shared.fillMaxRadiusPx);
 
         const deepc::BandPlan plan = deepc::planBands(
             memoryLimitBytes(), fc.box.h(), K, C, W, holdoutConnected,
@@ -1839,9 +1845,10 @@ private:
     // ------------------------------------------------------------------
     // computeBand() — one horizontal band, end to end
     //
-    //   (fill: background) pass 1: band +/- (padY + reach) source rows
-    //     -> SurfaceMap, the deepest staged surface per pixel
-    //   fetch band +/- padY source rows -> flattenPixelToSoA
+    //   (fill: background) pass 1: band +/- (padY + max_radius) source rows
+    //     -> SurfaceMap + MaxDepthPyramid, the deepest staged surface per pixel
+    //   fetch band +/- padY source rows -> (fill: background) one synthetic
+    //     hidden sample from the map, appended to the pixel -> flattenPixelToSoA
     //   (only if it can matter) fetch the band's own rows of holdout
     //     -> HoldoutSampleSoA -> HoldoutLut at the FRAME-GLOBAL boundary set
     //   scatterBandCPU -> resolveBandCPU (saturate + composite)
@@ -1883,7 +1890,7 @@ private:
                 job.surfaces, *job.fp, *job.buckets,
                 fc.box.x(), fc.box.r(), fc.box.y(), fc.box.t(),
                 job.srcBox.x(), job.srcBox.r(), job.srcBox.y(), job.srcBox.t(),
-                y0, y1, job.padY, deepc::fillReachPx(job.fillSearchPx), C,
+                y0, y1, job.padY, deepc::fillReachPx(job.fillMaxRadiusPx), C,
                 [&](int y) -> bool {
                     if (aborted())
                         return false;
@@ -1898,8 +1905,10 @@ private:
                 });
             if (!mapOk)
                 return false;
+            job.pyramid.build(job.surfaces);
         } else {
             job.surfaces.clear();
+            job.pyramid.clear();
         }
 
         const bool fetchOk = deepc::buildResidualWindow(
@@ -1920,6 +1929,11 @@ private:
                 if (!fillSampleRecords(deepRow.getPixel(y, x), *job.colorChannels,
                                        job.samples))
                     return false;
+                if (job.fillMode == deepc::FillMode::Background) {
+                    deepc::appendHiddenBackground(job.surfaces, job.pyramid, *job.fp,
+                                                  x, y, job.fillSearchPx,
+                                                  job.fillMaxRadiusPx, job.samples);
+                }
                 deepc::flattenPixelToSoA(*job.fp, *job.buckets, x, y,
                                          job.samples, job.flattenScratch,
                                          job.soa, nullptr,

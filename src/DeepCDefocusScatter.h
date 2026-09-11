@@ -3441,7 +3441,9 @@ void resolveBandCPU(const ScatterParams& params,
 //                                `fill: background` only (zero otherwise):
 //                                one deepest surface per pixel of the fetch
 //                                window extended by the fill's search reach
-//                                on each side (surfaceMapBytesForWindow)
+//                                on each side (surfaceMapBytesForWindow),
+//                                plus its max-depth pyramid, ~1/15 of one
+//                                plane (maxDepthPyramidBytesForWindow)
 // + (K+1)*W*B*4                  the holdout transmittance LUT, when a holdout
 //                                is connected — NOT counted by
 //                                bytesForBand(), measured 17.0 MB per 4096x64
@@ -3499,6 +3501,42 @@ inline std::size_t surfaceMapBytesForWindow(int width, int height, int channelCo
     return (c + 4) * w * h * sizeof(float);
 }
 
+// The max-depth pyramid over that map: one float per 4^l x 4^l block, level 1
+// up to the root, ~1/15 of one map plane.  Same arrangement as the map's
+// formula above: defined here so bandBudgetBytes() can count it, forwarded
+// to by MaxDepthPyramid::bytesForWindow() (DeepCDefocusFill.h).
+constexpr int kMaxDepthPyramidTileShift = 2;
+constexpr int kMaxDepthPyramidMaxLevels = 12;
+
+inline int maxDepthPyramidLevels(int width, int height)
+{
+    if (width <= 0 || height <= 0)
+        return 0;
+    const int tile = 1 << kMaxDepthPyramidTileShift;
+    int levels = 0;
+    int w = width, h = height;
+    do {
+        w = (w + tile - 1) / tile;
+        h = (h + tile - 1) / tile;
+        ++levels;
+    } while ((w > 1 || h > 1) && levels < kMaxDepthPyramidMaxLevels);
+    return levels;
+}
+
+inline std::size_t maxDepthPyramidBytesForWindow(int width, int height)
+{
+    const int levels = maxDepthPyramidLevels(width, height);
+    const int tile   = 1 << kMaxDepthPyramidTileShift;
+    std::size_t n = 0;
+    int w = width, h = height;
+    for (int l = 1; l <= levels; ++l) {
+        w = (w + tile - 1) / tile;
+        h = (h + tile - 1) / tile;
+        n += static_cast<std::size_t>(w) * static_cast<std::size_t>(h);
+    }
+    return n * sizeof(float);
+}
+
 inline double bandBudgetBytes(int bucketCount, int channelCount, int width,
                               int height, bool holdoutConnected,
                               double fragmentEstimate, int padY = 0,
@@ -3516,8 +3554,10 @@ inline double bandBudgetBytes(int bucketCount, int channelCount, int width,
     }
     if (fillMode == FillMode::Background) {
         const int reach = (fillReachPx > 0) ? fillReachPx : 0;
+        const int windowHeight = height + 2 * (padY + reach);
         bytes += static_cast<double>(surfaceMapBytesForWindow(
-            width, height + 2 * (padY + reach), channelCount));
+            width, windowHeight, channelCount));
+        bytes += static_cast<double>(maxDepthPyramidBytesForWindow(width, windowHeight));
     }
     if (fragmentEstimate > 0.0)
         bytes += fragmentEstimate * kSoAResidentBytesPerFragment;
