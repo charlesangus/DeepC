@@ -496,10 +496,18 @@ DEEPC_HD inline bool fragmentDepositsArea1Of(std::uint8_t flags)
 // heap allocation.
 constexpr int kMaxSpanSplitParts = DepthBuckets::kMaxBoundaries + 1;
 
-// Radius below which the scatter takes the sharp fast path (fragment
-// composites into its own pixel's bucket instead of rasterising a disc).
+// THE MINIMUM KERNEL DIAMETER IS 1 PIXEL, stated as its radius. Below it the
+// scatter takes the sharp fast path — the fragment composites into its own
+// pixel's bucket, which IS the 1x1 delta kernel — and at or above it the
+// scatter blends the two grid nodes bracketing the radius.
 // Defined here so the flatten, the scatter and the LUT's rMin contract all
 // read the same number; the flatten itself does not branch on it.
+//
+// The floor is FIXED at 0.5 px rather than tracking the LUT's own smallest
+// entry: at `edge_softness` above 1 the LUT's r=0.5 entry is not a delta
+// (at 2.0 its centre row is [0.1301, 0.3903, 0.1301]) while the sharp path
+// deposits a literal single pixel regardless, so the two disagree at d = 1.
+// That is a known, deliberately unhandled step above `edge_softness` 1.
 constexpr float kSharpRadiusPx = 0.5f;
 
 // ---------------------------------------------------------------------------
@@ -2037,10 +2045,17 @@ DEEPC_HD inline void scatterSpanBothBuckets(const BucketPlaneView& planes,
 // KernelSampler call and the allocations, all of which a device build
 // replaces.
 //
-//   rowScratch : at least (2*kv.radiusX + 1) floats, and REQUIRED only when
-//                holdout.enabled(); pass nullptr otherwise.  With no holdout
-//                the kernel's own weight row is used directly — the vis == 1
-//                short-circuit is a different loop, not a multiply by one.
+//   weightScale: this kernel's share of a bracketing-kernel blend.  1.0 for a
+//                fragment whose radius sits on a grid node, and the caller's
+//                (1 - f) / f pair for one that does not — both passes scale
+//                colour, alpha, area AND arrival by it, and every deposit is
+//                linear in the weight, so two scaled passes are exactly one
+//                pass over the blended row.
+//   rowScratch : at least (2*kv.radiusX + 1) floats, and REQUIRED when
+//                holdout.enabled() or weightScale != 1; pass nullptr
+//                otherwise.  With neither, the kernel's own weight row is used
+//                directly — the vis == 1 short-circuit is a different loop,
+//                not a multiply by one.
 //
 // Returns the number of destination pixels deposited into (per group), for
 // ScatterStats.
@@ -2049,15 +2064,18 @@ DEEPC_HD inline std::size_t scatterFragmentSpans(const BucketPlaneView& planes,
                                                  const HoldoutSoA&      holdout,
                                                  const KernelView&      kv,
                                                  const ScatterFragment& frag,
+                                                 float                  weightScale,
                                                  float* __restrict__    rowScratch,
                                                  std::size_t*           rowSpansOut)
 {
     std::size_t touched = 0;
     std::size_t rows    = 0;
 
-    const bool  useHoldout = holdout.enabled();
-    const int   bIndex     = frag.boundaryIndex;
-    const float bFrac      = frag.boundaryFrac;
+    const bool  useHoldout   = holdout.enabled();
+    const int   bIndex       = frag.boundaryIndex;
+    const float bFrac        = frag.boundaryFrac;
+    const bool  scaled       = (weightScale != 1.0f);
+    const float arrivalScale = frag.share * weightScale;
 
     for (int row = 0; row < kv.rowCount; ++row) {
         const RowSpan& span = kv.row(row);
@@ -2096,10 +2114,12 @@ DEEPC_HD inline std::size_t scatterFragmentSpans(const BucketPlaneView& planes,
         // which the M4 fill must never do — see BucketPlaneView.  One deposit
         // per fragment regardless of which bucket(s) it lands in: gated on
         // depositCoverage (group 0), the same flag the coverage plane uses.
+        // `arrivalScale` carries this pass's blend weight, so a bracketed
+        // fragment's two passes deposit share * ((1-f)*wA + f*wB).
         if (frag.depositCoverage) {
             float* __restrict__ arrivalDst = planes.arrival + dstOffset;
             for (int i = 0; i < count; ++i)
-                arrivalDst[i] += w[i] * frag.share;
+                arrivalDst[i] += w[i] * arrivalScale;
         }
 
         if (useHoldout) {
@@ -2117,8 +2137,12 @@ DEEPC_HD inline std::size_t scatterFragmentSpans(const BucketPlaneView& planes,
                 const float vis = HoldoutVisibility::interpAtBucket(
                     holdout.pixelLut(dstOffset + i),
                     holdout.boundaryCount(), bIndex, bFrac);
-                rowScratch[i] = w[i] * vis;
+                rowScratch[i] = w[i] * vis * weightScale;
             }
+            w = rowScratch;
+        } else if (scaled) {
+            for (int i = 0; i < count; ++i)
+                rowScratch[i] = w[i] * weightScale;
             w = rowScratch;
         }
 

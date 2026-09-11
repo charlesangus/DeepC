@@ -313,6 +313,49 @@ DEEPC_HD inline int kernelGridIndex(float radiusPx)
     return kKernelFineOrigin - static_cast<int>(n);
 }
 
+// The two grid nodes that bracket `radiusPx`, and the blend weight between
+// them: a caller rasterises node A at (1 - frac) and node B at frac, which is
+// continuous in radius and reproduces the node's own kernel exactly on a node.
+// `frac` is stated on the DIAMETER, (d - dA)/(dB - dA); diameter is twice the
+// radius, so the factors of two cancel and it is computed on radii.
+//
+// Derived FROM kernelGridIndex() rather than by re-inverting the grid, so the
+// two can never drift: nearest-in-radius is at most one node from the floor,
+// and the step back is decided by the same float comparison the caller makes.
+// Every degenerate case -- exactly on a node, NaN, non-positive, or the
+// saturation clamp kernelGridIndex() applies above 1e6 px -- returns
+// indexB == indexA with frac 0, i.e. a single kernel and no second pass.
+struct KernelGridBracket {
+    int   indexA = 0;
+    int   indexB = 0;
+    float frac   = 0.0f;
+};
+
+DEEPC_HD inline KernelGridBracket kernelGridBracket(float radiusPx)
+{
+    KernelGridBracket b;
+    if (!(radiusPx > 0.0f))
+        return b;
+
+    int i = kernelGridIndex(radiusPx);
+    if (i < 0)
+        i = 0;
+    if (kernelGridRadius(i) > radiusPx && i > 0)
+        --i;
+
+    b.indexA = i;
+    b.indexB = i;
+
+    const float rA = kernelGridRadius(i);
+    const float rB = kernelGridRadius(i + 1);
+    if (!(radiusPx > rA) || !(radiusPx < rB))
+        return b;
+
+    b.indexB = i + 1;
+    b.frac   = (radiusPx - rA) / (rB - rA);
+    return b;
+}
+
 // ---------------------------------------------------------------------------
 // DiscKernelLUT -- the disc KernelSampler implementation.
 //
@@ -327,9 +370,13 @@ DEEPC_HD inline int kernelGridIndex(float radiusPx)
 // minRadius kernel, so a LUT built over a measured [2, 40] answers a 0.25px
 // query with a 2px disc -- a visible error, not a rounding one. That is fine
 // only because the caller both (a) measures the range from the frame's own CoC
-// range, and (b) never reaches the sampler for radius < 0.5px, which takes the
-// sharp fast path instead. A caller that cannot guarantee (b) must pass
-// minRadius = 0. The high-end clamp is benign by comparison: radii above
+// range, and (b) never reaches the sampler for radius < 0.5px -- the minimum
+// kernel DIAMETER is 1px (`kSharpRadiusPx`), and everything at or below it is
+// served by the sharp single-pixel path instead. A caller that cannot
+// guarantee (b) must pass minRadius = 0. Above that floor a caller asks for
+// two adjacent grid nodes (kernelGridBracket()) and blends them, so the
+// radii reaching here are grid-node radii and the clamp is the only rounding
+// left. The high-end clamp is benign by comparison: radii above
 // maxRadius are already bounded by the `max_radius` knob before they get here.
 //
 // Each entry is an anti-aliased disc built via discEdgeWeight(),

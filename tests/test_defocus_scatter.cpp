@@ -918,6 +918,58 @@ struct ExpectedPlanes {
     }
 };
 
+// The bracketing-kernel blend, derived from the stated rule -- node A at
+// (1-f), node B at f, f measured on the DIAMETER -- and not from
+// kernelGridBracket()'s own arithmetic: the floor node is found by a linear
+// walk of kernelGridRadius(), a different derivation from the closed form the
+// shipped helper uses.  On a node (and for anything the walk cannot bracket)
+// it returns a single pass at weight 1.
+struct RefBracket {
+    int    node[2]  = {0, 0};
+    double blend[2] = {1.0, 0.0};
+    int    passes   = 1;
+};
+
+RefBracket refBracket(float radius)
+{
+    int lo = 0;
+    while (lo < 8000 && kernelGridRadius(lo + 1) <= radius)
+        ++lo;
+    const double dA = 2.0 * kernelGridRadius(lo);
+    const double dB = 2.0 * kernelGridRadius(lo + 1);
+    const double d  = 2.0 * static_cast<double>(radius);
+    const double f  = (d > dA && d < dB) ? (d - dA) / (dB - dA) : 0.0;
+
+    RefBracket b;
+    b.node[0]  = lo;
+    b.node[1]  = (f > 0.0) ? lo + 1 : lo;
+    b.blend[0] = 1.0 - f;
+    b.blend[1] = f;
+    b.passes   = (f > 0.0) ? 2 : 1;
+    return b;
+}
+
+// The blended kernel's weight at pixel offset (dx, dy) from its centre, via
+// refBracket(): the per-tap oracle every blend assertion below is checked
+// against.
+double refBlendedWeight(const DiscKernelLUT& lut, float radius, int dx, int dy)
+{
+    const RefBracket b = refBracket(radius);
+    double w = 0.0;
+    for (int p = 0; p < b.passes; ++p) {
+        const KernelView kv = lut.kernel(kernelGridRadius(b.node[p]), 0, 0, 0.0f, 0);
+        REQUIRE(kv.valid());
+        const int row = dy + kv.radiusY;
+        if (row < 0 || row >= kv.rowCount)
+            continue;
+        const RowSpan& span = kv.row(row);
+        if (span.empty() || dx < span.xStart || dx > span.xEnd)
+            continue;
+        w += static_cast<double>(kv.rowWeights(row)[dx - span.xStart]) * b.blend[p];
+    }
+    return w;
+}
+
 void refRasterize(ExpectedPlanes& out, const ScatterParams& sp, const SampleSoA& soa,
                   const DiscKernelLUT& lut, const HoldoutSoA* holdout)
 {
@@ -953,22 +1005,27 @@ void refRasterize(ExpectedPlanes& out, const ScatterParams& sp, const SampleSoA&
             if (destX >= 0 && destX < out.W && destY >= 0 && destY < out.H)
                 touched.emplace_back(static_cast<std::ptrdiff_t>(destY) * out.W + destX, 1.0);
         } else {
-            const KernelView kv = lut.kernel(radius, destX, destY, depth, 0);
-            REQUIRE(kv.valid());
-            for (int row = 0; row < kv.rowCount; ++row) {
-                const RowSpan& span = kv.row(row);
-                if (span.empty())
-                    continue;
-                const int dy = destY + kv.rowY(row);
-                if (dy < 0 || dy >= out.H)
-                    continue;
-                const float* w = kv.rowWeights(row);
-                for (int i = 0; i < span.count(); ++i) {
-                    const int dx = destX + span.xStart + i;
-                    if (dx < 0 || dx >= out.W)
+            const RefBracket b = refBracket(radius);
+            for (int p = 0; p < b.passes; ++p) {
+                const KernelView kv = lut.kernel(kernelGridRadius(b.node[p]),
+                                                 destX, destY, depth, 0);
+                REQUIRE(kv.valid());
+                for (int row = 0; row < kv.rowCount; ++row) {
+                    const RowSpan& span = kv.row(row);
+                    if (span.empty())
                         continue;
-                    touched.emplace_back(static_cast<std::ptrdiff_t>(dy) * out.W + dx,
-                                          static_cast<double>(w[i]));
+                    const int dy = destY + kv.rowY(row);
+                    if (dy < 0 || dy >= out.H)
+                        continue;
+                    const float* w = kv.rowWeights(row);
+                    for (int i = 0; i < span.count(); ++i) {
+                        const int dx = destX + span.xStart + i;
+                        if (dx < 0 || dx >= out.W)
+                            continue;
+                        touched.emplace_back(
+                            static_cast<std::ptrdiff_t>(dy) * out.W + dx,
+                            static_cast<double>(w[i]) * b.blend[p]);
+                    }
                 }
             }
         }
@@ -4305,12 +4362,37 @@ TEST_CASE("flat opaque field ACROSS buckets: the bucket composite holds alpha 1"
     CAPTURE(maxArrival);
     CAPTURE(minAlpha);
 
-    // The composite holds the identity to 5e-3 (measured 0.995718 at the worst
+    // The composite holds the identity to 4e-3 (measured 0.996284 at the worst
     // interior pixel: the two checkerboard depths rasterise DIFFERENT radii,
     // 7.85px and 6.40px, so the two half-coverages do not tile the pixel
     // perfectly).  BANDED, not floored: a floor at 0.9956 also accepts a
     // uniform 0.5px kernel grid's 0.99927, so it would not notice the grid
     // being coarsened.
+    //
+    // AND PREDICTED, not just banded: the Nyquist model below is evaluated on
+    // the test-side blend oracle at the two radii the flatten actually
+    // produced, so the band cannot drift with the kernel scheme unnoticed --
+    // the model's own prediction has to move with it.
+    {
+        float rLo = 1e9f, rHi = -1.0f;
+        for (std::size_t f = 0; f < soa.fragmentCount(); ++f) {
+            rLo = std::min(rLo, soa.radius[f]);
+            rHi = std::max(rHi, soa.radius[f]);
+        }
+        REQUIRE(rHi > rLo + 1.0f);
+        auto nyquist = [&](float r) {
+            double c = 0.0;
+            const int reach = static_cast<int>(std::ceil(r)) + 2;
+            for (int dy = -reach; dy <= reach; ++dy)
+                for (int dx = -reach; dx <= reach; ++dx)
+                    c += (((dx + dy) & 1) ? -1.0 : 1.0) * refBlendedWeight(lut, r, dx, dy);
+            return c;
+        };
+        const double half = 0.5 * std::fabs(nyquist(rHi) - nyquist(rLo));
+        CAPTURE(rLo); CAPTURE(rHi); CAPTURE(half);
+        CHECK(std::fabs(minArrival - (1.0 - half)) < 3.0e-04);
+        CHECK(std::fabs(maxArrival - (1.0 + half)) < 3.0e-04);
+    }
     //
     // THE BAND IS ON `arrival`, NOT ON THE OUTPUT ALPHA, and the same numbers
     // to the digit: on a field this dense every source pixel is opaque, so its
@@ -4325,15 +4407,17 @@ TEST_CASE("flat opaque field ACROSS buckets: the bucket composite holds alpha 1"
     // coverage == 1 + (C_A - C_B)/2 with C_r = sum (-1)^(dx+dy) w_r.  A uniform
     // 0.5px grid would SNAP the two radii to 8.00 and 6.50, and
     // (C_8.00 - C_6.50)/2 = -7.30e-04 is a number that belongs to the snapping.
-    // This grid snaps them to 7.876923 and 6.400000, giving -4.28e-03 against
-    // the UNQUANTISED -4.00e-03, i.e. within 2.8e-04 of the exact answer
-    // instead of 3.3e-03 away from it.
+    // Nearest-node snapping put them on 7.876923 and 6.400000, giving
+    // -4.28e-03 against the UNQUANTISED -4.00e-03; the bracketing blend at
+    // the true radii gives -3.72e-03 -- the same 2.8e-04 from the exact
+    // answer, on the other side of it, because a blend of two discs is not
+    // the disc between them at the Nyquist frequency either.
     //
     // A plain `over` of the buckets reads 0.7479..0.7521 on this same fixture
     // -- the 25.0%-across-2-buckets deficit -- which is what makes this
     // configuration the cleanest discriminator available.
-    CHECK(minArrival > 0.9954);
-    CHECK(minArrival < 0.9960);
+    CHECK(minArrival > 0.9958);
+    CHECK(minArrival < 0.9966);
     // Both signs of the Nyquist response are present, and only the deficit
     // side is corrected: the surplus cell keeps its over-read in arrival and
     // the pre-existing down-only clamp is what caps its alpha.
@@ -4969,7 +5053,7 @@ TEST_CASE("volumetric parent reconstruction is EXACT in front of focus, at any p
 }
 
 TEST_CASE("behind focus the residue is structural: "
-          "PINNED at +36.9 / +50.2 / +56.3 / +61.0%")
+          "PINNED at +36.9 / +50.2 / +56.4 / +60.4%")
 {
     // Behind focus the residue is structurally irreducible by any per-bucket
     // plane.  Pinned so it is documentation-with-teeth rather than something
@@ -5018,8 +5102,21 @@ TEST_CASE("behind focus the residue is structural: "
     // and the residue reads +1.75 / +0.62 / +0.37 points high.  Pooled onto
     // the deepest part (FragmentRecord::share) arrival is exactly 1 and the
     // pins below are the composite's own.
+    //
+    // THE BRACKETING-KERNEL BLEND MOVED THE COLUMN AGAIN, and in both
+    // directions at once: 36.91 / 50.25 / 56.40 / 60.41.  The first three
+    // cells now sit ON the grid-free truth to the second decimal (the parts'
+    // brackets there are under 0.06 px wide, so the blend is the disc), while
+    // the 8-bucket cell moved 0.6 points AWAY from it (61.02).  Its outer parts
+    // sit at 8.6 / 10.1 / 11.7 px, where a bracket is 0.14-0.27 px wide and
+    // the blend of two 1 px-soft discs that far apart has a softer edge than
+    // the disc it stands in for; the residue's co-located-area division is
+    // sensitive to exactly that edge.  Adjudicated as the kernel family, not
+    // the composite: the composite is untouched and the K = 2..4 cells prove
+    // it.  A per-radius exact disc between the nodes would return this cell
+    // to 61.0.
     struct Case { int buckets; double partitionPct; };
-    const Case cases[] = {{2, 36.86}, {3, 50.25}, {4, 56.31}, {8, 61.00}};
+    const Case cases[] = {{2, 36.91}, {3, 50.25}, {4, 56.40}, {8, 60.41}};
 
     for (const Case& cs : cases) {
         CAPTURE(cs.buckets);
@@ -7529,10 +7626,10 @@ TEST_CASE("scatterBackgroundCPU: a pixel WITH samples uses its own residual radi
     const ScatterParams sp = makeScatterParams(W, H);
 
     const float rWithSamples = 3.0f;    // the pixel's own deepest-sample radius
-    const float rGlobal      = 18.0f;   // background_depth's global radius -- far from it
+    const float rGlobal      = 18.2f;   // background_depth's global radius -- far from it
 
     const int ax = 20, ay = 20;   // "has samples": scatters at rWithSamples
-    const int bx = 60, by = 60;   // "no samples": scatters at rGlobal, far enough not to overlap A
+    const int bx = 55, by = 55;   // "no samples": scatters at rGlobal, far enough not to overlap A
 
     ResidualWindow window;
     window.allocate(0, 0, W, H, rGlobal);
@@ -7547,55 +7644,46 @@ TEST_CASE("scatterBackgroundCPU: a pixel WITH samples uses its own residual radi
     planes.zero();
     scatterBackgroundCPU(sp, window, lut, planes);
 
-    // The independently-derived expected footprint for EACH radius, via the
-    // exact lookup scatterBackgroundCPU itself uses (DiscKernelLUT::kernel(),
-    // which resolves radiusToIndex() internally).
+    // The independently-derived expected footprint for EACH radius: the
+    // blended kernel from refBracket()/refBlendedWeight(), which walks the
+    // grid rather than calling kernelGridBracket().  Neither 3.0 nor 18.0 is
+    // a grid node (the fine region's nodes are 512/n; the coarse region's
+    // are 16 + m/2), so both are genuine two-kernel blends and a background
+    // scatter that snapped to the nearest node would miss on every tap.
+    REQUIRE(refBracket(rWithSamples).passes == 2);
+    REQUIRE(refBracket(rGlobal).passes == 2);
     const KernelView kvA = lut.kernel(rWithSamples, ax, ay, 0.0f, 0);
     const KernelView kvB = lut.kernel(rGlobal,      bx, by, 0.0f, 0);
     REQUIRE(kvA.valid());
     REQUIRE(kvB.valid());
     REQUIRE(kvA.radiusX != kvB.radiusX);   // the two footprints are visibly different sizes
 
-    // A's actual deposit matches kvA's footprint pixel for pixel, scaled by its
-    // own T=0.5 -- NOT kvB's.  This is the assertion a dropped per-pixel radius
-    // (always using the global one) would break: A's footprint would come out
-    // kvB-shaped instead.
-    int pixelsCheckedA = 0;
-    for (int row = 0; row < kvA.rowCount; ++row) {
-        const RowSpan& span = kvA.row(row);
-        if (span.empty())
-            continue;
-        const int dy = ay + kvA.rowY(row);
-        const float* w = kvA.rowWeights(row);
-        for (int dx = span.xStart; dx <= span.xEnd; ++dx) {
-            const int destXPixel = ax + dx;
-            const float expected = w[dx - span.xStart] * 0.5f;
-            const float actual =
-                planes.arrival[static_cast<std::size_t>(dy) * W + destXPixel];
-            CHECK(actual == doctest::Approx(expected).epsilon(1e-6));
-            ++pixelsCheckedA;
+    // A's actual deposit matches the blend at rWithSamples pixel for pixel,
+    // scaled by its own T=0.5 -- NOT the blend at rGlobal.  This is the
+    // assertion a dropped per-pixel radius (always using the global one)
+    // would break: A's footprint would come out kvB-shaped instead.  The
+    // footprint walked is one pixel wider than the larger bracketing node in
+    // every direction, so a deposit landing OUTSIDE the blend's support is
+    // caught as well.
+    auto checkFootprint = [&](int cx, int cy, float radius, int reach) -> int {
+        int checked = 0;
+        for (int dy = -reach; dy <= reach; ++dy) {
+            for (int dx = -reach; dx <= reach; ++dx) {
+                const double expected = refBlendedWeight(lut, radius, dx, dy) * 0.5;
+                const double actual = planes.arrival[
+                    static_cast<std::size_t>(cy + dy) * W + static_cast<std::size_t>(cx + dx)];
+                CHECK(std::fabs(actual - expected) <= 1e-6 * std::max(1.0, expected));
+                ++checked;
+            }
         }
-    }
-    CHECK(pixelsCheckedA > 0);
-
-    // B's actual deposit matches kvB's footprint, scaled by its own T=0.5.
-    int pixelsCheckedB = 0;
-    for (int row = 0; row < kvB.rowCount; ++row) {
-        const RowSpan& span = kvB.row(row);
-        if (span.empty())
-            continue;
-        const int dy = by + kvB.rowY(row);
-        const float* w = kvB.rowWeights(row);
-        for (int dx = span.xStart; dx <= span.xEnd; ++dx) {
-            const int destXPixel = bx + dx;
-            const float expected = w[dx - span.xStart] * 0.5f;
-            const float actual =
-                planes.arrival[static_cast<std::size_t>(dy) * W + destXPixel];
-            CHECK(actual == doctest::Approx(expected).epsilon(1e-6));
-            ++pixelsCheckedB;
-        }
-    }
-    CHECK(pixelsCheckedB > 0);
+        return checked;
+    };
+    const KernelView kvAhi = lut.kernel(kernelGridRadius(refBracket(rWithSamples).node[1]),
+                                        0, 0, 0.0f, 0);
+    const KernelView kvBhi = lut.kernel(kernelGridRadius(refBracket(rGlobal).node[1]),
+                                        0, 0, 0.0f, 0);
+    CHECK(checkFootprint(ax, ay, rWithSamples, kvAhi.radiusX + 1) > 0);
+    CHECK(checkFootprint(bx, by, rGlobal,      kvBhi.radiusX + 1) > 0);
 }
 
 TEST_CASE("scatterBackgroundCPU: the per-pixel residual radius is what lets the future "
@@ -7627,14 +7715,14 @@ TEST_CASE("scatterBackgroundCPU: the per-pixel residual radius is what lets the 
     const float rMismatched = 5.8f;    // a global radius that does NOT match it -- close,
                                         // not wildly off, which is the realistic case
 
-    // The two radii resolve to genuinely different LUT entries -- not
-    // necessarily a different pixel footprint (radiusX can coincide at a
-    // 0.2px spacing), but a different centre weight, which is the quantity
-    // wC that actually drives the mismatch below.
-    const KernelView kvSample     = lut.kernel(rSample, 0, 0, 0.0f, 0);
-    const KernelView kvMismatched = lut.kernel(rMismatched, 0, 0, 0.0f, 0);
-    REQUIRE(kvSample.rowWeights(kvSample.radiusY)[kvSample.radiusX]
-            != kvMismatched.rowWeights(kvMismatched.radiusY)[kvMismatched.radiusX]);
+    // The two radii blend to genuinely different kernels -- not necessarily a
+    // different pixel footprint (radiusX can coincide at a 0.2px spacing),
+    // but a different centre weight, which is the quantity wC that actually
+    // drives the mismatch below.  Both centre weights come from the test-side
+    // blend oracle, not from the scatter under test.
+    const double wcSample     = refBlendedWeight(lut, rSample, 0, 0);
+    const double wcMismatched = refBlendedWeight(lut, rMismatched, 0, 0);
+    REQUIRE(wcSample != wcMismatched);
 
     auto recover = [&](float residualRadius) -> float {
         SampleSoA soa;
@@ -7677,11 +7765,17 @@ TEST_CASE("scatterBackgroundCPU: the per-pixel residual radius is what lets the 
     const float mismatched = recover(rMismatched);
 
     CHECK(correct == doctest::Approx(trueAlpha).epsilon(1e-6));
-    // A 0.2px radius mismatch (6.0 vs 5.8) reads 0.893253 here -- the same
+    // A 0.2px radius mismatch (6.0 vs 5.8) reads ~0.8935 here -- the same
     // ~1.8-code-value scale (1.8/255 =~ 0.007) the design doc quotes for this
-    // class of mismatch on a full scene.  Measured directly by this rig
-    // rather than re-derived by hand.
-    CHECK(mismatched == doctest::Approx(0.893253f).epsilon(1e-4));
+    // class of mismatch on a full scene.  The expected value is the centre-
+    // pixel derivation above evaluated on the oracle's own centre weights,
+    // and it is banded on top so the mismatch cannot quietly shrink towards
+    // 0.9 or grow past the scale the design quotes.
+    const double wantMismatched =
+        trueAlpha * wcSample / (trueAlpha * wcSample + (1.0 - trueAlpha) * wcMismatched);
+    CHECK(mismatched == doctest::Approx(wantMismatched).epsilon(1e-5));
+    CHECK(mismatched > 0.890f);
+    CHECK(mismatched < 0.896f);
     CHECK(std::abs(mismatched - trueAlpha) > 0.005f);   // unambiguously NOT 0.9
 }
 
@@ -8229,3 +8323,562 @@ TEST_CASE("BandLedger: a setup re-claim drains active readers first, and the "
     CHECK(!ledger.beginRead(1));      // the old key stays dead
 }
 
+// ===========================================================================
+//
+//  The bracketing-kernel blend and the 1px minimum diameter
+//
+//  Above the sharp floor the scatter rasterises the two grid nodes bracketing
+//  a radius at (1-f) and f.  Every check below reads the kernel the SHIPPED
+//  driver actually deposits -- one fragment with unit share and unit alpha,
+//  whole into bucket 0, so its `weight` plane is the effective kernel and its
+//  `arrival` plane must carry the same numbers -- and compares it against
+//  test-side derivations: refBracket()'s grid walk, an exact disc built
+//  straight from discEdgeWeight(), or the radii snapped to their nearest node
+//  first, which through the same driver IS the pre-blend scatter bit for bit
+//  (a node radius brackets to a single pass at weight 1).
+//
+// ===========================================================================
+
+namespace {
+
+struct KernelRig {
+    int W, H, cx, cy;
+    ScatterParams sp;
+    BucketPlanes planes;
+    ScatterScratch scratch;
+    HoldoutSoA none;
+
+    KernelRig(int w, int h) : W(w), H(h), cx(w / 2), cy(h / 2), sp(makeScatterParams(w, h))
+    {
+        planes.allocate(1, 1, W, H);
+    }
+
+    // Rasterise one unit fragment at `radius`; the planes hold the result.
+    void rasterize(const DiscKernelLUT& lut, float radius)
+    {
+        SampleSoA soa;
+        soa.begin(1, makeSingleChannelGroup(1));
+        FragmentRecord f;
+        f.x = cx; f.y = cy;
+        f.radius = radius;
+        f.depth  = 5.0f;
+        f.alpha  = 1.0f;
+        f.share  = 1.0f;
+        BucketWeight bw;
+        bw.index = 0; bw.frac = 0.0f;
+        f.deposit = fragmentDeposit(bw, 1.0f);
+        f.kind = FragmentKind::Point;
+        const float ch[1] = {0.5f};
+        soa.appendFragment(f, ch);
+        planes.zero();
+        scatterBandCPU(sp, soa, none, lut, planes, scratch);
+    }
+
+    std::size_t pixels() const { return static_cast<std::size_t>(W) * H; }
+    float weightAt(int dx, int dy) const
+    { return planes.weight[static_cast<std::size_t>(cy + dy) * W + static_cast<std::size_t>(cx + dx)]; }
+
+    bool arrivalIsWeightBitExact() const
+    {
+        for (std::size_t i = 0; i < pixels(); ++i)
+            if (planes.arrival[i] != planes.weight[i])
+                return false;
+        return true;
+    }
+};
+
+float snappedToNearestNode(float radius)
+{
+    return kernelGridRadius(kernelGridIndex(radius));
+}
+
+// The exact anti-aliased disc at `radius`, edge softness 1, normalised in
+// double -- what DiscKernelLUT builds at a node, derived here without it.
+std::vector<double> exactDisc(float radius, int W, int H, int cx, int cy)
+{
+    std::vector<double> k(static_cast<std::size_t>(W) * H, 0.0);
+    double sum = 0.0;
+    const int reach = static_cast<int>(std::ceil(radius + 0.5f)) + 1;
+    for (int dy = -reach; dy <= reach; ++dy)
+        for (int dx = -reach; dx <= reach; ++dx) {
+            const float d = std::sqrt(static_cast<float>(dx * dx + dy * dy));
+            const double w = discEdgeWeight(d, radius, 1.0f);
+            k[static_cast<std::size_t>(cy + dy) * W + static_cast<std::size_t>(cx + dx)] = w;
+            sum += w;
+        }
+    for (double& v : k)
+        v /= sum;
+    return k;
+}
+
+} // namespace
+
+TEST_CASE("kernelGridBracket: on a node a single pass, between nodes the floor pair "
+          "and a diameter-linear fraction, degenerate inputs a single pass at node 0")
+{
+    // On every node in the fine region and the first coarse nodes: one pass.
+    for (int i = 1; i <= kKernelFineLastIndex + 40; ++i) {
+        const KernelGridBracket b = kernelGridBracket(kernelGridRadius(i));
+        CHECK(b.indexA == i);
+        CHECK(b.indexB == i);
+        CHECK(b.frac == 0.0f);
+    }
+
+    // Between nodes: agrees with the grid walk on the pair, and the fraction
+    // is the diameter's position in the bracket.
+    std::uint32_t state = 0x9E3779B9u;
+    auto next01 = [&]() {
+        state = state * 1664525u + 1013904223u;
+        return static_cast<float>(state >> 8) / 16777216.0f;
+    };
+    for (int t = 0; t < 4000; ++t) {
+        const float r = 0.5f + next01() * 39.5f;
+        const KernelGridBracket b  = kernelGridBracket(r);
+        const RefBracket        rb = refBracket(r);
+        CAPTURE(r);
+        CHECK(b.indexA == rb.node[0]);
+        CHECK(b.indexB == rb.node[1]);
+        CHECK(std::fabs(static_cast<double>(b.frac) - rb.blend[1]) <= 1e-6);
+        CHECK(kernelGridRadius(b.indexA) <= r);
+        if (b.indexB != b.indexA) {
+            CHECK(b.indexB == b.indexA + 1);
+            CHECK(kernelGridRadius(b.indexB) > r);
+            CHECK(b.frac > 0.0f);
+            CHECK(b.frac < 1.0f);
+            const double dA = 2.0 * kernelGridRadius(b.indexA);
+            const double dB = 2.0 * kernelGridRadius(b.indexB);
+            CHECK(std::fabs(b.frac - (2.0 * r - dA) / (dB - dA)) <= 1e-6);
+        }
+    }
+
+    // Monotone in radius across a bracket.
+    {
+        const float rA = kernelGridRadius(500), rB = kernelGridRadius(501);
+        float prev = -1.0f;
+        for (int k = 1; k < 100; ++k) {
+            const float r = rA + (rB - rA) * static_cast<float>(k) / 100.0f;
+            const KernelGridBracket b = kernelGridBracket(r);
+            CHECK(b.indexA == 500);
+            CHECK(b.frac > prev);
+            prev = b.frac;
+        }
+    }
+
+    // Degenerate inputs never ask for a second pass.
+    for (float r : {0.0f, -1.0f, std::numeric_limits<float>::quiet_NaN(),
+                    std::numeric_limits<float>::infinity(), 2.0e6f}) {
+        const KernelGridBracket b = kernelGridBracket(r);
+        CAPTURE(r);
+        CHECK(b.indexA == b.indexB);
+        CHECK(b.frac == 0.0f);
+    }
+    CHECK(kernelGridBracket(0.0f).indexA == 0);
+    CHECK(kernelGridBracket(std::numeric_limits<float>::quiet_NaN()).indexA == 0);
+}
+
+TEST_CASE("the blended kernel is continuous in diameter: jumps shrink with the sweep step, "
+          "the nearest-node scatter's do not, and arrival carries the same blend bit for bit")
+{
+    // A measured-range LUT whose floor IS the 1px-diameter floor, so no
+    // sub-0.5 radius can degenerate to a shared entry.
+    DiscKernelLUT lut(0.5f, 24.0f, 1.0f, 1.0f);
+    KernelRig rig(52, 52);
+
+    struct Sweep { double maxTapJump = 0.0, maxL1Jump = 0.0, atRadius = 0.0; };
+
+    auto sweep = [&](double dFrom, double dTo, double h, bool snap) -> Sweep {
+        Sweep s;
+        std::vector<float> prev;
+        for (double d = dFrom; d <= dTo + 1e-12; d += h) {
+            float r = static_cast<float>(d * 0.5);
+            if (snap)
+                r = snappedToNearestNode(r);
+            rig.rasterize(lut, r);
+            // Both kernels feed arrival at the same f: with unit share and
+            // unit alpha the arrival plane IS the coverage plane, to the bit.
+            REQUIRE(rig.arrivalIsWeightBitExact());
+            if (!prev.empty()) {
+                double tap = 0.0, l1 = 0.0;
+                for (std::size_t i = 0; i < rig.pixels(); ++i) {
+                    const double dv = std::fabs(static_cast<double>(rig.planes.weight[i]) - prev[i]);
+                    tap = std::max(tap, dv);
+                    l1 += dv;
+                }
+                if (tap > s.maxTapJump) { s.maxTapJump = tap; s.atRadius = r; }
+                s.maxL1Jump = std::max(s.maxL1Jump, l1);
+            }
+            prev.assign(rig.planes.weight.data(), rig.planes.weight.data() + rig.pixels());
+        }
+        return s;
+    };
+
+    // (1) d in [1, 16] at h = 2e-3 px of diameter and at h/4.  A Lipschitz
+    // family's jumps scale with the step; a step function's do not.  The
+    // per-tap figure is dominated by the C1 kink at d = 1 (the delta node
+    // against the first 3x3 node, 0.0005 px apart) and is the same slope for
+    // both schemes there, so the discriminator is the L1 jump, which for the
+    // nearest-node scatter is the whole difference between adjacent nodes no
+    // matter how small the step.
+    const double h = 2.0e-3;
+    const Sweep blend  = sweep(1.0, 16.0, h, false);
+    const Sweep blendQ = sweep(1.0, 16.0, h / 4.0, false);
+    const Sweep snapd  = sweep(1.0, 16.0, h, true);
+    const Sweep snapdQ = sweep(1.0, 16.0, h / 4.0, true);
+    CAPTURE(blend.maxTapJump);  CAPTURE(blend.maxL1Jump);  CAPTURE(blend.atRadius);
+    CAPTURE(blendQ.maxTapJump); CAPTURE(blendQ.maxL1Jump); CAPTURE(blendQ.atRadius);
+    CAPTURE(snapd.maxTapJump);  CAPTURE(snapd.maxL1Jump);  CAPTURE(snapd.atRadius);
+    CAPTURE(snapdQ.maxTapJump); CAPTURE(snapdQ.maxL1Jump); CAPTURE(snapdQ.atRadius);
+
+    // Blend: measured 3.984e-03 / 7.968e-03 (tap / L1) at h, exactly a
+    // quarter of each at h/4, both at r = 0.501.
+    CHECK(blend.maxTapJump > 3.0e-03);
+    CHECK(blend.maxTapJump < 5.0e-03);
+    CHECK(blend.maxL1Jump  < 1.0e-02);
+    CHECK(blendQ.maxTapJump < blend.maxTapJump * 0.30);
+    CHECK(blendQ.maxTapJump > blend.maxTapJump * 0.20);
+    CHECK(blendQ.maxL1Jump  < blend.maxL1Jump  * 0.30);
+    CHECK(blendQ.maxL1Jump  > blend.maxL1Jump  * 0.20);
+    // Nearest node: the L1 jump is a node step and does not shrink.
+    CHECK(snapd.maxL1Jump  > 5.0 * blend.maxL1Jump);
+    CHECK(snapdQ.maxL1Jump > 0.9 * snapd.maxL1Jump);
+
+    // (2) One float ulp across every node and every bracket midpoint in
+    // [0.5, 4]: the crossings where a broken bracket (at a node) or the
+    // nearest-node rule (at a midpoint) would jump.  This is the literal
+    // "no jump above 1e-6 per tap" gate, placed where a jump could be.
+    double ulpNodeJump = 0.0, ulpMidJump = 0.0, ulpMidJumpSnap = 0.0;
+    int crossings = 0;
+    for (int i = 1; kernelGridRadius(i) < 4.0f; ++i) {
+        const float rn = kernelGridRadius(i);
+        const float rm = 0.5f * (rn + kernelGridRadius(i + 1));
+        auto crossing = [&](float r, bool snap) -> double {
+            const float lo = std::nextafter(r, 0.0f), hi = std::nextafter(r, 100.0f);
+            rig.rasterize(lut, snap ? snappedToNearestNode(lo) : lo);
+            std::vector<float> a(rig.planes.weight.data(), rig.planes.weight.data() + rig.pixels());
+            rig.rasterize(lut, snap ? snappedToNearestNode(hi) : hi);
+            double tap = 0.0;
+            for (std::size_t k = 0; k < rig.pixels(); ++k)
+                tap = std::max(tap, std::fabs(static_cast<double>(rig.planes.weight[k]) - a[k]));
+            return tap;
+        };
+        ulpNodeJump    = std::max(ulpNodeJump, crossing(rn, false));
+        ulpMidJump     = std::max(ulpMidJump, crossing(rm, false));
+        ulpMidJumpSnap = std::max(ulpMidJumpSnap, crossing(rm, true));
+        ++crossings;
+    }
+    CAPTURE(crossings); CAPTURE(ulpNodeJump); CAPTURE(ulpMidJump); CAPTURE(ulpMidJumpSnap);
+    CHECK(crossings > 800);
+    CHECK(ulpNodeJump < 1.0e-06);           // measured 4.768e-07
+    CHECK(ulpMidJump  < 1.0e-06);           // measured 5.364e-07
+    CHECK(ulpMidJumpSnap > 1.0e-03);        // measured 1.951e-03: the step the blend removes
+}
+
+TEST_CASE("the effective kernel at a node radius is the exact disc at that radius, and "
+          "between nodes the blend's deviation from the exact disc is banded")
+{
+    DiscKernelLUT lut(0.5f, 24.0f, 1.0f, 1.0f);
+    KernelRig rig(52, 52);
+
+    // Every 17th fine node and every coarse node up to 20 px, and the
+    // midpoint of the bracket above each.
+    double worstNode = 0.0, worstNodeR = 0.0;
+    double worstMid = 0.0, worstMidR = 0.0, worstMidL1 = 0.0, bestMid = 1.0;
+    double worstMidSnap = 0.0;
+    int nodes = 0;
+    for (int i = 1; kernelGridRadius(i) <= 20.0f; i += (i < kKernelFineLastIndex ? 17 : 1)) {
+        const float rn = kernelGridRadius(i);
+        rig.rasterize(lut, rn);
+        const std::vector<double> exact = exactDisc(rn, rig.W, rig.H, rig.cx, rig.cy);
+        double dev = 0.0, sumEff = 0.0, sumExact = 0.0;
+        for (std::size_t k = 0; k < rig.pixels(); ++k) {
+            dev = std::max(dev, std::fabs(static_cast<double>(rig.planes.weight[k]) - exact[k]));
+            sumEff   += rig.planes.weight[k];
+            sumExact += exact[k];
+        }
+        CHECK(std::fabs(sumEff - 1.0) <= 1e-6);
+        CHECK(std::fabs(sumExact - 1.0) <= 1e-12);
+        if (dev > worstNode) { worstNode = dev; worstNodeR = rn; }
+        ++nodes;
+
+        const float rm = 0.5f * (rn + kernelGridRadius(i + 1));
+        const std::vector<double> exactMid = exactDisc(rm, rig.W, rig.H, rig.cx, rig.cy);
+        double peak = 0.0;
+        for (double v : exactMid)
+            peak = std::max(peak, v);
+
+        rig.rasterize(lut, rm);
+        double devMid = 0.0, l1 = 0.0;
+        for (std::size_t k = 0; k < rig.pixels(); ++k) {
+            const double dv = std::fabs(static_cast<double>(rig.planes.weight[k]) - exactMid[k]);
+            devMid = std::max(devMid, dv);
+            l1 += dv;
+        }
+        if (devMid / peak > worstMid) { worstMid = devMid / peak; worstMidR = rm; }
+        worstMidL1 = std::max(worstMidL1, l1);
+        bestMid = std::min(bestMid, devMid / peak);
+
+        rig.rasterize(lut, snappedToNearestNode(rm));
+        double devSnap = 0.0;
+        for (std::size_t k = 0; k < rig.pixels(); ++k)
+            devSnap = std::max(devSnap, std::fabs(static_cast<double>(rig.planes.weight[k]) - exactMid[k]));
+        worstMidSnap = std::max(worstMidSnap, devSnap / peak);
+    }
+    CAPTURE(nodes); CAPTURE(worstNode); CAPTURE(worstNodeR);
+    CAPTURE(worstMid); CAPTURE(worstMidR); CAPTURE(worstMidL1); CAPTURE(bestMid);
+    CAPTURE(worstMidSnap);
+
+    CHECK(nodes >= 59);
+    // On a node: float rounding only (measured 2.889e-08 at r = 0.5356).
+    CHECK(worstNode < 5.0e-08);
+    // Between nodes the blend is a blend of two discs, not the disc: worst
+    // per-tap 0.0923 of peak at r = 13.66 and 0.0064 L1 (measured), against
+    // the nearest node's 0.1769 of peak on the same midpoints.  Banded on
+    // both sides: the lower bound is what says this IS the linear blend and
+    // not something exact.
+    CHECK(worstMid > 0.05);
+    CHECK(worstMid < 0.12);
+    CHECK(worstMidL1 > 0.003);
+    CHECK(worstMidL1 < 0.012);
+    CHECK(bestMid < 1.0e-05);               // the finest brackets are as good as exact
+    CHECK(worstMidSnap > 1.5 * worstMid);   // and the blend is the closer of the two
+    CHECK(worstMidSnap < 0.30);
+}
+
+TEST_CASE("size-0 parity: every diameter at or below 1px rasterises bit-identically to the "
+          "sharp delta, planes and output alike, through a LUT that never reaches down to it")
+{
+    // THE GATE (a) PIN.  Three runs of one mixed corpus through the real
+    // pipeline: size 0 (every radius exactly 0 -- the canonical sharp path),
+    // a sub-pixel size whose radii fill (0, 0.49], and that same SoA with every
+    // radius forced to the largest sharp float below 0.5.  All three must
+    // agree TO THE BIT on all five planes and on the resolved output.  The LUT
+    // is built over a measured range that starts at 2 px, so any radius that
+    // leaked past the floor would come back as a 2 px disc, not a rounding
+    // difference.  pre_merge is off so the three SoAs differ in nothing but
+    // the radius column (its tolerance would otherwise regroup them).
+    const int C = 3, W = 40, H = 40, K = 16, spp = 4;
+    DiscKernelLUT lut(2.0f, 20.0f, 1.0f, 1.0f);
+
+    Lcg rng(0x5122u);
+    std::vector<std::vector<SampleRecord>> pixels(static_cast<std::size_t>(W) * H);
+    for (auto& v : pixels) {
+        float z = rng.range(1.05f, 30.0f);
+        for (int s = 0; s < spp; ++s) {
+            const float a = rng.range(0.02f, 1.0f);
+            const float zb = (s % 2 == 0) ? z : z + rng.range(0.1f, 4.0f);   // points and spans
+            v.push_back(makeSample(z, zb, a, {a * rng.unit(), a * rng.unit(), a * rng.unit()}));
+            z = zb + rng.range(0.05f, 5.0f);
+        }
+    }
+
+    // One bucket set for every run: the buckets are a function of the CoC
+    // parameters, and the comparison is about the radius column alone.
+    auto rigFor = [](float sizePx, float maxRadiusPx) {
+        return makeCocParams(CocMode::Manual, 50.0f, 2.8f, 36.0f, 10.0f,
+                             unitScale(WorldUnits::Meters), 1920.0f, 1.0f,
+                             1.0f, 1.0f, maxRadiusPx, sizePx);
+    };
+    const DepthBuckets bk = makeBoundedDeltaCocBuckets(rigFor(0.45f, 0.49f), 1.0f, 100.0f, K);
+
+    struct Run {
+        Band band;
+        float maxRadius = 0.0f, minRadius = 1.0f;
+        std::size_t fragments = 0;
+    };
+    auto run = [&](float sizePx, float maxRadiusPx, bool forceLargestSharp) -> Run {
+        const CocParams p = rigFor(sizePx, maxRadiusPx);
+        const FlattenParams fp = makeFlattenParams(p, C, /*preMerge*/ false);
+        SampleSoA soa;
+        soa.begin(C, fp.groups);
+        FlattenScratch scratch;
+        ResidualWindow window;
+        window.allocate(0, 0, W, H, autoBackgroundRadiusPx(p, bk));
+        flattenIntoWithResidual(fp, bk, 0, 0, W, H, soa, scratch, window,
+            [&](int x, int y) { return pixels[static_cast<std::size_t>(y) * W + x]; });
+
+        Run r;
+        r.fragments = soa.fragmentCount();
+        for (std::size_t f = 0; f < soa.fragmentCount(); ++f) {
+            r.maxRadius = std::max(r.maxRadius, soa.radius[f]);
+            r.minRadius = std::min(r.minRadius, soa.radius[f]);
+            if (forceLargestSharp)
+                soa.radius[f] = std::nextafter(kSharpRadiusPx, 0.0f);
+        }
+        if (forceLargestSharp)
+            for (int y = 0; y < H; ++y)
+                for (int x = 0; x < W; ++x)
+                    window.radiusPx[static_cast<std::size_t>(window.index(x, y))] =
+                        std::nextafter(kSharpRadiusPx, 0.0f);
+
+        r.band.K = K; r.band.C = C; r.band.W = W; r.band.H = H;
+        HoldoutSoA none;
+        runBand(r.band, makeScatterParams(W, H), soa, none, lut, false, &window);
+        return r;
+    };
+
+    const Run sizeZero = run(0.0f, 100.0f, false);
+    const Run subPixel = run(0.45f, 0.49f, false);
+    const Run largest  = run(0.45f, 0.49f, true);
+
+    // The sub-pixel run genuinely exercised the whole sharp band, and the
+    // corpus is not trivially small.
+    REQUIRE(sizeZero.fragments == subPixel.fragments);
+    REQUIRE(subPixel.fragments > 2000);
+    CHECK(sizeZero.maxRadius == 0.0f);
+    CHECK(subPixel.maxRadius > 0.45f);
+    CHECK(subPixel.maxRadius < kSharpRadiusPx);
+    CHECK(subPixel.minRadius > 0.0f);
+
+    auto bitIdentical = [&](const Band& a, const Band& b) {
+        std::size_t diffs = 0;
+        auto cmp = [&](const PodBuffer<float>& x, const PodBuffer<float>& y) {
+            REQUIRE(x.size() == y.size());
+            for (std::size_t i = 0; i < x.size(); ++i)
+                if (x[i] != y[i])
+                    ++diffs;
+        };
+        cmp(a.planes.color, b.planes.color);
+        cmp(a.planes.alpha, b.planes.alpha);
+        cmp(a.planes.weight, b.planes.weight);
+        cmp(a.planes.colocated, b.planes.colocated);
+        cmp(a.planes.arrival, b.planes.arrival);
+        for (std::size_t i = 0; i < a.alpha.size(); ++i)
+            if (a.alpha[i] != b.alpha[i])
+                ++diffs;
+        for (std::size_t i = 0; i < a.color.size(); ++i)
+            if (a.color[i] != b.color[i])
+                ++diffs;
+        return diffs;
+    };
+    CHECK(bitIdentical(sizeZero.band, subPixel.band) == 0);
+    CHECK(bitIdentical(sizeZero.band, largest.band) == 0);
+
+    // And the output is the flatten of the input, so "bit-identical" is not
+    // three copies of the same wrong answer.  The premultiplied pair is
+    // checked as a pair.
+    double worstAlpha = 0.0, worstColor = 0.0;
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x) {
+            const RefOver r = refSequentialOver(pixels[static_cast<std::size_t>(y) * W + x], C);
+            worstAlpha = std::max(worstAlpha,
+                std::fabs(static_cast<double>(subPixel.band.outAlpha(x, y)) - r.alpha));
+            for (int c = 0; c < C; ++c)
+                worstColor = std::max(worstColor,
+                    std::fabs(static_cast<double>(subPixel.band.outColor(c, x, y))
+                              - r.color[static_cast<std::size_t>(c)]));
+        }
+    CAPTURE(worstAlpha); CAPTURE(worstColor);
+    CHECK(worstAlpha <= 1e-06);
+    CHECK(worstColor <= 1e-06);
+}
+
+TEST_CASE("an alpha 0.9 surface on a gentle ramp of fractional diameters reads 0.900 within "
+          "1/255 -- the over-read deficit-only division cannot fix, and the nearest-node "
+          "scatter's reading of the same rig is outside 1/255")
+{
+    // A flat alpha 0.9 field whose CoC radius climbs slowly down the band, so
+    // every row is a different fractional diameter.  Every fragment lands
+    // WHOLE in one bucket (the bucket range ends in front of the ramp), which
+    // takes the bucket composite's own split-pooling artefact out of the
+    // measurement: what remains at a pixel is alpha 0.9 times the raw weight
+    // sum, and that sum is 1 only if the kernels tile.  Nearest-node snapping
+    // makes rows either side of a node crossing rasterise discs a whole node
+    // apart, and the surplus rows read straight through as alpha > 0.9 --
+    // the fill divides deficits only.  The same rig with every radius snapped
+    // to its nearest node first is that scatter, bit for bit, through the
+    // same driver, and is the control that says the rig can see the defect.
+    //
+    // The residual (0.1 per pixel) scatters at the same per-pixel radius, so
+    // arrival and coverage move together and neither scheme is helped by
+    // the fill here.
+    const float size = 100.0f, F = 10.0f;
+    const CocParams p = makeCocParams(CocMode::Manual, 50.0f, 2.8f, 36.0f, F, 1000.0f,
+                                      256.0f, 1.0f, 1.0f, 1.0f, 100.0f, size);
+    const int W = 24, H = 160;
+    const float alpha = 0.9f, unpremult = 0.5f;
+    const double codeValue = 1.0 / 255.0;
+
+    struct Segment { float r0, slope; };
+    // Radius 1 -> 1.8, 6 -> 6.8, 16 -> 16.8 px over the band's 160 rows: the
+    // near-focus end where the grid is finest, the middle, and the coarse
+    // 0.5 px region.
+    const Segment segments[] = {{1.0f, 0.005f}, {6.0f, 0.005f}, {16.0f, 0.005f}};
+
+    for (const Segment& seg : segments) {
+        CAPTURE(seg.r0);
+        auto rOf = [&](int y) { return seg.r0 + seg.slope * static_cast<float>(y); };
+        auto zOf = [&](float r) { return F / (1.0f - r / size); };
+        const int pad = static_cast<int>(std::ceil(rOf(H + 40) + 2.0f));
+        const DepthBuckets bk = makeBoundedDeltaCocBuckets(p, zOf(0.2f), zOf(0.5f), 4);
+        DiscKernelLUT lut(0.5f, rOf(H + pad) + 1.0f, 1.0f, 1.0f);
+
+        struct Reading { double worstAlpha = 0.0, worstRatio = 0.0, minArrival = 9.0, maxArrival = -9.0; };
+        auto run = [&](bool snap) -> Reading {
+            const FlattenParams fp = makeFlattenParams(p, 1, /*preMerge*/ true);
+            SampleSoA soa;
+            soa.begin(1, fp.groups);
+            FlattenScratch scratch;
+            ResidualWindow window;
+            window.allocate(-pad, -pad, W + 2 * pad, H + 2 * pad, rOf(H + pad));
+            flattenIntoWithResidual(fp, bk, -pad, -pad, W + pad, H + pad, soa, scratch, window,
+                [&](int, int y) -> std::vector<SampleRecord> {
+                    const float z = zOf(rOf(y));
+                    return {makeSample(z, z, alpha, {alpha * unpremult})};
+                });
+            for (std::size_t f = 0; f < soa.fragmentCount(); ++f) {
+                REQUIRE(soa.bucketAlpha1[f] == 0.0f);        // whole into one bucket
+                REQUIRE(refBracket(soa.radius[f]).passes == 2);   // every row fractional
+                if (snap)
+                    soa.radius[f] = snappedToNearestNode(soa.radius[f]);
+            }
+            if (snap)
+                for (int y = 0; y < window.height; ++y)
+                    for (int x = 0; x < window.width; ++x) {
+                        const std::size_t i = static_cast<std::size_t>(
+                            window.index(window.x + x, window.y + y));
+                        window.radiusPx[i] = snappedToNearestNode(window.radiusPx[i]);
+                    }
+
+            Band band;
+            band.K = bk.bucketCount(); band.C = 1; band.W = W; band.H = H;
+            HoldoutSoA none;
+            runBand(band, makeScatterParams(W, H), soa, none, lut, false, &window);
+
+            Reading rd;
+            for (int y = 0; y < H; ++y)
+                for (int x = 0; x < W; ++x) {
+                    const double a = band.outAlpha(x, y);
+                    rd.worstAlpha = std::max(rd.worstAlpha, std::fabs(a - alpha));
+                    rd.worstRatio = std::max(rd.worstRatio,
+                        std::fabs(static_cast<double>(band.outColor(0, x, y)) / a - unpremult));
+                    const double d = band.planes.arrival[static_cast<std::size_t>(y) * W + x];
+                    rd.minArrival = std::min(rd.minArrival, d);
+                    rd.maxArrival = std::max(rd.maxArrival, d);
+                }
+            return rd;
+        };
+
+        const Reading blend = run(false);
+        const Reading snapd = run(true);
+        CAPTURE(blend.worstAlpha); CAPTURE(blend.minArrival); CAPTURE(blend.maxArrival);
+        CAPTURE(snapd.worstAlpha); CAPTURE(snapd.minArrival); CAPTURE(snapd.maxArrival);
+
+        // Blended: 1.40e-03 / 2.26e-04 / 6.26e-05 measured on the three
+        // segments, all inside a code value; arrival within 1.6e-03 of 1.
+        CHECK(blend.worstAlpha < codeValue);
+        CHECK(blend.worstRatio <= 1e-06);
+        CHECK(blend.maxArrival - 1.0 < codeValue);
+        CHECK(1.0 - blend.minArrival < codeValue);
+        // Nearest node: never better than the blend, and outside a code value
+        // wherever the brackets are wide enough to see (4.63e-03 at 6 px,
+        // 8.76e-03 at 16 px, measured; 1.79e-03 at 1 px, where the grid is
+        // 0.001 px fine and the residual error is the ramp's own).
+        CHECK(snapd.worstAlpha >= blend.worstAlpha);
+        CHECK(snapd.worstRatio <= 1e-06);
+        if (seg.r0 >= 6.0f) {
+            CHECK(snapd.worstAlpha > codeValue);
+            CHECK(snapd.worstAlpha < 4.0 * codeValue);
+            CHECK(snapd.maxArrival - 1.0 > codeValue);
+        }
+    }
+}

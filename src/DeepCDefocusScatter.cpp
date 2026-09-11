@@ -1671,25 +1671,44 @@ void scatterBandCPU(const ScatterParams& params,
                 continue;
             }
 
-            // DiscKernelLUT ignores destX/destY/depth/channelGroup; they are
-            // passed anyway because that unused-ness IS the sampler seam.
-            const KernelView kv = kernel.kernel(radius, frag.destX, frag.destY,
-                                                depth, g);
-            if (!kv.valid())
-                continue;
+            // --- the bracketing-kernel blend --------------------------------
+            // The radius picks the two grid nodes around it, not the nearest
+            // one, and the fragment rasterises both at (1 - f) and f.  Every
+            // deposit is linear in the weight, so the pair is exactly one pass
+            // over the blended row.  On a node the bracket collapses to a
+            // single pass at weight 1, which needs no scratch row and deposits
+            // the raw kernel row unchanged.
+            const KernelGridBracket br = kernelGridBracket(radius);
+            const int   nodeIndex[2] = { br.indexA, br.indexB };
+            const float nodeBlend[2] = { 1.0f - br.frac, br.frac };
+            const int   passes       = (br.indexB != br.indexA) ? 2 : 1;
 
-            float* rowScratch = nullptr;
-            if (useHoldout) {
-                // The widest span a kernel row can have, before clipping.
-                scratch.ensureRow(static_cast<std::size_t>(2 * kv.radiusX + 1));
-                rowScratch = scratch.rowWeights.data();
+            for (int p = 0; p < passes; ++p) {
+                if (nodeBlend[p] == 0.0f)
+                    continue;
+
+                // DiscKernelLUT ignores destX/destY/depth/channelGroup; they
+                // are passed anyway because that unused-ness IS the sampler
+                // seam.
+                const KernelView kv = kernel.kernel(kernelGridRadius(nodeIndex[p]),
+                                                    frag.destX, frag.destY,
+                                                    depth, g);
+                if (!kv.valid())
+                    continue;
+
+                float* rowScratch = nullptr;
+                if (useHoldout || nodeBlend[p] != 1.0f) {
+                    // The widest span a kernel row can have, before clipping.
+                    scratch.ensureRow(static_cast<std::size_t>(2 * kv.radiusX + 1));
+                    rowScratch = scratch.rowWeights.data();
+                }
+
+                std::size_t rows = 0;
+                touched += scatterFragmentSpans(view, vis, kv, frag,
+                                                nodeBlend[p], rowScratch, &rows);
+                if (stats != nullptr)
+                    stats->rowSpans += rows;
             }
-
-            std::size_t rows = 0;
-            touched += scatterFragmentSpans(view, vis, kv, frag,
-                                            rowScratch, &rows);
-            if (stats != nullptr)
-                stats->rowSpans += rows;
         }
 
         if (stats != nullptr) {
@@ -1754,44 +1773,58 @@ void scatterBackgroundCPU(const ScatterParams&  params,
                 continue;
             }
 
-            // The per-pixel kernel lookup: DiscKernelLUT::kernel() resolves
-            // `radiusPx` via radiusToIndex() internally, so this pixel's OWN
-            // residual radius -- not a single frame-wide one -- picks the
-            // disc.  See the header doc: a mismatched radius is a measured
-            // artifact, not a rounding difference.
-            const KernelView kv = kernel.kernel(radiusPx, destX, destY, 0.0f, 0);
-            if (!kv.valid())
-                continue;
+            // The per-pixel kernel lookup, through the same bracketing blend
+            // the fragment scatter uses: this pixel's OWN residual radius --
+            // not a single frame-wide one -- picks the pair of grid nodes, and
+            // the claim splits across them.  See the header doc: a mismatched
+            // radius is a measured artifact, not a rounding difference, and
+            // snapping the residual to the nearest node while fragments blend
+            // is the same mismatch one grid step wide.
+            const KernelGridBracket br = kernelGridBracket(radiusPx);
+            const int   nodeIndex[2] = { br.indexA, br.indexB };
+            const float nodeBlend[2] = { 1.0f - br.frac, br.frac };
+            const int   passes       = (br.indexB != br.indexA) ? 2 : 1;
 
-            for (int row = 0; row < kv.rowCount; ++row) {
-                const RowSpan& span = kv.row(row);
-                if (span.empty())
+            for (int p = 0; p < passes; ++p) {
+                const float claim = T * nodeBlend[p];
+                if (claim == 0.0f)
                     continue;
 
-                const int dy = destY + kv.rowY(row);
-                if (dy < 0 || dy >= view.height)
+                const KernelView kv = kernel.kernel(kernelGridRadius(nodeIndex[p]),
+                                                    destX, destY, 0.0f, 0);
+                if (!kv.valid())
                     continue;
 
-                int xs = destX + span.xStart;
-                int xe = destX + span.xEnd;
-                int skip = 0;
-                if (xs < 0) {
-                    skip = -xs;
-                    xs   = 0;
+                for (int row = 0; row < kv.rowCount; ++row) {
+                    const RowSpan& span = kv.row(row);
+                    if (span.empty())
+                        continue;
+
+                    const int dy = destY + kv.rowY(row);
+                    if (dy < 0 || dy >= view.height)
+                        continue;
+
+                    int xs = destX + span.xStart;
+                    int xe = destX + span.xEnd;
+                    int skip = 0;
+                    if (xs < 0) {
+                        skip = -xs;
+                        xs   = 0;
+                    }
+                    if (xe >= view.width)
+                        xe = view.width - 1;
+                    if (xe < xs)
+                        continue;
+
+                    const int count = xe - xs + 1;
+                    const std::ptrdiff_t dstOffset =
+                        static_cast<std::ptrdiff_t>(dy) * view.width + xs;
+                    const float* w = kv.rowWeights(row) + skip;
+
+                    float* __restrict__ arrivalDst = view.arrival + dstOffset;
+                    for (int k = 0; k < count; ++k)
+                        arrivalDst[k] += w[k] * claim;
                 }
-                if (xe >= view.width)
-                    xe = view.width - 1;
-                if (xe < xs)
-                    continue;
-
-                const int count = xe - xs + 1;
-                const std::ptrdiff_t dstOffset =
-                    static_cast<std::ptrdiff_t>(dy) * view.width + xs;
-                const float* w = kv.rowWeights(row) + skip;
-
-                float* __restrict__ arrivalDst = view.arrival + dstOffset;
-                for (int k = 0; k < count; ++k)
-                    arrivalDst[k] += w[k] * T;
             }
         }
     }
