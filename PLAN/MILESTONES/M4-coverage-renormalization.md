@@ -286,7 +286,7 @@ behaviour, with no legacy knob. The "honest dip" contract is retired; docs, vali
     prototype and the compile-time switch are both removed — no production code keeps the switch.
   - size: L
 
-- [ ] M4.P2.T2 — Minimum 1px diameter and the bracketing-kernel blend
+- [x] M4.P2.T2 — Minimum 1px diameter and the bracketing-kernel blend
   - files: `src/DeepCDefocusKernel.h`, `src/DeepCDefocusScatter.h` (`kSharpRadiusPx`:503 = `0.5f`
     and the rMin contract comment at 499–502; `scatterFragmentSpans`:1810;
     `scatterFragmentSharp`:1896), `tests/test_defocus_scatter.cpp`
@@ -685,3 +685,31 @@ including.
   recommended dropping it. The user overruled: the blending machinery is expected to matter for
   later work, and P2.T2–T4 are to be implemented as the plan and the review file describe. This
   supersedes that recommendation; the phase is not optional and not deferred.
+
+- 2026-09-10 — **`scatterBackgroundCPU()` blends the residual's claim across the same bracket**
+  (M4.P2.T2; not in the brief's file list). With fragments blending but the virtual background
+  still snapping to the nearest node, the arrival plane carries a one-grid-step radius mismatch the
+  fill then divides by — the T5/T7 defect in a new coat. Caught by mutation: the pre-existing
+  "volumetric parent reconstruction is EXACT in front of focus" case fails without it.
+- 2026-09-10 — **"α=0.9 reads 0.900 within 1/255 across the whole near-focus ramp" is not
+  achievable at scene-g slope, and blending was never going to make it so** (M4.P2.T2). P2.T1's
+  own data has g_a0.9 at +0.0734 for both the shipped kernel and candidate B. At 0.5 px/row the
+  error is the intrinsic true-gradient term, kernel-independent; what blending removes is the
+  quantisation **surplus** on gentle ramps (0.005 px/row: nearest-node 4.63e-3/8.76e-3 → blend
+  2.26e-4/6.26e-5 at r≈6/16, both under 1/255). T2's verify is pinned in that form. **P3.T1 (m3)
+  must frame its α=0.9 acceptance the same way** — the reported artifact is the band, and at α<1
+  the gradient term is a floor no kernel scheme moves. At K=16 with fractional bucket splits the
+  same rig reads 0.845–0.85 whichever kernel is used: that is g4's composite-pooling artifact, which
+  P3.T3 re-pins, not a kernel-step effect.
+- 2026-09-10 — **One pin moved away from the grid-free truth at T2 and was re-pinned with a
+  reason**: "behind focus the residue is structural", K=8 cell 61.00 → 60.41 against exact-disc
+  truth 61.02, while K=2/3/4 moved *onto* the truth. Outer parts at 8.6–11.7 px sit in 0.14–0.27 px
+  brackets, and a linear blend of two 1px-soft discs has a softer edge than the single disc it
+  replaces. Plausible, recorded in the test, and **flagged for the milestone review** rather than
+  adjudicated here. The checkerboard `minArrival` band moved 0.9954–0.9960 → 0.9958–0.9966 and is
+  now predicted by the Nyquist model on the blend oracle (0.9962849 vs measured 0.996284).
+- 2026-09-10 — **`scatterKernelBin`/`sameScatterKernel` are unsound as of T2**, as predicted: the
+  flatten absorb (`DeepCDefocusScatter.cpp:1115`) and the claim/frontier bin (`:490`) are lossy at up
+  to half a bracket, and the comment block at `DeepCDefocusScatter.h:513–520` ("same node → same
+  KernelView") is stale. Both are P2.T3's to re-derive; the tree is knowingly in this state between
+  the two commits.
