@@ -344,7 +344,7 @@ behaviour, with no legacy knob. The "honest dip" contract is retired; docs, vali
 
 ## Phase 4.3: Scenes, re-spec, sign-off
 
-- [ ] M4.P3.T1 — Validation scene (m), cells m0–m3
+- [x] M4.P3.T1 — Validation scene (m), cells m0–m3
   - files: `tests/nuke/scenes.py` (new scene builder; the `SCENES` dict at :2965 currently holds
     keys a–l only), `tests/nuke/generate_scene_scripts.py`,
     `tests/nuke/scene_m_coverage_halo.nk` (new — the convention is
@@ -810,3 +810,19 @@ including.
   claims — numerator linear in visibility, divisor independent of it — is exactly what m4b pins.
   **Revisit marker:** whether holdout under a `D > 1` surplus *should* scale linearly is a design
   question about the area model, not the fill; it is parked here, not answered.
+
+- 2026-09-11 — **Scene (m) m0–m3 landed (`2a8b2c8`): `PASS=11 FAIL=0 XFAIL=1`.** m1's halo dip
+  5.96e-8 (T0: 0.2702 at the card corner, 0.5199 on the centre scanline, 16 px wide); m2's bloom
+  pinned at ten offsets from T0's numbers, new build bit-identical outside the edge and within
+  3.1e-5 inside; m3a 2.09e-6, m3b min row 0.89909 (T0 0.8743), m3c +0.0734 at y=127 matching the
+  consultant probe row-for-row. Every cell fails under at least one of four mutations (fill off,
+  alpha-only fill, symmetric `1/D`, background under-claim ×0.9); m2b's ratio arm survives all
+  four, honestly — a single-colour source cannot desync its pair unless the fill does.
+- 2026-09-11 — **At α<1 the colour:alpha target is not the plane colour**: `pointLayer(premult=False)`
+  has `DeepFromImage` premultiply already-premultiplied colour again, so an α=0.9 sample's R/A is
+  0.36, not 0.40. Scene (g) never asserted a ratio at α<1, which is why it never surfaced. Scene (m)
+  takes the target from a stock `DeepToImage` flatten of the same source. **P3.T3 should check
+  whether any re-pinned α<1 ratio in scenes (g)/(i) inherits this.**
+- 2026-09-11 — **m3c's band is the XFAIL trigger; the `[0, +0.100]` range is the physical envelope**
+  enforced additionally (`hardValue = inf` outside it) — g4's idiom. m2/m3 fix K=16 via
+  `settings.derive(k=16)` because the pins are K-specific; m0/m1 run at the run's K.
