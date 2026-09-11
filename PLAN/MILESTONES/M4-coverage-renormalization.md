@@ -356,9 +356,23 @@ behaviour, with no legacy knob. The "honest dip" contract is retired; docs, vali
     under the FG silhouette: dip depth ≤ 1/255, and the filled band's unpremult colour is **FG**
     colour (the fill must not invent BG colour). **m2** FG over nothing — bloom profile shipped as
     pinned numbers, cross-checked against P1.T1's preserved baseline `.so`; a single-depth scene,
-    so the conditional bloom property applies. **m3** the reported artifact — 45° ramp at scene-g
-    slope at α=1 and α=0.9, interior `|a−1| ≤ 1/255` and `|a−0.9| ≤ 1/255`, **including the
-    near-focus rows scene (g) excludes**.
+    so the conditional bloom property applies. **m3 — RE-SPECIFIED 2026-09-11 (user ruling, see `## Decisions`): three cells.**
+    The rig is the bake-off's ramp (size 86, focus 10, 0.5 CoC px/row through focus, K=16,
+    interior rows 66–190 **including the near-focus rows scene (g) excludes**).
+    **m3a (must-hold, the reported artifact):** α=1 — every row mean and every pixel
+    `|a−1| ≤ 1/255`, colour ratio within 1/255 of the source; consultant measured ≤ 2e-6,
+    K-invariant. **m3b (must-hold, the fill at α<1):** α=0.9, near-focus band `|y−128| ≤ 3` —
+    **no row reads below `0.9 − 1/255`** (one-sided by design: the deficit is the artifact, the
+    surplus is m3c's); measured min 0.8991 at the two `D<1` rows, T0 read 0.8743; colour ratio
+    within 1/255. **m3c (two-sided band pin with a hard outer bound):** α=0.9, worst near-focus
+    row in `|y−128| ≤ 8` reads **+0.0734 ± 0.004**, hard bound **[0, +0.100]** (the α-clamp
+    ceiling, measured at K=128 and under whole-bucket assignment); the note records `D = 1.201`
+    at rows 127/129, K- and kernel-independent, un-pooled +0.100, pooling −0.027 at K=16. Do NOT
+    re-pin the far field in m3c — it *is* g4 (0.0328 measured vs the 0.0325 pin); reference g4.
+    Mutation for m3a/m3b: force arrival to 1 (fill off) → rows 126/130 read 0.9723 / 0.874, both
+    fail. Independent oracle for every number: the consultant's probe at `/tmp/m3probe/`
+    (`ksweep.py`, `ksweep_base.json`, `probe_run2.txt`) — copy it to `~/deepc-baselines/M4-P3T1/`
+    before it is lost, and cite it in the commit.
   - verify: all four cells run under `run_validation.sh` and pass on the new build; **each is
     mutation-tested** (perturb the fill by a known amount and confirm the cell fails — a check
     nobody has made fail proves nothing); the committed `.nk` reproduces each cell exactly.
@@ -366,14 +380,19 @@ behaviour, with no legacy knob. The "honest dip" contract is retired; docs, vali
 
 - [ ] M4.P3.T2 — Validation scene (m), cells m4 and m5
   - files: `tests/nuke/scenes.py`, `tests/nuke/scene_m_coverage_halo.nk`
-  - approach: **m4 holdout commutation** — render the scene with and without a 0.5-alpha holdout
-    card in front of everything; the ratio of the two renders under the card must hold to float
-    precision at every pixel, **including the rows the fill changes**. This is the direct test that
-    the numerator scales linearly with visibility per fragment while the divisor ignores it, and it
-    subsumes the weaker "held-out alpha is never boosted" guard. **m5** — over-checkerboard EXR
+  - approach: **m4 holdout commutation — RE-SPECIFIED 2026-09-11 (user ruling, see `## Decisions`):
+    two cells.** "Ratio holds to float precision at every pixel" is false wherever arrival `D > 1`
+    — the area model's saturation, not the fill, sets the ratio there (0.60 at focus on the m3
+    ramp, 0.537 far field; exactly 0.500 only where `D ≤ 1`). **m4a:** a flat card at one depth
+    (`D ≤ 1` everywhere), rendered with and without a 0.5-alpha holdout card in front of
+    everything — the ratio of the two renders under the card holds to float precision at every
+    pixel. **m4b:** the m3 ramp — the fill multiplier `1/D` is **bit-identical** with and without
+    the card, and on the `D < 1` rows (126/130) the ratio is exactly 0.5. Together they are the
+    direct test that the numerator scales linearly with visibility per fragment while the divisor
+    ignores it, and subsume the weaker "held-out alpha is never boosted" guard. **m5** — over-checkerboard EXR
     writes of m1 and m3 for eyeballing, consumed by P3.T5.
-  - verify: m4 passes, and is mutation-tested by deliberately folding visibility into the arrival
-    deposit — it must fail; m5 writes readable EXRs at the expected paths.
+  - verify: m4a and m4b pass, each mutation-tested by deliberately folding visibility into the
+    arrival deposit — both must fail; m5 writes readable EXRs at the expected paths.
   - size: M
 
 - [ ] M4.P3.T3 — Re-spec and re-pin the retired honest-dip contract
@@ -441,10 +460,10 @@ behaviour, with no legacy knob. The "honest dip" contract is retired; docs, vali
 
 **Verification gate:** both doctest suites green; the full a–l+m harness green under
 `scripts/hostguard.sh` with `DEEPC_PLUGIN_DIR` pinned to a fresh `build/local-17.0/src`, with
-must-hold gates (a) size-0 bit-exact parity, (c), (d), (e), (h), (b)/(f) holdout parity and (m4)
-holdout commutation all passing, and every XFAIL carrying a hard outer bound; **m3 — the 45° ramp
-at α=1 and α=0.9 including the near-focus rows — is the acceptance check for the reported
-artifact**, and m1's dip ≤ 1/255 with FG-coloured fill the acceptance check for the halo; the user
+must-hold gates (a) size-0 bit-exact parity, (c), (d), (e), (h), (b)/(f) holdout parity and (m4a)/(m4b)
+holdout commutation all passing, and every XFAIL carrying a hard outer bound; **m3a/m3b — the 45° ramp
+at α=1, and the α=0.9 deficit floor, including the near-focus rows — are the acceptance checks
+for the reported artifact, with m3c's surplus band pinned two-sided**, and m1's dip ≤ 1/255 with FG-coloured fill the acceptance check for the halo; the user
 has signed off on the before/after checkerboard renders; `./docker-build.sh --linux` green (the
 release gate — local-build binaries need `GLIBC_2.29` and cannot load on RHEL 8); then PR to
 `master` from `claude/deep-defocus-node-plan-o0ld83`.
@@ -761,3 +780,33 @@ including.
 - 2026-09-11 — **Phase 4.2 complete** (T1 `—`, T2 `fc489c4`, T3 `bd5438c`, T4 `4924972`). Scene
   status entering Phase 4.3: c1, i2, i3, g4, g5 red as expected (c1 newly so); everything else
   in scenes (c) and (i) green; the full a–l roster is P3.T4's to explain against T0.
+
+- 2026-09-11 — **User ruling: m3 is split into m3a/m3b/m3c; the α=0.9 `≤ 1/255` arm is retired
+  as unachievable and not the fill's to fix.** Consultant decomposition on the bake-off ramp
+  (K=16, fill live): arrival `D = 1.201` at the two r=0.5 rows either side of focus (own delta
+  share + neighbours' discs), 1.072 across the far field, below 1 on exactly two rows (126/130) —
+  which the fill fixed (0.874 → 0.899). The near-focus +0.073 is g5's surplus (un-pooled it reads
+  the +0.100 α-clamp ceiling; K=16 pooling masks −0.027), the far-field −0.030 is g4's bucket
+  pooling — both pre-M4, both K- and kernel-independent; only 8 of 124 interior rows sit within
+  1/255 of 0.9. M4 changed exactly two rows on this ramp at α=0.9 and at α=1. Evidence:
+  `/tmp/m3probe/` (P3.T1 preserves it under `~/deepc-baselines/M4-P3T1/`).
+- 2026-09-11 — **Symmetric arrival division is rejected, with the reason the design never wrote
+  down.** The design's deficit-only text is about the per-bucket coverage plane, not the raw
+  arrival plane. Measured: post-composite `1/D` for `D > 1` double-corrects against the area
+  model's saturation (α=1 ramp reads 0.833 at focus — gate (c) dead). Pre-composite scaling of all
+  four planes makes the ramp exact but the arrival plane cannot tell a continuous surface's
+  adjoint surplus from a defocused neighbour legitimately overlapping an occluder: in-focus opaque
+  FG beside a defocused opaque BG bleeds **28%** BG (`D = 1.394`); an α=0.5 bloom over opaque BG
+  punches the BG to 0.859 — the halo artifact re-invented; and g4 worsens (−0.030 → −0.044) because
+  the cancelling surplus is removed. **Follow-up candidate, outside M4:** a depth-gated
+  ("same-surface") arrival plane is the only structural route to exact α<1 ramps; it has its own
+  open questions (volumetric identity, grazing-angle tolerance) and is new-milestone scale.
+- 2026-09-11 — **User ruling: m4 is split into m4a (flat `D ≤ 1` card, exact 0.5 ratio at every
+  pixel) and m4b (the ramp: fill multiplier bit-identical with and without the card, `D < 1` rows
+  ratio exactly 0.5) — recorded as something to potentially revisit.** Consultant measured the
+  with/without ratio on the ramp at 0.60 (focus) / 0.537 (far field) at α=1: wherever `D > 1` the
+  area model's saturation, not the fill, sets the ratio, so "float precision at every pixel" was
+  never true of this node and is not a fill regression. The commutation property the design
+  claims — numerator linear in visibility, divisor independent of it — is exactly what m4b pins.
+  **Revisit marker:** whether holdout under a `D > 1` surplus *should* scale linearly is a design
+  question about the area model, not the fill; it is parked here, not answered.
