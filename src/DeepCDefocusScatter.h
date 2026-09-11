@@ -3437,6 +3437,11 @@ void resolveBandCPU(const ScatterParams& params,
 //                                defaults (padY=101): windowHeight=64+2*101
 //                                =266, 2*4096*266*4 = 8,716,288 B — nearly
 //                                4x the arrival plane at the same defaults.
+// + (C+4)*W*(B+2*(padY+reach))*4 the background fill's surface map, in
+//                                `fill: background` only (zero otherwise):
+//                                one deepest surface per pixel of the fetch
+//                                window extended by the fill's search reach
+//                                on each side (surfaceMapBytesForWindow)
 // + (K+1)*W*B*4                  the holdout transmittance LUT, when a holdout
 //                                is connected — NOT counted by
 //                                bytesForBand(), measured 17.0 MB per 4096x64
@@ -3482,9 +3487,23 @@ void resolveBandCPU(const ScatterParams& params,
 // ---------------------------------------------------------------------------
 constexpr double kSoAResidentBytesPerFragment = 100.0;
 
+// The surface map's size, (C+4) floats per pixel over the window it is built
+// on.  Defined here rather than on SurfaceMap (DeepCDefocusFill.h) because
+// bandBudgetBytes() cannot include that header; SurfaceMap::bytesForWindow()
+// forwards to this so the two cannot drift.
+inline std::size_t surfaceMapBytesForWindow(int width, int height, int channelCount)
+{
+    const std::size_t w = (width  > 0) ? static_cast<std::size_t>(width)  : 0;
+    const std::size_t h = (height > 0) ? static_cast<std::size_t>(height) : 0;
+    const std::size_t c = (channelCount > 0) ? static_cast<std::size_t>(channelCount) : 0;
+    return (c + 4) * w * h * sizeof(float);
+}
+
 inline double bandBudgetBytes(int bucketCount, int channelCount, int width,
                               int height, bool holdoutConnected,
-                              double fragmentEstimate, int padY = 0)
+                              double fragmentEstimate, int padY = 0,
+                              FillMode fillMode = FillMode::Foreground,
+                              int fillReachPx = 0)
 {
     double bytes = static_cast<double>(
         BucketPlanes::bytesForBand(bucketCount, channelCount, width, height));
@@ -3494,6 +3513,11 @@ inline double bandBudgetBytes(int bucketCount, int channelCount, int width,
         bytes += static_cast<double>(bucketCount + 1)
                * static_cast<double>(width)
                * static_cast<double>(height) * 4.0;
+    }
+    if (fillMode == FillMode::Background) {
+        const int reach = (fillReachPx > 0) ? fillReachPx : 0;
+        bytes += static_cast<double>(surfaceMapBytesForWindow(
+            width, height + 2 * (padY + reach), channelCount));
     }
     if (fragmentEstimate > 0.0)
         bytes += fragmentEstimate * kSoAResidentBytesPerFragment;
@@ -3537,7 +3561,9 @@ inline BandPlan planBands(double memoryLimitBytes,
                           bool   holdoutConnected,
                           int    initialBandHeight,
                           FragmentsForBandHeight&& fragmentsForBandHeight,
-                          int    padY = 0)
+                          int    padY = 0,
+                          FillMode fillMode = FillMode::Foreground,
+                          int    fillReachPx = 0)
 {
     BandPlan plan;
     if (frameHeight <= 0 || width <= 0) {
@@ -3554,11 +3580,13 @@ inline BandPlan planBands(double memoryLimitBytes,
         b = frameHeight;
 
     double bytes = bandBudgetBytes(bucketCount, channelCount, width, b,
-                                   holdoutConnected, fragmentsForBandHeight(b), padY);
+                                   holdoutConnected, fragmentsForBandHeight(b), padY,
+                                   fillMode, fillReachPx);
     while (b > 1 && bytes > memoryLimitBytes) {
         b = (b / 2 > 0) ? b / 2 : 1;
         bytes = bandBudgetBytes(bucketCount, channelCount, width, b,
-                                holdoutConnected, fragmentsForBandHeight(b), padY);
+                                holdoutConnected, fragmentsForBandHeight(b), padY,
+                                fillMode, fillReachPx);
     }
 
     plan.bandHeight = b;

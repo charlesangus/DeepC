@@ -59,6 +59,7 @@
 #include "DDImage/Hash.h"
 #include "DDImage/Thread.h"
 
+#include "DeepCDefocusFill.h"
 #include "DeepCDefocusMath.h"
 #include "DeepCDefocusScatter.h"
 #include "DeepSampleOptimizer.h"
@@ -1298,6 +1299,7 @@ private:
         deepc::ScatterScratch   scatterScratch;
         deepc::BucketPlanes     planes;
         deepc::ResidualWindow   residual;   // virtual-background T/radius, full fetch window
+        deepc::SurfaceMap       surfaces;   // fill: background only; size 0 otherwise
         deepc::HoldoutSampleSoA holdoutSamples;
         deepc::HoldoutLut       holdoutLut;
 
@@ -1548,9 +1550,12 @@ private:
             deepc::clampi(static_cast<int>(std::ceil(2.0f * rMax)), 32, 256),
             fc.box.h());
 
+        const int fillReachPx = deepc::fillReachPx(_shared.fillSearchPx);
+
         const deepc::BandPlan plan = deepc::planBands(
             memoryLimitBytes(), fc.box.h(), K, C, W, holdoutConnected,
-            initialBandHeight, worstBandFragments, padY);
+            initialBandHeight, worstBandFragments, padY,
+            _shared.fillMode, fillReachPx);
 
         _shared.bandHeight   = plan.bandHeight;
         _shared.bandCount    = plan.bandCount;
@@ -1560,7 +1565,8 @@ private:
         if (_debugBands) {
             const double fragments = worstBandFragments(plan.bandHeight);
             const double perBand = deepc::bandBudgetBytes(
-                K, C, W, plan.bandHeight, holdoutConnected, fragments, padY);
+                K, C, W, plan.bandHeight, holdoutConnected, fragments, padY,
+                _shared.fillMode, fillReachPx);
             std::fprintf(stderr,
                          "DeepCDefocus: budget limitGB %.3f bandGB %.3f "
                          "maxInFlight %d promisedGB %.3f fragments %.0f\n",
@@ -1786,8 +1792,55 @@ private:
     }
 
     // ------------------------------------------------------------------
+    // DeepPixelSamples — one DeepPixel as the SampleView deepestSurface()
+    // reads. Same validity test as fillSampleRecords(): a pixel missing
+    // deep.front or alpha reads as empty.
+    // ------------------------------------------------------------------
+    struct DeepPixelSamples {
+        DeepPixel pixel;
+        const std::vector<Channel>* chans;
+        bool valid;
+        bool haveBack;
+
+        DeepPixelSamples(const DeepPixel& p, const std::vector<Channel>& c)
+            : pixel(p), chans(&c), valid(false), haveBack(false)
+        {
+            const ChannelMap& have = pixel.channels();
+            valid    = have.contains(Chan_DeepFront) && have.contains(Chan_Alpha);
+            haveBack = have.contains(Chan_DeepBack);
+        }
+
+        int count() const
+        {
+            return valid ? static_cast<int>(pixel.getSampleCount()) : 0;
+        }
+        float zFront(int i) const
+        {
+            return pixel.getUnorderedSample(static_cast<size_t>(i), Chan_DeepFront);
+        }
+        float zBack(int i) const
+        {
+            return haveBack ? pixel.getUnorderedSample(static_cast<size_t>(i), Chan_DeepBack)
+                            : zFront(i);
+        }
+        float alpha(int i) const
+        {
+            return pixel.getUnorderedSample(static_cast<size_t>(i), Chan_Alpha);
+        }
+        float channel(int i, int c) const
+        {
+            const Channel ch = (*chans)[static_cast<size_t>(c)];
+            return pixel.channels().contains(ch)
+                 ? pixel.getUnorderedSample(static_cast<size_t>(i), ch)
+                 : 0.0f;
+        }
+    };
+
+    // ------------------------------------------------------------------
     // computeBand() — one horizontal band, end to end
     //
+    //   (fill: background) pass 1: band +/- (padY + reach) source rows
+    //     -> SurfaceMap, the deepest staged surface per pixel
     //   fetch band +/- padY source rows -> flattenPixelToSoA
     //   (only if it can matter) fetch the band's own rows of holdout
     //     -> HoldoutSampleSoA -> HoldoutLut at the FRAME-GLOBAL boundary set
@@ -1822,8 +1875,33 @@ private:
 
         const ChannelSet need = neededDeepChannels();
 
-        DeepPlane deepRow;   // captured by both callbacks below
+        DeepPlane deepRow;   // captured by every callback below
         const auto fetchStart = std::chrono::steady_clock::now();
+
+        if (job.fillMode == deepc::FillMode::Background) {
+            const bool mapOk = deepc::buildSurfaceMap(
+                job.surfaces, *job.fp, *job.buckets,
+                fc.box.x(), fc.box.r(), fc.box.y(), fc.box.t(),
+                job.srcBox.x(), job.srcBox.r(), job.srcBox.y(), job.srcBox.t(),
+                y0, y1, job.padY, deepc::fillReachPx(job.fillSearchPx), C,
+                [&](int y) -> bool {
+                    if (aborted())
+                        return false;
+                    if (!job.src->deepEngine(y, job.srcBox.x(), job.srcBox.r(), need, deepRow)) {
+                        Iop::abort();
+                        return false;
+                    }
+                    return true;
+                },
+                [&](int x, int y) -> DeepPixelSamples {
+                    return DeepPixelSamples(deepRow.getPixel(y, x), *job.colorChannels);
+                });
+            if (!mapOk)
+                return false;
+        } else {
+            job.surfaces.clear();
+        }
+
         const bool fetchOk = deepc::buildResidualWindow(
             job.residual,
             fc.box.x(), fc.box.r(), fc.box.y(), fc.box.t(),

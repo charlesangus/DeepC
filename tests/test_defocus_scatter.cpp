@@ -42,6 +42,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
 
+#include "../src/DeepCDefocusFill.h"
 #include "../src/DeepCDefocusScatter.h"
 
 #include <algorithm>
@@ -2409,6 +2410,391 @@ TEST_CASE("resolveFillSearchPx: 0 (and NaN) is auto -- 2*radiusPx + 1; a manual 
     SUBCASE("a manual value above maxRadiusPx clamps to maxRadiusPx")
     {
         CHECK(resolveFillSearchPx(500.0f, radiusPx, maxRadiusPx) == maxRadiusPx);
+    }
+}
+
+// ===========================================================================
+// The background fill's surface map
+// ===========================================================================
+
+namespace {
+
+// The SampleView deepestSurface() reads, over a hand-built SampleRecord stack
+// -- the doctest-side stand-in for the node's DeepPixel adapter.
+struct VectorSamples {
+    const std::vector<SampleRecord>* v = nullptr;
+
+    int   count() const            { return v ? static_cast<int>(v->size()) : 0; }
+    float zFront(int i) const      { return (*v)[static_cast<std::size_t>(i)].zFront; }
+    float zBack(int i) const       { return (*v)[static_cast<std::size_t>(i)].zBack; }
+    float alpha(int i) const       { return (*v)[static_cast<std::size_t>(i)].alpha; }
+    float channel(int i, int c) const
+    {
+        return (*v)[static_cast<std::size_t>(i)].channels[static_cast<std::size_t>(c)];
+    }
+};
+
+// A tidy-disjoint stack: point samples and volumetric spans laid out front to
+// back with gaps, so tidyOverlapping() has nothing to cut and the flatten's
+// last-staged fragment is unambiguously the deepest sample's.  Optionally
+// followed by alpha-0 samples deeper than everything else, and shuffled so
+// the map's scan order is never the flatten's sorted order.
+std::vector<SampleRecord> fuzzDisjointStack(Lcg& rng, int n, int zeroAlphaTail,
+                                            int channelCount)
+{
+    std::vector<SampleRecord> v;
+    float z = rng.range(1.05f, 20.0f);
+    for (int s = 0; s < n; ++s) {
+        const bool  span      = (rng.unit() < 0.5f);
+        const float thickness = span ? rng.range(0.5f, 12.0f) : 0.0f;
+        const float a         = rng.range(0.001f, 1.0f);
+        std::vector<float> ch;
+        for (int c = 0; c < channelCount; ++c)
+            ch.push_back(a * rng.range(0.0f, 1.0f));
+        v.push_back(makeSample(z, z + thickness, a, ch));
+        z += thickness + rng.range(0.25f, 6.0f);
+    }
+    for (int s = 0; s < zeroAlphaTail; ++s) {
+        const float thickness = (rng.unit() < 0.5f) ? rng.range(0.5f, 3.0f) : 0.0f;
+        std::vector<float> ch(static_cast<std::size_t>(channelCount), 0.0f);
+        v.push_back(makeSample(z, z + thickness, 0.0f, ch));
+        z += thickness + rng.range(0.25f, 2.0f);
+    }
+    for (std::size_t i = v.size(); i > 1; --i) {
+        const std::size_t j = static_cast<std::size_t>(rng.intRange(0, static_cast<int>(i) - 1));
+        std::swap(v[i - 1], v[j]);
+    }
+    return v;
+}
+
+// The flatten's own answer for a stack: residualRadiusPx and the last staged
+// fragment's zBack, read off the scratch it leaves behind.
+struct LastStaged {
+    bool  any      = false;
+    float residualT = 1.0f;
+    float radiusPx = -1.0f;
+    float zBack    = -1.0f;
+};
+
+LastStaged flattenLastStaged(const FlattenParams& fp, const DepthBuckets& bk,
+                             int x, int y, std::vector<SampleRecord> v)
+{
+    SampleSoA soa;
+    soa.begin(fp.channelCount, fp.groups);
+    FlattenScratch scratch;
+    LastStaged r;
+    flattenPixelToSoA(fp, bk, x, y, v, scratch, soa, nullptr,
+                      &r.residualT, &r.radiusPx);
+    r.any = scratch.stagedCount > 0u;
+    if (r.any)
+        r.zBack = scratch.staged[scratch.stagedCount - 1].zBack;
+    return r;
+}
+
+} // namespace
+
+TEST_CASE("deepestSurface: depth and radius equal flattenPixelToSoA()'s last-staged "
+          "fragment and residualRadiusPx bit-exactly, fuzzed over tidy-disjoint stacks of "
+          "point samples, volumetric spans and alpha-0 tails")
+{
+    Lcg rng(0x5EAFu);
+    const CocParams    p  = makeStandardRig(10.0f);
+    const DepthBuckets bk = makeStandardBuckets(p, 16);
+    const int C = 3;
+
+    SUBCASE("on the optical axis, no ray-distance correction")
+    {
+        const FlattenParams fp = makeFlattenParams(p, C, /*preMerge*/ true);
+        int volumetricWinners = 0;
+        for (int iter = 0; iter < 600; ++iter) {
+            CAPTURE(iter);
+            const std::vector<SampleRecord> v =
+                fuzzDisjointStack(rng, rng.intRange(1, 6), rng.intRange(0, 2), C);
+
+            const LastStaged staged = flattenLastStaged(fp, bk, 0, 0, v);
+            REQUIRE(staged.any);
+
+            Surface s;
+            const VectorSamples view{&v};
+            const int i = deepestSurface(fp, bk, 0, 0, view, s);
+            REQUIRE(i >= 0);
+            CHECK(s.radiusPx == staged.radiusPx);
+            CHECK(s.zBack    == staged.zBack);
+
+            // The winner is the raw stack's deepest alpha > 0 sample, carried
+            // whole (its own span and alpha, not the staged tail part's).
+            const SampleRecord& w = v[static_cast<std::size_t>(i)];
+            CHECK(w.alpha > 0.0f);
+            CHECK(s.alpha  == w.alpha);
+            CHECK(s.zFront == w.zFront);
+            CHECK(s.zBack  == w.zBack);
+            for (std::size_t k = 0; k < v.size(); ++k)
+                if (v[k].alpha > 0.0f)
+                    CHECK(v[k].zBack <= w.zBack);
+            if (w.zBack > w.zFront)
+                ++volumetricWinners;
+        }
+        CHECK(volumetricWinners > 100);      // the span branch is exercised
+    }
+
+    SUBCASE("off-axis with depth_is_ray_distance: the per-pixel scale is applied")
+    {
+        FlattenParams fp = makeFlattenParams(p, C, /*preMerge*/ true);
+        fp.depthIsRayDistance = true;
+        fp.formatHeightPx     = 1080.0f;
+        for (int iter = 0; iter < 200; ++iter) {
+            CAPTURE(iter);
+            const int x = rng.intRange(0, 1919);
+            const int y = rng.intRange(0, 1079);
+            const std::vector<SampleRecord> v =
+                fuzzDisjointStack(rng, rng.intRange(1, 5), rng.intRange(0, 1), C);
+
+            const LastStaged staged = flattenLastStaged(fp, bk, x, y, v);
+            REQUIRE(staged.any);
+
+            Surface s;
+            const VectorSamples view{&v};
+            const int i = deepestSurface(fp, bk, x, y, view, s);
+            REQUIRE(i >= 0);
+            CHECK(s.radiusPx == staged.radiusPx);
+            CHECK(s.zBack    == staged.zBack);
+            // The correction always shrinks depth off-axis, so an unscaled
+            // map would read the raw zBack here and fail.
+            CHECK(s.zBack < v[static_cast<std::size_t>(i)].zBack);
+        }
+    }
+
+    SUBCASE("a span reaching past depthMax folds its tail parts like the flatten does")
+    {
+        const FlattenParams fp = makeFlattenParams(p, C, /*preMerge*/ false);
+        const std::vector<SampleRecord> v{makeSample(0.2f, 400.0f, 0.6f, {0.1f, 0.2f, 0.3f})};
+        const LastStaged staged = flattenLastStaged(fp, bk, 0, 0, v);
+        REQUIRE(staged.any);
+        Surface s;
+        const VectorSamples view{&v};
+        REQUIRE(deepestSurface(fp, bk, 0, 0, view, s) == 0);
+        CHECK(s.radiusPx == staged.radiusPx);
+        CHECK(s.zBack    == staged.zBack);
+    }
+}
+
+TEST_CASE("deepestSurface: an all-alpha-0 pixel and an empty pixel both read empty; NaN "
+          "and non-finite depths take the flatten's sanitising")
+{
+    const CocParams     p  = makeStandardRig(10.0f);
+    const DepthBuckets  bk = makeStandardBuckets(p, 16);
+    const FlattenParams fp = makeFlattenParams(p, 1, /*preMerge*/ true);
+
+    SUBCASE("empty")
+    {
+        const std::vector<SampleRecord> v;
+        Surface s;
+        CHECK(deepestSurface(fp, bk, 0, 0, VectorSamples{&v}, s) == -1);
+    }
+    SUBCASE("all alpha 0, including a NaN alpha")
+    {
+        const std::vector<SampleRecord> v{
+            makeSample(3.0f, 3.0f, 0.0f, {0.0f}),
+            makeSample(5.0f, 9.0f, -0.5f, {0.0f}),
+            makeSample(20.0f, 20.0f, std::numeric_limits<float>::quiet_NaN(), {0.0f})};
+        Surface s;
+        CHECK(deepestSurface(fp, bk, 0, 0, VectorSamples{&v}, s) == -1);
+        const LastStaged staged = flattenLastStaged(fp, bk, 0, 0, v);
+        CHECK(!staged.any);
+    }
+    SUBCASE("+inf zBack is kMaxDepth, a NaN front is 0, back-before-front collapses")
+    {
+        const std::vector<SampleRecord> v{
+            makeSample(std::numeric_limits<float>::quiet_NaN(), 2.0f, 0.5f, {0.1f}),
+            makeSample(9.0f, 4.0f, 0.5f, {0.1f}),
+            makeSample(30.0f, std::numeric_limits<float>::infinity(), 0.5f, {0.1f})};
+        Surface s;
+        CHECK(deepestSurface(fp, bk, 0, 0, VectorSamples{&v}, s) == 2);
+        CHECK(s.zFront == 30.0f);
+        CHECK(s.zBack  == DepthBuckets::kMaxDepth);
+        const LastStaged staged = flattenLastStaged(fp, bk, 0, 0, v);
+        REQUIRE(staged.any);
+        CHECK(s.radiusPx == staged.radiusPx);
+        CHECK(s.zBack    == staged.zBack);
+
+        const std::vector<SampleRecord> collapsed{makeSample(9.0f, 4.0f, 0.5f, {0.1f})};
+        CHECK(deepestSurface(fp, bk, 0, 0, VectorSamples{&collapsed}, s) == 0);
+        CHECK(s.zFront == 9.0f);
+        CHECK(s.zBack  == 9.0f);
+    }
+    SUBCASE("alpha above 1 clamps, ties on zBack go to the later index")
+    {
+        const std::vector<SampleRecord> v{
+            makeSample(7.0f, 7.0f, 3.0f, {0.1f}),
+            makeSample(7.0f, 7.0f, 0.25f, {0.2f})};
+        Surface s;
+        CHECK(deepestSurface(fp, bk, 0, 0, VectorSamples{&v}, s) == 1);
+        CHECK(s.alpha == 0.25f);
+        const std::vector<SampleRecord> one{makeSample(7.0f, 7.0f, 3.0f, {0.1f})};
+        CHECK(deepestSurface(fp, bk, 0, 0, VectorSamples{&one}, s) == 0);
+        CHECK(s.alpha == 1.0f);
+    }
+}
+
+TEST_CASE("SurfaceMap: bytesForWindow is (C+4) floats per pixel, and bandBudgetBytes carries "
+          "it in background mode only, over the window extended by the search reach")
+{
+    CHECK(SurfaceMap::bytesForWindow(4096, 64 + 2 * (101 + 33), 4) == 8u * 4096u * 332u * 4u);
+    CHECK(SurfaceMap::bytesForWindow(4096, 64 + 2 * (101 + 33), 4) == 43515904u);
+    CHECK(SurfaceMap::bytesForWindow(-1, 10, 4) == 0u);
+    CHECK(SurfaceMap::bytesForWindow(10, 0, 4) == 0u);
+    CHECK(SurfaceMap::bytesForWindow(10, 10, -3) == 4u * 100u * 4u);
+    CHECK(SurfaceMap::bytesForWindow(10, 10, 4) == surfaceMapBytesForWindow(10, 10, 4));
+
+    const double fg = bandBudgetBytes(16, 4, 4096, 64, false, 0.0, 101);
+    CHECK(fg == bandBudgetBytes(16, 4, 4096, 64, false, 0.0, 101, FillMode::Foreground, 33));
+    CHECK(bandBudgetBytes(16, 4, 4096, 64, false, 0.0, 101, FillMode::Background, 33) - fg
+          == doctest::Approx(43515904.0));
+    CHECK(bandBudgetBytes(16, 4, 4096, 64, false, 0.0, 101, FillMode::Background, 0) - fg
+          == doctest::Approx(8.0 * 4096.0 * 266.0 * 4.0));
+    CHECK(bandBudgetBytes(16, 4, 4096, 64, false, 0.0, 101, FillMode::Background, -5) - fg
+          == doctest::Approx(8.0 * 4096.0 * 266.0 * 4.0));
+
+    CHECK(fillReachPx(0.0f) == 0);
+    CHECK(fillReachPx(-2.0f) == 0);
+    CHECK(fillReachPx(std::numeric_limits<float>::quiet_NaN()) == 0);
+    CHECK(fillReachPx(std::numeric_limits<float>::infinity()) == 0);
+    CHECK(fillReachPx(16.0f) == 16);
+    CHECK(fillReachPx(16.01f) == 17);
+}
+
+TEST_CASE("SurfaceMap: a fresh map has size 0 and clear() keeps it there")
+{
+    SurfaceMap map;
+    CHECK(map.pixels() == 0);
+    CHECK(map.planes.size() == 0u);
+    map.allocate(0, 0, 4, 3, 2);
+    CHECK(map.pixels() == 12);
+    CHECK(map.planes.size() == 12u * 6u);
+    for (std::ptrdiff_t i = 0; i < map.pixels(); ++i)
+        CHECK(map.empty(i));
+    map.clear();
+    CHECK(map.pixels() == 0);
+    CHECK(map.planes.size() == 0u);
+    CHECK(!map.contains(0, 0));
+}
+
+TEST_CASE("buildSurfaceMap: the extended window is band +/- (padY + reach) clipped to the "
+          "output box; only srcBox rows are fetched; cells outside srcBox read empty")
+{
+    const CocParams     p  = makeStandardRig(10.0f);
+    const DepthBuckets  bk = makeStandardBuckets(p, 16);
+    const int C = 2;
+    const FlattenParams fp = makeFlattenParams(p, C, /*preMerge*/ true);
+
+    // Output box 40x40; srcBox strictly inside; a band in the middle whose
+    // padY + reach reaches past srcBox on both sides but stays inside the
+    // output box at the bottom and clips at the top.
+    const int outX0 = 0, outX1 = 40, outY0 = 0, outY1 = 40;
+    const int srcX0 = 10, srcX1 = 30, srcY0 = 8, srcY1 = 34;
+    const int bandY0 = 16, bandY1 = 24, padY = 5, reach = 12;
+
+    // Every srcBox pixel carries one point sample whose depth encodes (x, y)
+    // and an alpha-0 sample deeper than it; pixels on one column carry
+    // nothing at all.
+    const auto stackAt = [&](int x, int y) {
+        std::vector<SampleRecord> v;
+        if (x == 17)
+            return v;
+        const float z = 2.0f + 0.01f * static_cast<float>(x) + 0.5f * static_cast<float>(y);
+        v.push_back(makeSample(z + 50.0f, z + 50.0f, 0.0f, {0.0f, 0.0f}));
+        v.push_back(makeSample(z, z, 0.5f, {0.1f * static_cast<float>(x), 0.2f * static_cast<float>(y)}));
+        return v;
+    };
+
+    SurfaceMap map;
+    std::vector<int> rowsFetched;
+    std::vector<SampleRecord> row;    // the "fetched" pixel, rebuilt per column
+    const bool ok = buildSurfaceMap(
+        map, fp, bk, outX0, outX1, outY0, outY1, srcX0, srcX1, srcY0, srcY1,
+        bandY0, bandY1, padY, reach, C,
+        [&](int y) -> bool { rowsFetched.push_back(y); return true; },
+        [&](int x, int y) -> VectorSamples {
+            row = stackAt(x, y);
+            return VectorSamples{&row};
+        });
+    REQUIRE(ok);
+
+    // Extent: rows [16-17, 24+17) = [-1, 41) clipped to [0, 40); full X.
+    CHECK(map.x == outX0);
+    CHECK(map.width == outX1 - outX0);
+    CHECK(map.y == 0);
+    CHECK(map.height == 40);
+    CHECK(map.channelCount == C);
+
+    // Visiting: srcBox rows only, [8, 34), in order.
+    REQUIRE(rowsFetched.size() == static_cast<std::size_t>(srcY1 - srcY0));
+    for (std::size_t i = 0; i < rowsFetched.size(); ++i)
+        CHECK(rowsFetched[i] == srcY0 + static_cast<int>(i));
+
+    int filled = 0, emptyInside = 0, emptyOutside = 0;
+    for (int y = map.y; y < map.y + map.height; ++y) {
+        for (int x = map.x; x < map.x + map.width; ++x) {
+            const std::ptrdiff_t i = map.index(x, y);
+            const bool inSrc = x >= srcX0 && x < srcX1 && y >= srcY0 && y < srcY1;
+            if (!inSrc) {
+                CHECK(map.empty(i));
+                ++emptyOutside;
+                continue;
+            }
+            if (x == 17) {
+                CHECK(map.empty(i));
+                ++emptyInside;
+                continue;
+            }
+            const std::vector<SampleRecord> v = stackAt(x, y);
+            const LastStaged staged = flattenLastStaged(fp, bk, x, y, v);
+            REQUIRE(staged.any);
+            CHECK(!map.empty(i));
+            CHECK(map.plane(SurfaceMap::kZFront)[i] == v[1].zFront);
+            CHECK(map.plane(SurfaceMap::kZBack)[i]  == staged.zBack);
+            CHECK(map.plane(SurfaceMap::kAlpha)[i]  == 0.5f);
+            CHECK(map.plane(SurfaceMap::kRadius)[i] == staged.radiusPx);
+            CHECK(map.plane(SurfaceMap::kChannel0)[i]     == v[1].channels[0]);
+            CHECK(map.plane(SurfaceMap::kChannel0 + 1)[i] == v[1].channels[1]);
+            ++filled;
+        }
+    }
+    CHECK(filled == (srcX1 - srcX0 - 1) * (srcY1 - srcY0));
+    CHECK(emptyInside == (srcY1 - srcY0));
+    CHECK(emptyOutside == 40 * 40 - (srcX1 - srcX0) * (srcY1 - srcY0));
+
+    SUBCASE("a band near the bottom: the extent runs past srcBox to row 39 while "
+            "visiting stops at srcBox's last row")
+    {
+        rowsFetched.clear();
+        const bool ok2 = buildSurfaceMap(
+            map, fp, bk, outX0, outX1, outY0, outY1, srcX0, srcX1, srcY0, srcY1,
+            /*bandY0*/ 30, /*bandY1*/ 36, /*padY*/ 2, /*reach*/ 1, C,
+            [&](int y) -> bool { rowsFetched.push_back(y); return true; },
+            [&](int x, int y) -> VectorSamples {
+                row = stackAt(x, y);
+                return VectorSamples{&row};
+            });
+        REQUIRE(ok2);
+        CHECK(map.y == 27);
+        CHECK(map.height == 39 - 27);
+        REQUIRE(rowsFetched.size() == 7u);       // [27, 34)
+        CHECK(rowsFetched.front() == 27);
+        CHECK(rowsFetched.back() == 33);
+    }
+
+    SUBCASE("a failing fetch aborts the build")
+    {
+        const bool ok3 = buildSurfaceMap(
+            map, fp, bk, outX0, outX1, outY0, outY1, srcX0, srcX1, srcY0, srcY1,
+            bandY0, bandY1, padY, reach, C,
+            [&](int y) -> bool { return y < 12; },
+            [&](int x, int y) -> VectorSamples {
+                row = stackAt(x, y);
+                return VectorSamples{&row};
+            });
+        CHECK(!ok3);
     }
 }
 
