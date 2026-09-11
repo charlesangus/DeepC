@@ -1,4 +1,5 @@
-"""Validation scenes (a)-(l) from the M1 Design reference's scene list.
+"""Validation scenes (a)-(l) from the M1 Design reference's scene list,
+plus (m), the coverage fill.
 
 Every scene builds its graph from Python nodes (no committed ``.nk`` — that is
 M1.P5.T3's job), renders through ``harness.render()`` and reports a number.
@@ -2985,6 +2986,571 @@ def sceneL(settings):
     return checks
 
 
+# --- scene (m) ---------------------------------------------------------------
+
+# The halo family (m0/m1/m2) shares ONE foreground card: an opaque 96x96 card
+# at z=4 in front of a focal plane at z=20, so its CoC radius is
+# size * |1 - focus/z| = 4 * 4 = 16 px EXACTLY -- a node of the kernel grid
+# (512/32), so the bloom pinned in m2 is the disc at that node with no blend
+# term, and the same numbers describe it whichever way fractional radii are
+# rasterised.  The background sits ON the focal plane: it cannot scatter at
+# all, so every pixel inside the silhouette is fed by the foreground alone and
+# any background colour inside it would have to be invented.
+HALO_SILHOUETTE = (80, 80, 176, 176)
+HALO_NEAR_Z, HALO_FAR_Z = 4.0, 20.0
+HALO_FOCUS, HALO_SIZE = 20.0, 4.0
+HALO_RADIUS = HALO_SIZE * abs(1.0 - HALO_FOCUS / HALO_NEAR_Z)      # 16 px
+# The two cards share G and B and differ ONLY in R.  G/A and B/A are then
+# known analytically at every pixel whatever the FG:BG mix -- the colour:alpha
+# assertion beside every alpha assertion below is stated on those two -- while
+# R/A reads the mix itself: 0.80 is pure foreground, 0.20 pure background.
+HALO_FG = (0.80, 0.55, 0.30)
+HALO_BG = (0.20, 0.55, 0.30)
+
+
+def haloForeground():
+    """The defocused card alone: one opaque point sample per pixel inside
+    the silhouette, nothing anywhere else."""
+    return pointLayer(rectangle2d(HALO_SILHOUETTE, HALO_FG + (1.0,)),
+                      HALO_NEAR_Z, keepZeroAlpha=False, premult=True)
+
+
+def haloBackground():
+    """A full-frame opaque card on the focal plane."""
+    return pointLayer(constant2d(HALO_BG + (1.0,)), HALO_FAR_Z,
+                      keepZeroAlpha=False, premult=True)
+
+
+def haloSparse():
+    """The same visible content with EXACTLY ONE sample per pixel: foreground
+    inside the silhouette, background outside, and no background sample
+    behind the card anywhere -- what a renderer that terminates opaque hits
+    emits, and the content the halo appears on.  (Scene (i) builds its
+    sparse source the same way; ``depthRampLayer()`` documents why a single
+    ``DeepFromImage`` over a per-pixel depth is the only builder that can.)"""
+    x0, y0, x1, y1 = HALO_SILHOUETTE
+    inside = "(x>=%d && x<%d && y>=%d && y<%d)" % (x0, x1, y0, y1)
+    image = nuke.nodes.Expression(inputs=[constant2d((0.0, 0.0, 0.0, 0.0))])
+    for index, (fg, bg) in enumerate(zip(HALO_FG, HALO_BG)):
+        image["expr%d" % index].setValue("%s ? %g : %g" % (inside, fg, bg))
+    image["expr3"].setValue("1.0")
+    return depthRampLayer(image, "%s ? %g : %g"
+                          % (inside, HALO_NEAR_Z, HALO_FAR_Z))
+
+
+def _cropToDepth(source, zNear, zFar):
+    """Keep only the samples whose depth lies in [zNear, zFar]: the way to
+    ask a deep source which of its layers is actually present at a pixel."""
+    node = nuke.nodes.DeepCrop(inputs=[source])
+    node["use_bbox"].setValue(False)
+    node["use_znear"].setValue(True)
+    node["use_zfar"].setValue(True)
+    node["znear"].setValue(float(zNear))
+    node["zfar"].setValue(float(zFar))
+    return node
+
+
+def _worstUnpremult(image, channel, target, box, floor=1.0e-03):
+    """Worst |channel/A - target| over ``box``, skipping pixels whose alpha is
+    below ``floor`` (an unpremultiplied ratio means nothing there).  Returns
+    (worst, (x, y), pixels measured)."""
+    x0, y0, x1, y1 = box
+    worst, worstAt, count = 0.0, (x0, y0), 0
+    for y in range(y0, y1):
+        alphaRow = image.row("A", y)
+        colourRow = image.row(channel, y)
+        for x in range(x0, x1):
+            i = x - image.x0
+            if not (0 <= i < image.width):
+                continue
+            alpha = alphaRow[i]
+            if alpha < floor:
+                continue
+            count += 1
+            deviation = abs(colourRow[i] / alpha - target)
+            if deviation > worst:
+                worst, worstAt = deviation, (x, y)
+    return worst, worstAt, count
+
+
+def _outsetBox(box, outset):
+    return insetBox(box, -outset)
+
+
+def sceneM(settings):
+    """Coverage fill: the silhouette halo, and the bands either side of focus.
+
+    The node is a SCATTER: each source fragment spreads a unit disc, and where
+    the CoC varies across a destination pixel's neighbourhood the weight that
+    ARRIVES there does not sum to 1.  A defocused foreground scatters off its
+    own silhouette, and the pixels it vacates have nothing behind them unless
+    the renderer wrote occluded samples there -- which a renderer that
+    terminates opaque hits never does -- so the silhouette used to carry a
+    reduced-opacity halo about one CoC wide (scene (i) once pinned it as the
+    specified "honest dip").  A plane receding through focus at 0.5 CoC px per
+    scanline loses weight on the rows either side of the focal line for the
+    same reason: adjacent scanlines genuinely rasterise different discs.  2D
+    defocus nodes show neither, because a flat image has a source pixel under
+    every output pixel and their weight sums are ~1 everywhere.
+
+    The node now fills both: every fragment's share of its source pixel's unit
+    area is deposited, kernel-weighted, into an ARRIVAL plane; the pixel's
+    un-covered residual (1 for an empty pixel) is deposited too, as a virtual
+    background that carries no colour; and a destination pixel whose arrival
+    falls short of 1 has its premultiplied pair scaled up by 1/arrival, never
+    down.  This scene is the acceptance check for that fill, stated on the
+    two reported artifacts:
+
+      m0  the control -- the SAME silhouette with the occluded background
+          samples present (a DeepMerge) must be untouched: alpha 1 and the
+          source's colour:alpha ratio, INCLUDING the edge band where those
+          occluded samples enter the numerator but not the divisor, the fill
+          pushes alpha past 1 and the clamp has to bring the pair back down
+          TOGETHER.
+      m1  the halo -- one sample per pixel, no background behind the card:
+          the dip is gone, and the filled band is FOREGROUND colour.  The
+          fill scales what arrived; it invents no background.
+      m2  the same card over NOTHING -- the bloom must be UNCHANGED, pinned
+          as a two-sided profile.  This holds only because the scene is
+          single-depth: the empty pixels' virtual background scatters at the
+          farthest measured depth's CoC, which for one object IS its own
+          CoC, so the object's disc and its neighbours' residual discs tile
+          to exactly 1 and the fill never engages.  With far geometry
+          elsewhere in the frame an object's fringe over emptiness CAN be
+          boosted where its kernel is smaller than the background's; that
+          case is documented, not pinned here.
+      m3  the ramp -- scene (g)'s ground plane at its own deliberately steep
+          slope (0.5 CoC px per scanline), read over EVERY interior row
+          including the near-focus ones scene (g) excludes: at alpha 1 the
+          field is flat (m3a); at alpha 0.9 no row reads short (m3b), and the
+          near-focus SURPLUS that the deficit-only fill cannot touch, and
+          was never meant to, is pinned where it stands (m3c).
+
+    Every pin here was measured on an independent probe of the same
+    geometry, never read off the build under test, and every alpha assertion
+    carries a colour:alpha assertion beside it: "clamp one of a premultiplied
+    pair and not the other" has appeared three times in this node.
+    """
+    checks = []
+    box = formatBox()
+    silhouette = HALO_SILHOUETTE
+    radius = HALO_RADIUS
+    reach = int(math.ceil(radius)) + 3
+    # Inside band: from the silhouette edge to one CoC (+3 px) inward -- the
+    # band the halo occupies.  Outside band: the same width outward, where the
+    # foreground bloom lands over the background.  The annulus is both.
+    deep = insetBox(silhouette, reach)
+    wide = _outsetBox(silhouette, reach)
+    ratioTol = 1.0 / 255.0
+
+    def annulusStats(image, channel):
+        """min/max/mean over the annulus |edge distance| <= reach."""
+        x0, y0, x1, y1 = deep
+
+        def inDeep(x, y):
+            return x0 <= x < x1 and y0 <= y < y1
+        return channelStats(image, channel, wide, exclude=inDeep)
+
+    def insideBandStats(image, channel):
+        x0, y0, x1, y1 = deep
+
+        def inDeep(x, y):
+            return x0 <= x < x1 and y0 <= y < y1
+        return channelStats(image, channel, silhouette, exclude=inDeep)
+
+    def insideBandRatio(image, channel, target):
+        """Worst unpremultiplied deviation over the inside band only."""
+        x0, y0, x1, y1 = deep
+        strips = [(silhouette[0], silhouette[1], silhouette[2], y0),
+                  (silhouette[0], y1, silhouette[2], silhouette[3]),
+                  (silhouette[0], y0, x0, y1),
+                  (x1, y0, silhouette[2], y1)]
+        worst, worstAt, count = 0.0, None, 0
+        for strip in strips:
+            w, at, n = _worstUnpremult(image, channel, target, strip)
+            count += n
+            if w > worst or worstAt is None:
+                worst, worstAt = w, at
+        return worst, worstAt, count
+
+    def defocus(source, cell=None):
+        cell = cell or settings
+        return makeDefocus(cell, source, size=HALO_SIZE,
+                           focusDistance=HALO_FOCUS, cocMode="manual")
+
+    # ------------------------------------------------------------------
+    # m0: the occluded-samples-present control.
+    # ------------------------------------------------------------------
+    resetScript()
+    control = render(settings, defocus(deepMerge([haloForeground(),
+                                                  haloBackground()])),
+                     "m_control", box=box)
+    controlAlpha = channelStats(control, "A", silhouette)
+    checks.append(tolCheck(
+        "m", "m0 occluded samples present: silhouette alpha |a-1|",
+        max(abs(controlAlpha.minimum - 1.0), abs(controlAlpha.maximum - 1.0)),
+        1.0 / 255.0,
+        population="%d px, the whole silhouette incl. the %d px edge band"
+                   % (controlAlpha.count, reach),
+        note="min %.7f at %s max %.7f; an opaque background behind an opaque "
+             "card is alpha 1 by construction -- this is the control for m1, "
+             "and where the edge band's occluded samples are scattered into "
+             "the numerator but not the divisor the fill overshoots and the "
+             "clamp must bring the pair back down together (m0b)"
+             % (controlAlpha.minimum, controlAlpha.minAt,
+                controlAlpha.maximum)))
+    worstRatio, worstAt, ratioCount = 0.0, None, 0
+    for channel, target in (("G", HALO_FG[1]), ("B", HALO_FG[2])):
+        w, at, n = _worstUnpremult(control, channel, target, silhouette)
+        ratioCount = n
+        if w > worstRatio or worstAt is None:
+            worstRatio, worstAt = w, (channel,) + at
+    # The occluded background REALLY shows through the defocused edge: R/A
+    # on the last foreground column at mid-height is the FG:BG mix at the
+    # bloom's half-way point, not 0.80.  Without this the ratio check above
+    # would be satisfied by a card with nothing behind it.
+    edgeMix = (control.at("R", silhouette[2] - 1, 128)
+               / control.at("A", silhouette[2] - 1, 128))
+    checks.append(boolCheck(
+        "m", "m0b ...and the colour:alpha ratio is the source's (G/A, B/A)",
+        worstRatio <= ratioTol and HALO_BG[0] + 0.1 < edgeMix < HALO_FG[0] - 0.1,
+        "worst |c/a - src| %.2e (%s@(%d,%d)); edge mix R/A %.4f"
+        % (worstRatio, worstAt[0], worstAt[1], worstAt[2], edgeMix),
+        "<= %.1e; edge R/A in (%.2f, %.2f)"
+        % (ratioTol, HALO_BG[0] + 0.1, HALO_FG[0] - 0.1),
+        population="%d px x 2 channels" % ratioCount,
+        note="FG and BG share G and B, so both ratios are known at every "
+             "pixel whatever the mix; R/A at the silhouette's last column "
+             "reads the mix itself (0.80 pure FG, 0.20 pure BG) and proves "
+             "the occluded background is present and visible through the "
+             "defocused edge"))
+
+    # ------------------------------------------------------------------
+    # m1: the halo.
+    # ------------------------------------------------------------------
+    # m1a: the sparse source really is sparse -- crop each source to the
+    # background's depth and flatten: the sparse one must have NO sample
+    # there inside the silhouette, the DeepMerge twin must have its full
+    # background.  Without this, "the dip is gone" proves nothing about the
+    # fill, because a source with hidden samples never dipped (m0).
+    resetScript()
+    sparseBg = render(settings,
+                      deepToImage(_cropToDepth(haloSparse(), HALO_FAR_Z - 5.0,
+                                               HALO_FAR_Z + 5.0)),
+                      "m_sparse_bg_only", box=box)
+    resetScript()
+    mergedBg = render(settings,
+                      deepToImage(_cropToDepth(
+                          deepMerge([haloForeground(), haloBackground()]),
+                          HALO_FAR_Z - 5.0, HALO_FAR_Z + 5.0)),
+                      "m_merged_bg_only", box=box)
+    sparseHidden = channelStats(sparseBg, "A", silhouette)
+    mergedHidden = channelStats(mergedBg, "A", silhouette)
+    sparseOutside = channelStats(sparseBg, "A", (0, 0, FORMAT_W, silhouette[1]))
+    checks.append(boolCheck(
+        "m", "m1a guard: the sparse source has NO background behind the card",
+        sparseHidden.maximum == 0.0 and mergedHidden.minimum == 1.0
+        and sparseOutside.minimum == 1.0,
+        "sparse %.1f, DeepMerge twin %.1f behind the card; sparse %.1f outside"
+        % (sparseHidden.maximum, mergedHidden.minimum, sparseOutside.minimum),
+        "0 / 1 / 1",
+        population="%d px behind the card" % sparseHidden.count,
+        note="both sources DeepCrop'd to the background depth and flattened: "
+             "the sparse one has exactly one sample per pixel, so nothing "
+             "survives the crop inside the silhouette, while the twin keeps "
+             "its occluded background"))
+
+    resetScript()
+    halo = render(settings, defocus(haloSparse()), "m_halo", box=box)
+    haloAnnulus = annulusStats(halo, "A")
+    dipDepth = 1.0 - haloAnnulus.minimum
+    haloRow = [halo.at("A", x, 128) for x in range(silhouette[0],
+                                                     silhouette[2])]
+    dipWidth = 0
+    for value in haloRow:
+        if value >= 0.999:
+            break
+        dipWidth += 1
+    checks.append(tolCheck(
+        "m", "m1 the halo: alpha dip around the silhouette (1 - min alpha)",
+        dipDepth, 1.0 / 255.0,
+        population="%d px, |edge distance| <= %d px, both sides"
+                   % (haloAnnulus.count, reach),
+        note="min %.7f at %s max %.7f; dip width on y=128 from the edge "
+             "inward %d px (CoC radius %.0f px).  The SAME source on the "
+             "pre-fill plugin read min 0.2702 at the card's corner, 0.5199 "
+             "on this scanline's last foreground column and a 16 px dip "
+             "width -- the halo the fill exists to remove"
+             % (haloAnnulus.minimum, haloAnnulus.minAt, haloAnnulus.maximum,
+                dipWidth, radius)))
+    worstRatio, worstAt, ratioCount = 0.0, None, 0
+    for channel, target in (("R", HALO_FG[0]), ("G", HALO_FG[1]),
+                            ("B", HALO_FG[2])):
+        w, at, n = insideBandRatio(halo, channel, target)
+        ratioCount = n
+        if w > worstRatio or worstAt is None:
+            worstRatio, worstAt = w, (channel,) + at
+    checks.append(tolCheck(
+        "m", "m1b ...and the filled band is FOREGROUND colour (R/A, G/A, B/A)",
+        worstRatio, ratioTol,
+        population="%d px x 3 channels, the inside band" % ratioCount,
+        note="worst %s@(%d,%d); R separates the two cards (FG 0.80, BG 0.20) "
+             "and the background is ON the focal plane, so it cannot scatter "
+             "inward: every unit of background colour inside the silhouette "
+             "would be invented.  The fill scales the foreground that arrived "
+             "and adds nothing of its own"
+             % worstAt))
+
+    # ------------------------------------------------------------------
+    # m2: the same card over nothing -- the bloom, pinned.
+    # ------------------------------------------------------------------
+    # Pinned at the PRE-FILL plugin's reading of this exact rig (the
+    # preserved baseline, K=16), NOT at this build's: the property is that
+    # the fill leaves a single-depth bloom alone, so the oracle is the render
+    # that had no fill.  Two-sided on purpose -- a boosted fringe and a
+    # flattened one are both wrong.  The band is 1e-3: the arrival plane
+    # accumulates ~pi*r^2 = 800 float terms per pixel here and lands within
+    # 3.1e-5 of the baseline on the inside points (bit-identical outside),
+    # while the nearest fill mutation that reaches this rig -- a 10%
+    # under-claim by the virtual background -- moves the edge pixel by
+    # +0.026 and the -8 / +7 px points by +0.017 / +0.018.  (Forcing the
+    # fill OFF leaves every point bit-identical to its pin, which is the
+    # other half of the statement: the pins ARE the no-fill numbers.)
+    #
+    # The card's own pre-fill reading and this build's differ in NO other
+    # way: the flat interior, the 16 px extent and the colour ratio are all
+    # the same numbers on both.
+    M2_BAND = 1.0e-03
+    m2Cell = settings.derive(k=16)
+    resetScript()
+    bloom = render(m2Cell, defocus(haloForeground(), m2Cell), "m_bloom",
+                   box=box)
+    edge = silhouette[2]                    # first column OUTSIDE the card
+    # (offset from that column, baseline alpha): the last foreground pixel
+    # is -1, the first empty one 0; +15 is the last pixel the 16 px disc
+    # reaches and +16 must be exactly 0.
+    M2_PROFILE = [
+        (-15, 0.983015), (-12, 0.914358), (-8, 0.787027), (-4, 0.638170),
+        (-1, 0.519894), (0, 0.480109), (3, 0.361833), (7, 0.212976),
+        (11, 0.085645), (14, 0.016988),
+    ]
+    worstDelta, worstOffset = 0.0, M2_PROFILE[0][0]
+    profileText = []
+    for offset, pin in M2_PROFILE:
+        value = bloom.at("A", edge + offset, 128)
+        profileText.append("%+d:%.6f" % (offset, value))
+        if abs(value - pin) > worstDelta:
+            worstDelta, worstOffset = abs(value - pin), offset
+    beyond = bloom.at("A", edge + 16, 128)
+    last = bloom.at("A", edge + 15, 128)
+    checks.append(boolCheck(
+        "m", "m2 K=16 card over nothing: bloom profile across the edge (y=128)",
+        worstDelta <= M2_BAND and beyond == 0.0 and last > 0.0,
+        "worst |a - pin| %.2e at %+d px; +15: %.6f, +16: %.7f"
+        % (worstDelta, worstOffset, last, beyond),
+        "each of %d points within +/- %.0e of its pin; +16 exactly 0"
+        % (len(M2_PROFILE), M2_BAND),
+        population="offsets %s from the card's right edge"
+                   % ",".join("%+d" % o for o, _ in M2_PROFILE),
+        note="reads " + " ".join(profileText) + "; pins are the pre-fill "
+             "plugin's reading of this rig, K=16, and the bloom is unchanged "
+             "ONLY because the scene is single-depth (the empty pixels' "
+             "virtual background scatters at this card's own CoC, so the "
+             "discs tile to exactly 1); a near object with far geometry "
+             "elsewhere in the frame is documented, not pinned"))
+    worstRatio, worstAt, ratioCount = 0.0, None, 0
+    for channel, target in (("R", HALO_FG[0]), ("G", HALO_FG[1]),
+                            ("B", HALO_FG[2])):
+        w, at, n = _worstUnpremult(bloom, channel, target, wide)
+        ratioCount = n
+        if w > worstRatio or worstAt is None:
+            worstRatio, worstAt = w, (channel,) + at
+    checks.append(tolCheck(
+        "m", "m2b ...and the bloom's colour:alpha ratio is the card's",
+        worstRatio, ratioTol,
+        population="%d px with alpha >= 1e-3, silhouette + %d px" % (ratioCount,
+                                                                     reach),
+        note="worst %s@(%d,%d); one colour in, so every pixel that carries any "
+             "alpha must carry it at exactly the card's ratio" % worstAt))
+
+    # ------------------------------------------------------------------
+    # m3: the ramp, every interior row, near-focus rows included.
+    # ------------------------------------------------------------------
+    # Scene (g)'s rig exactly -- size 86 at focus 10 is 0.5 CoC px per
+    # scanline, 64 px at the frame edges -- and scene (g)'s interior bound,
+    # but WITHOUT its near-focus exclusion: the rows it excludes are the ones
+    # this fill is for.  K is fixed at 16 like g4/g5, so the pins compare
+    # across runs whatever --k says.
+    #
+    # WHAT THE FILL DID HERE, AND WHAT IT DID NOT (the decomposition that
+    # split this into three cells).  Arrival on this ramp at K=16 reads
+    # 1.201 at the two r=0.5 rows either side of focus (the row's own
+    # delta share plus its neighbours' discs), ~1.07 across the far field,
+    # and BELOW 1 on exactly two rows -- 126 and 130, at 0.972.  Those two
+    # are the rows the fill moves: 0.972 -> 1 at alpha 1, 0.874 -> 0.899 at
+    # alpha 0.9.  Every other row carries a SURPLUS, which deficit-only
+    # division leaves alone by construction: at alpha 1 the clamp absorbs it
+    # (g1 reads 1e-08 on the same weights); at alpha 0.9 it is visible --
+    # +0.073 on the r=0.5 rows (g5's over-read arm: un-pooled it reads the
+    # +0.100 alpha-clamp ceiling, and K=16's bucket pooling masks 0.027 of
+    # it) and -0.030 across the far field (g4's head-and-rear pooling,
+    # 0.0328 here against g4's 0.0325 pin).  Both pre-date the fill, both
+    # are K- and kernel-independent, and neither is the fill's to fix -- a
+    # symmetric 1/D was tried and rejected: post-composite it double-corrects
+    # against the area model's saturation (alpha 1 reads 0.833 at focus),
+    # pre-composite it cannot tell a continuous surface's adjoint surplus
+    # from a defocused neighbour legitimately overlapping an occluder.
+    #
+    # So: m3a and m3b are MUST-HOLD, m3c is a band pin.  m3b is one-sided
+    # because the deficit is the artifact and the surplus is m3c's.  m3c
+    # does NOT re-pin the far field: that is g4, and g4 keeps its own pin.
+    #
+    # MUTATION (fill forced off, arrival = 1): rows 126/130 read 0.9723 at
+    # alpha 1 and 0.874 at alpha 0.9 -- m3a fails by 0.028, m3b by 0.025;
+    # m3c does not move, as it must not (its rows have D > 1).
+    size = 86.0
+    slope = groundSlope(size)
+    edgeRadius = slope * GROUND_Y_FOCUS
+    bound = int(math.ceil(edgeRadius)) + 2                       # 66
+    rampBox = (bound, bound, FORMAT_W - bound, FORMAT_H - bound)
+    rampRows = list(range(rampBox[1], rampBox[3]))
+    m3Cell = settings.derive(k=16)
+    tol = 1.0 / 255.0
+
+    def rampSource(alpha):
+        colour = tuple(c * alpha for c in GROUND_COLOR[:3]) + (alpha,)
+        return groundPlane(color=colour)
+
+    def sourceRatio(alpha):
+        """The source's OWN unpremultiplied red, read from a stock flatten.
+        ``groundPlane()`` hands DeepFromImage a colour that is already
+        premultiplied and it premultiplies once more, so at alpha < 1 the
+        sample's ratio is GROUND_COLOR * alpha, not GROUND_COLOR -- the
+        reference is whatever the source really carries, not what the
+        constant says."""
+        resetScript()
+        flat = render(m3Cell, deepToImage(rampSource(alpha)),
+                      "m_ramp_source_alpha%g" % alpha, box=rampBox)
+        x, y = (rampBox[0] + rampBox[2]) // 2, (rampBox[1] + rampBox[3]) // 2
+        return flat.at("R", x, y) / flat.at("A", x, y)
+
+    def rampRender(alpha):
+        resetScript()
+        return render(m3Cell,
+                      makeDefocus(m3Cell, rampSource(alpha), size=size,
+                                  focusDistance=GROUND_FOCUS,
+                                  cocMode="manual"),
+                      "m_ramp_alpha%g" % alpha)
+
+    # --- m3a: alpha 1.
+    redRatio = sourceRatio(1.0)
+    opaque = rampRender(1.0)
+    opaqueRows = rowMeans(opaque, "A", rampBox)
+    opaquePixels = channelStats(opaque, "A", rampBox)
+    worstRow = max(abs(v - 1.0) for v in opaqueRows)
+    worstRowY = rampRows[[abs(v - 1.0) for v in opaqueRows].index(worstRow)]
+    worstPixel = max(abs(opaquePixels.minimum - 1.0),
+                     abs(opaquePixels.maximum - 1.0))
+    checks.append(tolCheck(
+        "m", "m3a K=16 alpha 1 ramp, EVERY interior row incl. near focus: "
+             "|a-1|",
+        max(worstRow, worstPixel), tol,
+        population="%d rows x %d px, rows %d-%d, near-focus rows INCLUDED"
+                   % (len(rampRows), rampBox[2] - rampBox[0], rampRows[0],
+                      rampRows[-1]),
+        note="worst row mean |a-1| %.2e at y=%d, worst pixel %.2e (min "
+             "%.6f at %s); rows 126/130 read 0.9723 before the fill and "
+             "read 1 now -- the reported band artifact, at the one alpha "
+             "where the clamp hides every surplus"
+             % (worstRow, worstRowY, worstPixel, opaquePixels.minimum,
+                opaquePixels.minAt)))
+    worstRatio, worstAt, ratioCount = _worstUnpremult(opaque, "R", redRatio,
+                                                      rampBox)
+    checks.append(tolCheck(
+        "m", "m3a ...and colour:alpha ratio vs the source (R/A)",
+        worstRatio, tol,
+        population="%d px" % ratioCount,
+        note="source R/A %.4f (stock flatten); worst at (%d,%d)"
+             % ((redRatio,) + worstAt)))
+
+    # --- m3b / m3c: alpha 0.9.
+    m3Alpha = 0.90
+    redRatio = sourceRatio(m3Alpha)
+    fog = rampRender(m3Alpha)
+    fogRows = rowMeans(fog, "A", rampBox)
+    nearBand = [(y, v) for y, v in zip(rampRows, fogRows) if abs(y - 128) <= 3]
+    nearMinY, nearMin = min(nearBand, key=lambda t: t[1])
+    floorAlpha = m3Alpha - tol
+    checks.append(boolCheck(
+        "m", "m3b K=16 alpha 0.9 ramp, near-focus rows |y-128| <= 3: no row "
+             "reads short",
+        nearMin >= floorAlpha,
+        "min row mean %.5f at y=%d (%+.5f)" % (nearMin, nearMinY,
+                                                nearMin - m3Alpha),
+        ">= %.5f (alpha - 1/255)" % floorAlpha,
+        population="%d rows x %d px" % (len(nearBand),
+                                        rampBox[2] - rampBox[0]),
+        note="rows: " + " ".join("%d:%.5f" % (y, v) for y, v in nearBand)
+             + "; ONE-SIDED by design -- the deficit is the artifact, the "
+               "surplus on the other rows is m3c's.  Rows 126/130 are the "
+               "only rows with arrival < 1 on this ramp (0.972); they read "
+               "0.8743 before the fill"))
+    nearBox = (rampBox[0], 128 - 3, rampBox[2], 128 + 4)
+    worstRatio, worstAt, ratioCount = _worstUnpremult(fog, "R", redRatio,
+                                                      nearBox)
+    checks.append(tolCheck(
+        "m", "m3b ...and colour:alpha ratio vs the source (R/A), same rows",
+        worstRatio, tol,
+        population="%d px" % ratioCount,
+        note="source R/A %.4f (stock flatten; the plane's premultiplied "
+             "colour is premultiplied again by DeepFromImage, so it is "
+             "0.40 * 0.90); worst at (%d,%d)" % ((redRatio,) + worstAt)))
+
+    # --- m3c: the near-focus SURPLUS, pinned two-sided.
+    # +0.0734 is the reading at the r=0.5 rows (127/129) at K=16 on the
+    # independent probe (and the pre-fill plugin reads +0.0734 on the same
+    # row: the fill did not touch it).  Band 0.004, the house width for a
+    # residual pin.  [0, +0.100] is the PHYSICAL range of this residual:
+    # +0.100 is the alpha-clamp ceiling at alpha 0.9 (read directly at K=128
+    # and under whole-bucket assignment), and a reading below 0 is a
+    # deficit, which would be a different mechanism altogether -- a reading
+    # outside the band but inside the range has moved and must be re-pinned;
+    # one outside the range is not this residual at all.
+    #
+    # THIS CHECK CANNOT PASS, BY CONSTRUCTION: it is a band around a
+    # residual.  Whoever moves it must re-pin it in the same commit.
+    M3C_PIN, M3C_BAND = +0.0734, 0.004
+    M3C_RANGE = (0.0, +0.100)
+    wideBand = [(y, v) for y, v in zip(rampRows, fogRows) if abs(y - 128) <= 8]
+    surplusY, surplusValue = max(wideBand, key=lambda t: abs(t[1] - m3Alpha))
+    surplus = surplusValue - m3Alpha
+    inRange = M3C_RANGE[0] <= surplus <= M3C_RANGE[1]
+    checks.append(boolCheck(
+        "m", "m3c K=16 alpha 0.9 ramp, worst row |y-128| <= 8: the near-focus "
+             "surplus (pinned)",
+        False,
+        "%+.4f (%.5f vs %.2f) at y=%d%s"
+        % (surplus, surplusValue, m3Alpha, surplusY,
+           "" if inRange else "; OUTSIDE the physical range"),
+        "0.0000 (xfail %+.4f +/- %.4f; range [%+.3f, %+.3f])"
+        % (M3C_PIN, M3C_BAND, M3C_RANGE[0], M3C_RANGE[1]),
+        population="%d rows x %d px" % (len(wideBand),
+                                        rampBox[2] - rampBox[0]),
+        note="rows 120-136: " + " ".join("%d:%.4f" % (y, v)
+                                         for y, v in wideBand)
+             + "; arrival is 1.201 at rows 127/129, K- and "
+               "kernel-independent, so deficit-only division never engages "
+               "there -- this is the scatter's own over-delivery on a steep "
+               "CoC gradient (g5's arm; un-pooled it reads the +0.100 clamp "
+               "ceiling, K=16 bucket pooling masks 0.027).  The far field's "
+               "-0.030 is NOT pinned here: it is g4, which keeps its own "
+               "pin.  Fill forced off leaves this cell exactly where it is",
+        expectedFailure=True, hardTol=M3C_BAND,
+        hardValue=abs(surplus - M3C_PIN) if inRange else float("inf")))
+    return checks
+
+
+
 SCENES = {
     "a": ("size=0 parity with DeepToImage", sceneA),
     "b": ("holdout in focus vs DeepHoldout2", sceneB),
@@ -2998,4 +3564,5 @@ SCENES = {
     "j": ("anamorphic pixel aspect", sceneJ),
     "k": ("proxy + ray-distance", sceneK),
     "l": ("small-CoC transition", sceneL),
+    "m": ("coverage fill: silhouette halo, focal-line bands", sceneM),
 }
