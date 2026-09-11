@@ -289,28 +289,33 @@ std::vector<RefPart> refSplitSpan(const DepthBuckets& b, double zFront, double z
     return out;
 }
 
-// "Which kernel would the scatter fetch for this radius?", from the documented
-// rule rather than from the shipped predicate: below the sharp threshold every
-// fragment is one weight of 1.0 at its own pixel (bin -1), and above it
-// DiscKernelLUT rounds onto the NEAREST NODE, IN RADIUS, of the global
-// kernel-radius grid.
+// "Which kernel would the scatter rasterise for this radius?", from the
+// documented rule rather than from the shipped predicate: below the sharp
+// threshold every fragment is one weight of 1.0 at its own pixel (bin -1), and
+// above it the scatter blends the two grid nodes bracketing the radius at
+// f = (d - dA) / (dB - dA), so the kernel is the pair (lower node, f) and two
+// radii share a bin when their f agree to 2^-20 of the bracket.
 //
 // Deliberately derived by SEARCHING the grid's node radii (kernelGridRadius(),
 // which is the grid's definition) instead of by inverting them: the closed
-// form kernelGridIndex() uses -- a reciprocal and a harmonic-mean midpoint --
-// is exactly the thing this reference exists to disagree with if it is wrong.
-int refKernelBin(double radiusPx)
+// form kernelGridIndex()/kernelGridBracket() use -- a reciprocal and a
+// harmonic-mean midpoint -- is exactly the thing this reference exists to
+// disagree with if it is wrong.
+constexpr double kRefKernelBlendCells = 1048576.0;      // 2^20
+
+std::int64_t refKernelBin(double radiusPx)
 {
     if (!(radiusPx >= static_cast<double>(kSharpRadiusPx)))
         return -1;
 
-    // Bracket, then bisect, on the monotone node radii.
+    // Bracket, then bisect, on the monotone node radii: afterwards
+    // node(lo) < radius <= node(hi), or lo == hi on a node.
     int lo = 0, hi = 1;
     while (static_cast<double>(kernelGridRadius(hi)) < radiusPx) {
         lo = hi;
         hi *= 2;
         if (hi > (1 << 26))
-            return hi;                  // absurd radius; the LUT clamps anyway
+            return static_cast<std::int64_t>(hi) * static_cast<std::int64_t>(kRefKernelBlendCells);
     }
     while (hi - lo > 1) {
         const int mid = lo + (hi - lo) / 2;
@@ -319,9 +324,13 @@ int refKernelBin(double radiusPx)
         else
             hi = mid;
     }
-    const double dLo = radiusPx - static_cast<double>(kernelGridRadius(lo));
-    const double dHi = static_cast<double>(kernelGridRadius(hi)) - radiusPx;
-    return (dHi < dLo) ? hi : lo;
+    const double rLo = static_cast<double>(kernelGridRadius(lo));
+    const double rHi = static_cast<double>(kernelGridRadius(hi));
+    if (radiusPx >= rHi)
+        return static_cast<std::int64_t>(hi) * static_cast<std::int64_t>(kRefKernelBlendCells);
+    const double f = (2.0 * radiusPx - 2.0 * rLo) / (2.0 * rHi - 2.0 * rLo);
+    return static_cast<std::int64_t>(lo) * static_cast<std::int64_t>(kRefKernelBlendCells)
+         + static_cast<std::int64_t>(std::floor(f * kRefKernelBlendCells));
 }
 
 // Which HoldoutBoundaries bracket a depth falls in.  The boundary SET is shared
@@ -381,7 +390,8 @@ std::vector<RefFragment> refFlatten(const CocParams& p,
                                     bool preMerge,
                                     double mergeTolerancePx,
                                     int channelCount,
-                                    bool holdoutConnected = false)
+                                    bool holdoutConnected = false,
+                                    bool absorbCollisions = true)
 {
     // --- 1. sanitise -------------------------------------------------------
     for (SampleRecord& s : samples) {
@@ -563,7 +573,7 @@ std::vector<RefFragment> refFlatten(const CocParams& p,
     std::vector<RefFragment> merged;
     for (const RefFragment& c : cands) {
         bool absorb = false;
-        if (!merged.empty()) {
+        if (absorbCollisions && !merged.empty()) {
             const RefFragment& g = merged.back();
             const bool oneKernel = (refKernelBin(g.radius) == refKernelBin(c.radius));
             const bool oneBracket =
@@ -605,15 +615,16 @@ std::vector<RefFragment> refFlatten(const CocParams& p,
     //    transmittance already there) and writes NO area of its own;
     //  * a deposit landing on a bucket claimed by a DIFFERENT kernel keeps its
     //    area but arrives CO-LOCATED, never as a second new-area claim.
-    struct RefTouch { int bucket; int bin; double running; };
+    struct RefTouch { int bucket; std::int64_t bin; double running; };
     std::vector<RefTouch> touched;
-    std::vector<std::pair<int, int>> claimed;   // (bucket, the claiming kernel's bin)
+    std::vector<std::pair<int, std::int64_t>> claimed;   // (bucket, the claiming kernel's bin)
     const int lastBucket = (b.bucketCount() > 0) ? (b.bucketCount() - 1) : 0;
-    int frontier = 0, frontierBin = 0;
+    int          frontier    = 0;
+    std::int64_t frontierBin = 0;
 
     std::vector<RefFragment> out;
     for (RefFragment f : merged) {
-        const int bin = refKernelBin(f.radius);
+        const std::int64_t bin = refKernelBin(f.radius);
 
         if (b.bucketCount() > 0 && f.index0 < frontier && bin == frontierBin) {
             f.index0 = (frontier < b.bucketCount()) ? frontier : lastBucket;
@@ -665,7 +676,7 @@ std::vector<RefFragment> refFlatten(const CocParams& p,
 
         if (f.coverageHead) {
             bool seen = false;
-            for (const std::pair<int, int>& c : claimed) {
+            for (const std::pair<int, std::int64_t>& c : claimed) {
                 if (c.first != f.index0)
                     continue;
                 seen = true;
@@ -1664,7 +1675,7 @@ TEST_CASE("coverage head: exactly one per POST-TIDY parent, fuzzed over single- 
 
                 const SampleSoA soa = flattenOnePixel(fp, bk, 3, 4, samples);
                 int heads = 0;
-                std::vector<std::pair<int, int>> headClaims;   // (bucket, kernel bin)
+                std::vector<std::pair<int, std::int64_t>> headClaims;   // (bucket, kernel bin)
                 for (std::size_t i = 0; i < soa.fragmentCount(); ++i) {
                     if (!fragmentCoverageHeadOf(soa.flags[i]))
                         continue;
@@ -2363,10 +2374,10 @@ TEST_CASE("size-0 flatten is a DeepToImage `over` of the pixel, at every K and b
 
 TEST_CASE("scatterKernelBin mirrors the scatter's own two radius decisions, at the edges")
 {
-    // The merge is only lossless when the two members fetch LITERALLY the same
-    // kernel, so this predicate has to agree with the scatter at both of the
-    // scatter's decision points and not merely near them.  Both edges survive
-    // a mutation set unless a case exercises them exactly.
+    // The merge is only lossless when the two members rasterise LITERALLY the
+    // same kernel, so this predicate has to agree with the scatter at both of
+    // the scatter's decision points and not merely near them.  Both edges
+    // survive a mutation set unless a case exercises them exactly.
     //
     // 1. THE SHARP THRESHOLD.  scatterBandCPU() takes the sharp path for
     //    `!(radius >= sharpRadiusPx)`, so radius == kSharpRadiusPx exactly is a
@@ -2378,42 +2389,403 @@ TEST_CASE("scatterKernelBin mirrors the scatter's own two radius decisions, at t
     CHECK(scatterKernelBin(std::nextafter(kSharpRadiusPx, 0.0f)) == -1);
     CHECK(scatterKernelBin(0.0f) == -1);
     CHECK(sameScatterKernel(0.0f, std::nextafter(kSharpRadiusPx, 0.0f)));
-    // ...and the exactly-0.5 fragment must merge with the one a hair above it,
-    // because DiscKernelLUT rounds both onto grid node 1.  NOTE:
-    // a uniform 0.5px grid would put 0.6f on node 1 too; on this grid node 1
-    // is 0.5 and node 2 is 0.5004888, so 0.6 is ~200 nodes away and must NOT
-    // merge -- 0.5 and 0.6 rasterise measurably different discs.
-    CHECK(sameScatterKernel(kSharpRadiusPx, 0.50024f));
+    // ...and the exactly-0.5 fragment is grid node 1, which the one a hair
+    // above it BLENDS with node 2 (0.5004888): they no longer rasterise the
+    // same kernel, so they must not merge.  0.6 is ~200 nodes away.
+    CHECK_FALSE(sameScatterKernel(kSharpRadiusPx, 0.50024f));
+    CHECK_FALSE(sameScatterKernel(kSharpRadiusPx, std::nextafter(kSharpRadiusPx, 1.0f)));
     CHECK_FALSE(sameScatterKernel(kSharpRadiusPx, 0.6f));
     CHECK_FALSE(sameScatterKernel(std::nextafter(kSharpRadiusPx, 0.0f), 0.50024f));
 
     // 2. NaN and +-inf.  NaN is sharp in the scatter (the test is negated), and
     //    an infinite radius must not reach std::lround, whose result there is
-    //    unspecified -- the LUT clamps to its last entry instead.
+    //    unspecified -- kernelGridIndex() saturates it, and every radius
+    //    beyond that saturation is one (clamped) bracket.
     const float nan = std::numeric_limits<float>::quiet_NaN();
     const float inf = std::numeric_limits<float>::infinity();
     CHECK(scatterKernelBin(nan) == -1);
     CHECK(sameScatterKernel(nan, nan));
     CHECK(sameScatterKernel(inf, inf));
     CHECK(scatterKernelBin(inf) == scatterKernelBin(2.0e6f));
+    CHECK(scatterKernelBin(inf) == scatterKernelBin(3.0e6f));
     CHECK_FALSE(sameScatterKernel(inf, 1.0f));
     CHECK(scatterKernelBin(-1.0f) == -1);
+    // The bin is (node, 2^20 blend cells) and the saturated node is ~2e6, so
+    // the key needs 41 bits: it must not have been folded into an int.
+    CHECK(scatterKernelBin(inf) == (static_cast<std::int64_t>(kernelGridIndex(inf))
+                                     << kScatterKernelBlendBits));
+    CHECK(scatterKernelBin(inf) > scatterKernelBin(DiscKernelLUT::kMaxSupportedRadius));
 
-    // 3. The grid itself: same node merges, adjacent nodes do not -- in BOTH
-    //    of its regions, since the grid is piecewise.
-    //    Fine region (hyperbolic, node spacing ~r^2/512): nodes 926/927 are
-    //    5.171717/5.224490 px, so 5.16 and 5.19 share node 926 while 5.20
-    //    rounds to 927.
-    CHECK(sameScatterKernel(5.16f, 5.19f));
-    CHECK_FALSE(sameScatterKernel(5.16f, 5.20f));
-    //    Coarse region (uniform 0.5px, unchanged, at and above 16px).
-    CHECK(sameScatterKernel(20.10f, 20.20f));
-    CHECK_FALSE(sameScatterKernel(20.10f, 20.60f));
+    // 3. The grid itself.  A node is its own bin; ONE ULP off it is a blend
+    //    with the neighbour and a different bin -- in BOTH regions, since the
+    //    grid is piecewise -- and pairs the old nearest-node rule merged
+    //    (5.16/5.19 on node 926, 20.10/20.20 on node 17) no longer do.
+    for (float node : {0.5f, 1.0f, 5.171717f, 16.0f, 20.0f, 39.5f}) {
+        CAPTURE(node);
+        const float r = kernelGridRadius(kernelGridIndex(node));
+        CHECK(sameScatterKernel(r, r));
+        CHECK(scatterKernelBin(r) == (static_cast<std::int64_t>(kernelGridIndex(node))
+                                      << kScatterKernelBlendBits));
+        CHECK_FALSE(sameScatterKernel(r, std::nextafter(r, 100.0f)));
+        CHECK_FALSE(sameScatterKernel(r, std::nextafter(r, 0.0f)));
+    }
+    CHECK_FALSE(sameScatterKernel(5.16f, 5.19f));
+    CHECK_FALSE(sameScatterKernel(5.16f, std::nextafter(5.16f, 6.0f)));
+    CHECK_FALSE(sameScatterKernel(20.10f, 20.20f));
+    CHECK_FALSE(sameScatterKernel(20.10f, std::nextafter(20.10f, 21.0f)));
+    CHECK(sameScatterKernel(5.16f, 5.16f));
+    CHECK(sameScatterKernel(20.10f, 20.10f));
     //    ...and the two regions join without a gap or an overlap.
-    CHECK(scatterKernelBin(kKernelCoarseFromPx) == kKernelFineLastIndex);
+    CHECK(scatterKernelBin(kKernelCoarseFromPx)
+          == (static_cast<std::int64_t>(kKernelFineLastIndex) << kScatterKernelBlendBits));
     CHECK(kernelGridRadius(kKernelFineLastIndex) == kKernelCoarseFromPx);
     CHECK(kernelGridRadius(kKernelFineLastIndex + 1)
           == doctest::Approx(kKernelCoarseFromPx + 0.5f));
+    //    The independent reference agrees at a node, and off it by exactly the
+    //    documented cell arithmetic.
+    for (float r : {0.7f, 2.0f, 3.3f, 15.9f, 16.0f, 16.2f, 33.75f}) {
+        CAPTURE(r);
+        CHECK(scatterKernelBin(r) == refKernelBin(static_cast<double>(r)));
+    }
+}
+
+// The kernel the scatter rasterises for `radius`, as a dense (2R+1)^2 plane
+// centred on the fragment: the sharp path's single weight below the threshold,
+// otherwise refBracket()'s blend of the two bracketing LUT entries.  `R` is the
+// plane's half-extent, which must cover both radii being compared.
+void refKernelPlane(const DiscKernelLUT& lut, float radius, int R,
+                    std::vector<double>& plane)
+{
+    const int side = 2 * R + 1;
+    plane.assign(static_cast<std::size_t>(side) * side, 0.0);
+    if (!(radius >= kSharpRadiusPx)) {
+        plane[static_cast<std::size_t>(R) * side + R] = 1.0;
+        return;
+    }
+    const RefBracket b = refBracket(radius);
+    for (int p = 0; p < b.passes; ++p) {
+        const KernelView kv = lut.kernel(kernelGridRadius(b.node[p]), 0, 0, 0.0f, 0);
+        REQUIRE(kv.valid());
+        REQUIRE(kv.radiusX <= R);
+        REQUIRE(kv.radiusY <= R);
+        for (int row = 0; row < kv.rowCount; ++row) {
+            const RowSpan& span = kv.row(row);
+            if (span.empty())
+                continue;
+            const int y = kv.rowY(row) + R;
+            const float* w = kv.rowWeights(row);
+            for (int i = 0; i < span.count(); ++i) {
+                const int x = span.xStart + i + R;
+                plane[static_cast<std::size_t>(y) * side + x] +=
+                    static_cast<double>(w[i]) * b.blend[p];
+            }
+        }
+    }
+}
+
+double maxAbsDiff(const std::vector<double>& a, const std::vector<double>& b)
+{
+    REQUIRE(a.size() == b.size());
+    double m = 0.0;
+    for (std::size_t i = 0; i < a.size(); ++i)
+        m = std::max(m, std::fabs(a[i] - b[i]));
+    return m;
+}
+
+TEST_CASE("sameScatterKernel is never true for two radii that rasterise differently "
+          "(fuzzed against the full blended planes)")
+{
+    // THE PREDICATE'S ONE HARD PROMISE: "same" means the two radii deposit
+    // the same weights into the same pixels, within the 2^-20 the header
+    // states.  It is checked here against the rasterised kernel itself --
+    // refBracket()'s blend of the two LUT entries, on a dense plane -- and not
+    // against any bin arithmetic, so a predicate that collapsed a bracket
+    // (nearest node), dropped the node from the key, or widened the blend
+    // cell would be caught by the planes and not merely by a changed number.
+    //
+    // Pairs are generated where the predicate is most likely to be wrong: a
+    // separation swept log-uniformly from 1e-9 to 1 px (below one ulp, so a
+    // fraction of pairs are exact duplicates), on and one ulp off grid nodes,
+    // on and around bracket midpoints, astride the 16px coarse boundary, and
+    // in the sharp region below 0.5px where every radius is one kernel.  Two
+    // MEASURED-RANGE LUTs cover [2, 40]: edge_softness 1 (the default) and 0
+    // (a hard edge, where adjacent nodes differ by a whole pixel's weight and
+    // a widened cell shows up first).  Radii below the floor clamp onto the
+    // 2px entry -- identical planes that the predicate may still call
+    // different, which is the permitted direction.
+    struct Fixture { const char* name; float softness; };
+    const Fixture fixtures[] = {{"edge_softness 1", 1.0f}, {"edge_softness 0", 0.0f}};
+
+    Lcg rng(0x5CA77E12ULL);
+
+    // (a, b) pairs, built once and shared by both fixtures.
+    std::vector<std::pair<float, float>> pairs;
+    const auto nearby = [&](float a, int count) {
+        for (int i = 0; i < count; ++i) {
+            const float sep  = std::pow(10.0f, rng.range(-9.0f, 0.0f));
+            const float sign = (rng.unit() < 0.5f) ? -1.0f : 1.0f;
+            pairs.emplace_back(a, a + sign * sep);
+        }
+    };
+    for (int i = 0; i < 6000; ++i) {
+        const float a = rng.range(0.5f, 40.0f);
+        nearby(a, 2);
+        pairs.emplace_back(a, a);
+        pairs.emplace_back(a, rng.range(0.5f, 40.0f));
+    }
+    for (int i = 0; i < 2000; ++i) {                    // the hyperbolic region
+        const float a = rng.range(0.5f, 16.0f);
+        nearby(a, 2);
+    }
+    for (int i = 0; i < 1500; ++i) {                    // the sub-0.5px sharp region
+        const float a = rng.range(0.0f, 0.5f);
+        pairs.emplace_back(a, rng.range(0.0f, 0.5f));
+        pairs.emplace_back(a, rng.range(0.5f, 1.0f));
+        pairs.emplace_back(a, std::nextafter(kSharpRadiusPx, 0.0f));
+    }
+    for (int idx = 1; idx <= kKernelFineLastIndex + 48; idx += 1) {   // every node to 40px
+        const float node = kernelGridRadius(idx);
+        const float next = kernelGridRadius(idx + 1);
+        const float mid  = 0.5f * (node + next);
+        pairs.emplace_back(node, node);
+        pairs.emplace_back(node, std::nextafter(node, 100.0f));
+        pairs.emplace_back(node, std::nextafter(node, 0.0f));
+        pairs.emplace_back(node, next);
+        pairs.emplace_back(mid, mid);
+        pairs.emplace_back(mid, std::nextafter(mid, 100.0f));
+        pairs.emplace_back(mid, std::nextafter(mid, 0.0f));
+        pairs.emplace_back(node, mid);
+        nearby(node, 1);
+        nearby(mid, 1);
+    }
+    for (int i = 0; i < 500; ++i) {                     // astride the coarse boundary
+        pairs.emplace_back(kKernelCoarseFromPx + rng.range(-0.6f, 0.6f),
+                           kKernelCoarseFromPx + rng.range(-0.6f, 0.6f));
+        nearby(kKernelCoarseFromPx + rng.range(-0.01f, 0.01f), 1);
+    }
+
+    // Independent of any LUT: the header's claim that one radius ulp always
+    // moves the blend by more than a cell, so "same bin" is "same radius"
+    // above the sharp threshold.  The reference bin agrees on every pair.
+    std::size_t sameCount = 0, differentCount = 0;
+    for (const auto& pr : pairs) {
+        const float a = pr.first, b = pr.second;
+        const bool same = sameScatterKernel(a, b);
+        const bool bothSharp = !(a >= kSharpRadiusPx) && !(b >= kSharpRadiusPx);
+        CAPTURE(a);
+        CAPTURE(b);
+        CHECK(same == (bothSharp || a == b));
+        CHECK(same == (refKernelBin(static_cast<double>(a))
+                       == refKernelBin(static_cast<double>(b))));
+        if (same) ++sameCount; else ++differentCount;
+    }
+    // Neither answer is vacuous over the corpus.
+    CHECK(sameCount >= 3000u);
+    CHECK(differentCount >= 20000u);
+
+    for (const Fixture& fx : fixtures) {
+        CAPTURE(fx.name);
+        const DiscKernelLUT lut(2.0f, 40.0f, fx.softness, 1.0f);
+        const int R = 42;                               // 40px + half a softness, rounded up
+
+        std::vector<double> planeA, planeB;
+        double      worstSame      = 0.0;    // largest plane difference over "same" pairs
+        double      smallestOther  = 1.0;    // smallest NON-ZERO difference over "different" pairs
+        std::size_t differentPlanes = 0;     // "different" pairs whose planes really differ
+        std::size_t identicalPlanes = 0;     // "different" pairs whose planes do not (allowed)
+        for (const auto& pr : pairs) {
+            const float a = pr.first, b = pr.second;
+            refKernelPlane(lut, a, R, planeA);
+            refKernelPlane(lut, b, R, planeB);
+            const double d = maxAbsDiff(planeA, planeB);
+            if (sameScatterKernel(a, b)) {
+                CAPTURE(a);
+                CAPTURE(b);
+                CAPTURE(d);
+                // The contract, and its tightest form on this grid.
+                CHECK(d <= 1.0e-06);
+                CHECK(d == 0.0);
+                worstSame = std::max(worstSame, d);
+            } else if (d > 0.0) {
+                ++differentPlanes;
+                smallestOther = std::min(smallestOther, d);
+            } else {
+                ++identicalPlanes;
+            }
+        }
+        CAPTURE(worstSame);
+        CAPTURE(smallestOther);
+        CAPTURE(identicalPlanes);
+        CHECK(worstSame == 0.0);
+        // The negative direction is exercised on thousands of pairs whose
+        // planes REALLY differ, including ones a single ulp apart -- so a
+        // predicate that merged any of them would have been seen to.
+        CHECK(differentPlanes >= 15000u);
+        CHECK(smallestOther < 1.0e-06);
+    }
+}
+
+TEST_CASE("the flatten's collision absorb is lossless: merged-then-scattered equals "
+          "scattered-separately within 1e-6 (fuzzed)")
+{
+    // The absorb `over`-composites two same-pixel fragments into one when
+    // they share a bucket AND rasterise one kernel, and the result is then
+    // scattered ONCE at the front member's radius.  The reference is the same
+    // pixel with the absorb switched off: every member stays its own
+    // fragment at its OWN radius, attenuated per bucket by the running alpha
+    // of the same-kernel deposits ahead of it -- same kernel by the
+    // reference's independently derived bin.  Rasterised onto the bucket
+    // planes, the two agree within 1e-6 only if (a) the flatten absorbed
+    // exactly the pairs the reference calls one kernel and (b) the absorbed
+    // member's kernel really was the front member's.
+    //
+    // Volumetric samples, so every deposit is whole-weight into its
+    // containing bucket and the two paths differ ONLY by the kernel each
+    // member is rasterised at: a point sample's fractional two-bucket
+    // partition is not linear in `over`, which would put a partition
+    // residual into the comparison that has nothing to do with the predicate.
+    // The standard rig clamped at 12px saturates every depth in front of
+    // z = 1.68, so a fraction of the members share a radius exactly (the only
+    // way two disjoint samples can); the rest spread over (9.6, 12) px in the
+    // same first bucket, where a relaxed predicate would absorb near-equal
+    // radii and be caught.
+    const CocParams    p  = makeStandardRig(10.0f, /*maxRadiusPx*/ 12.0f);
+    const DepthBuckets bk = makeBoundedDeltaCocBuckets(p, 1.0f, 100.0f, 6);
+    REQUIRE(radiusPixels(p, 1.65f) == 12.0f);
+    REQUIRE(radiusPixels(p, 1.90f) < 12.0f);
+    REQUIRE(bk.boundary(1) > 1.90f);
+    const int C = 2;
+    const FlattenParams fp = makeFlattenParams(p, C, /*preMerge*/ false);
+    const DiscKernelLUT lut(2.0f, 40.0f, 1.0f, 1.0f);
+    const int R = 14, side = 2 * R + 1;                 // 12px + softness, with room
+    const int K = bk.bucketCount();
+
+    // (alpha, colour[C]) planes per bucket for one fragment list, via the
+    // blended kernel plane; the two lists deposit into the same layout.
+    struct Deposit {
+        float radius; int index0, index1; double alpha0, alpha1, cs0, cs1;
+        std::vector<double> channels;
+    };
+    const auto rasterise = [&](const std::vector<Deposit>& list) {
+        std::vector<double> alpha(static_cast<std::size_t>(K) * side * side, 0.0);
+        std::vector<double> color(static_cast<std::size_t>(K) * C * side * side, 0.0);
+        std::vector<double> plane;
+        for (const Deposit& d : list) {
+            refKernelPlane(lut, d.radius, R, plane);
+            for (int pass = 0; pass < 2; ++pass) {
+                const int    k  = (pass == 0) ? d.index0 : d.index1;
+                const double a  = (pass == 0) ? d.alpha0 : d.alpha1;
+                const double cs = (pass == 0) ? d.cs0 : d.cs1;
+                if (pass == 1 && d.index1 == d.index0)
+                    break;
+                if (k < 0 || k >= K)
+                    continue;
+                for (std::size_t i = 0; i < plane.size(); ++i) {
+                    alpha[static_cast<std::size_t>(k) * side * side + i] += plane[i] * a;
+                    for (int c = 0; c < C; ++c)
+                        color[(static_cast<std::size_t>(k) * C + c) * side * side + i] +=
+                            plane[i] * d.channels[static_cast<std::size_t>(c)] * cs;
+                }
+            }
+        }
+        return std::make_pair(alpha, color);
+    };
+
+    Lcg rng(0xAB50B8ULL);
+    std::size_t absorbs = 0, sets = 0, setsWithAbsorb = 0;
+    double worstAlpha = 0.0, worstColor = 0.0, worstRatio = 0.0;
+    for (int trial = 0; trial < 400; ++trial) {
+        std::vector<SampleRecord> samples;
+        float z = rng.range(1.0f, 1.6f);
+        const int n = rng.intRange(2, 7);
+        for (int i = 0; i < n && z < 2.2f; ++i) {
+            const float a = rng.range(0.05f, 1.0f);
+            const float ratio = rng.range(0.1f, 1.0f);
+            // One sample in three is a NEAR-duplicate of its predecessor: a
+            // sliver 1e-6..1e-2 deep, so the two radii differ by a fraction
+            // of a blend cell up to a few nodes -- the pairs a loosened cell
+            // would wrongly absorb.
+            const bool sliver = (i > 0) && (rng.unit() < 0.34f);
+            const float thickness = sliver ? std::pow(10.0f, rng.range(-6.0f, -2.0f))
+                                           : rng.range(0.005f, 0.15f);
+            samples.push_back(makeSample(z, z + thickness, a, {a * ratio, a * ratio * 0.5f}));
+            z += thickness + (sliver ? std::pow(10.0f, rng.range(-6.0f, -3.0f))
+                                     : rng.range(0.001f, 0.2f));  // strictly disjoint
+        }
+        if (samples.size() < 2u)
+            continue;
+        ++sets;
+
+        const SampleSoA merged = flattenOnePixel(fp, bk, R, R, samples);
+        const std::vector<RefFragment> separate =
+            refFlatten(p, bk, R, R, samples, false, fp.mergeTolerancePx, C,
+                       false, /*absorbCollisions*/ false);
+        REQUIRE(separate.size() >= merged.fragmentCount());
+        const std::size_t here = separate.size() - merged.fragmentCount();
+        absorbs += here;
+        if (here > 0)
+            ++setsWithAbsorb;
+
+        std::vector<Deposit> mergedList, separateList;
+        for (std::size_t i = 0; i < merged.fragmentCount(); ++i) {
+            Deposit d;
+            d.radius = merged.radius[i];
+            d.index0 = static_cast<int>(merged.bucketIndex0[i]);
+            d.index1 = static_cast<int>(merged.bucketIndex1[i]);
+            d.alpha0 = merged.bucketAlpha0[i];
+            d.alpha1 = merged.bucketAlpha1[i];
+            d.cs0    = merged.colorScale0[i];
+            d.cs1    = merged.colorScale1[i];
+            const float* col = merged.colorOf(i);
+            for (int c = 0; c < C; ++c)
+                d.channels.push_back(static_cast<double>(col[c]));
+            mergedList.push_back(d);
+        }
+        for (const RefFragment& f : separate) {
+            Deposit d;
+            d.radius = static_cast<float>(f.radius);
+            d.index0 = f.index0;
+            d.index1 = f.index1;
+            d.alpha0 = f.alpha0;
+            d.alpha1 = f.alpha1;
+            d.cs0    = f.colorScale0;
+            d.cs1    = f.colorScale1;
+            d.channels = f.channels;
+            separateList.push_back(d);
+        }
+
+        const auto got  = rasterise(mergedList);
+        const auto want = rasterise(separateList);
+        const double dAlpha = maxAbsDiff(got.first, want.first);
+        const double dColor = maxAbsDiff(got.second, want.second);
+        CAPTURE(trial);
+        CAPTURE(here);
+        CHECK(dAlpha <= 1.0e-06);
+        CHECK(dColor <= 1.0e-06);
+        worstAlpha = std::max(worstAlpha, dAlpha);
+        worstColor = std::max(worstColor, dColor);
+        // The colour:alpha ratio, per plane pixel, survives the absorb too.
+        for (std::size_t i = 0; i < got.first.size(); ++i) {
+            if (got.first[i] < 1.0e-03 || want.first[i] < 1.0e-03)
+                continue;
+            for (int c = 0; c < C; ++c) {
+                const std::size_t k  = i / (static_cast<std::size_t>(side) * side);
+                const std::size_t px = i % (static_cast<std::size_t>(side) * side);
+                const std::size_t ci = (k * C + c) * side * side + px;
+                const double r = std::fabs(got.second[ci] / got.first[i]
+                                           - want.second[ci] / want.first[i]);
+                worstRatio = std::max(worstRatio, r);
+            }
+        }
+    }
+    CAPTURE(worstAlpha);
+    CAPTURE(worstColor);
+    CAPTURE(worstRatio);
+    CHECK(worstRatio <= 1.0e-05);
+    // Non-vacuity: the absorb fired, and in a good fraction of the sets.
+    CHECK(sets >= 350u);
+    CHECK(absorbs >= 200u);
+    CHECK(setsWithAbsorb >= 100u);
 }
 
 // Centre-ROW weight sum of one LUT entry, S_r(0).  This is the quantity the
@@ -3331,7 +3703,7 @@ TEST_CASE("claimNewArea() RECORDS the claiming kernel, not just the stamp")
     const FlattenParams fp = makeFlattenParams(p, 1, /*preMerge*/ false);
 
     const float zA = 8.0f, zB = 10.0f;                  // bins 4 and -1 (sharp)
-    const int   binB = scatterKernelBin(radiusPixels(p, zB));
+    const std::int64_t binB = scatterKernelBin(radiusPixels(p, zB));
     REQUIRE(binB != scatterKernelBin(radiusPixels(p, zA)));
 
     FlattenScratch scratch;
@@ -3533,12 +3905,13 @@ TEST_CASE("within one bucket at one pixel, every area claim belongs to ONE kerne
                 // (source pixel, bucket, kernel bin) of every head, read off the
                 // SoA -- the plane is downstream of this and cannot be
                 // attributed to a depositor once the deposits have been summed.
-                std::vector<std::array<int, 4>> claims;
+                std::vector<std::array<std::int64_t, 4>> claims;
                 for (std::size_t i = 0; i < soa.fragmentCount(); ++i) {
                     if (!fragmentCoverageHeadOf(soa.flags[i]))
                         continue;
-                    claims.push_back({soa.x[i], soa.y[i],
-                                      static_cast<int>(soa.bucketIndex0[i]),
+                    claims.push_back({static_cast<std::int64_t>(soa.x[i]),
+                                      static_cast<std::int64_t>(soa.y[i]),
+                                      static_cast<std::int64_t>(soa.bucketIndex0[i]),
                                       refKernelBin(soa.radius[i])});
                 }
                 REQUIRE(!claims.empty());
@@ -3608,23 +3981,31 @@ TEST_CASE("the collision merge is bounded: different kernels are not collapsed, 
         // group's first flag instead of the OR would drop B's coverage
         // entirely, leaving one claimed bucket where there are two.
         //
-        // "Close enough" is a MEASURED distance, not a guess: at these depths
-        // the radii are ~7.14px and ~7.08px and the kernel-radius grid is
-        // 0.103px wide there, so both land on grid node 953.  A span of
-        // [b10+0.02, b10+0.05] puts the two on ADJACENT nodes instead, which
-        // silently turns this subcase into a three-fragment no-merge case.
-        const CocParams    q  = makeStandardRig(10.0f);
-        const DepthBuckets qb = makeStandardBuckets(q);
-        const float b10 = qb.boundary(10);
+        // "Close enough" means the SAME radius: two radii rasterise one kernel
+        // only when they are equal, and two disjoint parts have distinct
+        // midpoints, so the only way a part and its follower share a kernel is
+        // the max_radius clamp.  Manual size 10 / focus 10 clamped at 8px
+        // saturates every depth beyond z = 50; A's rear part [b5, 80] has its
+        // midpoint at 50.7 and B at 80.75, both 8.0000px, both in the last
+        // bucket.  A rear part ending at 60 (midpoint 40.7, 7.54px) would
+        // silently turn this subcase into a three-fragment no-merge case.
+        const CocParams q = makeCocParams(CocMode::Manual, 50.0f, 2.8f, 36.0f,
+                                          10.0f, unitScale(WorldUnits::Meters),
+                                          1920.0f, 1.0f, 1.0f, 1.0f,
+                                          /*maxRadiusPx*/ 8.0f, /*sizePx*/ 10.0f);
+        const DepthBuckets qb = makeBoundedDeltaCocBuckets(q, 1.0f, 100.0f, 6);
+        const float b5 = qb.boundary(5);
+        REQUIRE(radiusPixels(q, 0.5f * (b5 + 80.0f)) == 8.0f);
+        REQUIRE(radiusPixels(q, 80.75f) == 8.0f);
         const FlattenParams fq = makeFlattenParams(q, 1, /*preMerge*/ false);
         const SampleSoA soa = flattenOnePixel(fq, qb, 20, 20,
-            {makeSample(b10 - 0.02f, b10 + 0.02f, 0.6f, {0.6f * 0.5f}),
-             makeSample(b10 + 0.02f, b10 + 0.03f, 0.4f, {0.4f * 0.5f})});
+            {makeSample(b5 - 0.02f, 80.0f, 0.6f, {0.6f * 0.5f}),
+             makeSample(80.5f, 81.0f, 0.4f, {0.4f * 0.5f})});
 
-        // A0 (head, bucket 9) and the merged [A1 + B] (bucket 10).
+        // A0 (head, bucket 4) and the merged [A1 + B] (bucket 5).
         REQUIRE(soa.fragmentCount() == 2u);
-        CHECK(soa.bucketIndex0[0] == 9);
-        CHECK(soa.bucketIndex0[1] == 10);
+        CHECK(soa.bucketIndex0[0] == 4);
+        CHECK(soa.bucketIndex0[1] == 5);
         CHECK(fragmentCoverageHeadOf(soa.flags[0]));
         CHECK(fragmentCoverageHeadOf(soa.flags[1]));
 
@@ -3684,25 +4065,28 @@ TEST_CASE("the collision merge is bounded: different kernels are not collapsed, 
         // pixels beyond 1e-3, which the collision pass does not improve on
         // (2.3e-01, 47-67% without it) — pure-point and pure-span content are
         // both at 2e-07.  Recorded here so the hole has a test that names it.
-        const CocParams    q  = makeStandardRig(10.0f);
+        //
+        // One kernel means one RADIUS, and a point and a span piece at distinct
+        // depths only share one through the max_radius clamp: the standard rig
+        // clamped at 12px saturates everything in front of z = 1.68, and both
+        // of these sit inside the first bucket there.
+        const CocParams    q  = makeStandardRig(10.0f, /*maxRadiusPx*/ 12.0f);
         const DepthBuckets qb = makeStandardBuckets(q);
-        const float b10 = qb.boundary(10);
         const FlattenParams fq = makeFlattenParams(q, 1, /*preMerge*/ false);
         const SampleSoA soa = flattenOnePixel(fq, qb, 0, 0,
-            {makeSample(b10 + 0.05f, b10 + 0.05f, 0.6f, {0.6f * 0.5f}),
-             makeSample(b10 + 0.051f, b10 + 0.055f, 0.4f, {0.4f * 0.5f})});
+            {makeSample(1.50f, 1.50f, 0.6f, {0.6f * 0.5f}),
+             makeSample(1.51f, 1.55f, 0.4f, {0.4f * 0.5f})});
 
         REQUIRE(soa.fragmentCount() == 2u);
         CHECK(fragmentKindOf(soa.flags[0]) == FragmentKind::Point);
         CHECK(fragmentKindOf(soa.flags[1]) == FragmentKind::Volumetric);
-        // They really do collide (the point's rear bucket is the span's), and
-        // they really are one kernel — kind is the only thing keeping them
-        // apart, so this case cannot pass for the wrong reason.  NOTE: a span
-        // of [b10+0.06, b10+0.10] does NOT work here — at ~6.99px the
-        // kernel-radius grid's node spacing is 0.096px and those two midpoints
-        // are 0.109px apart in radius, so they do not share a kernel and the
-        // subcase passes for the wrong reason.
-        CHECK(soa.bucketIndex1[0] == soa.bucketIndex0[1]);
+        // They really do collide (the span's bucket is one of the point's
+        // pair), and they really are one kernel — kind is the only thing
+        // keeping them apart, so this case cannot pass for the wrong reason.
+        CHECK(soa.bucketIndex0[1] >= soa.bucketIndex0[0]);
+        CHECK(soa.bucketIndex0[1] <= soa.bucketIndex1[0]);
+        CHECK(soa.radius[0] == 12.0f);
+        CHECK(soa.radius[1] == 12.0f);
         CHECK(sameScatterKernel(soa.radius[0], soa.radius[1]));
     }
 

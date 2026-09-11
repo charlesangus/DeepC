@@ -513,51 +513,47 @@ constexpr float kSharpRadiusPx = 0.5f;
 // ---------------------------------------------------------------------------
 // scatterKernelBin — "would the scatter rasterise these two radii identically?"
 //
-// TRUE only when two fragments deposit the same weights into the same pixels,
-// which is exactly the condition under which over-compositing them at the
-// flatten is lossless.  It mirrors the only two decisions the scatter makes
-// about a radius, and nothing else:
+// The scatter rasterises a radius as (1 - f) * K[A] + f * K[B] with
+// (A, B, f) = kernelGridBracket(radius) — scatterBandCPU() for fragments,
+// scatterBackgroundCPU() for the residual — so the rasterised kernel is a
+// function of (A, f) and of nothing else.  The bin is the lattice cell
+// (A, floor(f * 2^20)).  Equal bins therefore mean the same node pair and
+// blend weights within 2^-20 of each other, and since every LUT weight lies
+// in [0, 1] the two rasterisations differ by less than 2^-20 < 1e-6 per
+// pixel at ANY edge_softness.  That is the bound the flatten's absorb needs,
+// and no coarser cell is sound: at edge_softness 0 the nodes at 0.998 and
+// 1.0 px differ by 0.8 in one weight.  Conversely one radius ulp moves f by
+// at least 2^-19 everywhere on the grid (a bracket is never wider than 0.5 px,
+// nor than r^2/512 below 16 px), so distinct radii never share a cell: in
+// practice "same bin" means "same radius".  Both directions are deliberate.
+// This predicate never answers "same" for a pair that rasterises differently;
+// it may answer "different" for a pair that does not (two radii the LUT clamps
+// onto one entry, say), which costs an absorb and never correctness.
 //
-//   * scatterBandCPU() takes the SHARP path for `!(radius >= sharpRadiusPx)`,
-//     where the "kernel" is a single weight of 1.0 at the fragment's own pixel
-//     — so every sharp radius is the same kernel, and NaN is sharp there too;
-//   * otherwise DiscKernelLUT::radiusToIndex() rounds to the nearest node of
-//     the global kernel-radius grid (`kernelGridIndex()`, owned by
-//     DeepCDefocusKernel.h and CALLED here rather than re-derived, so the two
-//     cannot drift), so two radii on the same grid node return the SAME
-//     KernelView — identical weights, identical row spans, identical support.
+// Below kSharpRadiusPx — NaN included, exactly as the scatter tests it — the
+// kernel is one weight of 1.0 at the fragment's own pixel, so every sharp
+// radius is one bin.
 //
-// NOTE the grid is not uniform — below 16px it refines as `c*r^2` — so this
-// predicate is STRICT at small radii (at r = 1px two radii must agree to
-// ~0.002px to share a node). That is the conservative direction: the absorb
-// below exists so a group never rasterises a disc none of its members has, and
-// it fires only when the members genuinely rasterise the same one.
+// `pre_merge` does not consult this predicate: it groups on `merge_tolerance`
+// (0.25 px by default) and rasterises the group at its front member's
+// radius, which is lossy whenever the members' radii differ at all (harness
+// check `i7`).
 //
-// IT DOES NOT TOUCH `pre_merge`. The two are different mechanisms: `pre_merge`
-// groups same-pixel fragments whose radii are within `merge_tolerance` and
-// this predicate is not consulted. `pre_merge` is therefore reachable AND
-// lossy at its 0.25px default — a pair 0.20px apart is grouped and then
-// rasterised at the front member's radius (harness check `i7`, CoC radius 1.2
-// and 1.4 px, reads 9.0000e-02 on 100% of pixels).
-//
-// The LUT additionally CLAMPS the index into its built [rMin, rMax] range, so
-// two different bins can still resolve to one entry.  This function does not
-// model that, which makes it conservative in the safe direction: it can answer
-// "different kernels" for a pair the LUT would have merged, never the reverse.
-//
-// NOTE: with several channel groups a group's radius is
+// With several channel groups a group's radius is
 // `groupRadius(groups, g, baseRadius)`, and equal BASE bins do not imply equal
 // bins after a per-group `channelRadiusScale != 1`.  Every scale is currently
-// 1.0, so the base bin IS every group's bin; adding groups means revisiting
-// this alongside the "which group owns alpha" question.
+// 1.0, so the base bin IS every group's bin.
 // ---------------------------------------------------------------------------
-DEEPC_HD inline int scatterKernelBin(float radiusPx)
+constexpr int kScatterKernelBlendBits = 20;
+
+DEEPC_HD inline std::int64_t scatterKernelBin(float radiusPx)
 {
     if (!(radiusPx >= kSharpRadiusPx))      // also catches NaN, as the scatter does
         return -1;                          // the sharp one-pixel kernel
-    if (!(radiusPx <= 1.0e6f))              // +inf: the LUT clamps to its last entry
-        return 0x40000000;
-    return kernelGridIndex(radiusPx);
+    const KernelGridBracket br    = kernelGridBracket(radiusPx);
+    const float             cells = static_cast<float>(1 << kScatterKernelBlendBits);
+    const std::int64_t      cell  = static_cast<std::int64_t>(br.frac * cells);
+    return (static_cast<std::int64_t>(br.indexA) << kScatterKernelBlendBits) + cell;
 }
 
 DEEPC_HD inline bool sameScatterKernel(float a, float b)
@@ -913,13 +909,13 @@ struct FlattenScratch {
     // claimEpoch` means "claimed during the current pixel", so a pixel costs no
     // reset at all.  The epoch is incremented per pixel and both arrays are
     // sized to the bucket count on first use, so this is O(1) per fragment.
-    // 8 B/bucket — 1KB per thread at K=128.  `claimBin` holds the claimer's
-    // scatterKernelBin(): a later deposit yields the claim only to a DIFFERENT
-    // kernel — see visitBucket() in the .cpp for the measurement that makes
-    // that restriction load-bearing, and for the per-bucket running alpha that
-    // `runAlpha` holds beside them.
+    // 12 B/bucket — 1.5KB per thread at K=128.  `claimBin` holds the
+    // claimer's scatterKernelBin(): a later deposit yields the claim only to a
+    // DIFFERENT kernel — see visitBucket() in the .cpp for the measurement
+    // that makes that restriction load-bearing, and for the per-bucket
+    // running alpha that `runAlpha` holds beside them.
     std::vector<std::uint32_t> claimStamp;
-    std::vector<int>           claimBin;
+    std::vector<std::int64_t>  claimBin;
     std::uint32_t              claimEpoch = 0;
 
     // Per-bucket TOUCH record, beside the claim above: which kernel last
@@ -932,11 +928,11 @@ struct FlattenScratch {
     // into one stamp is a measured regression; see claimNewArea() in the .cpp.
     //
     // COST, because the band budget counts it: THREE arrays, not one float —
-    // 12 B/bucket, i.e. 1.5KB per thread at K=128.  With the claim pair above
-    // the flatten's per-bucket scratch is 20 B/bucket, 2.5KB per thread at
+    // 16 B/bucket, i.e. 2KB per thread at K=128.  With the claim pair above
+    // the flatten's per-bucket scratch is 28 B/bucket, 3.5KB per thread at
     // K=128.
     std::vector<std::uint32_t> runStamp;
-    std::vector<int>           runBin;
+    std::vector<std::int64_t>  runBin;
     std::vector<float>         runAlpha;
 
     // The highest bucket any deposit at the CURRENT source pixel has touched,
@@ -944,7 +940,7 @@ struct FlattenScratch {
     // (further) fragment rasterising THAT SAME kernel may not deposit in front
     // of it -- see emitPending() in the .cpp.
     int                        frontierBucket = 0;
-    int                        frontierBin    = 0;
+    std::int64_t               frontierBin    = 0;
 };
 
 // ---------------------------------------------------------------------------

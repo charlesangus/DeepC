@@ -387,7 +387,7 @@ inline bool depositsCollide(const BucketWeight& a, const BucketWeight& b)
 // The state is stamped, not cleared (`claimStamp[k] == claimEpoch` means
 // "touched during the current pixel"), so a pixel costs no reset.  The
 // attenuation's memory cost is the THREE `run*` arrays, not one float:
-// 12 B/bucket, i.e. 1.5 KB per thread at K=128, which is what the node's band
+// 16 B/bucket, i.e. 2 KB per thread at K=128, which is what the node's band
 // budget has to size on; see FlattenScratch.
 // ------------------------------------------------------------------------
 enum class BucketVisit {
@@ -426,7 +426,7 @@ inline void ensureBucketScratch(FlattenScratch& scratch, int bucketCount)
 // pixel at radii 23.3px and 8.5px band-sum to 1.000000 with this and 2.000000
 // without it.
 inline bool claimNewArea(FlattenScratch& scratch, int bucketCount, int bucket,
-                         int kernelBin)
+                         std::int64_t kernelBin)
 {
     if (bucket < 0 || bucket >= bucketCount)
         return true;                            // never index out of range
@@ -441,7 +441,7 @@ inline bool claimNewArea(FlattenScratch& scratch, int bucketCount, int bucket,
 }
 
 inline BucketVisit visitBucket(FlattenScratch& scratch, int bucketCount,
-                               int kernelBin, int bucket,
+                               std::int64_t kernelBin, int bucket,
                                float& alpha, float& colorScale)
 {
     if (bucket < 0 || bucket >= bucketCount)
@@ -487,7 +487,7 @@ inline void emitPending(FlattenScratch&      scratch,
     // stop summing to 1.
     f.share  = g.share;
 
-    const int kernelBin = scatterKernelBin(g.radius);
+    const std::int64_t kernelBin = scatterKernelBin(g.radius);
 
     // --- THE MONOTONE BUCKET FRONTIER ------------------------------------
     // The bucket composite is front-to-back over the PLANES: everything in

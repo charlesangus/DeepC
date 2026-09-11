@@ -2336,20 +2336,35 @@ def sceneI(settings):
     # The pre-merge groups adjacent same-pixel fragments when they share a
     # containing bucket, a FragmentKind and a holdout bracket, and their radii
     # are within merge_tolerance; the group then rasterises ONE disc, at its
-    # front member's radius.  So the merge is lossless exactly when the grouped
-    # radii round to the same DiscKernelLUT bin, and lossy when they do not —
-    # which the 0.25px DEFAULT tolerance permits, because the bins are 0.5px
-    # wide and their edges sit at n*0.5 + 0.25, so a pair 0.2px apart can still
-    # straddle one.  (M1.P3.T16's first pass asserted the opposite — "anything
-    # grouped at 0.25px rasterises the same disc, so the default is exactly
-    # lossless" — and gated it on a pair 1.47px apart, which the default
-    # tolerance never groups at all: the check read 0 because nothing merged,
-    # not because merging was free.  Measured here instead.)
+    # front member's radius.  The scatter rasterises a radius as a blend of the
+    # two kernel-grid nodes bracketing it, so two radii rasterise one kernel
+    # only when they are EQUAL (`sameScatterKernel`), and the merge is lossy
+    # whenever the grouped radii differ at all -- which the 0.25px DEFAULT
+    # tolerance permits.  (M1.P3.T16's first pass asserted the opposite --
+    # "anything grouped at 0.25px rasterises the same disc, so the default is
+    # exactly lossless" -- and gated it on a pair 1.47px apart, which the
+    # default tolerance never groups at all: the check read 0 because nothing
+    # merged, not because merging was free.  Measured here instead.)
     #
-    # Both layers are full-frame, so every pixel carries the pair; a corner
-    # element at z=3 widens the frame's measured CoC range so the pair still
-    # shares one containing ΔCoC bucket.
+    # WHAT THE DELTA IS.  Both layers are full-frame constants at alpha 0.6, so
+    # the interior reads the same alpha whatever disc it is scattered with,
+    # and the pre_merge on/off difference is not a bokeh-size effect: with
+    # pre_merge OFF the pair lands in one bucket as two DIFFERENT-kernel
+    # deposits, whose co-located area split falls a^2/4 short of the `over`
+    # (the collision residual the header documents: two opaque layers read
+    # 0.75 against 1) -- 0.09 at a = 0.6.  A pair the predicate calls one
+    # kernel is instead `over`-composited whether or not it pre-merges, and
+    # reads 0.  So the delta is a^2/4 with the kernels distinguished and
+    # exactly 0 with them identified, and both halves are pinned below.
+    #
+    # A corner element at z=3 widens the frame's measured CoC range so the pair
+    # still shares one containing ΔCoC bucket.
     SIZE, FOCUS = 20.0, 10.0
+    LAYER_ALPHA = 0.60
+    collisionResidual = LAYER_ALPHA * LAYER_ALPHA / 4.0     # 0.09
+    # a^2/4 is the co-location term alone; two distinct discs add a kernel-
+    # shape term of a few 1e-5 near the corner element, and the band admits it.
+    residualBand = 1.0e-03
 
     def zForRadius(radiusPx):
         """Behind focus: r = size*(1 - focus/z)."""
@@ -2357,16 +2372,19 @@ def sceneI(settings):
 
     reachBox = (32, 32, 224, 224)
 
-    def reachability(radiusA, radiusB, tolerance):
+    def reachability(radiusA, radiusB, tolerance, maxRadius=None):
         rendered = []
         for preMerge in (True, False):
-            cell = settings.derive(preMerge=preMerge, mergeTolerance=tolerance)
+            overrides = dict(preMerge=preMerge, mergeTolerance=tolerance)
+            if maxRadius is not None:
+                overrides["maxRadius"] = maxRadius
+            cell = settings.derive(**overrides)
             resetScript()
             source = deepMerge([
-                pointLayer(constant2d((0.30, 0.30, 0.30, 0.60)),
+                pointLayer(constant2d((0.30, 0.30, 0.30, LAYER_ALPHA)),
                            zForRadius(radiusA), keepZeroAlpha=False,
                            premult=False),
-                pointLayer(constant2d((0.30, 0.30, 0.30, 0.60)),
+                pointLayer(constant2d((0.30, 0.30, 0.30, LAYER_ALPHA)),
                            zForRadius(radiusB), keepZeroAlpha=False,
                            premult=False),
                 pointLayer(rectangle2d((0, 0, 24, 24), (0.5, 0.5, 0.5, 1.0)),
@@ -2374,23 +2392,26 @@ def sceneI(settings):
             rendered.append(render(
                 cell, makeDefocus(cell, source, size=SIZE,
                                   focusDistance=FOCUS, cocMode="manual"),
-                "i_reach_%s_%g_%g" % (preMerge, radiusB - radiusA, tolerance),
+                "i_reach_%s_%g_%g_%s" % (preMerge, radiusB - radiusA,
+                                         tolerance, maxRadius),
                 box=reachBox))
         return compareImages(rendered[0], rendered[1], box=reachBox)
 
     # 1.2 and 1.4 CoC px: 0.20 apart, i.e. inside the SHIPPING DEFAULT
-    # tolerance, but on opposite sides of the 1.25 bin edge (bins 1.0 and 1.5).
+    # tolerance, and two different kernels.
     atDefault = reachability(1.2, 1.4, settings.mergeTolerance)
     checks.append(boolCheck(
         "i", "i7 pre_merge reaches the render at the DEFAULT merge_tolerance",
-        atDefault.maxAbs > 1.0e-02,
+        abs(atDefault.maxAbs - collisionResidual) <= residualBand,
         "%.4e" % atDefault.maxAbs,
-        "> 1e-02 at merge_tolerance %.2f" % settings.mergeTolerance,
+        "%.4f +/- %.0e at merge_tolerance %.2f"
+        % (collisionResidual, residualBand, settings.mergeTolerance),
         population=atDefault.population(),
-        note="two full-frame same-pixel layers at CoC radius 1.2 and 1.4 px — "
-             "0.20 px apart, so within tolerance, but straddling the 1.25 px "
-             "kernel-bin edge, so the group rasterises a different disc than "
-             "the pair would"))
+        note="two full-frame same-pixel layers at CoC radius 1.2 and 1.4 px -- "
+             "0.20 px apart, so within tolerance, but different kernels, so "
+             "the group rasterises a different disc than the pair would; the "
+             "delta is the pair's collision residual a^2/4 = %.4f at a = %.2f"
+             % (collisionResidual, LAYER_ALPHA)))
     # The control: identical content, tolerance 0, so nothing may group. It is
     # what makes i7 a statement about the merge rather than about the geometry.
     noGrouping = reachability(1.2, 1.4, 0.0)
@@ -2400,37 +2421,39 @@ def sceneI(settings):
         note="pre_merge on vs off with nothing eligible to group; a non-zero "
              "reading here would mean i7's delta is not the merge"))
     # And the lossless half of the predicate, stated where it is actually true:
-    # a pair inside the SAME bin.
-    #
-    # M1.P3.T19 MOVED THIS PAIR.  It used to be 5.0 and 5.2 px, which shared
-    # bin 5.0 on the old uniform 0.5px grid; on the refined grid the nodes are
-    # ~0.05px apart there (5.019608 and 5.224490), so that pair straddles four
-    # of them and reads 9.0e-02 — a real reading of a real loss, but no longer a
-    # reading of the LOSSLESS case this check exists for. Moved to 17.0/17.2,
-    # which sit above kKernelCoarseFromPx where the grid is still the uniform
-    # 0.5px one, both inside the [16.75, 17.25] bin.
-    sameBin = reachability(17.0, 17.2, settings.mergeTolerance)
+    # a pair that rasterises ONE kernel, i.e. two EQUAL radii.  Two samples
+    # at distinct depths only share a radius through the max_radius clamp, so
+    # the pair sits 0.20 px apart in unclamped CoC like i7 and max_radius is
+    # lowered onto the front member: both then scatter at exactly 17.0 px.
+    SAME_KERNEL_CLAMP = 17
+    sameKernel = reachability(17.0, 17.2, settings.mergeTolerance,
+                              maxRadius=SAME_KERNEL_CLAMP)
     checks.append(tolCheck(
-        "i", "i7c ...and is lossless when the grouped radii share a kernel bin",
-        sameBin.maxAbs, 1.0e-07, population=sameBin.population(),
-        note="CoC radius 17.0 and 17.2 px: 0.20 apart like i7, but both inside "
-             "the [16.75, 17.25] bin, so the grouped disc IS the pair's disc. "
-             "i7d is the non-vacuity guard"))
+        "i", "i7c ...and is lossless when the grouped radii rasterise one kernel",
+        sameKernel.maxAbs, 1.0e-07, population=sameKernel.population(),
+        note="CoC radius 17.0 and 17.2 px at max_radius %d: 0.20 apart like "
+             "i7, but both clamp to 17.0 px, and equal radii are one kernel "
+             "under `sameScatterKernel`, so the grouped disc IS the pair's "
+             "disc. i7d is the non-vacuity guard" % SAME_KERNEL_CLAMP))
     # ...and the guard that keeps i7c from passing because nothing GROUPED.
     # A lossless merge is unobservable by construction, so eligibility has to
     # be shown on a pair that is identical in every respect the pre-merge
-    # tests -- same radius scale, same 0.20px separation, same tolerance,
-    # same content -- and differs only in straddling a bin edge.
-    straddle = reachability(17.2, 17.4, settings.mergeTolerance)
+    # tests -- same radius scale, same 0.20px separation, same tolerance, same
+    # max_radius, same content -- and differs only in sitting just UNDER the
+    # clamp, so its two radii stay distinct.
+    straddle = reachability(16.6, 16.8, settings.mergeTolerance,
+                            maxRadius=SAME_KERNEL_CLAMP)
     checks.append(boolCheck(
-        "i", "i7d guard: the same pair 0.2px higher, straddling a bin edge, DOES move",
-        straddle.maxAbs > 1.0e-02,
-        "%.4e" % straddle.maxAbs, "> 1e-02",
+        "i", "i7d guard: the same pair 0.4px under the clamp, two kernels, DOES move",
+        abs(straddle.maxAbs - collisionResidual) <= residualBand,
+        "%.4e" % straddle.maxAbs,
+        "%.4f +/- %.0e" % (collisionResidual, residualBand),
         population=straddle.population(),
-        note="17.2 and 17.4 px straddle the 17.25 px edge (bins 17.0 and "
-             "17.5), so this content at this tolerance really is eligible to "
-             "group -- which is what makes i7c's zero a statement about "
-             "losslessness rather than about nothing having merged"))
+        note="16.6 and 16.8 px at max_radius %d are unclamped and distinct, "
+             "so two kernels: this content at this tolerance really is "
+             "eligible to group and reads the collision residual -- which is "
+             "what makes i7c's zero a statement about losslessness rather "
+             "than about nothing having merged" % SAME_KERNEL_CLAMP))
     return checks
 
 
