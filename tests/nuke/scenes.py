@@ -4795,32 +4795,22 @@ def sceneN(settings):
     # ------------------------------------------------------------------
     # Scene (m) never sets `fill`: its every pin is on the knob's default.
     # This pins that the default IS foreground and that an explicit
-    # foreground render is the same bits -- in-process, one .so.  The
-    # M5-T0 baseline file is read too when it is on this machine, as a
-    # cross-build reading in the note; the gate is the in-process pair.
+    # foreground render is the same bits -- in-process, one .so.  n4b is
+    # the cross-build gate: the same three over-checkerboard graphs scene
+    # (m) writes (m1 halo, m3 ramp at alpha 1 and 0.9), rendered here at
+    # the baseline's own knob settings, must equal the preserved baseline
+    # files bit for bit.  Without the files the cell is SKIP, never PASS.
     resetScript()
     m1Default = render(settings, defocus(haloSparse()), "n4_m1_default",
                        box=box)
     resetScript()
     m1Foreground = render(settings, defocus(haloSparse(), fill="foreground"),
                           "n4_m1_foreground", box=box)
-    baselinePath = os.path.join(os.path.expanduser("~"), "deepc-baselines",
-                                "M5-T0", "renders", "over_checker_m1_halo.exr")
-    baselineNote = "no M5-T0 baseline file on this machine"
-    if os.path.isfile(baselinePath):
-        resetScript()
-        m1Board = render(settings,
-                         overChecker(defocus(haloSparse(), fill="foreground")),
-                         "n4_m1_over_checker", box=box)
-        baselineDiff = compareImages(m1Board, readExr(baselinePath), box=box)
-        baselineNote = ("over-checker render vs the M5-T0 baseline file: "
-                        "%d ULP, max |d| %.2e" % (baselineDiff.maxUlpsAny,
-                                                  baselineDiff.maxAbs))
     identityCheck(
         "n4 foreground unchanged: explicit fill=foreground == scene (m)'s "
         "m1 render (default knob)",
         m1Foreground, m1Default, box,
-        note="the halo rig at the run's K; %s" % baselineNote)
+        note="the halo rig at the run's K")
     m3Cell = settings.derive(k=16)
     m3Alpha = 0.90
     rampColour = tuple(c * m3Alpha for c in GROUND_COLOR[:3]) + (m3Alpha,)
@@ -4841,6 +4831,61 @@ def sceneN(settings):
         m3Foreground, m3Default, box,
         note="scene (g)'s ramp at m3's slope; the frame includes the "
              "frame-edge band and the near-focus rows")
+
+    # n4b: the preserved baseline renders.  The baseline was made at the
+    # harness defaults (K=16, pre_merge on, tolerance 0.25, max_radius
+    # 100), so the cell renders at exactly those whatever the run's own
+    # settings are.
+    baselineDir = os.environ.get(
+        "DEEPC_BASELINE_RENDERS",
+        os.path.join(os.path.expanduser("~"), "deepc-baselines", "M5-T0",
+                     "renders"))
+    baselineCell = settings.derive(k=16, preMerge=True, mergeTolerance=0.25,
+                                   maxRadius=100)
+    baselineFiles = ("over_checker_m1_halo.exr", "over_checker_m3_ramp_a1.exr",
+                     "over_checker_m3_ramp_a0.9.exr")
+    baselinePaths = [os.path.join(baselineDir, f) for f in baselineFiles]
+    if all(os.path.isfile(p) for p in baselinePaths):
+        def baselineGraph(tag):
+            if tag == "over_checker_m1_halo.exr":
+                return defocus(haloSparse(), baselineCell, fill="foreground")
+            alpha = 1.0 if tag.endswith("_a1.exr") else 0.9
+            colour = tuple(c * alpha for c in GROUND_COLOR[:3]) + (alpha,)
+            return makeDefocus(baselineCell, groundPlane(color=colour),
+                               size=86.0, focusDistance=GROUND_FOCUS,
+                               cocMode="manual", fill="foreground")
+        worst = []
+        for tag, path in zip(baselineFiles, baselinePaths):
+            resetScript()
+            board = render(baselineCell, overChecker(baselineGraph(tag)),
+                           "n4b_" + tag.replace(".exr", ""), box=box)
+            diff = compareImages(board, readExr(path), box=box)
+            worst.append((tag, diff))
+        checks.append(boolCheck(
+            "n", "n4b foreground mode == the preserved M5-T0 baseline renders, "
+                 "over the checkerboard, all three files",
+            all(d.maxAbs == 0.0 and d.maxUlpsAny == 0 for _, d in worst),
+            "; ".join("%s %d ULP, max |d| %.2e" % (t.replace("over_checker_", "")
+                                                    .replace(".exr", ""),
+                                                    d.maxUlpsAny, d.maxAbs)
+                      for t, d in worst),
+            "0 ULP on R, G, B and A, each file",
+            population="%d px x 4 channels x 3 files" % worst[0][1].total,
+            note="baseline %s; rendered at the baseline's knobs (K=16, "
+                 "pre_merge on, tolerance 0.25, max_radius 100), not the "
+                 "run's.  This is the foreground-mode oracle: a change here "
+                 "is a change to the shipped scheme, whatever the in-process "
+                 "n4 pair says" % baselineDir))
+    else:
+        missing = [os.path.basename(p) for p in baselinePaths
+                   if not os.path.isfile(p)]
+        checks.append(Check(
+            "n", "n4b foreground mode == the preserved M5-T0 baseline renders, "
+                 "over the checkerboard, all three files",
+            "-", "0 ULP each file", SKIP,
+            note="no baseline in %s (missing %s); set DEEPC_BASELINE_RENDERS "
+                 "to the directory holding scene (m)'s over_checker_*.exr "
+                 "from the preserved build" % (baselineDir, ", ".join(missing))))
 
     # ------------------------------------------------------------------
     # n5: empties and the identities that must not move.
@@ -5068,8 +5113,8 @@ def sceneN(settings):
     # (one CoC + 3), read as the mean |dR| between the sparse render and the
     # twin, on PREMULTIPLIED R -- alpha is 1 across the band in both (gated
     # below), so that is the ratio difference too.  The pins are the
-    # bake-off's own readings (M5.P2.T3, renders verified bit-identical to
-    # the knob build), NOT this build's; the band is 0.005 and the hard
+    # bake-off's own readings (its renders verified bit-identical to the
+    # knob build), NOT this build's; the band is 0.005 and the hard
     # range is the region in which a reading is still this estimator on this
     # board -- outside the band but inside it the estimator moved and must
     # be re-pinned, outside the range it is not this estimator at all.
@@ -5126,7 +5171,7 @@ def sceneN(settings):
                 population="%d px, the silhouette minus a %d px inset "
                            "(one CoC + 3), premultiplied R" % (count, reach),
                 note="foreground mode reads %.4f on the same band; the pin "
-                     "is the bake-off's reading of this rig (M5.P2.T3), the "
+                     "is the bake-off's reading of this rig, the "
                      "band 0.005, and the hard range is where a reading is "
                      "still this estimator on this board: inside the range "
                      "but off the pin it moved and must be re-pinned, "
@@ -5162,6 +5207,61 @@ def sceneN(settings):
                  "premultiplied difference IS the colour-ratio difference.  "
                  "MUTATION synthesis off: average == nearest (0.0863 / "
                  "0.0648) and the alpha is 1 / 21 ULP off the twin"))
+
+    # ------------------------------------------------------------------
+    # n9: the fallback reach is max_radius in PROXY pixels.
+    # ------------------------------------------------------------------
+    # The halo card over NOTHING, with a background strip a gap away from
+    # its top edge.  The gap is chosen so the strip is beyond max_radius at
+    # full size (no pixel borrows, background == foreground) and, at proxy
+    # 0.5, beyond max_radius/2 -- so it must still not borrow.  A fallback
+    # reach left in full-size pixels would reach it at proxy (gap/2 <
+    # max_radius) and the card's top band would turn background-coloured.
+    # The control halves the gap: then the strip IS within reach at full
+    # size and background mode visibly differs, so the rig can tell.
+    n9MaxRadius = 40
+    n9Cell = settings.derive(maxRadius=n9MaxRadius)
+    top = HALO_SILHOUETTE[3]
+
+    def stripSparse(gap):
+        strip = pointLayer(rectangle2d((0, top + gap, FORMAT_W, FORMAT_H),
+                                       HALO_BG + (1.0,)),
+                           HALO_FAR_Z, keepZeroAlpha=False, premult=True)
+        return deepMerge([haloForeground(), strip])
+
+    n9 = {}
+    for gap, label in ((50, "gap"), (25, "control")):
+        for proxyScale in (None, 0.5):
+            pair = {}
+            for mode in ("foreground", "background"):
+                resetScript(proxyScale=proxyScale)
+                node = defocus(stripSparse(gap), n9Cell, fill=mode)
+                image = render(n9Cell, node,
+                               "n9_%s_proxy%g_%s" % (label, proxyScale or 1.0,
+                                                     mode), box=box)
+                pair[mode] = image
+            window = (pair["foreground"].x0, pair["foreground"].y0,
+                      pair["foreground"].x0 + pair["foreground"].width,
+                      pair["foreground"].y0 + pair["foreground"].height)
+            n9[(label, proxyScale or 1.0)] = compareImages(
+                pair["background"], pair["foreground"], box=window)
+    checks.append(boolCheck(
+        "n", "n9 proxy 0.5: a background %d px past max_radius %d at full size "
+             "is not borrowed at proxy either (reach %d proxy px, strip %d)"
+             % (50 - n9MaxRadius, n9MaxRadius, n9MaxRadius // 2, 25),
+        n9[("gap", 1.0)].maxUlpsAny == 0 and n9[("gap", 0.5)].maxUlpsAny == 0
+        and n9[("control", 1.0)].maxAbs > 0.05
+        and n9[("control", 0.5)].maxAbs > 0.05,
+        "background vs foreground: full %d ULP, proxy %d ULP; control (gap "
+        "%d) full max |d| %.3f, proxy %.3f"
+        % (n9[("gap", 1.0)].maxUlpsAny, n9[("gap", 0.5)].maxUlpsAny, 25,
+           n9[("control", 1.0)].maxAbs, n9[("control", 0.5)].maxAbs),
+        "0 ULP at both scales; control > 0.05 at both",
+        population="%d px full, %d px proxy, 4 channels"
+        % (n9[("gap", 1.0)].total, n9[("gap", 0.5)].total),
+        note="MUTATION (fallback reach in full-size pixels): the proxy "
+             "render borrows the strip into the card's top band and reads "
+             "the FG:BG mix there; full size is unaffected"))
     return checks
 
 

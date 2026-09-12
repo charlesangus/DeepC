@@ -2704,6 +2704,32 @@ TEST_CASE("SurfaceMap: a fresh map has size 0 and release() returns it there, fr
     CHECK(!map.contains(0, 0));
 }
 
+TEST_CASE("SurfaceMap/MaxDepthPyramid bytes(): a map rebuilt smaller without release() keeps "
+          "the larger capacity, so the frame budget must charge bytes(), after a release()")
+{
+    SurfaceMap map;
+    MaxDepthPyramid pyramid;
+    map.allocate(0, 0, 64, 64, 4);
+    pyramid.build(map);
+    CHECK(map.bytes() == SurfaceMap::bytesForWindow(64, 64, 4));
+    CHECK(pyramid.bytes() == MaxDepthPyramid::bytesForWindow(64, 64));
+    CHECK(map.bytes() + pyramid.bytes() == surfaceMapFrameBytes(64, 64, 4));
+
+    map.allocate(0, 0, 8, 8, 4);
+    pyramid.build(map);
+    CHECK(map.bytes() == SurfaceMap::bytesForWindow(64, 64, 4));
+    CHECK(map.bytes() > SurfaceMap::bytesForWindow(8, 8, 4));
+    CHECK(pyramid.bytes() == MaxDepthPyramid::bytesForWindow(64, 64));
+
+    map.release();
+    pyramid.release();
+    CHECK(map.bytes() == 0u);
+    CHECK(pyramid.bytes() == 0u);
+    map.allocate(0, 0, 8, 8, 4);
+    pyramid.build(map);
+    CHECK(map.bytes() + pyramid.bytes() == surfaceMapFrameBytes(8, 8, 4));
+}
+
 TEST_CASE("buildSurfaceMap: the extended window is band +/- (padY + reach) clipped to the "
           "output box; only srcBox rows are fetched; cells outside srcBox read empty")
 {
@@ -3321,6 +3347,7 @@ TEST_CASE("findBackgroundSource: band invariance -- two maps windowed differentl
           "answers as both of them do, from every band")
 {
     const FillRig halo = makeHaloFillRig();
+    FillScratch fillScratch;
     const int primary = 33, fallback = 60;
 
     SurfaceMap wide, narrow, frame;
@@ -3383,10 +3410,10 @@ TEST_CASE("findBackgroundSource: band invariance -- two maps windowed differentl
                     std::vector<SampleRecord> fromFrame  = haloStack(x, y, false);
                     const bool w = appendHiddenBackground(windowed, windowedPyr, halo.fp, x, y,
                                                           0.0f, static_cast<float>(fallback),
-                                                          smear, fromWindow);
+                                                          smear, fromWindow, fillScratch);
                     const bool f = appendHiddenBackground(frame, framePyr, halo.fp, x, y,
                                                           0.0f, static_cast<float>(fallback),
-                                                          smear, fromFrame);
+                                                          smear, fromFrame, fillScratch);
                     REQUIRE(w == f);
                     REQUIRE(fromWindow.size() == fromFrame.size());
                     for (std::size_t i = 0; i < fromWindow.size(); ++i) {
@@ -3560,6 +3587,7 @@ void renderSynthRig(SynthRender& out, const SynthRig& rig, bool synthesize, bool
                     bool smear, float cardAlpha, const HoldoutSoA& holdout)
 {
     const int W = kSynthW, pad = 10;
+    FillScratch fillScratch;
     auto stackAt = [&](int x, int y) -> std::vector<SampleRecord> {
         if (!inSynthCard(x, y))
             return planeSample();
@@ -3582,7 +3610,7 @@ void renderSynthRig(SynthRender& out, const SynthRig& rig, bool synthesize, bool
         for (int x = -pad; x < W + pad; ++x) {
             std::vector<SampleRecord> v = stackAt(x, y);
             if (synthesize
-                && appendHiddenBackground(map, pyramid, rig.fp, x, y, 0.0f, 100.0f, smear, v))
+                && appendHiddenBackground(map, pyramid, rig.fp, x, y, 0.0f, 100.0f, smear, v, fillScratch))
                 ++out.appended;
             const std::size_t i = static_cast<std::size_t>(out.window.index(x, y));
             float residualT = 1.0f;
@@ -3607,6 +3635,7 @@ TEST_CASE("the synthesised hidden sample flattens bit-identically to the real on
           "would have supplied: fragments, residualT and residualRadiusPx")
 {
     const SynthRig rig = makeSynthRig();
+    FillScratch fillScratch;
     const int x0 = 0, x1 = 24, y0 = 0, y1 = 24;
 
     // A 24 x 24 field: card over [8, 16)^2, plane elsewhere.  Every card pixel
@@ -3630,7 +3659,7 @@ TEST_CASE("the synthesised hidden sample flattens bit-identically to the real on
                 CAPTURE(x);
                 CAPTURE(y);
                 std::vector<SampleRecord> synth = cardSample(1.0f);
-                REQUIRE(appendHiddenBackground(map, pyramid, rig.fp, x, y, 0.0f, 100.0f, smear, synth));
+                REQUIRE(appendHiddenBackground(map, pyramid, rig.fp, x, y, 0.0f, 100.0f, smear, synth, fillScratch));
                 REQUIRE(synth.size() == 2u);
                 CHECK(synth[1].zFront == kSynthPlaneZ);
                 CHECK(synth[1].zBack  == kSynthPlaneZ);
@@ -3679,7 +3708,7 @@ TEST_CASE("the synthesised hidden sample flattens bit-identically to the real on
         for (bool smear : {false, true}) {
             CAPTURE(smear);
             std::vector<SampleRecord> synth = cardSample(0.5f);
-            REQUIRE(appendHiddenBackground(map, pyramid, rig.fp, 12, 12, 0.0f, 100.0f, smear, synth));
+            REQUIRE(appendHiddenBackground(map, pyramid, rig.fp, 12, 12, 0.0f, 100.0f, smear, synth, fillScratch));
             std::vector<SampleRecord> twin = cardSample(0.5f);
             twin.push_back(planeSample(alphaQ)[0]);
 
@@ -3701,8 +3730,8 @@ TEST_CASE("the synthesised hidden sample flattens bit-identically to the real on
         }
     }
 
-    SUBCASE("off axis with depth_is_ray_distance: the raw depth is pre-divided by P's own "
-            "factor and lands back on Q's camera depth within 1 ulp")
+    SUBCASE("off axis with depth_is_ray_distance: the raw depth is written so P's own "
+            "factor lands it back on Q's camera depth at 0 ulp")
     {
         const SynthRig ray = makeSynthRig(true);
         const int ox = 1800, oy = 1000;
@@ -3729,7 +3758,7 @@ TEST_CASE("the synthesised hidden sample flattens bit-identically to the real on
                 REQUIRE(sP < 1.0f);
 
                 std::vector<SampleRecord> synth = cardSample(1.0f);
-                REQUIRE(appendHiddenBackground(map, pyramid, ray.fp, x, y, 0.0f, 100.0f, smear, synth));
+                REQUIRE(appendHiddenBackground(map, pyramid, ray.fp, x, y, 0.0f, 100.0f, smear, synth, fillScratch));
                 REQUIRE(synth.size() == 2u);
                 // Q's camera depth as the map holds it, after P's own
                 // correction is applied to the synthetic.
@@ -3738,7 +3767,8 @@ TEST_CASE("the synthesised hidden sample flattens bit-identically to the real on
                 const float zCamQ = map.plane(SurfaceMap::kZFront)[map.index(q.qx, q.qy)];
                 const int rt = floatUlps(synth[1].zFront * sP, zCamQ);
                 worstRoundTrip = std::max(worstRoundTrip, rt);
-                CHECK(rt <= 1);
+                CHECK(rt == 0);
+                CHECK(synth[1].zBack * sP == zCamQ);
 
                 std::vector<SampleRecord> twin = cardSample(1.0f);
                 twin.push_back(planeSample(1.0f, sP)[0]);
@@ -3747,16 +3777,15 @@ TEST_CASE("the synthesised hidden sample flattens bit-identically to the real on
                 const SampleSoA b = flattenOnePixel(ray.fp, ray.buckets, x, y, twin,  &tT, &rT);
                 const SoADiff d = compareSoA(a, b);
                 CHECK(d.sameShape);
-                // Q's plane sample was itself rounded once at Q (raw * sQ),
-                // then once more here (/ sP * sP): two roundings against the
-                // twin's one, so the staged depth may sit 2 ulps off and the
-                // radius derived from it a few more.
-                CHECK(d.worstUlps <= 4);
+                // Q's camera depth (raw_Q * sQ) against the twin's (raw_P *
+                // sP): on this rig both land on kSynthPlaneZ exactly, so the
+                // synthetic and the twin flatten to the same bits.
+                CHECK(d.worstUlps == 0);
                 worstSoA = std::max(worstSoA, d.worstUlps);
                 if (d.worstUlps == 0)
                     ++exact;
                 CHECK(tS == tT);
-                CHECK(floatUlps(rS, rT) <= 4);
+                CHECK(rS == rT);
                 CHECK(tS == 0.0f);
                 ++checked;
             }
@@ -3790,7 +3819,7 @@ TEST_CASE("the synthesised hidden sample flattens bit-identically to the real on
         for (bool smear : {false, true}) {
             CAPTURE(smear);
             std::vector<SampleRecord> synth = cardSample(1.0f);
-            REQUIRE(appendHiddenBackground(map, pyramid, wide.fp, 12, 12, 0.0f, 100.0f, smear, synth));
+            REQUIRE(appendHiddenBackground(map, pyramid, wide.fp, 12, 12, 0.0f, 100.0f, smear, synth, fillScratch));
             REQUIRE(synth.size() == 2u);
             CHECK(synth[1].zFront == spanB.zFront);
             CHECK(synth[1].zBack  == spanB.zBack);
@@ -3827,6 +3856,52 @@ TEST_CASE("the synthesised hidden sample flattens bit-identically to the real on
     }
 }
 
+TEST_CASE("rawDepthForCameraDepth: raw * s reproduces the camera depth exactly wherever a "
+          "float raw exists, else lands within 1 ulp and no neighbour does better; the "
+          "residual rate over 1e5 pairs")
+{
+    // s in the ray-scale range the node produces: f / sqrt(f^2 + r^2) runs
+    // from 1 on axis to ~0.3 at the corner of a very wide lens.
+    Lcg rng(0x5CA1Eu);
+    int exact = 0, residual = 0, worstResidualUlps = 0;
+    for (int iter = 0; iter < 100000; ++iter) {
+        const float s   = rng.range(0.3f, 1.0f);
+        const float cam = std::exp(rng.range(std::log(1e-3f), std::log(1e6f)));
+        const float raw = rawDepthForCameraDepth(cam, s);
+        REQUIRE(std::isfinite(raw));
+        REQUIRE(raw > 0.0f);
+        if (raw * s == cam) {
+            ++exact;
+            continue;
+        }
+        ++residual;
+        const int u = floatUlps(raw * s, cam);
+        worstResidualUlps = std::max(worstResidualUlps, u);
+        REQUIRE(u <= 1);
+        for (int k = 1; k <= 2; ++k) {
+            float lo = raw, hi = raw;
+            for (int i = 0; i < k; ++i) {
+                lo = std::nextafter(lo, 0.0f);
+                hi = std::nextafter(hi, std::numeric_limits<float>::infinity());
+            }
+            CHECK(!(lo * s == cam));
+            CHECK(!(hi * s == cam));
+        }
+    }
+    std::printf("\nrawDepthForCameraDepth: 1e5 pairs, exact %d, no float raw %d (worst %d ulp)\n",
+                exact, residual, worstResidualUlps);
+    CHECK(exact > 85000);
+    CHECK(residual < 15000);
+    CHECK(worstResidualUlps == 1);
+
+    // s == 1 (the toggle off, or the on-axis pixel) and cam == 0 are the
+    // identity at zero steps.
+    CHECK(rawDepthForCameraDepth(7.25f, 1.0f) == 7.25f);
+    CHECK(rawDepthForCameraDepth(0.0f, 0.7f) == 0.0f);
+    CHECK(floatUlps(rawDepthForCameraDepth(DepthBuckets::kMaxDepth, 0.3f) * 0.3f,
+                    DepthBuckets::kMaxDepth) <= 1);
+}
+
 TEST_CASE("residualTransmittance agrees with flattenPixelToSoA's residualT over fuzzed "
           "stacks of points, spans and overlaps, far inside kFillDeficitTol")
 {
@@ -3846,16 +3921,85 @@ TEST_CASE("residualTransmittance agrees with flattenPixelToSoA's residualT over 
         }
         if (rng.unit() < 0.2f)
             v.push_back(makeSample(3.0f, 3.0f, std::numeric_limits<float>::quiet_NaN(), {0.0f, 0.0f}));
-        const float helper = residualTransmittance(v);
+        const float helper = static_cast<float>(residualTransmittance(v));
         float tF = -1.0f;
         flattenOnePixel(fp, bk, 0, 0, v, &tF, nullptr);
         worst = std::max(worst, std::fabs(helper - tF));
         CHECK(helper == doctest::Approx(tF).epsilon(2e-6));
     }
     CHECK(worst < kFillDeficitTol * 0.1f);
-    CHECK(residualTransmittance({}) == 1.0f);
-    CHECK(residualTransmittance(cardSample(1.0f)) == 0.0f);
-    CHECK(residualTransmittance(cardSample(0.5f)) == 0.5f);
+    CHECK(residualTransmittance({}) == 1.0);
+    CHECK(residualTransmittance(cardSample(1.0f)) == 0.0);
+    CHECK(residualTransmittance(cardSample(0.5f)) == 0.5);
+}
+
+TEST_CASE("residualTransmittance and the prune decision are invariant to sample order, "
+          "including stacks whose product sits within an ulp of kFillDeficitTol")
+{
+    Lcg rng(0x0DDEu);
+    const float rP = 4.0f;
+    int nearThreshold = 0, pruned = 0, floatOrderFlips = 0;
+    for (int iter = 0; iter < 20000; ++iter) {
+        CAPTURE(iter);
+        const int n = rng.intRange(2, 8);
+        std::vector<SampleRecord> v;
+        // Half the stacks are built so the product of (1 - a) lands on
+        // kFillDeficitTol to float rounding: n - 1 random factors, the last
+        // chosen to hit the tolerance, then jittered by a few float ulps.
+        const bool aimed = (iter % 2) == 0;
+        double product = 1.0;
+        for (int i = 0; i < n - 1; ++i) {
+            const float a = aimed ? rng.range(0.05f, 0.6f) : rng.range(0.0f, 1.0f);
+            v.push_back(makeSample(1.0f + i, 1.0f + i, a, {0.1f}));
+            product *= 1.0 - static_cast<double>(a);
+        }
+        float last = aimed ? static_cast<float>(1.0 - static_cast<double>(kFillDeficitTol) / product)
+                           : rng.range(0.0f, 1.0f);
+        if (aimed) {
+            for (int k = rng.intRange(-3, 3); k < 0; ++k) last = std::nextafter(last, 0.0f);
+            for (int k = rng.intRange(-3, 3); k > 0; --k) last = std::nextafter(last, 1.0f);
+        }
+        v.push_back(makeSample(static_cast<float>(n), static_cast<float>(n), last, {0.1f}));
+
+        const double t0 = residualTransmittance(v);
+        const bool   p0 = pruneSynthesis(t0, rP, rP);
+        if (std::fabs(t0 - static_cast<double>(kFillDeficitTol)) < 1e-6)
+            ++nearThreshold;
+        if (p0)
+            ++pruned;
+
+        // Every rotation and the reverse, plus a few random shuffles.
+        float tFloatFirst = 1.0f;
+        for (const SampleRecord& s : v) tFloatFirst *= (1.0f - s.alpha);
+        std::vector<std::vector<SampleRecord>> orders;
+        for (int r = 1; r < n; ++r) {
+            std::vector<SampleRecord> w(v.begin() + r, v.end());
+            w.insert(w.end(), v.begin(), v.begin() + r);
+            orders.push_back(w);
+        }
+        orders.push_back(std::vector<SampleRecord>(v.rbegin(), v.rend()));
+        for (int k = 0; k < 3; ++k) {
+            std::vector<SampleRecord> w = v;
+            for (int i = n - 1; i > 0; --i)
+                std::swap(w[static_cast<std::size_t>(i)],
+                          w[static_cast<std::size_t>(rng.intRange(0, i))]);
+            orders.push_back(w);
+        }
+        for (const std::vector<SampleRecord>& w : orders) {
+            const double t = residualTransmittance(w);
+            CHECK(pruneSynthesis(t, rP, rP) == p0);
+            CHECK(std::fabs(t - t0) <= 2e-15 * t0);
+            float tFloat = 1.0f;
+            for (const SampleRecord& s : w) tFloat *= (1.0f - s.alpha);
+            if ((tFloat <= kFillDeficitTol) != (tFloatFirst <= kFillDeficitTol))
+                ++floatOrderFlips;
+        }
+    }
+    std::printf("\nresidual order invariance: %d near-threshold stacks, %d pruned; a float "
+                "product in raw order would have flipped the prune %d times\n",
+                nearThreshold, pruned, floatOrderFlips);
+    CHECK(nearThreshold > 1000);
+    CHECK(pruned > 1000);
 }
 
 TEST_CASE("appendHiddenBackground: the per-pixel auto reach is 2 * r_P + 1 at P's own "
@@ -3863,6 +4007,7 @@ TEST_CASE("appendHiddenBackground: the per-pixel auto reach is 2 * r_P + 1 at P'
           "empty pixel or one with no source appends nothing")
 {
     const SynthRig rig = makeSynthRig();
+    FillScratch fillScratch;
 
     SUBCASE("prune: opaque P at r = 0 over a source at r = 0 appends nothing; alpha 0.5 P does")
     {
@@ -3882,11 +4027,11 @@ TEST_CASE("appendHiddenBackground: the per-pixel auto reach is 2 * r_P + 1 at P'
 
         std::vector<SampleRecord> opaque = planeSample(1.0f);
         CHECK(findBackgroundSource(map, pyramid, 7, 12, 1, 100).found);
-        CHECK(!appendHiddenBackground(map, pyramid, wide.fp, 7, 12, 0.0f, 100.0f, true, opaque));
+        CHECK(!appendHiddenBackground(map, pyramid, wide.fp, 7, 12, 0.0f, 100.0f, true, opaque, fillScratch));
         CHECK(opaque.size() == 1u);
 
         std::vector<SampleRecord> half = planeSample(0.5f);
-        CHECK(appendHiddenBackground(map, pyramid, wide.fp, 7, 12, 0.0f, 100.0f, true, half));
+        CHECK(appendHiddenBackground(map, pyramid, wide.fp, 7, 12, 0.0f, 100.0f, true, half, fillScratch));
         CHECK(half.size() == 2u);
         CHECK(half[1].zFront == kSynthPlaneZ + 10.0f);
     }
@@ -3905,18 +4050,18 @@ TEST_CASE("appendHiddenBackground: the per-pixel auto reach is 2 * r_P + 1 at P'
 
         FillSearchStats withFallback, primaryOnly, manual;
         std::vector<SampleRecord> a = cardSample(1.0f);
-        CHECK(appendHiddenBackground(map, pyramid, rig.fp, 24, 24, 0.0f, 100.0f, true, a, &withFallback));
+        CHECK(appendHiddenBackground(map, pyramid, rig.fp, 24, 24, 0.0f, 100.0f, true, a, fillScratch, &withFallback));
         std::vector<SampleRecord> b = cardSample(1.0f);
-        CHECK(!appendHiddenBackground(map, pyramid, rig.fp, 24, 24, 0.0f, 17.0f, true, b, &primaryOnly));
+        CHECK(!appendHiddenBackground(map, pyramid, rig.fp, 24, 24, 0.0f, 17.0f, true, b, fillScratch, &primaryOnly));
         CHECK(b.size() == 1u);
         std::vector<SampleRecord> c = cardSample(1.0f);
-        CHECK(appendHiddenBackground(map, pyramid, rig.fp, 24, 24, 20.0f, 20.0f, true, c, &manual));
+        CHECK(appendHiddenBackground(map, pyramid, rig.fp, 24, 24, 20.0f, 20.0f, true, c, fillScratch, &manual));
         CHECK(c.size() == 2u);
         std::vector<SampleRecord> e = cardSample(1.0f);
-        CHECK(!appendHiddenBackground(map, pyramid, rig.fp, 24, 24, 19.0f, 19.0f, true, e));
-        CHECK(!appendHiddenBackground(map, pyramid, rig.fp, 24, 24, 100.0f, 19.0f, true, e));
+        CHECK(!appendHiddenBackground(map, pyramid, rig.fp, 24, 24, 19.0f, 19.0f, true, e, fillScratch));
+        CHECK(!appendHiddenBackground(map, pyramid, rig.fp, 24, 24, 100.0f, 19.0f, true, e, fillScratch));
         CHECK(e.size() == 1u);
-        CHECK(appendHiddenBackground(map, pyramid, rig.fp, 12, 24, 0.0f, 17.0f, true, e));
+        CHECK(appendHiddenBackground(map, pyramid, rig.fp, 12, 24, 0.0f, 17.0f, true, e, fillScratch));
         CHECK(e.size() == 2u);
         CHECK(withFallback.tilesVisited > primaryOnly.tilesVisited);
     }
@@ -3931,11 +4076,11 @@ TEST_CASE("appendHiddenBackground: the per-pixel auto reach is 2 * r_P + 1 at P'
         MaxDepthPyramid pyramid;
         buildSynthMap(map, pyramid, rig, 0, 24, 0, 24, field);
         std::vector<SampleRecord> none;
-        CHECK(!appendHiddenBackground(map, pyramid, rig.fp, 30, 30, 0.0f, 100.0f, true, none));
-        CHECK(!appendHiddenBackground(map, pyramid, rig.fp, 2, 2, 0.0f, 100.0f, true, none));
+        CHECK(!appendHiddenBackground(map, pyramid, rig.fp, 30, 30, 0.0f, 100.0f, true, none, fillScratch));
+        CHECK(!appendHiddenBackground(map, pyramid, rig.fp, 2, 2, 0.0f, 100.0f, true, none, fillScratch));
         CHECK(none.empty());
         std::vector<SampleRecord> plane = planeSample();
-        CHECK(!appendHiddenBackground(map, pyramid, rig.fp, 2, 2, 0.0f, 100.0f, true, plane));
+        CHECK(!appendHiddenBackground(map, pyramid, rig.fp, 2, 2, 0.0f, 100.0f, true, plane, fillScratch));
         CHECK(plane.size() == 1u);
     }
 }
@@ -4072,6 +4217,7 @@ TEST_CASE("fill_smear on a textured background: off, the synthetic is the neares
           "reach (1 ulp of an independent double sum) and a fallback-tier Q stays verbatim")
 {
     const SynthRig rig = makeSynthRig();
+    FillScratch fillScratch;
 
     SUBCASE("primary tier: 16 x 16 opaque card over the checker, every card pixel within reach 17")
     {
@@ -4101,7 +4247,7 @@ TEST_CASE("fill_smear on a textured background: off, the synthetic is the neares
                 const float nearestC = checkerColour(q.qx, q.qy);
 
                 std::vector<SampleRecord> plain = cardSample(1.0f);
-                REQUIRE(appendHiddenBackground(map, pyramid, rig.fp, x, y, 0.0f, 100.0f, false, plain));
+                REQUIRE(appendHiddenBackground(map, pyramid, rig.fp, x, y, 0.0f, 100.0f, false, plain, fillScratch));
                 REQUIRE(plain.size() == 2u);
                 CHECK(plain[1].channels[0] == nearestC);
                 CHECK(plain[1].alpha  == 1.0f);
@@ -4127,7 +4273,7 @@ TEST_CASE("fill_smear on a textured background: off, the synthetic is the neares
                 const float expected = static_cast<float>(sum / n);
 
                 std::vector<SampleRecord> smeared = cardSample(1.0f);
-                REQUIRE(appendHiddenBackground(map, pyramid, rig.fp, x, y, 0.0f, 100.0f, true, smeared));
+                REQUIRE(appendHiddenBackground(map, pyramid, rig.fp, x, y, 0.0f, 100.0f, true, smeared, fillScratch));
                 REQUIRE(smeared.size() == 2u);
                 const int ulps = floatUlps(smeared[1].channels[0], expected);
                 worstUlps = std::max(worstUlps, ulps);
@@ -4162,7 +4308,7 @@ TEST_CASE("fill_smear on a textured background: off, the synthetic is the neares
         for (bool smear : {false, true}) {
             CAPTURE(smear);
             std::vector<SampleRecord> v = cardSample(1.0f);
-            REQUIRE(appendHiddenBackground(map, pyramid, rig.fp, 24, 24, 0.0f, 100.0f, smear, v));
+            REQUIRE(appendHiddenBackground(map, pyramid, rig.fp, 24, 24, 0.0f, 100.0f, smear, v, fillScratch));
             REQUIRE(v.size() == 2u);
             CHECK(v[1].channels[0] == checkerColour(q.qx, q.qy));
         }
@@ -9744,6 +9890,38 @@ TEST_CASE("bandBudgetBytes: the virtual-background window scales with padY, "
     // (not the band's) -- the independent hand derivation for the 8.72 MB
     // figure quoted in bandBudgetBytes()'s doc block.
     CHECK(ResidualWindow::bytesForWindow(4096, 64 + 2 * 101) == 8716288u);
+}
+
+TEST_CASE("worstFetchWindowSum: the worst band's fetch-window sum of per-row counts, and "
+          "background mode's +1 per non-empty pixel raises it by the window's pixel count")
+{
+    // 12 source rows at y = 4..15, one sample per row except row 9 (five);
+    // output box y = 0..20; band height 4, padY 1.
+    std::vector<double> rows(12, 1.0);
+    rows[5] = 5.0;                                          // y = 9
+    const int srcY0 = 4;
+    CHECK(worstFetchWindowSum(rows, srcY0, 0, 20, 4, 1) == 10.0);    // band 8..12 -> fetch 7..13
+    CHECK(worstFetchWindowSum(rows, srcY0, 0, 20, 4, 0) == 8.0);     // band 8..12 alone
+    CHECK(worstFetchWindowSum(rows, srcY0, 0, 20, 20, 0) == 16.0);   // one band, every row
+    CHECK(worstFetchWindowSum(rows, srcY0, 0, 20, 1, 0) == 5.0);
+    CHECK(worstFetchWindowSum(rows, srcY0, 0, 4, 4, 0) == 0.0);      // no band reaches a source row
+    CHECK(worstFetchWindowSum({}, srcY0, 0, 20, 4, 1) == 0.0);
+
+    // Background mode: the node adds the per-row non-empty pixel count
+    // before handing the rows over, so the bound grows by exactly the
+    // fetch window's pixel count.
+    std::vector<double> pixels(12, 3.0);
+    std::vector<double> withFill = rows;
+    for (std::size_t i = 0; i < rows.size(); ++i)
+        withFill[i] += pixels[i];
+    CHECK(worstFetchWindowSum(withFill, srcY0, 0, 20, 4, 1)
+          == worstFetchWindowSum(rows, srcY0, 0, 20, 4, 1) + 6.0 * 3.0);
+    const BandPlan fg = planBands(4096.0 * 300.0, 20, 16, 4, 64, false, 4,
+                                  [&](int b) { return worstFetchWindowSum(rows, srcY0, 0, 20, b, 1); }, 1);
+    const BandPlan bg = planBands(4096.0 * 300.0, 20, 16, 4, 64, false, 4,
+                                  [&](int b) { return worstFetchWindowSum(withFill, srcY0, 0, 20, b, 1); }, 1);
+    CHECK(bg.bandHeight <= fg.bandHeight);
+    CHECK(bg.maxInFlight <= fg.maxInFlight);
 }
 
 TEST_CASE("planBands: shrink-to-fit floors at 1 row and the concurrent cap "

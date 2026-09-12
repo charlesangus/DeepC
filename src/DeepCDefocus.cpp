@@ -188,13 +188,16 @@ static const char* const HELP =
     "out to 'max radius' is used unsmeared, whatever 'smear' says.\n"
     "\n"
     "'smear' (on by default) averages the borrowed alpha and colour over "
-    "every qualifying pixel within 'fill search', which removes the "
-    "streaks a plain nearest-pixel copy leaves on a textured background; "
-    "off, it copies the nearest qualifying pixel's colour verbatim, "
-    "keeping hard edges in the borrowed colour at the price of those "
-    "streaks. The two agree exactly on a uniform background. BACKGROUND "
-    "re-reads the deep input over a wider band and roughly doubles "
-    "render time; FOREGROUND is unaffected.\n"
+    "the qualifying pixels of the 'fill search' disc, sampled on a "
+    "stride-capped lattice (at most a few hundred reads per pixel, "
+    "whatever the radius), which removes the streaks a plain "
+    "nearest-pixel copy leaves on a textured background; off, it copies "
+    "the nearest qualifying pixel's colour verbatim, keeping hard edges "
+    "in the borrowed colour at the price of those streaks. The two agree "
+    "exactly on a uniform background. BACKGROUND reads the deep input "
+    "once more, frame-wide, before the first band is rendered, and costs "
+    "about a fifth to a quarter more render time on the reference scene; "
+    "FOREGROUND is unaffected.\n"
     "\n"
     "The fill divides by the UN-HELD-OUT arrival: the arrival plane is "
     "deposited before holdout visibility is applied, while every colour and "
@@ -485,7 +488,7 @@ class DeepCDefocus : public DD::Image::Iop
         float backgroundRadiusPx = 0.0f;   // resolveBackgroundRadiusPx(), see frameSetup()
         deepc::FillMode fillMode = deepc::FillMode::Foreground;   // resolvedFillMode()
         float fillSearchPx    = 0.0f;   // clampedFillSearchPx(); <= 0 is auto
-        float fillMaxRadiusPx = 0.0f;   // clampedMaxRadius(): the fill's fallback reach
+        float fillMaxRadiusPx = 0.0f;   // the fill's fallback reach, in proxy px
         bool  fillSmear       = true;   // fill_smear: disc-average the borrowed colour
         deepc::SurfaceMap      surfaces;   // fill: background only; released otherwise
         deepc::MaxDepthPyramid pyramid;    // over `surfaces`, same lifetime
@@ -714,10 +717,10 @@ public:
 
         Bool_knob(f, &_fillSmear, "fill_smear", "smear");
         Tooltip(f, "In 'fill: background' mode, average the borrowed surface's alpha "
-                    "and colour over every qualifying pixel within 'fill search' "
-                    "instead of copying the nearest one verbatim -- removes streaking "
-                    "on textured backgrounds, at the cost of soft edges in the "
-                    "borrowed colour.");
+                    "and colour over the qualifying pixels of the 'fill search' disc "
+                    "(sampled on a stride-capped lattice) instead of copying the "
+                    "nearest one verbatim -- removes streaking on textured "
+                    "backgrounds, at the cost of soft edges in the borrowed colour.");
 
         // --- Output ----------------------------------------------------------
         Divider(f, "Output");
@@ -833,18 +836,13 @@ public:
         return (_backgroundDepth > 0.0f) ? _backgroundDepth * _proxyScale : 0.0f;
     }
 
-    // fill's resolved mode. The knob is a plain enum index, so no clamp is
-    // needed beyond the cast (Enumeration_knob already bounds it to the
-    // label table).
     deepc::FillMode resolvedFillMode() const
     {
         return static_cast<deepc::FillMode>(_fill);
     }
 
-    // fill_search, a search-radius in pixels like background_depth, so it is
-    // proxy-scaled here rather than by applyProxyScale() — same reasoning as
-    // clampedBackgroundDepthPx() above. <= 0 is left as-is (
-    // deepc::resolveFillSearchPx() reads that as "auto").
+    // A search radius in pixels, proxy-scaled like clampedBackgroundDepthPx();
+    // <= 0 stays as-is (auto).
     float clampedFillSearchPx() const
     {
         return (_fillSearch > 0.0f) ? _fillSearch * _proxyScale : 0.0f;
@@ -1375,6 +1373,7 @@ private:
 
         std::vector<deepc::SampleRecord> samples;         // source scratch
         std::vector<deepc::SampleRecord> holdoutRecords;  // holdout scratch
+        deepc::FillScratch               fillScratch;
 
         std::vector<float> bandColor;
         std::vector<float> bandAlpha;
@@ -1397,6 +1396,12 @@ private:
             Guard guard(_jobLock);
             _jobPool.clear();
         }
+        // Before any early return, and before a background cook rebuilds it:
+        // PodBuffer never shrinks, so a retained map would hold the previous
+        // frame's capacity and the budget below would charge only the new
+        // logical size.
+        _shared.surfaces.release();
+        _shared.pyramid.release();
 
         // Publish-empty defaults: every early "nothing to produce" return
         // below leaves a valid all-zero frame in which every band is
@@ -1478,8 +1483,9 @@ private:
         float depthMax  = 0.0f;
         bool  anyAlpha  = false;
         std::vector<double> rowSamples;
+        std::vector<double> rowPixels;
         if (!computeDepthRange(src, srcBox, fp, depthMin, depthMax, anyAlpha,
-                               rowSamples))
+                               rowSamples, rowPixels))
             return false;
         if (!anyAlpha)
             return true;   // no contributing sample anywhere: frame stays black
@@ -1517,13 +1523,14 @@ private:
         _shared.backgroundRadiusPx = deepc::resolveBackgroundRadiusPx(
             clampedBackgroundDepthPx(), cocAtDepthMax, rMax);
 
-        // fill / fill_search: carried through explicitly, same convention as
-        // background_depth above.  The knob is resolved per PIXEL (auto is
-        // 2*r + 1 at that pixel's own radius), so the clamped knob value goes
-        // through unresolved; max_radius is the fallback reach.
+        // fill_search is resolved per PIXEL (auto is 2r + 1 at that pixel's
+        // own radius), so the knob goes through unresolved.  The fallback
+        // reach is max_radius in PROXY pixels -- the same bound the CoC
+        // radii are clamped to -- with signedCocPixels()'s sanitising.
         _shared.fillMode        = resolvedFillMode();
         _shared.fillSearchPx    = clampedFillSearchPx();
-        _shared.fillMaxRadiusPx = static_cast<float>(clampedMaxRadius());
+        _shared.fillMaxRadiusPx = (fp.coc._maxRadiusPx > 0.0f && std::isfinite(fp.coc._maxRadiusPx))
+                                ? fp.coc._maxRadiusPx : 0.0f;
         _shared.fillSmear       = _fillSmear;
 
         // edge_softness is proxy-scaled HERE. applyProxyScale() deliberately
@@ -1577,11 +1584,9 @@ private:
         _shared.padY = padY;
 
         // --- 4. the background fill's surface map, ONCE per frame ----------
-        // One deepest-surface map over the whole output box, read by every
-        // band: the search only ever looks within a query's reach disc, so a
-        // frame-wide map answers exactly as a band-windowed one, and the deep
-        // input is read once for it instead of band +/- max_radius rows per
-        // band.
+        // The search only ever looks within a query's reach disc, so one
+        // frame-wide map answers exactly as a band-windowed one would, and
+        // the deep input is read once for it rather than once per band.
         std::size_t frameMapBytes = 0;
         if (_shared.fillMode == deepc::FillMode::Background) {
             const ChannelSet need = neededDeepChannels();
@@ -1606,10 +1611,7 @@ private:
             if (!mapOk)
                 return false;
             _shared.pyramid.build(_shared.surfaces);
-            frameMapBytes = deepc::surfaceMapFrameBytes(W, fc.box.h(), C);
-        } else {
-            _shared.surfaces.release();
-            _shared.pyramid.release();
+            frameMapBytes = _shared.surfaces.bytes() + _shared.pyramid.bytes();
         }
 
         // --- 5. band height + the concurrent-band cap ----------------------
@@ -1634,25 +1636,16 @@ private:
         // the whole frame.  See deepc::bandBudgetBytes() for the estimate's
         // stated error terms.  The frame's surface map is counted ONCE, off
         // the top of the limit, never per band.
-        const std::size_t nSrcRows = rowSamples.size();
-        std::vector<double> prefix(nSrcRows + 1, 0.0);
-        for (std::size_t i = 0; i < nSrcRows; ++i)
-            prefix[i + 1] = prefix[i] + rowSamples[i];
-
+        // Background mode appends up to one synthetic sample per non-empty
+        // source pixel before the flatten, so its fragment bound carries the
+        // pixel count too.
+        if (_shared.fillMode == deepc::FillMode::Background) {
+            for (std::size_t i = 0; i < rowSamples.size(); ++i)
+                rowSamples[i] += rowPixels[i];
+        }
         const auto worstBandFragments = [&](int b) -> double {
-            double worst = 0.0;
-            for (int y0 = fc.box.y(); y0 < fc.box.t(); y0 += b) {
-                const int y1  = std::min(y0 + b, fc.box.t());
-                const int fy0 = std::max(srcBox.y(), y0 - padY);
-                const int fy1 = std::min(srcBox.t(), y1 + padY);
-                if (fy1 <= fy0)
-                    continue;
-                const double s = prefix[static_cast<std::size_t>(fy1 - srcBox.y())]
-                               - prefix[static_cast<std::size_t>(fy0 - srcBox.y())];
-                if (s > worst)
-                    worst = s;
-            }
-            return worst;
+            return deepc::worstFetchWindowSum(rowSamples, srcBox.y(),
+                                              fc.box.y(), fc.box.t(), b, padY);
         };
 
         const int initialBandHeight = std::min(
@@ -1733,7 +1726,8 @@ private:
     // counts every sample of every depth-and-alpha-bearing pixel, INCLUDING
     // alpha<=0 samples the flatten later drops: over-counting is the safe
     // direction for a budget, and this pass is the one place that already
-    // touches every sample for free.
+    // touches every sample for free.  `rowPixels` counts those pixels, for
+    // the background fill's one-extra-sample-per-pixel bound.
     // ------------------------------------------------------------------
     bool computeDepthRange(DeepOp* src,
                           const DD::Image::Box& srcBox,
@@ -1741,12 +1735,14 @@ private:
                           float& depthMin,
                           float& depthMax,
                           bool&  anyAlpha,
-                          std::vector<double>& rowSamples)
+                          std::vector<double>& rowSamples,
+                          std::vector<double>& rowPixels)
     {
         depthMin = 0.0f;
         depthMax = 0.0f;
         anyAlpha = false;
         rowSamples.assign(static_cast<std::size_t>(std::max(0, srcBox.h())), 0.0);
+        rowPixels.assign(rowSamples.size(), 0.0);
 
         const int    kBins   = 2048;
         const double kTail   = 1e-4;   // of the frame's total alpha mass
@@ -1786,6 +1782,7 @@ private:
 
                 rowSamples[static_cast<std::size_t>(y - srcBox.y())]
                     += static_cast<double>(n);
+                rowPixels[static_cast<std::size_t>(y - srcBox.y())] += 1.0;
 
                 const float rayScale = deepc::rayDepthScaleAt(fp, x, y);
 
@@ -1902,11 +1899,8 @@ private:
         return true;
     }
 
-    // ------------------------------------------------------------------
-    // DeepPixelSamples — one DeepPixel as the SampleView deepestSurface()
-    // reads. Same validity test as fillSampleRecords(): a pixel missing
-    // deep.front or alpha reads as empty.
-    // ------------------------------------------------------------------
+    // Same validity test as fillSampleRecords(): a pixel missing deep.front
+    // or alpha reads as empty.
     struct DeepPixelSamples {
         DeepPixel pixel;
         const std::vector<Channel>* chans;
@@ -2011,7 +2005,7 @@ private:
                     deepc::appendHiddenBackground(*job.surfaces, *job.pyramid, *job.fp,
                                                   x, y, job.fillSearchPx,
                                                   job.fillMaxRadiusPx, job.fillSmear,
-                                                  job.samples);
+                                                  job.samples, job.fillScratch);
                 }
                 deepc::flattenPixelToSoA(*job.fp, *job.buckets, x, y,
                                          job.samples, job.flattenScratch,

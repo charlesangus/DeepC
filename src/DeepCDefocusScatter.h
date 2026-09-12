@@ -1309,23 +1309,13 @@ DEEPC_HD inline float resolveBackgroundRadiusPx(float backgroundDepthKnob,
     return clampf(backgroundDepthKnob, 0.0f, rMax);
 }
 
-// ---------------------------------------------------------------------------
-// FillMode — the `fill` knob: what a pixel the renderer left with no coverage
-// at all is filled with.
-// ---------------------------------------------------------------------------
 enum class FillMode {
     Foreground = 0,
     Background = 1
 };
 
-// ---------------------------------------------------------------------------
-// resolveFillSearchPx — the `fill_search` knob's resolution.
-//
-// knobPx <= 0 (including NaN, same convention as resolveBackgroundRadiusPx)
-// means auto: 2*radiusPx + 1, wide enough to reach past the invented disc's
-// own radius on either side. Either branch is then clamped to maxRadiusPx,
-// the frame's own hard search-radius bound.
-// ---------------------------------------------------------------------------
+// knobPx <= 0 (NaN included, as resolveBackgroundRadiusPx) is auto: 2r + 1,
+// wide enough to reach past the invented disc's own radius on either side.
 DEEPC_HD inline float resolveFillSearchPx(float knobPx, float radiusPx, float maxRadiusPx)
 {
     if (!(knobPx > 0.0f)) {
@@ -3532,6 +3522,39 @@ struct BandPlan {
     int bandCount   = 0;
     int maxInFlight = 1;
 };
+
+// The worst over the frame's bands of the sum of `rowCounts` (one entry per
+// source row, index y - srcY0) over the band's fetch window, band +/- padY
+// rows clipped to the source rows.  The node feeds planBands() this over its
+// per-row deep-sample counts; in fill: background mode each non-empty pixel
+// can gain one synthetic sample, so the row counts handed in must already
+// carry that pixel count too.
+inline double worstFetchWindowSum(const std::vector<double>& rowCounts,
+                                  int srcY0,
+                                  int boxY0, int boxY1,
+                                  int bandHeight, int padY)
+{
+    const std::size_t nRows = rowCounts.size();
+    std::vector<double> prefix(nRows + 1, 0.0);
+    for (std::size_t i = 0; i < nRows; ++i)
+        prefix[i + 1] = prefix[i] + rowCounts[i];
+
+    const int srcY1 = srcY0 + static_cast<int>(nRows);
+    const int b     = (bandHeight > 0) ? bandHeight : 1;
+    double worst = 0.0;
+    for (int y0 = boxY0; y0 < boxY1; y0 += b) {
+        const int y1  = (y0 + b < boxY1) ? y0 + b : boxY1;
+        const int fy0 = (srcY0 > y0 - padY) ? srcY0 : y0 - padY;
+        const int fy1 = (srcY1 < y1 + padY) ? srcY1 : y1 + padY;
+        if (fy1 <= fy0)
+            continue;
+        const double s = prefix[static_cast<std::size_t>(fy1 - srcY0)]
+                       - prefix[static_cast<std::size_t>(fy0 - srcY0)];
+        if (s > worst)
+            worst = s;
+    }
+    return worst;
+}
 
 template <typename FragmentsForBandHeight>
 inline BandPlan planBands(double memoryLimitBytes,

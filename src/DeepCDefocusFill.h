@@ -1,19 +1,10 @@
 // SPDX-License-Identifier: MIT
 //
-// ============================================================================
+// DeepCDefocusFill — the background fill's per-frame surface map.
 //
-//  DeepCDefocusFill — the background fill's per-frame surface map
-//
-//  NDK-free like DeepCDefocusScatter.h, and the same CUDA seam: per-pixel
-//  bodies are DEEPC_HD, buildSurfaceMap() is the loop driver.
-//
-//  SampleView contract (an adapter over one deep pixel, cheap to copy):
-//
-//    int   count() const;
-//    float zFront(int i) const;   float zBack(int i) const;
-//    float alpha(int i) const;    float channel(int i, int c) const;
-//
-// ============================================================================
+// NDK-free like DeepCDefocusScatter.h, same CUDA seam: per-pixel bodies are
+// DEEPC_HD, buildSurfaceMap() is the loop driver.  SampleView is an adapter
+// over one deep pixel: count(), zFront(i), zBack(i), alpha(i), channel(i, c).
 
 #ifndef DEEPC_DEFOCUS_FILL_H
 #define DEEPC_DEFOCUS_FILL_H
@@ -43,15 +34,10 @@ struct Surface {
     float radiusPx = 0.0f;
 };
 
-// ---------------------------------------------------------------------------
-// stagedRadiusPx — the scatter radius flattenPixelToSoA() stages a sample at
-//
-// A volumetric span is staged as its bucket-split parts, and the radius the
-// residual borrows is the LAST part's, after consecutive same-bucket parts
-// have been folded together — so the radius depends on the buckets, not on
-// the span's own midpoint.  Must stay step-for-step with the flatten's split
-// loop or the map's radius drifts from residualRadiusPx.
-// ---------------------------------------------------------------------------
+// The residual borrows the radius of the LAST part flattenPixelToSoA() stages
+// from a span, after consecutive same-bucket parts are folded together, so
+// the radius depends on the buckets rather than on the span's own midpoint.
+// Must stay step-for-step with the flatten's split loop.
 DEEPC_HD inline float stagedRadiusPx(const FlattenParams& params,
                                      const DepthBuckets&  buckets,
                                      float zFront, float zBack, float alpha)
@@ -86,20 +72,10 @@ DEEPC_HD inline float stagedRadiusPx(const FlattenParams& params,
     return radiusPixels(params.coc, sampleMidDepth(runFront, runBack));
 }
 
-// ---------------------------------------------------------------------------
-// deepestSurface — the sample flattenPixelToSoA() would stage last
-//
-// Applies the flatten's own sanitising (depth, ray-distance scale, back-
-// before-front, alpha clamp) and its alpha > 0 early-out, then keeps the
-// greatest sanitised zBack, later index on ties.  Returns the winning sample
-// index, or -1 for a pixel the flatten stages nothing from.  Channels are the
-// caller's to copy from that index: they are not read here so a pixel of many
-// samples pays one channel read, not one per sample.
-//
-// Reads the RAW stack, so it agrees with the flatten exactly when the stack is
-// tidy-disjoint; tidyOverlapping() would first cut overlapping spans, and the
-// cut pieces are not reconstructed here.
-// ---------------------------------------------------------------------------
+// Applies the flatten's own sanitising and alpha > 0 early-out to the RAW
+// stack; agrees with the flatten exactly when the stack is tidy-disjoint
+// (tidyOverlapping()'s cut pieces are not reconstructed here).  Channels are
+// not read: a pixel of many samples pays one channel read, at the winner.
 template <typename SampleView>
 DEEPC_HD inline int deepestSurface(const FlattenParams& params,
                                    const DepthBuckets&  buckets,
@@ -139,22 +115,9 @@ DEEPC_HD inline int deepestSurface(const FlattenParams& params,
     return best;
 }
 
-// ---------------------------------------------------------------------------
-// SurfaceMap — one pixel's deepest staged surface, over a window of rows
-// clipped to the output box (never to srcBox).  The node builds ONE map per
-// frame over the whole output box and every band reads it; the search is a
-// pure function of the map's contents within the query's reach disc, so a
-// map windowed to any band that holds that disc answers identically (the
-// doctests state this against band-sized windows).
-//
-// Planar: plane p of pixel i is planes[p * pixels() + i], p in
-// {zFront, zBack, alpha, radiusPx, channel 0 .. C-1}.  The search reads zBack
-// alone across many neighbours, so the depths are kept contiguous.
-//
-// An empty cell (no samples, none with alpha > 0, or never visited because it
-// lies outside srcBox) has zFront == kEmpty; every other field of an empty
-// cell is unspecified.
-// ---------------------------------------------------------------------------
+// Planar (plane p of pixel i at planes[p * pixels() + i]) because the search
+// reads zBack alone across many neighbours.  An empty cell has zFront ==
+// kEmpty and every other field unspecified.
 struct SurfaceMap {
     enum Plane : int {
         kZFront   = 0,
@@ -203,6 +166,8 @@ struct SurfaceMap {
         planes.release();
     }
 
+    std::size_t bytes() const { return planes.sizeBytes(); }
+
     std::ptrdiff_t index(int px, int py) const
     {
         return static_cast<std::ptrdiff_t>(py - y) * width + (px - x);
@@ -248,16 +213,9 @@ inline std::size_t surfaceMapBytesForWindow(int width, int height, int channelCo
     return SurfaceMap::bytesForWindow(width, height, channelCount);
 }
 
-// ---------------------------------------------------------------------------
-// buildSurfaceMap — the ONE place that sizes and fills a SurfaceMap, shared by
-// production and the doctests, with buildResidualWindow()'s callback shape:
-// `fetchRow(y)` once per visited row, `pixelSamples(x, y)` returning a
-// SampleView once per visited column.  The window is band +/- (padY +
-// reachPx) rows clipped to the output box; rows visited are further clipped
-// to srcBox.  Production passes the whole output box as the band with
-// padY = reachPx = 0 (one map per frame); the window arguments remain so the
-// doctests can state band invariance.
-// ---------------------------------------------------------------------------
+// The window is band +/- (padY + reachPx) rows clipped to the output box,
+// never to srcBox: a query at the box edge must find its own cell.  Rows
+// visited are clipped to srcBox.
 template <typename FetchRowFn, typename PixelSamplesFn>
 bool buildSurfaceMap(SurfaceMap& map,
                      const FlattenParams& params,
@@ -299,24 +257,16 @@ bool buildSurfaceMap(SurfaceMap& map,
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// The background predicate: Q's surface may stand in behind P's iff
-//
-//   zFront_Q > zBack_P + max(kFillDepthTol * zBack_P,
-//                            kFillSlope * step_P * d(P, Q))
-//
-// The relative term rejects coplanar noise.  The slope term is what stops a
-// receding CONTINUOUS surface borrowing from a deeper part of itself: with a
-// relative tolerance alone an alpha-0.9 ramp over nothing would fill from its
-// own far rows and read 0.99.  step_P is P's own local depth step (see
-// localDepthStep), so a surface never qualifies as its own background, while
-// a real background behind a flat card (no local step) qualifies at the
-// first term.
-//
-// kFillSlope 2 is not enough: a ground plane's depth is convex in y, and over
-// a 100 px reach its far rows outrun a 2x-step line.  Larger than 4 only
-// trades away fill behind tilted surfaces.
-// ---------------------------------------------------------------------------
+// Q may stand in behind P iff
+//   zFront_Q > zBack_P + max(kFillDepthTol * zBack_P, kFillSlope * step_P * d(P, Q))
+// The relative term rejects coplanar noise.  The slope term stops a receding
+// CONTINUOUS surface borrowing from a deeper part of itself (with the
+// relative term alone an alpha-0.9 ramp over nothing fills from its own far
+// rows and reads 0.99); step_P is P's own local depth step, so a flat card
+// with no local step qualifies a real background at the first term.
+// kFillSlope 2 is not enough: a ground plane's depth is convex in y and over
+// a 100 px reach its far rows outrun a 2x-step line; above 4 only trades
+// away fill behind tilted surfaces.
 constexpr float kFillDepthTol = 0.02f;
 constexpr float kFillSlope    = 4.0f;
 
@@ -378,19 +328,14 @@ DEEPC_HD inline float localDepthStep(const SurfaceMap& map, int x, int y)
     return (gx > gy) ? gx : gy;
 }
 
-// ---------------------------------------------------------------------------
-// pruneSynthesis — the post-check on a found source.
-//
-// residualTP is P's residual transmittance as the flatten reports it (for a
-// single-surface P that is 1 - alpha_P); the caller passes it because the map
-// holds only the deepest surface's alpha.  An opaque P whose background's disc
-// is at least as wide as its own gets that background from outside the
-// silhouette anyway, so synthesising it would double-count; a semi-
-// transparent P always synthesises.
-// ---------------------------------------------------------------------------
-DEEPC_HD inline bool pruneSynthesis(float residualTP, float radiusPxP, float radiusPxQ)
+// An opaque P whose background's disc is at least as wide as its own gets
+// that background from outside the silhouette anyway, so synthesising it
+// would double-count.  A tolerance decision at kFillDeficitTol, not a
+// bit-exact one: residualTP is a product of the raw stack's (1 - alpha), and
+// only its position against the tolerance matters.
+DEEPC_HD inline bool pruneSynthesis(double residualTP, float radiusPxP, float radiusPxQ)
 {
-    return residualTP <= kFillDeficitTol && radiusPxQ >= radiusPxP;
+    return residualTP <= static_cast<double>(kFillDeficitTol) && radiusPxQ >= radiusPxP;
 }
 
 constexpr int kMaxDepthPyramidTileShift = 2;
@@ -411,7 +356,6 @@ inline int maxDepthPyramidLevels(int width, int height)
     return levels;
 }
 
-// One float per 4^l x 4^l block, level 1 up to the root: ~1/15 of one map plane.
 inline std::size_t maxDepthPyramidBytesForWindow(int width, int height)
 {
     const int levels = maxDepthPyramidLevels(width, height);
@@ -426,13 +370,9 @@ inline std::size_t maxDepthPyramidBytesForWindow(int width, int height)
     return n * sizeof(float);
 }
 
-// ---------------------------------------------------------------------------
-// MaxDepthPyramid — max zFront over 4x4 tiles, level on level, above a
-// SurfaceMap.  Level 0 is the map's own zFront plane and is not stored; level
-// l holds one float per 4^l x 4^l block of map pixels, up to the root level
-// whose single tile covers the whole map.  kEmpty is -inf, so an empty cell
-// never lifts a tile's max and an all-empty tile stays -inf.
-// ---------------------------------------------------------------------------
+// Max zFront over 4x4 tiles, level on level.  Level 0 is the map's own
+// zFront plane and is not stored.  kEmpty is -inf, so an empty cell never
+// lifts a tile's max and an all-empty tile stays -inf.
 struct MaxDepthPyramid {
     static constexpr int kTileShift = kMaxDepthPyramidTileShift;
     static constexpr int kTile      = 1 << kTileShift;
@@ -456,6 +396,8 @@ struct MaxDepthPyramid {
         _levelCount = 0;
         _tiles.release();
     }
+
+    std::size_t bytes() const { return _tiles.sizeBytes(); }
 
     static int levelsForWindow(int width, int height)
     {
@@ -553,13 +495,9 @@ DEEPC_HD inline bool precedesInScan(std::int64_t d2, int y, int x,
     return x < bestX;
 }
 
-// ---------------------------------------------------------------------------
-// nearestBackground — the nearest qualifying Q within reachPx of P, by
-// branch-and-bound over the pyramid: a tile is skipped when its max zFront
+// Branch-and-bound over the pyramid: a tile is skipped when its max zFront
 // cannot beat the threshold at the tile's nearest point, or when that point
-// is already farther than the best found.  Explicit stack, children ordered
-// nearest-first, no allocation.  P is (px, py) in map-local coordinates.
-// ---------------------------------------------------------------------------
+// is already farther than the best found.  (px, py) is map-local.
 DEEPC_HD inline BackgroundSource nearestBackground(const SurfaceMap&      map,
                                                    const MaxDepthPyramid& pyramid,
                                                    const FillPredicate&   pred,
@@ -622,9 +560,9 @@ DEEPC_HD inline BackgroundSource nearestBackground(const SurfaceMap&      map,
             continue;
         }
 
-        // Children go on the stack farthest-first so the nearest pops first
-        // and the distance bound tightens before the far ones are examined;
-        // the exact tie rule makes the answer independent of this order.
+        // Farthest-first on the stack so the nearest child pops first and
+        // tightens the distance bound; the tie rule keeps the answer
+        // independent of this order.
         const int childLevel = t.level - 1;
         const int childShift = MaxDepthPyramid::kTileShift * childLevel;
         const int childW = pyramid.width(childLevel);
@@ -668,13 +606,8 @@ DEEPC_HD inline BackgroundSource nearestBackground(const SurfaceMap&      map,
     return out;
 }
 
-// ---------------------------------------------------------------------------
-// findBackgroundSource — the two-tier query for absolute pixel (x, y): the
-// nearest qualifying source within primaryReachPx, else within
-// fallbackReachPx, else none.  Both reaches must not exceed the extension the
-// map was built with, so every query sees its whole disc whatever band the
-// map was windowed for.
-// ---------------------------------------------------------------------------
+// Neither reach may exceed the extension the map was built with, or a query
+// near the window edge sees a truncated disc.
 DEEPC_HD inline BackgroundSource findBackgroundSource(const SurfaceMap&      map,
                                                       const MaxDepthPyramid& pyramid,
                                                       int x, int y,
@@ -699,53 +632,50 @@ DEEPC_HD inline BackgroundSource findBackgroundSource(const SurfaceMap&      map
     return r;
 }
 
-// ---------------------------------------------------------------------------
-// residualTransmittance — the pixel's virtual-background claim BEFORE any
-// synthesis, from its raw samples: the product of (1 - alpha) over the
-// samples the flatten stages, with its alpha sanitising.  The flatten's own
-// residualT is the same product taken over the tidied, bucket-split parts,
-// which agrees with this to rounding (the split's parts multiply back to
-// their parent's transmittance); it is only compared against
-// kFillDeficitTol, so a flatten is not spent on it.
-// ---------------------------------------------------------------------------
-inline float residualTransmittance(const std::vector<SampleRecord>& samples)
+// The product of (1 - alpha) over the raw stack, with the flatten's alpha
+// sanitising.  Accumulated in double so the sample ORDER cannot move it: the
+// flatten's own residualT is the same product over the tidied, sorted,
+// bucket-split parts, and a float product taken in raw order can land on
+// the other side of kFillDeficitTol from one taken in staged order.
+inline double residualTransmittance(const std::vector<SampleRecord>& samples)
 {
-    float t = 1.0f;
+    double t = 1.0;
     for (const SampleRecord& s : samples) {
         const float a = clampf(s.alpha, 0.0f, 1.0f);
         if (a > 0.0f)
-            t *= (1.0f - a);
+            t *= 1.0 - static_cast<double>(a);
     }
     return t;
 }
 
-// ---------------------------------------------------------------------------
-// synthesizeHiddenSample — Q's surface as a raw SampleRecord for pixel P
-//
-// The map holds sanitised CAMERA-SPACE depths; flattenPixelToSoA() will
-// multiply P's samples by P's own ray-distance factor, so the depths are
-// written pre-divided by it and land back on Q's camera depth (bit-exact at
-// factor 1, within 1 ulp otherwise).  Channels are the map's, premultiplied,
-// in the SoA's channel order.
-// ---------------------------------------------------------------------------
+// The raw depth whose flatten product raw * rayScale (the one float multiply
+// flattenPixelToSoA() applies to a finite raw depth) is cameraDepth.  The
+// correctly rounded quotient is the nearest float to cameraDepth / rayScale,
+// so every other float's product is at least as far from cameraDepth: when
+// this one misses, no float raw exists and the miss is 1 ulp.  Measured over
+// 1e5 (depth, scale) pairs with scale in [0.3, 1]: exact for 90.1%, 1 ulp
+// for the rest (test_defocus_scatter.cpp).
+DEEPC_HD inline float rawDepthForCameraDepth(float cameraDepth, float rayScale)
+{
+    return cameraDepth / rayScale;
+}
+
+// The map holds sanitised CAMERA-SPACE depths and the flatten will multiply
+// P's samples by P's own ray-distance factor, so the depths are written to
+// land back on Q's camera depth.  Channels are the map's, premultiplied.
 inline void synthesizeHiddenSample(const SurfaceMap& map, int qx, int qy,
                                    float rayScaleP, SampleRecord& out)
 {
     const std::ptrdiff_t q = map.index(qx, qy);
-    out.zFront = map.plane(SurfaceMap::kZFront)[q] / rayScaleP;
-    out.zBack  = map.plane(SurfaceMap::kZBack)[q]  / rayScaleP;
+    out.zFront = rawDepthForCameraDepth(map.plane(SurfaceMap::kZFront)[q], rayScaleP);
+    out.zBack  = rawDepthForCameraDepth(map.plane(SurfaceMap::kZBack)[q],  rayScaleP);
     out.alpha  = map.plane(SurfaceMap::kAlpha)[q];
     out.channels.resize(static_cast<std::size_t>(map.channelCount));
     for (int c = 0; c < map.channelCount; ++c)
         out.channels[static_cast<std::size_t>(c)] = map.plane(SurfaceMap::kChannel0 + c)[q];
 }
 
-// ---------------------------------------------------------------------------
-// averageBackground — the smear estimator: Q's alpha/channels replaced by the
-// mean over every qualifying pixel on a stride-capped lattice within reachPx.
-// Depth and radius stay the nearest Q's.  The stride caps the reads per pixel
-// at kFillAverageBudget whatever the reach.
-// ---------------------------------------------------------------------------
+// The stride caps the reads per pixel at kFillAverageBudget whatever the reach.
 constexpr int kFillAverageBudget = 800;
 
 DEEPC_HD inline int fillAverageStride(int reachPx)
@@ -755,19 +685,27 @@ DEEPC_HD inline int fillAverageStride(int reachPx)
     return (stride > 1) ? stride : 1;
 }
 
+// Per-band scratch for the smear's channel sums, so no pixel allocates.
+struct FillScratch {
+    PodBuffer<double> channelSum;
+};
+
+// Q's alpha/channels replaced by the mean over the qualifying pixels on the
+// stride lattice within reachPx; depth and radius stay the nearest Q's.
+// Sums are double so a uniform disc's mean is bit-exact to its value.
 inline bool averageBackground(const SurfaceMap& map, const FillPredicate& pred,
                               int x, int y, float zBackP, float stepP, int reachPx,
-                              SampleRecord& out)
+                              FillScratch& scratch, SampleRecord& out)
 {
     const int          stride = fillAverageStride(reachPx);
     const int          steps  = reachPx / stride;
     const std::int64_t reach2 = static_cast<std::int64_t>(reachPx) * reachPx;
     const int          C      = map.channelCount;
 
-    // Accumulated in double so a uniform disc's mean is bit-exact to its value.
-    std::vector<double> channelSum(static_cast<std::size_t>(C), 0.0);
-    double alphaSum = 0.0;
-    int    n        = 0;
+    scratch.channelSum.assign(static_cast<std::size_t>(C), 0.0);
+    double* channelSum = scratch.channelSum.data();
+    double  alphaSum   = 0.0;
+    int     n          = 0;
     for (int j = -steps; j <= steps; ++j) {
         const int dy = j * stride;
         const int ny = y + dy;
@@ -785,7 +723,7 @@ inline bool averageBackground(const SurfaceMap& map, const FillPredicate& pred,
                 continue;
             alphaSum += map.plane(SurfaceMap::kAlpha)[q];
             for (int c = 0; c < C; ++c)
-                channelSum[static_cast<std::size_t>(c)] += map.plane(SurfaceMap::kChannel0 + c)[q];
+                channelSum[c] += map.plane(SurfaceMap::kChannel0 + c)[q];
             ++n;
         }
     }
@@ -793,20 +731,14 @@ inline bool averageBackground(const SurfaceMap& map, const FillPredicate& pred,
         return false;
     out.alpha = static_cast<float>(alphaSum / n);
     for (int c = 0; c < C; ++c)
-        out.channels[static_cast<std::size_t>(c)] = static_cast<float>(channelSum[static_cast<std::size_t>(c)] / n);
+        out.channels[static_cast<std::size_t>(c)] = static_cast<float>(channelSum[c] / n);
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// appendHiddenBackground — the whole per-pixel synthesis for pixel P, run on
-// P's real samples just before they are flattened: search, prune, and append
-// ONE synthetic sample (Q's surface) to `samples`.  Returns whether one was
-// appended.  `fillSearchPx` is the knob's clamped value (<= 0 = auto, resolved
-// per pixel against P's own staged radius); `maxRadiusPx` is the fallback
-// reach.  `fillSmear` swaps
-// the nearest Q's colour for the disc average when the PRIMARY tier found Q;
-// a fallback-tier Q is always copied verbatim.
-// ---------------------------------------------------------------------------
+// Search, prune, and append ONE synthetic sample (Q's surface) to P's raw
+// samples.  fillSearchPx <= 0 is auto, resolved per pixel against P's own
+// staged radius; maxRadiusPx is the fallback reach.  A fallback-tier Q is
+// always copied verbatim: the smear's lattice is sized to the primary reach.
 inline bool appendHiddenBackground(const SurfaceMap&      map,
                                    const MaxDepthPyramid& pyramid,
                                    const FlattenParams&   params,
@@ -814,6 +746,7 @@ inline bool appendHiddenBackground(const SurfaceMap&      map,
                                    float fillSearchPx, float maxRadiusPx,
                                    bool fillSmear,
                                    std::vector<SampleRecord>& samples,
+                                   FillScratch&               scratch,
                                    FillSearchStats* stats = nullptr)
 {
     if (!map.contains(x, y))
@@ -840,7 +773,8 @@ inline bool appendHiddenBackground(const SurfaceMap&      map,
     if (fillSmear && q.distance <= static_cast<float>(primary)) {
         const float zBackP = map.plane(SurfaceMap::kZBack)[iP];
         const float stepP  = localDepthStep(map, x, y);
-        averageBackground(map, FillPredicate(), x, y, zBackP, stepP, primary, samples.back());
+        averageBackground(map, FillPredicate(), x, y, zBackP, stepP, primary, scratch,
+                          samples.back());
     }
     return true;
 }
