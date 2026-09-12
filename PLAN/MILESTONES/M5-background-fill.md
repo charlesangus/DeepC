@@ -68,7 +68,7 @@ Constraints from the board apply in full: no SIMD, `DEEPC_HD` header-only kernel
   - verify: `scripts/hostguard.sh --mem-gb 6 -- tests/nuke/run_validation.sh --scenes n` all PASS; each cell demonstrated to fail under its named mutation (synthesis off, fallback reach 2, slope 0, nearer-card accepted by dropping the depth predicate) and the failing readings written into the cells' notes; the committed `.nk` reproduces each cell.
   - size: L
 
-- [ ] M5.P3.T2 — Full suite, cross-`.so` bit-identity, and the profile
+- [x] M5.P3.T2 — Full suite, cross-`.so` bit-identity, and the profile
   - files: none — verification only; any fix lands in the task that owns the code
   - approach: clean rebuild of `build/local-17.0`; both doctest suites; the full a–n harness in two halves (`a–f`, `g–n`) under `scripts/hostguard.sh --mem-gb 5.5` with `DEEPC_PLUGIN_DIR` pinned to the fresh build; `--scenes a,m --out-dir ~/deepc-validation/M5-P3T2/new` and `exrdiff.py` each kept EXR against `~/deepc-baselines/M5-T0/renders`. Profile: `tests/nuke/run_profile.sh` (5 reps, `--threads 2`) in `foreground` mode against the M4 P3.T5 figures (`cpuMedian=82.8 s`, 1.80 GB), then the same in `background` mode with `fill` set on the profile scene; record both.
   - verify: doctests green; harness `PASS=109+N FAIL=2 XFAIL=11 SKIP=1` with N = scene (n)'s cell count and **no other row moving** (every a–m reading identical to M4 P3.T4's log at `~/deepc-validation/M4-P3T4/`); `exrdiff.py` 0 ulps on all three (m) EXRs and (a); FG-mode `cpuMedian` within run-to-run noise of 82.8 s; BG-mode cost recorded, flagged with a named mitigation if above ~2× (candidates, in order: extend pass 1 by the resolved reach rather than `max_radius`; skip pass 1 rows whose band cannot receive any synthetic disc).
@@ -164,4 +164,19 @@ Constraints from the board apply in full: no SIMD, `DEEPC_HD` header-only kernel
   *in front of* a two-layer stack reads alpha 1.0 / R/A 0.50 where stock DeepHoldout2 reads
   0.5 / 0.80 (DeepMerge2 holdout 0.75 / 0.60) — identical on the M5-T0 `.so`, in foreground mode,
   at size 0 and with pre_merge off; scene (b)'s holdout sits *between* its layers, where all agree.
+- 2026-09-11 — **P3.T2 (verification only, no code commit): full suite on a clean rebuild
+  `PASS=133 FAIL=2 XFAIL=11 SKIP=1`** = M4's 109/2/11/1 + scene (n)'s 24, and **no a–m row moved**
+  (147 rows diffed against M4's post-review logs: 0 changed). Doctests 2/2. Cross-`.so`: scene (m)'s
+  three kept EXRs 0 ulps against `~/deepc-baselines/M5-T0/renders/`; scene (a) bit-exact in-Nuke.
+  Logs at `~/deepc-validation/M5-P3T2/`. **Profile, 2K/20spp, 2 threads, 5 reps, all same
+  conditions today:** M4-T0 `.so` median 22.5 s (cpu 39.7); M5-T0 `.so` (= M4 final) 28.2 s
+  (cpu 51.1); M5 foreground 28.0 s (cpu 50.6), RSS 1.81 GB — **foreground unchanged (0.99×)**.
+  Correction to M4's record: its true cost is **1.25×**, not the 1.69× measured at M4's sign-off,
+  which ran under heavy host load (cores busy 0.82 then vs 1.81 now). **Background mode 61.0 s
+  (cpu 117), RSS 2.00 GB — 2.18× foreground, over the ~2× line → flagged.** `fill_smear` on/off
+  makes no difference (61.0 vs 61.3). Named mitigations, in order: (1) extend pass 1 by the
+  *resolved* reach (`fill_search` auto/manual) instead of `max_radius` = 100 rows each side — the
+  refetch is the dominant term and most of it is fallback headroom; (2) skip pass-1 rows a band
+  cannot receive a synthetic disc from; (3) per-frame instead of per-band map for small frames.
+  Not a correctness gate; optimisation is a new task if the user wants it (see sign-off).
 
