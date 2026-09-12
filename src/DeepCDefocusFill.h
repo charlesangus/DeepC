@@ -2,7 +2,7 @@
 //
 // ============================================================================
 //
-//  DeepCDefocusFill — the background fill's per-band surface map
+//  DeepCDefocusFill — the background fill's per-frame surface map
 //
 //  NDK-free like DeepCDefocusScatter.h, and the same CUDA seam: per-pixel
 //  bodies are DEEPC_HD, buildSurfaceMap() is the loop driver.
@@ -140,9 +140,12 @@ DEEPC_HD inline int deepestSurface(const FlattenParams& params,
 }
 
 // ---------------------------------------------------------------------------
-// SurfaceMap — one pixel's deepest staged surface, over the fetch window
-// extended by the fill's search reach (band +/- (padY + reach) rows, clipped
-// to the output box like ResidualWindow, never to srcBox).
+// SurfaceMap — one pixel's deepest staged surface, over a window of rows
+// clipped to the output box (never to srcBox).  The node builds ONE map per
+// frame over the whole output box and every band reads it; the search is a
+// pure function of the map's contents within the query's reach disc, so a
+// map windowed to any band that holds that disc answers identically (the
+// doctests state this against band-sized windows).
 //
 // Planar: plane p of pixel i is planes[p * pixels() + i], p in
 // {zFront, zBack, alpha, radiusPx, channel 0 .. C-1}.  The search reads zBack
@@ -193,13 +196,11 @@ struct SurfaceMap {
             zf[i] = kEmpty;
     }
 
-    // Size 0, capacity kept: a pooled BandJob reused by a foreground cook
-    // must read as "no map" without freeing or allocating anything.
-    void clear()
+    void release()
     {
         width  = 0;
         height = 0;
-        planes.clear();
+        planes.release();
     }
 
     std::ptrdiff_t index(int px, int py) const
@@ -235,16 +236,27 @@ struct SurfaceMap {
 
     static std::size_t bytesForWindow(int width, int height, int channelCount)
     {
-        return surfaceMapBytesForWindow(width, height, channelCount);
+        const std::size_t w = (width  > 0) ? static_cast<std::size_t>(width)  : 0;
+        const std::size_t h = (height > 0) ? static_cast<std::size_t>(height) : 0;
+        const std::size_t c = (channelCount > 0) ? static_cast<std::size_t>(channelCount) : 0;
+        return (c + 4) * w * h * sizeof(float);
     }
 };
+
+inline std::size_t surfaceMapBytesForWindow(int width, int height, int channelCount)
+{
+    return SurfaceMap::bytesForWindow(width, height, channelCount);
+}
 
 // ---------------------------------------------------------------------------
 // buildSurfaceMap — the ONE place that sizes and fills a SurfaceMap, shared by
 // production and the doctests, with buildResidualWindow()'s callback shape:
 // `fetchRow(y)` once per visited row, `pixelSamples(x, y)` returning a
-// SampleView once per visited column.  Rows visited are clipped to srcBox;
-// the map's extent is clipped to the output box.
+// SampleView once per visited column.  The window is band +/- (padY +
+// reachPx) rows clipped to the output box; rows visited are further clipped
+// to srcBox.  Production passes the whole output box as the band with
+// padY = reachPx = 0 (one map per frame); the window arguments remain so the
+// doctests can state band invariance.
 // ---------------------------------------------------------------------------
 template <typename FetchRowFn, typename PixelSamplesFn>
 bool buildSurfaceMap(SurfaceMap& map,
@@ -381,6 +393,39 @@ DEEPC_HD inline bool pruneSynthesis(float residualTP, float radiusPxP, float rad
     return residualTP <= kFillDeficitTol && radiusPxQ >= radiusPxP;
 }
 
+constexpr int kMaxDepthPyramidTileShift = 2;
+constexpr int kMaxDepthPyramidMaxLevels = 12;
+
+inline int maxDepthPyramidLevels(int width, int height)
+{
+    if (width <= 0 || height <= 0)
+        return 0;
+    const int tile = 1 << kMaxDepthPyramidTileShift;
+    int levels = 0;
+    int w = width, h = height;
+    do {
+        w = (w + tile - 1) / tile;
+        h = (h + tile - 1) / tile;
+        ++levels;
+    } while ((w > 1 || h > 1) && levels < kMaxDepthPyramidMaxLevels);
+    return levels;
+}
+
+// One float per 4^l x 4^l block, level 1 up to the root: ~1/15 of one map plane.
+inline std::size_t maxDepthPyramidBytesForWindow(int width, int height)
+{
+    const int levels = maxDepthPyramidLevels(width, height);
+    const int tile   = 1 << kMaxDepthPyramidTileShift;
+    std::size_t n = 0;
+    int w = width, h = height;
+    for (int l = 1; l <= levels; ++l) {
+        w = (w + tile - 1) / tile;
+        h = (h + tile - 1) / tile;
+        n += static_cast<std::size_t>(w) * static_cast<std::size_t>(h);
+    }
+    return n * sizeof(float);
+}
+
 // ---------------------------------------------------------------------------
 // MaxDepthPyramid — max zFront over 4x4 tiles, level on level, above a
 // SurfaceMap.  Level 0 is the map's own zFront plane and is not stored; level
@@ -406,10 +451,10 @@ struct MaxDepthPyramid {
     const float* level(int l) const { return _tiles.data() + _offset[l]; }
     float*       level(int l)       { return _tiles.data() + _offset[l]; }
 
-    void clear()
+    void release()
     {
         _levelCount = 0;
-        _tiles.clear();
+        _tiles.release();
     }
 
     static int levelsForWindow(int width, int height)
@@ -463,6 +508,12 @@ struct MaxDepthPyramid {
         }
     }
 };
+
+inline std::size_t surfaceMapFrameBytes(int width, int height, int channelCount)
+{
+    return SurfaceMap::bytesForWindow(width, height, channelCount)
+         + MaxDepthPyramid::bytesForWindow(width, height);
+}
 
 struct FillSearchStats {
     int tilesVisited  = 0;
@@ -751,8 +802,8 @@ inline bool averageBackground(const SurfaceMap& map, const FillPredicate& pred,
 // P's real samples just before they are flattened: search, prune, and append
 // ONE synthetic sample (Q's surface) to `samples`.  Returns whether one was
 // appended.  `fillSearchPx` is the knob's clamped value (<= 0 = auto, resolved
-// per pixel against P's own staged radius); `maxRadiusPx` is both the
-// fallback reach and the reach the map was extended by.  `fillSmear` swaps
+// per pixel against P's own staged radius); `maxRadiusPx` is the fallback
+// reach.  `fillSmear` swaps
 // the nearest Q's colour for the disc average when the PRIMARY tier found Q;
 // a fallback-tier Q is always copied verbatim.
 // ---------------------------------------------------------------------------

@@ -2639,9 +2639,8 @@ TEST_CASE("deepestSurface: an all-alpha-0 pixel and an empty pixel both read emp
     }
 }
 
-TEST_CASE("SurfaceMap: bytesForWindow is (C+4) floats per pixel, and bandBudgetBytes carries "
-          "it and its pyramid in background mode only, over the window extended by the "
-          "search reach")
+TEST_CASE("SurfaceMap: bytesForWindow is (C+4) floats per pixel; surfaceMapFrameBytes adds the "
+          "pyramid, and bandBudgetBytes carries neither -- the map is per frame, not per band")
 {
     CHECK(SurfaceMap::bytesForWindow(4096, 64 + 2 * (101 + 33), 4) == 8u * 4096u * 332u * 4u);
     CHECK(SurfaceMap::bytesForWindow(4096, 64 + 2 * (101 + 33), 4) == 43515904u);
@@ -2650,19 +2649,24 @@ TEST_CASE("SurfaceMap: bytesForWindow is (C+4) floats per pixel, and bandBudgetB
     CHECK(SurfaceMap::bytesForWindow(10, 10, -3) == 4u * 100u * 4u);
     CHECK(SurfaceMap::bytesForWindow(10, 10, 4) == surfaceMapBytesForWindow(10, 10, 4));
 
-    const double fg = bandBudgetBytes(16, 4, 4096, 64, false, 0.0, 101);
-    CHECK(fg == bandBudgetBytes(16, 4, 4096, 64, false, 0.0, 101, FillMode::Foreground, 33));
     const double pyramid332 = static_cast<double>(MaxDepthPyramid::bytesForWindow(4096, 332));
-    const double pyramid266 = static_cast<double>(MaxDepthPyramid::bytesForWindow(4096, 266));
     CHECK(pyramid332 == (1024.0 * 83.0 + 256.0 * 21.0 + 64.0 * 6.0 + 16.0 * 2.0 + 4.0 + 1.0) * 4.0);
     CHECK(pyramid332 == static_cast<double>(maxDepthPyramidBytesForWindow(4096, 332)));
     CHECK(pyramid332 < 43515904.0 / 8.0 / 14.0);
-    CHECK(bandBudgetBytes(16, 4, 4096, 64, false, 0.0, 101, FillMode::Background, 33) - fg
-          == doctest::Approx(43515904.0 + pyramid332));
-    CHECK(bandBudgetBytes(16, 4, 4096, 64, false, 0.0, 101, FillMode::Background, 0) - fg
-          == doctest::Approx(8.0 * 4096.0 * 266.0 * 4.0 + pyramid266));
-    CHECK(bandBudgetBytes(16, 4, 4096, 64, false, 0.0, 101, FillMode::Background, -5) - fg
-          == doctest::Approx(8.0 * 4096.0 * 266.0 * 4.0 + pyramid266));
+
+    // 2K rgba: the frame-wide map is ~70 MB; 4K ~280 MB.
+    const std::size_t frame2k = surfaceMapFrameBytes(2048, 1080, 4);
+    CHECK(frame2k == 8u * 2048u * 1080u * 4u + MaxDepthPyramid::bytesForWindow(2048, 1080));
+    CHECK(frame2k > 70u * 1000u * 1000u);
+    CHECK(frame2k < 76u * 1000u * 1000u);
+    CHECK(surfaceMapFrameBytes(4096, 2160, 4) > 280u * 1000u * 1000u);
+    CHECK(surfaceMapFrameBytes(4096, 2160, 4) < 300u * 1000u * 1000u);
+    CHECK(surfaceMapFrameBytes(0, 2160, 4) == 0u);
+
+    // The per-band budget is fill-mode blind: the map is not in it.
+    const double fg = bandBudgetBytes(16, 4, 4096, 64, false, 0.0, 101);
+    CHECK(fg == static_cast<double>(BucketPlanes::bytesForBand(16, 4, 4096, 64))
+                + static_cast<double>(ResidualWindow::bytesForWindow(4096, 64 + 2 * 101)));
 
     CHECK(fillReachPx(0.0f) == 0);
     CHECK(fillReachPx(-2.0f) == 0);
@@ -2672,7 +2676,8 @@ TEST_CASE("SurfaceMap: bytesForWindow is (C+4) floats per pixel, and bandBudgetB
     CHECK(fillReachPx(16.01f) == 17);
 }
 
-TEST_CASE("SurfaceMap: a fresh map has size 0 and clear() keeps it there")
+TEST_CASE("SurfaceMap: a fresh map has size 0 and release() returns it there, freeing the "
+          "planes; the pyramid likewise")
 {
     SurfaceMap map;
     CHECK(map.pixels() == 0);
@@ -2682,9 +2687,20 @@ TEST_CASE("SurfaceMap: a fresh map has size 0 and clear() keeps it there")
     CHECK(map.planes.size() == 12u * 6u);
     for (std::ptrdiff_t i = 0; i < map.pixels(); ++i)
         CHECK(map.empty(i));
-    map.clear();
+
+    MaxDepthPyramid pyramid;
+    pyramid.build(map);
+    CHECK(pyramid.levelCount() == 1);
+    CHECK(pyramid._tiles.size() == 1u);
+    pyramid.release();
+    CHECK(pyramid.levelCount() == 0);
+    CHECK(pyramid._tiles.size() == 0u);
+    CHECK(pyramid._tiles.capacity() == 0u);
+
+    map.release();
     CHECK(map.pixels() == 0);
     CHECK(map.planes.size() == 0u);
+    CHECK(map.planes.capacity() == 0u);
     CHECK(!map.contains(0, 0));
 }
 
@@ -3301,39 +3317,90 @@ TEST_CASE("findBackgroundSource: the fallback tier reaches what the primary cann
 }
 
 TEST_CASE("findBackgroundSource: band invariance -- two maps windowed differently around a "
-          "pixel's full reach disc answer identically")
+          "pixel's full reach disc answer identically, and the frame-wide map the node builds "
+          "answers as both of them do, from every band")
 {
     const FillRig halo = makeHaloFillRig();
     const int primary = 33, fallback = 60;
 
-    SurfaceMap wide, narrow;
-    MaxDepthPyramid widePyr, narrowPyr;
+    SurfaceMap wide, narrow, frame;
+    MaxDepthPyramid widePyr, narrowPyr, framePyr;
     buildRigMap(wide, halo, 100, 140, 5, fallback, [](int x, int y) { return haloStack(x, y, false); });
     buildRigMap(narrow, halo, 120, 124, 2, fallback, [](int x, int y) { return haloStack(x, y, false); });
+    buildFullFrameMap(frame, framePyr, halo, [](int x, int y) { return haloStack(x, y, false); });
     widePyr.build(wide);
     narrowPyr.build(narrow);
     REQUIRE(wide.y == 35);
     REQUIRE(wide.height == 170);
     REQUIRE(narrow.y == 58);
     REQUIRE(narrow.height == 128);
+    REQUIRE(frame.y == 0);
+    REQUIRE(frame.height == kFillRigSize);
     CHECK(widePyr.levelCount() == 4);
     CHECK(narrowPyr.levelCount() == 4);
+    CHECK(framePyr.levelCount() == 4);
 
     for (int y = 120; y < 124; ++y) {
         for (int x = kHaloX0; x < kHaloX1; ++x) {
             const BackgroundSource a = findBackgroundSource(wide, widePyr, x, y, primary, fallback);
             const BackgroundSource b = findBackgroundSource(narrow, narrowPyr, x, y, primary, fallback);
+            const BackgroundSource c = findBackgroundSource(frame, framePyr, x, y, primary, fallback);
             REQUIRE(a.found);
             CHECK(sameSource(a, b));
             CHECK(a.qx == b.qx);
             CHECK(a.qy == b.qy);
             CHECK(a.distance == b.distance);
+            CHECK(sameSource(a, c));
+            CHECK(a.qx == c.qx);
+            CHECK(a.qy == c.qy);
+            CHECK(a.distance == c.distance);
         }
     }
+
     const BackgroundSource a = findBackgroundSource(wide, widePyr, 120, 122, primary, fallback);
     CHECK(a.distance == 41.0f);
     CHECK(a.qx == kHaloX0 - 1);
     CHECK(a.qy == 122);
+
+    // Two disjoint bands, each with the band-windowed map the node once
+    // built per band (band +/- (padY + fallback)), against the one
+    // frame-wide map: the whole synthesis -- search, prune, smear -- lands
+    // the same bits whichever band asks and whichever map it reads.
+    const int padY = 17;
+    const int bandY[2][2] = {{96, 128}, {160, 192}};
+    int appended = 0;
+    for (int band = 0; band < 2; ++band) {
+        SurfaceMap windowed;
+        MaxDepthPyramid windowedPyr;
+        buildRigMap(windowed, halo, bandY[band][0], bandY[band][1], padY, fallback,
+                    [](int x, int y) { return haloStack(x, y, false); });
+        windowedPyr.build(windowed);
+        REQUIRE(windowed.y != frame.y);
+        for (bool smear : {false, true}) {
+            for (int y = bandY[band][0] - padY; y < bandY[band][1] + padY; ++y) {
+                for (int x = 0; x < kFillRigSize; ++x) {
+                    std::vector<SampleRecord> fromWindow = haloStack(x, y, false);
+                    std::vector<SampleRecord> fromFrame  = haloStack(x, y, false);
+                    const bool w = appendHiddenBackground(windowed, windowedPyr, halo.fp, x, y,
+                                                          0.0f, static_cast<float>(fallback),
+                                                          smear, fromWindow);
+                    const bool f = appendHiddenBackground(frame, framePyr, halo.fp, x, y,
+                                                          0.0f, static_cast<float>(fallback),
+                                                          smear, fromFrame);
+                    REQUIRE(w == f);
+                    REQUIRE(fromWindow.size() == fromFrame.size());
+                    for (std::size_t i = 0; i < fromWindow.size(); ++i) {
+                        REQUIRE(fromWindow[i].zFront == fromFrame[i].zFront);
+                        REQUIRE(fromWindow[i].zBack  == fromFrame[i].zBack);
+                        REQUIRE(fromWindow[i].alpha  == fromFrame[i].alpha);
+                        REQUIRE(fromWindow[i].channels == fromFrame[i].channels);
+                    }
+                    appended += w ? 1 : 0;
+                }
+            }
+        }
+    }
+    CHECK(appended > 0);
 }
 
 TEST_CASE("pruneSynthesis: an opaque P is pruned iff the source's disc is at least its own; "
