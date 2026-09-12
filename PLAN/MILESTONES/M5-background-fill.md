@@ -222,4 +222,14 @@ Constraints from the board apply in full: no SIMD, `DEEPC_HD` header-only kernel
   the map walk into `computeDepthRange()`'s existing frame-wide read (selection is
   bucket-independent; radius can be filled after the buckets exist) — would recover ≈5 s and put
   background near 1.05×.
+- 2026-09-11 — **Gate green and PR #107 merged `6a51c8c`** after one Codex review round (11 findings,
+  fixed in `46421fa`). Final suite `PASS=135 FAIL=2 XFAIL=11 SKIP=1` (n4b cross-build gate and n9
+  proxy cell added; 0 pre-existing rows moved). **F0 was a real defect**: the fallback reach used the
+  unscaled `max_radius` while every other radius is proxy px — at proxy 0.5 the fill searched twice
+  as far. **F1 measured, not fixable**: `fl(cam/s)·s == cam` holds whenever any float does (90.1% of
+  1e5 pairs); the rest have no exact float and miss by 1 ulp — pins tightened to 0 ulp where
+  achievable. Also: planner bound +1 fragment per non-empty pixel in background mode; map/pyramid
+  released at the top of `frameSetup`, charged at capacity; smear scratch on `BandJob`; prune `T_P`
+  in double (order-invariance fuzz: float raw-order would have flipped 5 of 20k); `exrdiff.py`
+  empty-intersection and non-finite checks. `./docker-build.sh --linux` not run in-session.
 
