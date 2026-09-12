@@ -1,8 +1,8 @@
 ---
 title: DeepCDefocus — deep-input, flat-output defocus node
 status: running
-current: M5.P3.T1
-pm_heartbeat: 2026-09-11T19:37:01-04:00
+current: M5.P3.T2
+pm_heartbeat: 2026-09-11T20:06:01-04:00
 ship: pr-per-milestone
 ---
 
@@ -115,7 +115,14 @@ Bokeh/pgBokeh don't exhibit; it runs before M2 because it rewrites the kernel st
 
 # Open questions
 
-(none — all resolved; the bucket-composite question's ruling — "the bucket composite is
+- **2026-09-11 (found by M5.P3.T1, pre-existing, not the fill's):** a 0.5-alpha holdout placed *in
+  front of* a two-layer deep stack renders alpha 1.0 / R/A 0.50 inside the silhouette, where stock
+  `DeepHoldout2` gives 0.5 / 0.80 (and `DeepMerge2`'s holdout op 0.75 / 0.60). Same on the M5-T0
+  `.so`, in `fill: foreground`, at size 0, with `pre_merge` off. Scene (b) never sees it because its
+  holdout sits *between* its layers, where all three agree. Is this a defect to schedule (a new
+  milestone: holdout-in-front parity with DeepHoldout2, with scene (b) extended), or intended?
+  Not gated by scene (n); recorded in n7's note.
+
+(Earlier questions all resolved; the bucket-composite ruling — "the bucket composite is
 `CoveragePartition`", 2026-08-16 — is in the archived M1 decisions log,
-`PLAN/ARCHIVE/M1-history.md`. Project-wide decisions: `PLAN/DECISIONS/INDEX.md`. Current
-state and carried obligations: the M1 file's `## Status log`.)
+`PLAN/ARCHIVE/M1-history.md`. Project-wide decisions: `PLAN/DECISIONS/INDEX.md`.)

@@ -62,7 +62,7 @@ Constraints from the board apply in full: no SIMD, `DEEPC_HD` header-only kernel
 
 ## Phase 5.3: Validation, sign-off, docs
 
-- [ ] M5.P3.T1 — Validation scene (n): background fill
+- [x] M5.P3.T1 — Validation scene (n): background fill
   - files: `tests/nuke/scenes.py` (new `sceneN()` reusing the halo builders at 3383–3434 and `_worstUnpremult()`/`insideBandRatio` idioms; register in `SCENES` at 4296), `tests/nuke/generate_scene_scripts.py` (register at ~770 as `("n", "scene_n_background_fill.nk", buildSceneN)`), `tests/nuke/scene_n_background_fill.nk` (new, generated)
   - approach: every cell renders with `fill="background"` unless stated, at the run's K. **n0** the oracle guard: the sparse source has no sample at the BG depth behind the card (m1a's `_cropToDepth` idiom). **n1** twin identity: `haloSparse()` in BG mode vs `deepMerge([haloForeground(), haloBackground()])` in BG mode, `compareImages` over the whole format — max ulps 0 (nearest-only) or ≤ 1e-6 with a hard bound 1e-4 (average); **n1b** the inside band's R/A equals the twin's per pixel and lies strictly between BG 0.20 and FG 0.80 (non-vacuity: the fill really is BG-coloured), G/A and B/A within 1/255 — alpha and colour-ratio arms beside each other. **n2** nearer-object control: add a third card at z=3, R=0.5, abutting the FG's right edge; the FG's right-hand inside band reads the BG mix (R/A within 1/255 of the twin built with all three cards), never 0.5; and the near card's own inside band reads the FG mix, since the FG is what lies behind it. **n3** fallback control: `fill_search=2.0` on n1's rig equals the auto render within the n1 band; mutation recorded in the note: with the fallback reach forced to 2 the band beyond 2 px reads FG colour. **n4** foreground unchanged: `fill="foreground"` renders of the m1 and m3 rigs vs the same cell in scene (m) — max ulps 0 (in-process, same `.so`); the cross-`.so` statement is P3.T2's. **n5** empties and identities in BG mode: `haloForeground()` alone equals its FG-mode render at 0 ulps (empties never borrow); scene (d)'s sparse input exactly black outside; two 0.5 fog layers → 0.75 and one α=0.5 card → 0.5 within 1e-6. **n6** slope control: the m3 ramp at α=0.9 in BG mode equals its FG-mode render at 0 ulps (the slope rule); mutation: `kFillSlope=0` → the near-focus rows read ~0.99 and the cell fails. **n7** holdout commutation in BG mode: sparse rig + `haloHoldout()` vs the held twin, max ulps 0 / ≤ 1e-6. Every pin two-sided with a hard bound; the oracle is never the new output.
   - verify: `scripts/hostguard.sh --mem-gb 6 -- tests/nuke/run_validation.sh --scenes n` all PASS; each cell demonstrated to fail under its named mutation (synthesis off, fallback reach 2, slope 0, nearer-card accepted by dropping the depth predicate) and the failing readings written into the cells' notes; the committed `.nk` reproduces each cell.
@@ -153,4 +153,15 @@ Constraints from the board apply in full: no SIMD, `DEEPC_HD` header-only kernel
   double sum and the fallback tier verbatim; `fillAverageStride` never exceeds 800 reads up to
   `max_radius` 500 (worst 793 at reach 95). Scene (n) must add a **textured-BG cell per estimator**
   on top of the uniform-BG twin identity (which cannot tell them apart).
+- 2026-09-11 — **P3.T1 landed (`8a60ee6`): scene (n) `PASS=24`**, n1/n1s/n2/n3/n4/n5/n6/n7 all at 0 ULP
+  against their oracles, n8/n8b pinned at the bake-off's readings (re-measured within 2e-5).
+  Mutation limit recorded: on the all-opaque near-card rig the opaque-P prune (`22.7 ≥ 16 px`)
+  rejects the near card on its own, so dropping the depth predicate does not move n2 — a
+  predicate-only rig needs a nearer Q with a *smaller* disc (focal plane between them) or a
+  semi-transparent P; not built. `fill_smear` on that rig blends every qualifying depth in reach
+  (3.6e-2 off the twin) — by design of the average; n2 is stated on the nearest estimator.
+  **Pre-existing finding, outside M5 (raised under `# Open questions`):** a 0.5-alpha holdout
+  *in front of* a two-layer stack reads alpha 1.0 / R/A 0.50 where stock DeepHoldout2 reads
+  0.5 / 0.80 (DeepMerge2 holdout 0.75 / 0.60) — identical on the M5-T0 `.so`, in foreground mode,
+  at size 0 and with pre_merge off; scene (b)'s holdout sits *between* its layers, where all agree.
 
