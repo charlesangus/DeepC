@@ -2,7 +2,7 @@
 #
 # One-command re-run of the DeepCDefocus headless validation harness.
 #
-#   tests/nuke/run_validation.sh                       # scenes (a)-(m), defaults
+#   tests/nuke/run_validation.sh                       # scenes (a)-(n), defaults
 #   tests/nuke/run_validation.sh --scenes g,h --k 64
 #   tests/nuke/run_validation.sh --pre-merge off
 #   tests/nuke/run_validation.sh --threads 2           # cap Nuke's core count
