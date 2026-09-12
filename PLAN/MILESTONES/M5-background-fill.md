@@ -60,7 +60,7 @@ Constraints from the board apply in full: no SIMD, `DEEPC_HD` header-only kernel
   - verify: both variants render; the user's call and the rendered evidence paths are in `## Decisions`; `grep -n` finds no trace of the switch; P2.T2's twin-identity doctest still passes (bit-exact under nearest-only; re-pinned at ≤ 1e-6 with a note if the average wins, since a mean of identical values is not bit-exact).
   - size: L
 
-- [ ] M5.P2.T4 — Bring background mode's cost down from 2.18× (added at the gate, user ruling)
+- [x] M5.P2.T4 — Bring background mode's cost down from 2.18× (added at the gate, user ruling)
   - files: `src/DeepCDefocus.cpp` (`computeBand()` pass 1 ~1890–1912, `frameSetup()` ~1445–1470 and
     the band planner/budget call ~1555–1560, `FrameShared`/`BandJob`), `src/DeepCDefocusFill.h`
     (`buildSurfaceMap()`, `SurfaceMap`, `MaxDepthPyramid`), `src/DeepCDefocusScatter.h`
@@ -213,4 +213,13 @@ Constraints from the board apply in full: no SIMD, `DEEPC_HD` header-only kernel
   shipping** (M5.P2.T4 added; target ≤ 1.5× foreground); the holdout-in-front finding **stays an
   open question** on the board; **Codex review before merge** again overrides this run's
   `--no-review`.
+- 2026-09-11 — **P2.T4 landed (`c7c4772`), option A: one per-frame `SurfaceMap` + pyramid built in
+  `frameSetup()` under the ledger's setup claim; background mode 61.0 → 34.9 s = **1.22×
+  foreground** (target ≤ 1.5×), cpu 1.12×, RSS +0.33 GB/rep vs +0.27 (the 76 MB map, counted once
+  off the top of `memory_limit`). Fallback ruling intact. Output bit-identical (bake-off ×4, band
+  heights 32 vs 16 rows at 2K, M5-T0 ×3). Cost moved, not added: time-to-first-band 7.4 → 11.5 s
+  because the frame-wide walk is single-threaded in setup. **Follow-up candidate (not done):** fuse
+  the map walk into `computeDepthRange()`'s existing frame-wide read (selection is
+  bucket-independent; radius can be filled after the buckets exist) — would recover ≈5 s and put
+  background near 1.05×.
 
