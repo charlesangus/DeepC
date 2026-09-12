@@ -211,6 +211,10 @@ disocclusion fill; aberrations (M2); GPU (M3).
 | Bokeh | `edge_softness` | Float px | 1.0 | 0–4, disc AA falloff |
 | Output | `channels` | Input_ChannelSet | rgba | alpha always processed |
 | Output | `output_holdout_matte` | Bool + Channel | false / none | flattened holdout coverage AOV; the channel deliberately defaults to none (`Chan_Black`) so ticking the bool can't silently overwrite the node's own alpha — the user picks or creates one |
+| Bokeh | `background_depth` | Float px | 0 (auto) | 0–500; defocus radius of the virtual background for pixels the deep image left empty; auto = CoC at the farthest measured depth (added by M4) |
+| Bokeh | `fill` | Enum {foreground, background} | foreground | colour of coverage the renderer left empty: the pixel's own (foreground) or a hidden sample synthesised from the nearest surface behind it (background) (added by M5) |
+| Bokeh | `fill_search` | Float px | 0 (auto) | 0–500; search radius for the borrowed surface, auto = 2·r+1, clamped to `max_radius`; beyond it the nearest qualifying surface out to `max_radius` is used unsmeared (M5) |
+| Bokeh | `fill_smear` | Bool | true | background mode only: average the borrowed colour over the search disc (on) or copy the nearest pixel's verbatim (off) (M5) |
 | Perf | `max_radius` | Int px | 100 | 1–500; bounds bbox pad + LUT |
 | Perf | `depth_layers` | Int | 16 | 4–128 (K buckets; memory scales with K) |
 | Perf | `pre_merge` + `merge_tolerance` | Bool + Float | true / 0.25px | 0–2px, in **CoC-radius pixels** (tidy pass itself always on) |
