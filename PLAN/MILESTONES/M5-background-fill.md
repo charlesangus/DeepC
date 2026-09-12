@@ -60,6 +60,33 @@ Constraints from the board apply in full: no SIMD, `DEEPC_HD` header-only kernel
   - verify: both variants render; the user's call and the rendered evidence paths are in `## Decisions`; `grep -n` finds no trace of the switch; P2.T2's twin-identity doctest still passes (bit-exact under nearest-only; re-pinned at ≤ 1e-6 with a note if the average wins, since a mean of identical values is not bit-exact).
   - size: L
 
+- [ ] M5.P2.T4 — Bring background mode's cost down from 2.18× (added at the gate, user ruling)
+  - files: `src/DeepCDefocus.cpp` (`computeBand()` pass 1 ~1890–1912, `frameSetup()` ~1445–1470 and
+    the band planner/budget call ~1555–1560, `FrameShared`/`BandJob`), `src/DeepCDefocusFill.h`
+    (`buildSurfaceMap()`, `SurfaceMap`, `MaxDepthPyramid`), `src/DeepCDefocusScatter.h`
+    (`bandBudgetBytes()`'s background term), `tests/test_defocus_scatter.cpp`
+  - approach: the 2.18× is pass 1 re-reading the deep input over `band ± (padY + max_radius)` rows —
+    ~2.5× the fetch row-visits of foreground mode, most of it fallback headroom. **Option A (try
+    first — it preserves the depth-aware-to-`max_radius` fallback ruling):** one **per-frame**
+    `SurfaceMap` + pyramid, built lazily once under the frame's existing lazy-claim discipline
+    (M1's per-band claim pattern) on the first background-mode band and shared read-only by every
+    band; pass 1 then reads each deep row exactly once per frame instead of ~2.5×, no per-band
+    extension, the fallback trivially covered. Memory `(C+4)·W·H·4` + pyramid (≈70 MB at 2K rgba,
+    ≈280 MB at 4K), counted once in the frame budget, not per band. **Option B (only if A's
+    first-band latency or memory is unacceptable — say why with numbers):** extend pass 1 by the
+    *resolved* reach (`fill_search`, auto or manual) and clamp the fallback tier to that extension,
+    recording the reduction of the fallback ruling as a decision. Either way `foreground` mode must
+    not change (0 ulps), background output must be **bit-identical to P3.T2's** (same map contents,
+    same search → same synthetic samples; verify with `exrdiff` on scene (n)'s rigs and the
+    bake-off EXRs), and scene (n) stays `PASS=24`.
+  - verify: doctests green (band-invariance and twin-identity cases unchanged); `--scenes a,m,n`
+    green, scene (m) EXRs 0 ulps vs M5-T0, rig1/rig3 background renders 0 ulps vs
+    `~/deepc-validation/M5-P2T3/exr/`; `run_profile.sh` background mode re-measured under the same
+    conditions as P3.T2 (foreground 28.0 s median): target ≤ 1.5× foreground; the result and the
+    option taken recorded in `## Decisions`; the P3.T2 full-suite tally re-run at the gate (P3.T2's
+    checklist, not a new task).
+  - size: L
+
 ## Phase 5.3: Validation, sign-off, docs
 
 - [x] M5.P3.T1 — Validation scene (n): background fill
@@ -182,4 +209,8 @@ Constraints from the board apply in full: no SIMD, `DEEPC_HD` header-only kernel
 - 2026-09-11 — **P3.T3 landed (`2620483`); all tasks done.** node_help, tooltips (the earlier `fill`
   tooltip wrongly said "completely empty" — that is `background_depth`'s job; corrected), README
   unchanged (its one-liner never mentioned the fill), M1 knob list updated (`8a24777` on plan).
+- 2026-09-11 — **Gate rulings:** `fill_smear` default stays **on**; **optimise background mode before
+  shipping** (M5.P2.T4 added; target ≤ 1.5× foreground); the holdout-in-front finding **stays an
+  open question** on the board; **Codex review before merge** again overrides this run's
+  `--no-review`.
 
