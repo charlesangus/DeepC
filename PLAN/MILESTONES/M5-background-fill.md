@@ -74,7 +74,7 @@ Constraints from the board apply in full: no SIMD, `DEEPC_HD` header-only kernel
   - verify: doctests green; harness `PASS=109+N FAIL=2 XFAIL=11 SKIP=1` with N = scene (n)'s cell count and **no other row moving** (every a–m reading identical to M4 P3.T4's log at `~/deepc-validation/M4-P3T4/`); `exrdiff.py` 0 ulps on all three (m) EXRs and (a); FG-mode `cpuMedian` within run-to-run noise of 82.8 s; BG-mode cost recorded, flagged with a named mitigation if above ~2× (candidates, in order: extend pass 1 by the resolved reach rather than `max_radius`; skip pass 1 rows whose band cannot receive any synthetic disc).
   - size: M
 
-- [ ] M5.P3.T3 — node_help, tooltips, README
+- [x] M5.P3.T3 — node_help, tooltips, README
   - files: `src/DeepCDefocus.cpp` (the COVERAGE FILL block at 125–176 and the `background_depth` paragraph; new `fill`/`fill_search` tooltips), `README.md:32` (the one-liner, only if it should now mention the fill), `.plan/PLAN/MILESTONES/M1-deepcdefocus-v1.md` knob list (PM's edit, not the implementer's)
   - approach: rewrite "What the fill invents is FOREGROUND-coloured coverage" as the `fill` dropdown's two behaviours: `foreground` (unchanged text, now labelled as the default) and `background` — the node synthesises, behind each source pixel, the hidden sample a renderer that terminates opaque hits omitted, copied from the nearest pixel whose surface lies behind it (never from a nearer object, never from a receding continuation of the same surface, never for empty pixels) and scattered at that sample's own defocus; it is then treated exactly like an occluded sample from `DeepMerge`, so holdouts and the fill still commute. State the limits plainly: the colour is a smear of what is visible around the silhouette, not the occluded surface; pixels with no qualifying surface within `max_radius` fill with foreground colour as before; a BG whose disc is at least the foreground's is not synthesised behind opaque pixels because it is not needed. `fill_search`'s tooltip per P2.T3's outcome. No plan or task references anywhere in the text.
   - verify: `node_help()` reads correctly in headless Nuke; `grep -n "FOREGROUND-coloured" src/` finds only the rewritten sentence; comment-policy checker clean; the M1 knob list names `fill` and `fill_search` with their defaults.
@@ -179,4 +179,7 @@ Constraints from the board apply in full: no SIMD, `DEEPC_HD` header-only kernel
   refetch is the dominant term and most of it is fallback headroom; (2) skip pass-1 rows a band
   cannot receive a synthetic disc from; (3) per-frame instead of per-band map for small frames.
   Not a correctness gate; optimisation is a new task if the user wants it (see sign-off).
+- 2026-09-11 — **P3.T3 landed (`2620483`); all tasks done.** node_help, tooltips (the earlier `fill`
+  tooltip wrongly said "completely empty" — that is `background_depth`'s job; corrected), README
+  unchanged (its one-liner never mentioned the fill), M1 knob list updated (`8a24777` on plan).
 
