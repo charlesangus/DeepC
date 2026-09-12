@@ -1,5 +1,5 @@
 """Validation scenes (a)-(l) from the M1 Design reference's scene list,
-plus (m), the coverage fill.
+plus (m), the coverage fill, and (n), the background fill.
 
 Every scene builds its graph from Python nodes (no committed ``.nk`` — that is
 M1.P5.T3's job), renders through ``harness.render()`` and reports a number.
@@ -4292,6 +4292,978 @@ def sceneM(settings):
     return checks
 
 
+# --- scene (n) ---------------------------------------------------------------
+
+# The nearer object for n2: a THIRD depth, in front of the halo card (z=3,
+# CoC radius 4 * |1 - 20/3| = 22.67 px), abutting the card's right edge and
+# taller than it by 32 px each way.  Its colour is distinct from both halo
+# cards on every channel, so a borrowed near-card sample is visible on R
+# (0.50 against the FG's 0.80 and the BG's 0.20) AND on G/B.
+NEAR_CARD = (176, 48, 240, 208)
+NEAR_Z = 3.0
+NEAR_COLOUR = (0.50, 0.35, 0.65)
+NEAR_RADIUS = HALO_SIZE * abs(1.0 - HALO_FOCUS / NEAR_Z)          # 22.67 px
+# What the twin carries BEHIND the near card: the halo card, continued under
+# it for 32 px.  That is exactly the region the search's nearest-Q rule
+# assigns to the FG on this geometry -- a near-card pixel at column 176+d,
+# on the card's rows, is d+1 from the FG's last column and 64-d from the BG
+# beyond the near card's right edge (and >= 33 from the BG above/below it,
+# which is what the 32 px of extra height buys), so the FG is nearer for
+# d <= 31 and the BG from d = 32 on; on the near card's rows outside 80-175
+# the BG immediately to its left wins at every column.  With the twin built
+# that way the two sources carry the SAME hidden content at every pixel and
+# the nearest estimator must reproduce the twin exactly.
+NEAR_FG_EXTENT = (HALO_SILHOUETTE[0], HALO_SILHOUETTE[1],
+                  NEAR_CARD[0] + 32, HALO_SILHOUETTE[3])
+
+# n8's board: the bake-off's own -- 8 px cells, red (0.90, 0.10, 0.10) and
+# blue (0.10, 0.15, 0.90), so R and B are complementary cell to cell and G is
+# nearly flat.  Twice the frequency of m5's board, so a 16 px band holds two
+# full periods of it.
+FILL_CHECK_CELL_PX = 8
+FILL_CHECK_RED = (0.90, 0.10, 0.10)
+FILL_CHECK_BLUE = (0.10, 0.15, 0.90)
+# rig3's background depth: r(z) = 4 * (1 - 20/z), z = 640 gives 3.875 px.
+FILL_CHECK_FAR_Z = 640.0
+
+
+def _rectExpr(box):
+    return "(x>=%d && x<%d && y>=%d && y<%d)" % (box[0], box[2], box[1],
+                                                 box[3])
+
+
+def nearCard():
+    return pointLayer(rectangle2d(NEAR_CARD, NEAR_COLOUR + (1.0,)), NEAR_Z,
+                      keepZeroAlpha=False, premult=True)
+
+
+def nearSparse():
+    """One sample per pixel over three depths: the near card where it is, the
+    halo card inside its silhouette, the background elsewhere -- nothing
+    hidden behind anything."""
+    near, fg = _rectExpr(NEAR_CARD), _rectExpr(HALO_SILHOUETTE)
+    image = nuke.nodes.Expression(inputs=[constant2d((0.0, 0.0, 0.0, 0.0))])
+    for index, (n, f, b) in enumerate(zip(NEAR_COLOUR, HALO_FG, HALO_BG)):
+        image["expr%d" % index].setValue("%s ? %g : (%s ? %g : %g)"
+                                         % (near, n, fg, f, b))
+    image["expr3"].setValue("1.0")
+    return depthRampLayer(image, "%s ? %g : (%s ? %g : %g)"
+                          % (near, NEAR_Z, fg, HALO_NEAR_Z, HALO_FAR_Z))
+
+
+def nearTwin():
+    """The same visible content with the hidden samples present: the near
+    card, the halo card continued under it (NEAR_FG_EXTENT), the background
+    everywhere."""
+    fg = pointLayer(rectangle2d(NEAR_FG_EXTENT, HALO_FG + (1.0,)),
+                    HALO_NEAR_Z, keepZeroAlpha=False, premult=True)
+    return deepMerge([nearCard(), fg, haloBackground()])
+
+
+def fillChecker():
+    node = nuke.nodes.CheckerBoard2()
+    node["format"].setValue(currentFormat())
+    node["boxsize"].setValue(FILL_CHECK_CELL_PX)
+    for knob in ("color0", "color2"):
+        node[knob].setValue(list(FILL_CHECK_RED) + [1.0])
+    for knob in ("color1", "color3"):
+        node[knob].setValue(list(FILL_CHECK_BLUE) + [1.0])
+    node["centerlinewidth"].setValue(0)
+    node["linewidth"].setValue(0)
+    return node
+
+
+def checkerSparse(farZ):
+    """The halo card over the checker, one sample per pixel: FG colour at
+    z=4 inside the silhouette, the board's colour at ``farZ`` outside, no
+    board behind the card."""
+    inside = _rectExpr(HALO_SILHOUETTE)
+    image = nuke.nodes.Expression(inputs=[fillChecker()])
+    for index, (fg, channel) in enumerate(zip(HALO_FG, ("r", "g", "b"))):
+        image["expr%d" % index].setValue("%s ? %g : %s" % (inside, fg,
+                                                            channel))
+    image["expr3"].setValue("1.0")
+    return depthRampLayer(image, "%s ? %g : %g" % (inside, HALO_NEAR_Z, farZ))
+
+
+def checkerTwin(farZ):
+    """The same with the board's real samples kept behind the card."""
+    return deepMerge([haloForeground(),
+                      pointLayer(fillChecker(), farZ, keepZeroAlpha=False,
+                                 premult=True)])
+
+
+def _bandStrips(outer, inner):
+    """The four strips of ``outer`` minus ``inner`` (inner inside outer)."""
+    x0, y0, x1, y1 = inner
+    return [(outer[0], outer[1], outer[2], y0),
+            (outer[0], y1, outer[2], outer[3]),
+            (outer[0], y0, x0, y1),
+            (x1, y0, outer[2], y1)]
+
+
+def _worstRatioVsTwin(image, twin, channel, strips, floor=1.0e-03):
+    """Worst |c/a - c'/a'| between two renders over ``strips``, and the
+    image's own ratio range there.  Pixels with alpha below ``floor`` in
+    either render are skipped.  Returns (worst, (x, y), count, low, high)."""
+    worst, worstAt, count = 0.0, None, 0
+    low, high = float("inf"), float("-inf")
+    for x0, y0, x1, y1 in strips:
+        for y in range(y0, y1):
+            a, c = image.row("A", y), image.row(channel, y)
+            ta, tc = twin.row("A", y), twin.row(channel, y)
+            for x in range(x0, x1):
+                i, j = x - image.x0, x - twin.x0
+                if not (0 <= i < image.width and 0 <= j < twin.width):
+                    continue
+                if a[i] < floor or ta[j] < floor:
+                    continue
+                count += 1
+                ratio = c[i] / a[i]
+                low, high = min(low, ratio), max(high, ratio)
+                deviation = abs(ratio - tc[j] / ta[j])
+                if deviation > worst or worstAt is None:
+                    worst, worstAt = deviation, (x, y)
+    return worst, worstAt, count, low, high
+
+
+def _meanAbsDiff(image, twin, channel, strips):
+    """Mean |c - c'| over ``strips`` (premultiplied, as the bake-off read
+    it)."""
+    total, count = 0.0, 0
+    for x0, y0, x1, y1 in strips:
+        for y in range(y0, y1):
+            a, b = image.row(channel, y), twin.row(channel, y)
+            for x in range(x0, x1):
+                total += abs(a[x - image.x0] - b[x - twin.x0])
+                count += 1
+    return (total / count) if count else 0.0, count
+
+
+def sceneN(settings):
+    """Background fill: ``fill: background`` against the DeepMerge twin.
+
+    Scene (m) accepted the coverage fill on the statement that it invents no
+    background: the vacated band inside a defocused silhouette is scaled to
+    full coverage in the FOREGROUND's colour, because a renderer that
+    terminates opaque hits left nothing behind the card to show.  ``fill:
+    background`` supplies what is missing instead.  For every source pixel P
+    that has samples, a depth-aware search finds the nearest pixel Q whose
+    surface lies BEHIND P's --
+
+        zFront_Q > zBack_P + max(0.02 * zBack_P, 4 * step_P * d(P, Q))
+
+    with step_P the surface's own local depth step (the slope term keeps a
+    receding surface from borrowing from a farther part of itself) -- within
+    a primary reach (``fill_search``, auto = 2 r_P + 1) and, failing that,
+    out to ``max_radius``; an opaque P whose Q's disc is at least its own is
+    pruned (that background reaches it from outside the silhouette anyway).
+    ONE synthetic hidden sample -- Q's deepest surface -- is appended to P's
+    stack before the unchanged flatten, so a sparse source in background
+    mode is meant to be indistinguishable from the DeepMerge twin that
+    carries the real occluded samples.  ``fill_smear`` (default on) replaces
+    the nearest Q's alpha/colour with the mean over the qualifying pixels on
+    a stride lattice within the primary reach; off copies the nearest
+    verbatim.  Empty pixels never borrow, and foreground mode is untouched.
+
+    The oracle throughout is the twin, never this build's own output:
+
+      n0  guard: the sparse source has NO sample at the background's depth
+          behind the card, the twin has (m1a's crop).
+      n1  twin identity on the halo rig, whole frame, 0 ULP -- under both
+          estimators (a uniform background cannot tell them apart, and both
+          must be exact there).  n1b: the inside band's R/A equals the
+          twin's per pixel and reads the FG:BG mix, not 0.80 (the fill IS
+          background-coloured); G/A and B/A are the cards' shared values.
+      n2  nearer-object control: a third card at z=3 abutting the halo
+          card's right edge.  The halo card's right band must borrow the
+          BACKGROUND (never the near card, which is in front of it); the
+          near card's own left band borrows the halo card, which is what
+          lies behind it, and reads the near:FG mix through its vacated
+          edge.  Stated on the nearest estimator against a twin that
+          carries the same hidden content, at 1/255 on every colour ratio.
+          Measured limit: on this rig the opaque-P prune rejects the near
+          card on its own (its disc is the larger), so the cell does not
+          move when the depth predicate is widened -- see its note.
+      n3  fallback control: ``fill_search=2`` on n1's rig equals the auto
+          render at 0 ULP -- the fallback tier (max_radius) finds the same
+          nearest Q as the primary tier did.
+      n4  foreground unchanged: explicit ``fill: foreground`` renders of the
+          m1 and m3 rigs equal scene (m)'s own (default-knob) renders at 0
+          ULP, in-process.
+      n5  empties and identities: the halo card over NOTHING renders the
+          same in both modes (empties never borrow); scene (d)'s sparse
+          card is bitwise 0 outside in background mode; two 0.5 fog layers
+          read 0.75 and an alpha-0.5 card reads 0.5, both modes.
+      n6  slope control: the m3 ramp at alpha 0.9 renders the same in both
+          modes at 0 ULP -- a receding surface never qualifies as its own
+          background.
+      n7  holdout commutation: the held sparse rig equals the held twin at
+          0 ULP.
+      n8  textured background, BOTH estimators, where they differ: the halo
+          card over the bake-off's checker, in focus (n8) and defocused
+          (n8b).  Band mean |dR| against the twin, pinned two-sided at the
+          bake-off's own numbers with a hard outer range; average < nearest;
+          alpha bit-identical to the twin under both.
+
+    Every alpha assertion has a colour-ratio assertion beside it, and every
+    pin is two-sided with a hard bound.  The mutation each cell exists to
+    catch is recorded in its note with the reading it produced.
+    """
+    checks = []
+    box = formatBox()
+    silhouette = HALO_SILHOUETTE
+    reach = int(math.ceil(HALO_RADIUS)) + 3                       # 19
+    band = _bandStrips(silhouette, insetBox(silhouette, reach))
+    ratioTol = 1.0 / 255.0
+
+    def defocus(source, cell=None, **overrides):
+        cell = cell or settings
+        return makeDefocus(cell, source, size=HALO_SIZE,
+                           focusDistance=HALO_FOCUS, cocMode="manual",
+                           **overrides)
+
+    def background(source, cell=None, **overrides):
+        return defocus(source, cell, fill="background", **overrides)
+
+    def identityCheck(name, a, b, region, note, population=None):
+        """A 0 ULP gate on every channel over ``region``."""
+        diff = compareImages(a, b, box=region)
+        checks.append(boolCheck(
+            "n", name, diff.maxAbs == 0.0 and diff.maxUlpsAny == 0,
+            "max |d| %.2e; worst %d ULP" % (diff.maxAbs, diff.maxUlpsAny),
+            "0 ULP on R, G, B and A",
+            population=population or "%d px x 4 channels" % diff.total,
+            note=note))
+        return diff
+
+    # ------------------------------------------------------------------
+    # n0: the guard.
+    # ------------------------------------------------------------------
+    resetScript()
+    sparseBg = render(settings,
+                      deepToImage(_cropToDepth(haloSparse(), HALO_FAR_Z - 5.0,
+                                               HALO_FAR_Z + 5.0)),
+                      "n_sparse_bg_only", box=box)
+    resetScript()
+    mergedBg = render(settings,
+                      deepToImage(_cropToDepth(
+                          deepMerge([haloForeground(), haloBackground()]),
+                          HALO_FAR_Z - 5.0, HALO_FAR_Z + 5.0)),
+                      "n_merged_bg_only", box=box)
+    sparseHidden = channelStats(sparseBg, "A", silhouette)
+    mergedHidden = channelStats(mergedBg, "A", silhouette)
+    sparseOutside = channelStats(sparseBg, "A",
+                                 (0, 0, FORMAT_W, silhouette[1]))
+    checks.append(boolCheck(
+        "n", "n0 guard: the sparse source has NO background behind the card, "
+             "the twin has",
+        sparseHidden.maximum == 0.0 and mergedHidden.minimum == 1.0
+        and sparseOutside.minimum == 1.0,
+        "sparse %.1f, twin %.1f behind the card; sparse %.1f outside"
+        % (sparseHidden.maximum, mergedHidden.minimum, sparseOutside.minimum),
+        "0 / 1 / 1",
+        population="%d px behind the card" % sparseHidden.count,
+        note="m1a's crop: both sources DeepCrop'd to the background depth and "
+             "flattened.  Without this, every identity below would be "
+             "satisfied by a source that never lacked the samples"))
+
+    # ------------------------------------------------------------------
+    # n1: twin identity, both estimators.
+    # ------------------------------------------------------------------
+    # The background is one colour at one depth, so the nearest Q's copy and
+    # the mean over every qualifying Q are the same number -- the mean is
+    # accumulated in double, so bit-exact -- and BOTH must land on the twin.
+    # A uniform background cannot separate the estimators; n8 does.
+    renders = {}
+    for smear, tag in ((True, "n1"), (False, "n1s")):
+        resetScript()
+        sparse = render(settings,
+                        background(haloSparse(), fill_smear=smear),
+                        "n_halo_bg_smear%d" % smear, box=box)
+        resetScript()
+        twin = render(settings,
+                      background(deepMerge([haloForeground(),
+                                            haloBackground()]),
+                                 fill_smear=smear),
+                      "n_twin_bg_smear%d" % smear, box=box)
+        renders[smear] = (sparse, twin)
+        identityCheck(
+            "%s twin identity, fill_smear %s: sparse == DeepMerge twin, "
+            "whole frame" % (tag, "on" if smear else "off"),
+            sparse, twin, box,
+            note="the synthesised sample is Q's surface verbatim (nearest) "
+                 "or the double-accumulated mean of identical values "
+                 "(average): on a uniform background both ARE the twin's "
+                 "hidden sample.  MUTATION synthesis off (return early in "
+                 "appendHiddenBackground): max |d| 4.38e-01, 9659576 ULP, "
+                 "the vacated band FG-coloured (R/A 0.80 across it against "
+                 "the twin's 0.36..0.80); the same under a predicate that "
+                 "accepts any non-empty Q, because the nearest such Q is "
+                 "P's own neighbour and the opaque-P prune discards it")
+    sparse, twin = renders[True]
+    worstR, atR, countR, lowR, highR = _worstRatioVsTwin(sparse, twin, "R",
+                                                          band)
+    _, _, _, twinLow, twinHigh = _worstRatioVsTwin(twin, twin, "R", band)
+    mixLow, mixHigh = HALO_BG[0] + 0.1, HALO_FG[0] - 0.1
+    checks.append(boolCheck(
+        "n", "n1b ...and the inside band's R/A is the twin's per pixel and "
+             "reads the FG:BG mix",
+        worstR <= ratioTol and mixLow < lowR < mixHigh
+        and mixLow < twinLow < mixHigh,
+        "worst |R/A - twin| %.2e at %s; band R/A %.4f..%.4f (twin "
+        "%.4f..%.4f)" % (worstR, atR, lowR, highR, twinLow, twinHigh),
+        "<= %.1e; band min in (%.2f, %.2f)" % (ratioTol, mixLow, mixHigh),
+        population="%d px, the inside band (|edge distance| <= %d px)"
+                   % (countR, reach),
+        note="R separates the cards (FG 0.80, BG 0.20): the band's minimum "
+             "is the mix at the silhouette's last column, where half the "
+             "foreground's disc has left and the borrowed background shows "
+             "through -- the fill really is background-coloured.  Foreground "
+             "mode reads 0.80 across the same band (m1b).  Synthesis off: "
+             "band R/A 0.8000..0.8000, worst 4.38e-01 at (175,175)"))
+    worstRatio, worstAt, ratioCount = 0.0, None, 0
+    for channel, target in (("G", HALO_FG[1]), ("B", HALO_FG[2])):
+        w, at, n = _worstUnpremult(sparse, channel, target, silhouette)
+        ratioCount = n
+        if w > worstRatio or worstAt is None:
+            worstRatio, worstAt = w, (channel,) + at
+    checks.append(tolCheck(
+        "n", "n1b ...and G/A, B/A are the cards' shared values across the "
+             "silhouette",
+        worstRatio, ratioTol,
+        population="%d px x 2 channels" % ratioCount,
+        note="worst %s@(%d,%d); FG and BG share G and B, so whatever the "
+             "mix these two ratios are known analytically at every pixel"
+             % worstAt))
+
+    # ------------------------------------------------------------------
+    # n2: the nearer object.
+    # ------------------------------------------------------------------
+    # Nearest estimator (fill_smear off) by design: the average takes every
+    # qualifying depth within the reach, and a near-card pixel's reach holds
+    # both the halo card and the background -- the mean of the two is not
+    # what any single hidden surface reads, so the twin is no oracle for it.
+    # Its reading is reported in the note.
+    fgBand = (silhouette[2] - reach, silhouette[1] + reach,
+              silhouette[2], silhouette[3] - reach)
+    nearReach = int(math.ceil(NEAR_RADIUS)) + 3                     # 26
+    nearBand = (NEAR_CARD[0], silhouette[1] + nearReach,
+                NEAR_CARD[0] + nearReach, silhouette[3] - nearReach)
+    resetScript()
+    nearTwinImage = render(settings, background(nearTwin()), "n2_twin",
+                           box=box)
+    resetScript()
+    nearNearest = render(settings, background(nearSparse(), fill_smear=False),
+                         "n2_sparse_nearest", box=box)
+    resetScript()
+    nearAverage = render(settings, background(nearSparse(), fill_smear=True),
+                         "n2_sparse_average", box=box)
+    frameDiff = compareImages(nearNearest, nearTwinImage, box=box)
+    readings = {}
+    for label, region in (("fg", fgBand), ("near", nearBand)):
+        for channel in ("R", "G", "B"):
+            readings[(label, channel)] = _worstRatioVsTwin(
+                nearNearest, nearTwinImage, channel, [region])
+            readings[(label, channel, "avg")] = _worstRatioVsTwin(
+                nearAverage, nearTwinImage, channel, [region])
+        readings[(label, "A")] = compareImages(nearNearest, nearTwinImage,
+                                               channels=("A",), box=region)
+        readings[(label, "alpha")] = channelStats(nearNearest, "A", region)
+    fgR = readings[("fg", "R")]
+    fgWorst = max(readings[("fg", c)][0] for c in "RGB")
+    fgAlpha = readings[("fg", "alpha")]
+    checks.append(boolCheck(
+        "n", "n2 nearer object: the halo card's right band borrows the "
+             "BACKGROUND, never the near card (R/A, G/A, B/A vs twin; alpha)",
+        fgWorst <= ratioTol and fgR[3] > NEAR_COLOUR[0] + 0.1
+        and fgR[4] < HALO_FG[0]
+        and readings[("fg", "A")].maxUlpsAny == 0
+        and abs(fgAlpha.minimum - 1.0) <= ratioTol,
+        "worst |c/a - twin| %.2e; R/A %.4f..%.4f; alpha %.6f..%.6f, %d ULP "
+        "vs twin" % (fgWorst, fgR[3], fgR[4], fgAlpha.minimum,
+                     fgAlpha.maximum, readings[("fg", "A")].maxUlpsAny),
+        "<= %.1e x 3 channels; R/A in (%.2f, %.2f); alpha 1 +/- %.1e, 0 ULP"
+        % (ratioTol, NEAR_COLOUR[0] + 0.1, HALO_FG[0], ratioTol),
+        population="%d px, columns %d-%d x rows %d-%d (the card's right "
+                   "band, %d px)" % (fgR[2], fgBand[0], fgBand[2] - 1,
+                                     fgBand[1], fgBand[3] - 1, reach),
+        note="the near card (z=%g, R %.2f) is 1 px away but IN FRONT, so "
+             "the predicate rejects it and the band's hidden sample is the "
+             "background from beyond the near card, via the fallback tier "
+             "(48 px away at mid-height, past the 33 px primary reach).  "
+             "What the band READS is the near card's %.1f px disc over the "
+             "halo card -- R/A from 0.65 at the edge towards 0.80 -- and no "
+             "background, because the halo card continues under the near "
+             "card (in the twin as real samples, here as the near card's "
+             "own borrowed FG) and its disc keeps the band covered.  Whole "
+             "frame vs twin: %d ULP.  TWO rules reject the near card here "
+             "and either alone suffices: the depth predicate (z=%g is not "
+             "behind z=%g) and the opaque-P prune (its %.1f px disc is at "
+             "least the card's 16 px, so what it carries reaches the band "
+             "from outside anyway).  Measured: with the predicate widened "
+             "to any surface at a depth other than P's own this arm stays "
+             "at 0 ULP (the prune holds); with it widened to any non-empty "
+             "Q it stays green too, but as synthesis OFF -- the nearest "
+             "such Q is always P's own neighbour, pruned, and n1/n3/n7/n8 "
+             "fail exactly as under synthesis off.  A rig on which the "
+             "predicate is the ONLY guard needs a nearer Q with a SMALLER "
+             "disc than P (the focal plane between them) or a semi-"
+             "transparent P; neither is this rig"
+             % (NEAR_Z, NEAR_COLOUR[0], NEAR_RADIUS, frameDiff.maxUlpsAny,
+                NEAR_Z, HALO_NEAR_Z, NEAR_RADIUS)))
+    nearR = readings[("near", "R")]
+    nearWorst = max(readings[("near", c)][0] for c in "RGB")
+    nearAlpha = readings[("near", "alpha")]
+    edgeMix = [nearNearest.at("R", NEAR_CARD[0], y)
+               / nearNearest.at("A", NEAR_CARD[0], y)
+               for y in range(nearBand[1], nearBand[3])]
+    avgWorst = max(readings[(label, c, "avg")][0]
+                   for label in ("fg", "near") for c in "RGB")
+    checks.append(boolCheck(
+        "n", "n2 ...and the near card's own left band borrows the halo card "
+             "and reads the near:FG mix through its vacated edge",
+        nearWorst <= ratioTol
+        and all(NEAR_COLOUR[0] + 0.05 < v < HALO_FG[0] - 0.05 for v in edgeMix)
+        and readings[("near", "A")].maxUlpsAny == 0
+        and abs(nearAlpha.minimum - 1.0) <= ratioTol,
+        "worst |c/a - twin| %.2e; R/A %.4f..%.4f, edge column %.4f..%.4f; "
+        "alpha %.6f..%.6f, %d ULP vs twin"
+        % (nearWorst, nearR[3], nearR[4], min(edgeMix), max(edgeMix),
+           nearAlpha.minimum, nearAlpha.maximum,
+           readings[("near", "A")].maxUlpsAny),
+        "<= %.1e x 3 channels; edge column R/A in (%.2f, %.2f); alpha 1 +/- "
+        "%.1e, 0 ULP" % (ratioTol, NEAR_COLOUR[0] + 0.05, HALO_FG[0] - 0.05,
+                         ratioTol),
+        population="%d px, columns %d-%d x rows %d-%d (the near card's left "
+                   "band, %d px)" % (nearR[2], nearBand[0], nearBand[2] - 1,
+                                     nearBand[1], nearBand[3] - 1, nearReach),
+        note="the halo card (z=%g) is behind the near card (z=%g) and 1 px "
+             "away, so it is what the near card's band borrows, and its "
+             "disc shows through the near card's vacated edge: the edge "
+             "column reads the mix, the band's far side pure near card "
+             "(0.50).  fill_smear ON reads %.2e off the twin at worst "
+             "(both bands): the mean blends the halo card and the "
+             "background within the near card's 46 px reach, and that "
+             "blended z=%g sample scatters 16 px back into the halo card's "
+             "band -- the average estimator's own behaviour on a two-depth "
+             "surround, reported, not gated.  Foreground mode reads 3.1e-02 "
+             "off the twin here (alpha 0.99999, the coverage fill's "
+             "FG-coloured rescale).  MUTATION synthesis off (and the "
+             "any-non-empty-Q predicate, which the prune turns into the "
+             "same thing): nothing behind the near card's edge, the pair "
+             "rescaled from the halo card's disc alone -- worst |c/a - "
+             "twin| 3.65e-02, alpha 0.999990, 169 ULP off the twin"
+             % (HALO_NEAR_Z, NEAR_Z, avgWorst, HALO_NEAR_Z)))
+
+    # ------------------------------------------------------------------
+    # n3: the fallback tier.
+    # ------------------------------------------------------------------
+    # fill_search=2 shrinks the primary reach to 2 px: only the outermost
+    # two columns/rows of the silhouette still find the background there,
+    # every deeper pixel falls back to the max_radius tier, which must find
+    # the SAME nearest Q (the search is nearest-first at either reach) and
+    # copies it verbatim.  The average in the primary tier is over a 2 px
+    # disc of identical values.  So the render must equal n1's, bit for bit.
+    resetScript()
+    fallback = render(settings, background(haloSparse(), fill_search=2.0),
+                      "n_halo_fallback2", box=box)
+    identityCheck(
+        "n3 fallback control: fill_search=2 == auto (2r+1) on the halo rig, "
+        "whole frame",
+        fallback, sparse, box,
+        note="the band beyond 2 px is served by the fallback tier "
+             "(max_radius %d) and the outer 2 px by the primary tier "
+             "(smeared over identical values); both land on the same Q as "
+             "the auto reach's 33 px.  MUTATION fallback reach forced to 2: "
+             "every pixel deeper than 2 px finds nothing and the band reads "
+             "FG colour from 3 px in -- max |d| 3.86e-01, 7915213 ULP, the "
+             "R/A arm 3.86e-01 at (82,82); n7 fails with it (the held "
+             "silhouette's interior loses its hidden sample, alpha 0.866 "
+             "against the twin's 1.0) and nothing else moves"
+             % settings.maxRadius)
+    fallbackR = _worstRatioVsTwin(fallback, twin, "R", band)
+    checks.append(tolCheck(
+        "n", "n3 ...and its inside-band R/A is the twin's",
+        fallbackR[0], ratioTol,
+        population="%d px, the inside band" % fallbackR[2],
+        note="R/A %.4f..%.4f, worst at %s" % (fallbackR[3], fallbackR[4],
+                                              fallbackR[1])))
+
+    # ------------------------------------------------------------------
+    # n4: foreground mode is scene (m)'s render.
+    # ------------------------------------------------------------------
+    # Scene (m) never sets `fill`: its every pin is on the knob's default.
+    # This pins that the default IS foreground and that an explicit
+    # foreground render is the same bits -- in-process, one .so.  n4b is
+    # the cross-build gate: the same three over-checkerboard graphs scene
+    # (m) writes (m1 halo, m3 ramp at alpha 1 and 0.9), rendered here at
+    # the baseline's own knob settings, must equal the preserved baseline
+    # files bit for bit.  Without the files the cell is SKIP, never PASS.
+    resetScript()
+    m1Default = render(settings, defocus(haloSparse()), "n4_m1_default",
+                       box=box)
+    resetScript()
+    m1Foreground = render(settings, defocus(haloSparse(), fill="foreground"),
+                          "n4_m1_foreground", box=box)
+    identityCheck(
+        "n4 foreground unchanged: explicit fill=foreground == scene (m)'s "
+        "m1 render (default knob)",
+        m1Foreground, m1Default, box,
+        note="the halo rig at the run's K")
+    m3Cell = settings.derive(k=16)
+    m3Alpha = 0.90
+    rampColour = tuple(c * m3Alpha for c in GROUND_COLOR[:3]) + (m3Alpha,)
+
+    def rampRender(mode, tag, holdout=None):
+        resetScript()
+        overrides = {} if mode is None else {"fill": mode}
+        node = makeDefocus(m3Cell, groundPlane(color=rampColour), size=86.0,
+                           focusDistance=GROUND_FOCUS, cocMode="manual",
+                           holdout=holdout() if holdout else None,
+                           **overrides)
+        return render(m3Cell, node, tag)
+
+    m3Default = rampRender(None, "n4_m3_default")
+    m3Foreground = rampRender("foreground", "n4_m3_foreground")
+    identityCheck(
+        "n4 ...and scene (m)'s m3 ramp (alpha 0.9, K=16)",
+        m3Foreground, m3Default, box,
+        note="scene (g)'s ramp at m3's slope; the frame includes the "
+             "frame-edge band and the near-focus rows")
+
+    # n4b: the preserved baseline renders.  The baseline was made at the
+    # harness defaults (K=16, pre_merge on, tolerance 0.25, max_radius
+    # 100), so the cell renders at exactly those whatever the run's own
+    # settings are.
+    baselineDir = os.environ.get(
+        "DEEPC_BASELINE_RENDERS",
+        os.path.join(os.path.expanduser("~"), "deepc-baselines", "M5-T0",
+                     "renders"))
+    baselineCell = settings.derive(k=16, preMerge=True, mergeTolerance=0.25,
+                                   maxRadius=100)
+    baselineFiles = ("over_checker_m1_halo.exr", "over_checker_m3_ramp_a1.exr",
+                     "over_checker_m3_ramp_a0.9.exr")
+    baselinePaths = [os.path.join(baselineDir, f) for f in baselineFiles]
+    if all(os.path.isfile(p) for p in baselinePaths):
+        def baselineGraph(tag):
+            if tag == "over_checker_m1_halo.exr":
+                return defocus(haloSparse(), baselineCell, fill="foreground")
+            alpha = 1.0 if tag.endswith("_a1.exr") else 0.9
+            colour = tuple(c * alpha for c in GROUND_COLOR[:3]) + (alpha,)
+            return makeDefocus(baselineCell, groundPlane(color=colour),
+                               size=86.0, focusDistance=GROUND_FOCUS,
+                               cocMode="manual", fill="foreground")
+        worst = []
+        for tag, path in zip(baselineFiles, baselinePaths):
+            resetScript()
+            board = render(baselineCell, overChecker(baselineGraph(tag)),
+                           "n4b_" + tag.replace(".exr", ""), box=box)
+            diff = compareImages(board, readExr(path), box=box)
+            worst.append((tag, diff))
+        checks.append(boolCheck(
+            "n", "n4b foreground mode == the preserved M5-T0 baseline renders, "
+                 "over the checkerboard, all three files",
+            all(d.maxAbs == 0.0 and d.maxUlpsAny == 0 for _, d in worst),
+            "; ".join("%s %d ULP, max |d| %.2e" % (t.replace("over_checker_", "")
+                                                    .replace(".exr", ""),
+                                                    d.maxUlpsAny, d.maxAbs)
+                      for t, d in worst),
+            "0 ULP on R, G, B and A, each file",
+            population="%d px x 4 channels x 3 files" % worst[0][1].total,
+            note="baseline %s; rendered at the baseline's knobs (K=16, "
+                 "pre_merge on, tolerance 0.25, max_radius 100), not the "
+                 "run's.  This is the foreground-mode oracle: a change here "
+                 "is a change to the shipped scheme, whatever the in-process "
+                 "n4 pair says" % baselineDir))
+    else:
+        missing = [os.path.basename(p) for p in baselinePaths
+                   if not os.path.isfile(p)]
+        checks.append(Check(
+            "n", "n4b foreground mode == the preserved M5-T0 baseline renders, "
+                 "over the checkerboard, all three files",
+            "-", "0 ULP each file", SKIP,
+            note="no baseline in %s (missing %s); set DEEPC_BASELINE_RENDERS "
+                 "to the directory holding scene (m)'s over_checker_*.exr "
+                 "from the preserved build" % (baselineDir, ", ".join(missing))))
+
+    # ------------------------------------------------------------------
+    # n5: empties and the identities that must not move.
+    # ------------------------------------------------------------------
+    resetScript()
+    aloneBg = render(settings, background(haloForeground()), "n5_alone_bg",
+                     box=box)
+    resetScript()
+    aloneFg = render(settings, defocus(haloForeground(), fill="foreground"),
+                     "n5_alone_fg", box=box)
+    identityCheck(
+        "n5 the halo card over NOTHING: background mode == foreground mode",
+        aloneBg, aloneFg, box,
+        note="every pixel outside the card is empty and an empty pixel never "
+             "borrows; every pixel inside has no Q (nothing but itself has "
+             "a surface), so nothing is synthesised and m2's bloom stands")
+    # Scene (d)'s defocused sparse card, background mode: bitwise 0 beyond
+    # the scatter radius, over the padded bbox.
+    resetScript()
+    cardBox = (64, 64, 192, 192)
+    dSize, dFocus, dDepth = 12.0, 30.0, 10.0
+    dRadius = dSize * abs(1.0 - dFocus / dDepth)
+    dMargin = int(math.ceil(dRadius + 2.0)) + 2
+    dCard = pointLayer(rectangle2d(cardBox, (0.6, 0.4, 0.2, 1.0)), dDepth,
+                       keepZeroAlpha=False, premult=True)
+    dPad = dMargin + 8
+    dBox = (-dPad, -dPad, FORMAT_W + dPad, FORMAT_H + dPad)
+    dBlur = render(settings,
+                   makeDefocus(settings, dCard, size=dSize,
+                               focusDistance=dFocus, cocMode="manual",
+                               fill="background"),
+                   "n5_d_blur_bg", box=dBox)
+    dGrown = insetBox(cardBox, -dMargin)
+    nonZero, total = _countNonZeroOutside(dBlur, dGrown, dBox)
+    dInside = channelStats(dBlur, "A", insetBox(cardBox, dMargin))
+    checks.append(boolCheck(
+        "n", "n5 scene (d)'s sparse card in background mode: bitwise 0 "
+             "beyond r=%.0f+margin" % dRadius,
+        nonZero == 0 and dInside.minimum > 0.999,
+        "%d nonzero; interior alpha min %.6f" % (nonZero, dInside.minimum),
+        "== 0; interior > 0.999",
+        population="%d px checked (padded bbox)" % total,
+        note="d2's rig and gate; the card is present (interior alpha), so "
+             "'outside is black' is not an empty frame"))
+    # Two full-frame 0.5 fog layers: 1 - 0.5 * 0.5 = 0.75, both modes, at
+    # size 0 (f3's kernel-independent identity).  Every pixel holds both
+    # layers and no Q is deeper than either, so nothing is borrowed.
+    grey = (0.5, 0.5, 0.5, 0.5)
+    fogInterior = insetBox(box, settings.maxRadius + 4)
+    fogImages = {}
+    for mode in ("foreground", "background"):
+        resetScript()
+        fogImages[mode] = render(
+            settings,
+            makeDefocus(settings, deepMerge([slab(6.0, 10.0, grey),
+                                             slab(12.0, 16.0, grey)]),
+                        size=0.0, focusDistance=30.0, cocMode="manual",
+                        fill=mode),
+            "n5_fog_" + mode, box=box)
+    fogWorst = 0.0
+    fogText = []
+    for mode in ("foreground", "background"):
+        alpha = channelStats(fogImages[mode], "A", fogInterior)
+        red = channelStats(fogImages[mode], "R", fogInterior)
+        fogWorst = max(fogWorst, abs(alpha.minimum - 0.75),
+                       abs(alpha.maximum - 0.75), abs(red.minimum - 0.75),
+                       abs(red.maximum - 0.75))
+        fogText.append("%s A %.7f R %.7f" % (mode, alpha.mean, red.mean))
+    fogDiff = compareImages(fogImages["foreground"], fogImages["background"],
+                            box=box)
+    checks.append(boolCheck(
+        "n", "n5 two full-frame 0.5 fog layers read 0.75 (alpha AND "
+             "premultiplied colour), both modes, and the modes agree",
+        fogWorst <= 1.0e-06 and fogDiff.maxUlpsAny == 0,
+        "worst |v - 0.75| %.2e; modes %d ULP apart" % (fogWorst,
+                                                       fogDiff.maxUlpsAny),
+        "<= 1e-06; 0 ULP",
+        population="interior %dx%d px, A and R"
+                   % (fogInterior[2] - fogInterior[0],
+                      fogInterior[3] - fogInterior[1]),
+        note="; ".join(fogText) + "; the slabs' colour is 0.5 premultiplied "
+             "at alpha 0.5, so R composites to 0.75 as well (R/A 1)"))
+    # One alpha-0.5 card over nothing, defocused 4 px, both modes.  The
+    # colour reference is the source's OWN ratio from a stock flatten (m3's
+    # sourceRatio idiom: DeepFromImage premultiplies the Rectangle's colour,
+    # so the sample carries 0.30 / 0.50 = 0.60, not the knob's 0.30).
+    def halfCard():
+        return pointLayer(rectangle2d(cardBox, (0.3, 0.2, 0.1, 0.5)), 10.0,
+                          keepZeroAlpha=False, premult=True)
+
+    resetScript()
+    halfFlat = render(settings, deepToImage(halfCard()), "n5_half_card_flat",
+                      box=box)
+    halfRatio = halfFlat.at("R", 128, 128) / halfFlat.at("A", 128, 128)
+    cardImages = {}
+    for mode in ("foreground", "background"):
+        resetScript()
+        cardImages[mode] = render(
+            settings,
+            makeDefocus(settings, halfCard(), size=4.0, focusDistance=20.0,
+                        cocMode="manual", fill=mode),
+            "n5_half_card_" + mode, box=box)
+    cardInterior = insetBox(cardBox, 4 + 4)
+    cardWorst, cardRatio = 0.0, 0.0
+    cardText = []
+    for mode in ("foreground", "background"):
+        alpha = channelStats(cardImages[mode], "A", cardInterior)
+        cardWorst = max(cardWorst, abs(alpha.minimum - 0.5),
+                        abs(alpha.maximum - 0.5))
+        ratio = _worstUnpremult(cardImages[mode], "R", halfRatio, cardInterior)
+        cardRatio = max(cardRatio, ratio[0])
+        cardText.append("%s A %.7f..%.7f R/A worst %.1e"
+                        % (mode, alpha.minimum, alpha.maximum, ratio[0]))
+    cardDiff = compareImages(cardImages["foreground"],
+                             cardImages["background"], box=box)
+    checks.append(boolCheck(
+        "n", "n5 one alpha-0.5 card over nothing (r=4 px) reads 0.5 and the "
+             "source's R/A, both modes, and the modes agree",
+        cardWorst <= 1.0e-06 and cardRatio <= 1.0e-05
+        and cardDiff.maxUlpsAny == 0,
+        "worst |a - 0.5| %.2e; worst |R/A - %.2f| %.2e; modes %d ULP apart"
+        % (cardWorst, halfRatio, cardRatio, cardDiff.maxUlpsAny),
+        "<= 1e-06; <= 1e-05; 0 ULP",
+        population="interior %dx%d px" % (cardInterior[2] - cardInterior[0],
+                                          cardInterior[3] - cardInterior[1]),
+        note="; ".join(cardText) + "; source R/A %.4f (stock flatten); a "
+             "semi-transparent P always synthesises when it has a Q -- here "
+             "it has none: the only surface in the frame is its own, and "
+             "empties do not qualify" % halfRatio))
+
+    # ------------------------------------------------------------------
+    # n6: the slope rule.
+    # ------------------------------------------------------------------
+    rampBg = rampRender("background", "n6_ramp_bg")
+    rampRows = rowMeans(rampBg, "A", (66, 66, FORMAT_W - 66, FORMAT_H - 66))
+    nearRows = " ".join("%d:%.4f" % (y, v)
+                        for y, v in zip(range(66, FORMAT_H - 66), rampRows)
+                        if abs(y - 128) <= 4)
+    identityCheck(
+        "n6 slope control: the m3 ramp (alpha 0.9, K=16) in background mode "
+        "== foreground mode",
+        rampBg, m3Foreground, box,
+        note="the plane recedes 0.5 CoC px per scanline; with the relative "
+             "tolerance alone every row would borrow from a farther row of "
+             "ITSELF (the predicate's slope term is 4 x the row's own depth "
+             "step x distance, and the plane's depth is convex in y, so no "
+             "row of it ever clears that line) and the near-focus rows "
+             "would read ~0.99 through their own borrowed sample.  Rows "
+             "124-132 read " + nearRows + " -- m3b's numbers.  MUTATION "
+             "kFillSlope = 0: max |d| 3.69e-01, 6678368 ULP; rows 124-132 "
+             "read 1.0000 1.0000 0.9918 1.0000 1.0000 0.9831 0.9657 0.9264 "
+             "0.9078 -- the near-focus rows filled to 1 through their own "
+             "borrowed far rows.  Widening the predicate to any surface at "
+             "a depth other than P's own reads 3.10e-01 here (and moves "
+             "n5's fog pair to 0.875)")
+
+    # ------------------------------------------------------------------
+    # n7: holdout commutation.
+    # ------------------------------------------------------------------
+    resetScript()
+    heldSparse = render(settings,
+                        background(haloSparse(), holdout=haloHoldout()),
+                        "n7_sparse_held", box=box)
+    resetScript()
+    heldTwin = render(settings,
+                      background(deepMerge([haloForeground(),
+                                            haloBackground()]),
+                                 holdout=haloHoldout()),
+                      "n7_twin_held", box=box)
+    heldInterior = channelStats(heldSparse, "A", insetBox(silhouette, reach))
+    # The alpha arm is read where every reference agrees: the background-
+    # only rows well clear of the card's bloom, single-sample stacks under
+    # a 0.5 holdout, which DeepHoldout2 reads as exactly 0.5 too.
+    heldOutsideBox = (0, 0, FORMAT_W, silhouette[1] - reach - 8)
+    heldOutside = channelStats(heldSparse, "A", heldOutsideBox)
+    heldOutsideRatio = _worstUnpremult(heldSparse, "R", HALO_BG[0],
+                                       heldOutsideBox)
+    identityCheck(
+        "n7 holdout commutation: held sparse == held twin, whole frame",
+        heldSparse, heldTwin, box,
+        note="haloHoldout(): a full-frame 0.5-alpha card at z=%g in front of "
+             "everything; the synthesised sample meets the same holdout LUT "
+             "as the twin's real one.  RECORDED, NOT GATED: inside the "
+             "silhouette both renders read alpha %.4f at R/A %.4f, where "
+             "stock DeepHoldout2 reads 0.5 at R/A 0.80 and DeepMerge2's "
+             "holdout 0.75 at 0.60 -- a 0.5 holdout in FRONT of a stack "
+             "with a hidden sample lets that sample through unheld.  The "
+             "M5-T0 baseline .so reads the same, in foreground mode, at "
+             "size 0 and with pre_merge off, so it is the node's holdout "
+             "composite, not the fill's; scene (b)'s holdout sits BETWEEN "
+             "its layers, where all three agree.  MUTATION synthesis off: "
+             "max |d| 5.00e-01, 8388650 ULP, the held band R/A 0.80 "
+             "against the twin's 0.33..0.50; fallback reach forced to 2: "
+             "max |d| 5.00e-01, the held interior alpha 0.866"
+             % (HALO_HOLDOUT_Z, heldInterior.mean,
+                heldSparse.at("R", 128, 128) / heldSparse.at("A", 128, 128)))
+    heldR = _worstRatioVsTwin(heldSparse, heldTwin, "R", band)
+    checks.append(boolCheck(
+        "n", "n7 ...and the held band's R/A is the twin's; the held "
+             "background reads exactly half (alpha 0.5, R/A 0.20)",
+        heldR[0] <= ratioTol
+        and abs(heldOutside.minimum - HALO_HOLDOUT_ALPHA) <= 1.0e-06
+        and abs(heldOutside.maximum - HALO_HOLDOUT_ALPHA) <= 1.0e-06
+        and heldOutsideRatio[0] <= 1.0e-05,
+        "worst |R/A - twin| %.2e; band R/A %.4f..%.4f; held background alpha "
+        "%.7f..%.7f, worst |R/A - 0.20| %.1e"
+        % (heldR[0], heldR[3], heldR[4], heldOutside.minimum,
+           heldOutside.maximum, heldOutsideRatio[0]),
+        "<= %.1e; alpha 0.5 +/- 1e-06; R/A within 1e-05"
+        % ratioTol,
+        population="%d px, the inside band; %d px of held background (rows "
+                   "0-%d)" % (heldR[2], heldOutside.count,
+                              heldOutsideBox[3] - 1),
+        note="the colour arm beside n7's identity: the band's ratio is the "
+             "twin's pixel for pixel; the alpha arm is read on the "
+             "single-sample background rows, the one place every holdout "
+             "reference agrees (DeepHoldout2 reads 0.5 there too).  The "
+             "silhouette interior's held alpha is %.4f (see n7's note)"
+             % heldInterior.mean))
+
+    # ------------------------------------------------------------------
+    # n8: textured background, both estimators.
+    # ------------------------------------------------------------------
+    # The bake-off's rigs and its band: the silhouette minus a 19 px inset
+    # (one CoC + 3), read as the mean |dR| between the sparse render and the
+    # twin, on PREMULTIPLIED R -- alpha is 1 across the band in both (gated
+    # below), so that is the ratio difference too.  The pins are the
+    # bake-off's own readings (its renders verified bit-identical to the
+    # knob build), NOT this build's; the band is 0.005 and the hard
+    # range is the region in which a reading is still this estimator on this
+    # board -- outside the band but inside it the estimator moved and must
+    # be re-pinned, outside the range it is not this estimator at all.
+    # The foreground-mode reading is reported beside each rig because it is
+    # the number the average is judged against: a flat smear of the board is
+    # about as far from the real texture as the foreground colour is.
+    N8_BAND = 0.005
+    N8_PINS = {
+        ("n8", False): (0.1446, (0.10, 0.20)),
+        ("n8", True): (0.0873, (0.05, 0.12)),
+        ("n8b", False): (0.0716, (0.04, 0.10)),
+        ("n8b", True): (0.0358, (0.02, 0.06)),
+    }
+    for tag, farZ, title in (("n8", HALO_FAR_Z, "in-focus checker (z=%g)"),
+                             ("n8b", FILL_CHECK_FAR_Z,
+                              "defocused checker (z=%g, r=3.9 px)")):
+        title = title % farZ
+        resetScript()
+        checkerTwinImage = render(settings, background(checkerTwin(farZ)),
+                                  "%s_twin" % tag, box=box)
+        resetScript()
+        checkerForeground = render(settings,
+                                   defocus(checkerSparse(farZ),
+                                           fill="foreground"),
+                                   "%s_foreground" % tag, box=box)
+        foregroundMean = _meanAbsDiff(checkerForeground, checkerTwinImage, "R",
+                                      band)[0]
+        twinAlpha = channelStats(checkerTwinImage, "A", silhouette)
+        means, alphaDiffs, blueMeans = {}, {}, {}
+        for smear in (False, True):
+            resetScript()
+            image = render(settings,
+                           background(checkerSparse(farZ), fill_smear=smear),
+                           "%s_%s" % (tag, "average" if smear else "nearest"),
+                           box=box)
+            means[smear], count = _meanAbsDiff(image, checkerTwinImage, "R",
+                                               band)
+            blueMeans[smear] = _meanAbsDiff(image, checkerTwinImage, "B",
+                                            band)[0]
+            alphaDiffs[smear] = compareImages(image, checkerTwinImage,
+                                              channels=("A",), box=box)
+            pin, (hardLow, hardHigh) = N8_PINS[(tag, smear)]
+            inRange = hardLow <= means[smear] <= hardHigh
+            checks.append(boolCheck(
+                "n", "%s %s: band mean |dR| vs twin, %s (fill_smear %s)"
+                     % (tag, title, "average" if smear else "nearest",
+                        "on" if smear else "off"),
+                abs(means[smear] - pin) <= N8_BAND,
+                "%.4f (%+.4f from pin)%s"
+                % (means[smear], means[smear] - pin,
+                   "" if inRange else "; OUTSIDE the hard range"),
+                "%.4f +/- %.3f (hard [%.2f, %.2f])" % (pin, N8_BAND, hardLow,
+                                                       hardHigh),
+                population="%d px, the silhouette minus a %d px inset "
+                           "(one CoC + 3), premultiplied R" % (count, reach),
+                note="foreground mode reads %.4f on the same band; the pin "
+                     "is the bake-off's reading of this rig, the "
+                     "band 0.005, and the hard range is where a reading is "
+                     "still this estimator on this board: inside the range "
+                     "but off the pin it moved and must be re-pinned, "
+                     "outside the range it is something else.  MUTATION "
+                     "synthesis off reads the foreground number under both "
+                     "knob states -- on this rig the nearest pin and the "
+                     "ordering arm catch it; note the in-focus AVERAGE pin "
+                     "alone would not (0.0863 is inside 0.0873 +/- 0.005), "
+                     "which is why the ordering arm is gated beside it"
+                     % foregroundMean))
+        checks.append(boolCheck(
+            "n", "%s ...average < nearest, |dB| tracks |dR|, and alpha is the "
+                 "twin's bit for bit under both" % tag,
+            means[True] < means[False]
+            and all(abs(blueMeans[s] - means[s]) <= N8_BAND for s in means)
+            and all(alphaDiffs[s].maxUlpsAny == 0 for s in alphaDiffs)
+            and twinAlpha.minimum == 1.0,
+            "average %.4f < nearest %.4f; |dB| %.4f / %.4f; alpha %d / %d "
+            "ULP vs twin, twin band alpha %.1f"
+            % (means[True], means[False], blueMeans[True], blueMeans[False],
+               alphaDiffs[True].maxUlpsAny, alphaDiffs[False].maxUlpsAny,
+               twinAlpha.minimum),
+            "average < nearest; |dB| within %.3f of |dR|; 0 ULP; alpha 1"
+            % N8_BAND,
+            population="%d px band; alpha over the whole frame" % count,
+            note="the ordering is the point of the knob: the nearest copy "
+                 "streaks the board (Voronoi cells of the nearest edge "
+                 "pixel), the average smears it flat, and neither is the "
+                 "texture (only real hidden samples are).  The board's R and "
+                 "B are complementary cell to cell, so the two channel "
+                 "readings must agree; G is nearly flat on it and reads "
+                 "~0.01.  Alpha is 1 across the band in both, so the "
+                 "premultiplied difference IS the colour-ratio difference.  "
+                 "MUTATION synthesis off: average == nearest (0.0863 / "
+                 "0.0648) and the alpha is 1 / 21 ULP off the twin"))
+
+    # ------------------------------------------------------------------
+    # n9: the fallback reach is max_radius in PROXY pixels.
+    # ------------------------------------------------------------------
+    # The halo card over NOTHING, with a background strip a gap away from
+    # its top edge.  The gap is chosen so the strip is beyond max_radius at
+    # full size (no pixel borrows, background == foreground) and, at proxy
+    # 0.5, beyond max_radius/2 -- so it must still not borrow.  A fallback
+    # reach left in full-size pixels would reach it at proxy (gap/2 <
+    # max_radius) and the card's top band would turn background-coloured.
+    # The control halves the gap: then the strip IS within reach at full
+    # size and background mode visibly differs, so the rig can tell.
+    n9MaxRadius = 40
+    n9Cell = settings.derive(maxRadius=n9MaxRadius)
+    top = HALO_SILHOUETTE[3]
+
+    def stripSparse(gap):
+        strip = pointLayer(rectangle2d((0, top + gap, FORMAT_W, FORMAT_H),
+                                       HALO_BG + (1.0,)),
+                           HALO_FAR_Z, keepZeroAlpha=False, premult=True)
+        return deepMerge([haloForeground(), strip])
+
+    n9 = {}
+    for gap, label in ((50, "gap"), (25, "control")):
+        for proxyScale in (None, 0.5):
+            pair = {}
+            for mode in ("foreground", "background"):
+                resetScript(proxyScale=proxyScale)
+                node = defocus(stripSparse(gap), n9Cell, fill=mode)
+                image = render(n9Cell, node,
+                               "n9_%s_proxy%g_%s" % (label, proxyScale or 1.0,
+                                                     mode), box=box)
+                pair[mode] = image
+            window = (pair["foreground"].x0, pair["foreground"].y0,
+                      pair["foreground"].x0 + pair["foreground"].width,
+                      pair["foreground"].y0 + pair["foreground"].height)
+            n9[(label, proxyScale or 1.0)] = compareImages(
+                pair["background"], pair["foreground"], box=window)
+    checks.append(boolCheck(
+        "n", "n9 proxy 0.5: a background %d px past max_radius %d at full size "
+             "is not borrowed at proxy either (reach %d proxy px, strip %d)"
+             % (50 - n9MaxRadius, n9MaxRadius, n9MaxRadius // 2, 25),
+        n9[("gap", 1.0)].maxUlpsAny == 0 and n9[("gap", 0.5)].maxUlpsAny == 0
+        and n9[("control", 1.0)].maxAbs > 0.05
+        and n9[("control", 0.5)].maxAbs > 0.05,
+        "background vs foreground: full %d ULP, proxy %d ULP; control (gap "
+        "%d) full max |d| %.3f, proxy %.3f"
+        % (n9[("gap", 1.0)].maxUlpsAny, n9[("gap", 0.5)].maxUlpsAny, 25,
+           n9[("control", 1.0)].maxAbs, n9[("control", 0.5)].maxAbs),
+        "0 ULP at both scales; control > 0.05 at both",
+        population="%d px full, %d px proxy, 4 channels"
+        % (n9[("gap", 1.0)].total, n9[("gap", 0.5)].total),
+        note="MUTATION (fallback reach in full-size pixels): the proxy "
+             "render borrows the strip into the card's top band and reads "
+             "the FG:BG mix there; full size is unaffected"))
+    return checks
+
 
 SCENES = {
     "a": ("size=0 parity with DeepToImage", sceneA),
@@ -4307,4 +5279,5 @@ SCENES = {
     "k": ("proxy + ray-distance", sceneK),
     "l": ("small-CoC transition", sceneL),
     "m": ("coverage fill: silhouette halo, focal-line bands", sceneM),
+    "n": ("background fill vs the DeepMerge twin", sceneN),
 }

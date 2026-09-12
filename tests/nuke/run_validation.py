@@ -19,7 +19,7 @@ INTEGER value (``--k=64``, ``--max-radius=40``), because Nuke's own terminal
 argument parser consumes a bare integer as a frame range and never forwards
 it to ``sys.argv``.
 
-    --scenes a,b,...,m      which scenes to run          (default: all)
+    --scenes a,b,...,n      which scenes to run          (default: all)
     --k N                   depth_layers                 (default: 16)
     --pre-merge on|off                                   (default: on)
     --merge-tolerance F                                  (default: 0.25)
@@ -58,7 +58,7 @@ from scenes import SCENES                                       # noqa: E402
 
 def parseArgs(argv):
     options = {
-        "scenes": "abcdefghijklm",
+        "scenes": "abcdefghijklmn",
         "k": 16,
         "preMerge": True,
         "mergeTolerance": 0.25,
@@ -194,7 +194,7 @@ def main(argv):
                         fullSweep=options["fullSweep"],
                         outDir=options["outDir"])
 
-    print("DeepCDefocus headless validation — scenes (a)-(m)")
+    print("DeepCDefocus headless validation — scenes (a)-(n)")
     print("settings: %s" % settings.describe())
     print("renders:  %s%s" % (tmpDir,
                               "" if options["keepRenders"] else " (deleted)"))

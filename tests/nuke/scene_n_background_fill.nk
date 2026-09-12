@@ -1,0 +1,480 @@
+version 17.0 v3
+Root {
+ inputs 0
+ name scene_n_background_fill.nk
+ last_frame 1
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ proxy_type scale
+ proxy_format "1024 778 0 0 1024 778 1 1K_Super_35(full-ap)"
+ colorManagement Nuke
+ workingSpaceLUT linear
+ monitorLut sRGB
+ monitorOutLUT rec709
+ int8Lut sRGB
+ int16Lut sRGB
+ logLut Cineon
+ floatLut linear
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant1
+}
+Expression {
+ expr0 "(x>=80 && x<176 && y>=80 && y<176) ? 0.8 : 0.2"
+ expr1 "(x>=80 && x<176 && y>=80 && y<176) ? 0.55 : 0.55"
+ expr2 "(x>=80 && x<176 && y>=80 && y<176) ? 0.3 : 0.3"
+ expr3 1.0
+ name Expression1
+}
+Expression {
+ channel0 depth
+ expr0 "1.0/((x>=80 && x<176 && y>=80 && y<176) ? 4 : 20)"
+ name Expression2
+}
+DeepFromImage {
+ name DeepFromImage1
+ label "halo rig: ONE sample per pixel, no BG behind the card"
+ xpos -560
+}
+set N331ff4e0 [stack 0]
+DeepCDefocus {
+ coc_mode Manual
+ focus_distance 20
+ size 4
+ fill background
+ name DeepCDefocus1
+ label "n1: == twin at 0 ULP, fill_smear on (average)"
+ xpos -560
+ ypos 120
+}
+push $N331ff4e0
+DeepCDefocus {
+ coc_mode Manual
+ focus_distance 20
+ size 4
+ fill background
+ fill_smear false
+ name DeepCDefocus2
+ label "n1s: == twin at 0 ULP, fill_smear off (nearest)"
+ xpos -450
+ ypos 120
+}
+Constant {
+ inputs 0
+ color {0.2 0.55 0.3 1}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant3
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 20
+ name DeepFromImage3
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant2
+}
+Rectangle {
+ area {80 80 176 176}
+ color {0.8 0.55 0.3 1}
+ name Rectangle1
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 4
+ name DeepFromImage2
+}
+DeepMerge2 {
+ inputs 2
+ name DeepMerge1
+ label "twin: the same with the occluded BG PRESENT"
+ xpos -330
+}
+set N33227e50 [stack 0]
+DeepCDefocus {
+ coc_mode Manual
+ focus_distance 20
+ size 4
+ fill background
+ name DeepCDefocus3
+ label "the twin in background mode: the oracle for n1/n1b/n3"
+ xpos -330
+ ypos 120
+}
+push $N331ff4e0
+DeepCDefocus {
+ coc_mode Manual
+ focus_distance 20
+ size 4
+ fill background
+ fill_search 2
+ name DeepCDefocus4
+ label "n3: fill_search=2 == n1 at 0 ULP (the fallback tier finds the same Q)"
+ xpos -560
+ ypos 240
+}
+Constant {
+ inputs 0
+ color {0 0 0 0.5}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant4
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 2
+ name DeepFromImage4
+ label "n7 holdout: full-frame alpha 0.5 card at z=2"
+ xpos -220
+}
+set N33290ca0 [stack 0]
+push $N331ff4e0
+DeepCDefocus {
+ inputs 2
+ coc_mode Manual
+ focus_distance 20
+ size 4
+ fill background
+ name DeepCDefocus5
+ label "n7: held sparse == held twin at 0 ULP"
+ xpos -450
+ ypos 360
+}
+push $N33290ca0
+push $N33227e50
+DeepCDefocus {
+ inputs 2
+ coc_mode Manual
+ focus_distance 20
+ size 4
+ fill background
+ name DeepCDefocus6
+ label "n7: the held twin"
+ xpos -330
+ ypos 360
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant5
+}
+Expression {
+ expr0 "(x>=176 && x<240 && y>=48 && y<208) ? 0.5 : ((x>=80 && x<176 && y>=80 && y<176) ? 0.8 : 0.2)"
+ expr1 "(x>=176 && x<240 && y>=48 && y<208) ? 0.35 : ((x>=80 && x<176 && y>=80 && y<176) ? 0.55 : 0.55)"
+ expr2 "(x>=176 && x<240 && y>=48 && y<208) ? 0.65 : ((x>=80 && x<176 && y>=80 && y<176) ? 0.3 : 0.3)"
+ expr3 1.0
+ name Expression3
+}
+Expression {
+ channel0 depth
+ expr0 "1.0/((x>=176 && x<240 && y>=48 && y<208) ? 3 : ((x>=80 && x<176 && y>=80 && y<176) ? 4 : 20))"
+ name Expression4
+}
+DeepFromImage {
+ name DeepFromImage5
+ label "n2: near card z=3 (r=22.7 px) abutting the halo card; one sample per pixel"
+ xpos 0
+}
+set N332f8fc0 [stack 0]
+DeepCDefocus {
+ coc_mode Manual
+ focus_distance 20
+ size 4
+ fill background
+ fill_smear false
+ name DeepCDefocus7
+ label "n2: nearest estimator; == twin at 0 ULP, the halo card's band never borrows the near card"
+ xpos 0
+ ypos 120
+}
+Constant {
+ inputs 0
+ color {0.2 0.55 0.3 1}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant8
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 20
+ name DeepFromImage8
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant6
+}
+Rectangle {
+ area {80 80 208 176}
+ color {0.8 0.55 0.3 1}
+ name Rectangle2
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 4
+ name DeepFromImage6
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant7
+}
+Rectangle {
+ area {176 48 240 208}
+ color {0.5 0.35 0.65 1}
+ name Rectangle3
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 3
+ name DeepFromImage7
+}
+DeepMerge2 {
+ inputs 3
+ name DeepMerge2
+ label "n2 twin: near card + halo card continued to x=208 under it + BG"
+ xpos 180
+}
+DeepCDefocus {
+ coc_mode Manual
+ focus_distance 20
+ size 4
+ fill background
+ name DeepCDefocus8
+ label "n2: the twin"
+ xpos 180
+ ypos 120
+}
+push $N332f8fc0
+DeepCDefocus {
+ coc_mode Manual
+ focus_distance 20
+ size 4
+ fill background
+ name DeepCDefocus9
+ label "n2, fill_smear on: 3.6e-02 off the twin (reported, not gated)"
+ xpos 0
+ ypos 240
+}
+CheckerBoard2 {
+ inputs 0
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ boxsize 8
+ color0 {0.9 0.1 0.1 1}
+ color1 {0.1 0.15 0.9 1}
+ color2 {0.9 0.1 0.1 1}
+ color3 {0.1 0.15 0.9 1}
+ centerlinewidth 0
+ name CheckerBoard1
+}
+Expression {
+ expr0 "(x>=80 && x<176 && y>=80 && y<176) ? 0.8 : r"
+ expr1 "(x>=80 && x<176 && y>=80 && y<176) ? 0.55 : g"
+ expr2 "(x>=80 && x<176 && y>=80 && y<176) ? 0.3 : b"
+ expr3 1.0
+ name Expression5
+}
+Expression {
+ channel0 depth
+ expr0 "1.0/((x>=80 && x<176 && y>=80 && y<176) ? 4 : 20)"
+ name Expression6
+}
+DeepFromImage {
+ name DeepFromImage9
+ label "n8 in-focus checker (z=20): sparse, no board behind the card"
+ xpos 420
+}
+set N333f0d30 [stack 0]
+DeepCDefocus {
+ coc_mode Manual
+ focus_distance 20
+ size 4
+ fill background
+ fill_smear false
+ name DeepCDefocus10
+ label "n8 in-focus checker -- band mean |dR| vs twin nearest: 0.1446 / 0.0716 (in focus / defocused)"
+ xpos 420
+ ypos 120
+}
+push $N333f0d30
+DeepCDefocus {
+ coc_mode Manual
+ focus_distance 20
+ size 4
+ fill background
+ name DeepCDefocus11
+ label "n8 in-focus checker -- band mean |dR| vs twin average: 0.0873 / 0.0358 (in focus / defocused)"
+ xpos 560
+ ypos 120
+}
+CheckerBoard2 {
+ inputs 0
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ boxsize 8
+ color0 {0.9 0.1 0.1 1}
+ color1 {0.1 0.15 0.9 1}
+ color2 {0.9 0.1 0.1 1}
+ color3 {0.1 0.15 0.9 1}
+ centerlinewidth 0
+ name CheckerBoard2
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 20
+ name DeepFromImage11
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant9
+}
+Rectangle {
+ area {80 80 176 176}
+ color {0.8 0.55 0.3 1}
+ name Rectangle4
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 4
+ name DeepFromImage10
+}
+DeepMerge2 {
+ inputs 2
+ name DeepMerge3
+ label "n8 in-focus checker twin: the board's real samples behind the card"
+ xpos 700
+}
+DeepCDefocus {
+ coc_mode Manual
+ focus_distance 20
+ size 4
+ fill background
+ name DeepCDefocus12
+ label "n8 in-focus checker: the twin"
+ xpos 700
+ ypos 120
+}
+CheckerBoard2 {
+ inputs 0
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ boxsize 8
+ color0 {0.9 0.1 0.1 1}
+ color1 {0.1 0.15 0.9 1}
+ color2 {0.9 0.1 0.1 1}
+ color3 {0.1 0.15 0.9 1}
+ centerlinewidth 0
+ name CheckerBoard3
+}
+Expression {
+ expr0 "(x>=80 && x<176 && y>=80 && y<176) ? 0.8 : r"
+ expr1 "(x>=80 && x<176 && y>=80 && y<176) ? 0.55 : g"
+ expr2 "(x>=80 && x<176 && y>=80 && y<176) ? 0.3 : b"
+ expr3 1.0
+ name Expression7
+}
+Expression {
+ channel0 depth
+ expr0 "1.0/((x>=80 && x<176 && y>=80 && y<176) ? 4 : 640)"
+ name Expression8
+}
+DeepFromImage {
+ name DeepFromImage12
+ label "n8b defocused checker (z=640): sparse, no board behind the card"
+ xpos 420
+ ypos 360
+}
+set N334c2510 [stack 0]
+DeepCDefocus {
+ coc_mode Manual
+ focus_distance 20
+ size 4
+ fill background
+ fill_smear false
+ name DeepCDefocus13
+ label "n8b defocused checker -- band mean |dR| vs twin nearest: 0.1446 / 0.0716 (in focus / defocused)"
+ xpos 420
+ ypos 480
+}
+push $N334c2510
+DeepCDefocus {
+ coc_mode Manual
+ focus_distance 20
+ size 4
+ fill background
+ name DeepCDefocus14
+ label "n8b defocused checker -- band mean |dR| vs twin average: 0.0873 / 0.0358 (in focus / defocused)"
+ xpos 560
+ ypos 480
+}
+CheckerBoard2 {
+ inputs 0
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ boxsize 8
+ color0 {0.9 0.1 0.1 1}
+ color1 {0.1 0.15 0.9 1}
+ color2 {0.9 0.1 0.1 1}
+ color3 {0.1 0.15 0.9 1}
+ centerlinewidth 0
+ name CheckerBoard4
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 640
+ name DeepFromImage14
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant10
+}
+Rectangle {
+ area {80 80 176 176}
+ color {0.8 0.55 0.3 1}
+ name Rectangle5
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 4
+ name DeepFromImage13
+}
+DeepMerge2 {
+ inputs 2
+ name DeepMerge4
+ label "n8b defocused checker twin: the board's real samples behind the card"
+ xpos 700
+ ypos 360
+}
+DeepCDefocus {
+ coc_mode Manual
+ focus_distance 20
+ size 4
+ fill background
+ name DeepCDefocus15
+ label "n8b defocused checker: the twin"
+ xpos 700
+ ypos 480
+}
+StickyNote {
+ inputs 0
+ name StickyNote1
+ label "Scene (n) -- background fill: fill=background against the DeepMerge twin\n\nEvery DeepCDefocus here has fill=background (scene (m)'s rigs, which leave the knob at its foreground default, are the comparison). For each source pixel P with samples the node searches for the nearest pixel Q whose surface lies BEHIND P's -- zFront_Q > zBack_P + max(0.02 zBack_P, 4 step_P d(P,Q)), step_P the surface's own local depth step -- within fill_search (auto = 2r+1) and then out to max_radius, and appends ONE synthetic hidden sample (Q's surface) before the unchanged flatten. fill_smear (default on) averages the borrowed alpha/colour over the qualifying pixels within the primary reach; off copies the nearest verbatim. Empties never borrow.\n\nLeft column, the halo rig (card z=4, r=16 px, background ON the focal plane z=20):\n  n0: the sparse source has no sample behind the card (m1a's crop); the twin has.\n  n1/n1s: sparse == twin at 0 ULP over the whole frame, under both estimators (a uniform background cannot tell them apart; both must be exact). n1b: the inside band's R/A is the twin's per pixel and its minimum reads the FG:BG mix (0.36), not 0.80 -- the fill IS background-coloured; G/A, B/A are the cards' shared 0.55 / 0.30.\n  n3: fill_search=2 == the auto render at 0 ULP: pixels deeper than 2 px are served by the fallback tier (max_radius) and it finds the same nearest Q.\n  n7: the held sparse rig == the held twin at 0 ULP (the same full-frame 0.5-alpha card at z=2 scene (m) uses). Recorded, not gated: inside the silhouette the node reads alpha 1.0 / R/A 0.50 under this holdout where DeepHoldout2 reads 0.5 / 0.80 -- a holdout in FRONT of a stack with a hidden sample lets that sample through unheld; the M5-T0 baseline reads the same in foreground mode and at size 0, so it is the node's holdout composite, not the fill's.\n\nMiddle column, the nearer object (n2): a third card at z=3 (r=22.7 px, colour 0.50/0.35/0.65) abutting the halo card's right edge, against a twin that carries the halo card CONTINUED 32 px under it -- exactly the pixels the nearest-Q rule assigns to the FG on this geometry. Nearest estimator (fill_smear off): 0 ULP over the whole frame; the halo card's right band never borrows the near card (in front of it) and reads its 22.7 px disc over the halo card (R/A 0.65..0.79); the near card's left band borrows the halo card and reads the near:FG mix through its vacated edge (0.65). With fill_smear on the near card's band averages the halo card AND the background within its 46 px reach and reads 3.6e-02 off the twin: the average estimator on a two-depth surround, reported, not gated. Note that on this rig the opaque-P prune (r_Q >= r_P: 22.7 >= 16) rejects the near card on its own, so widening the depth predicate does not move the cell.\n\nRight column, the textured background (n8): the halo card over the bake-off's 8 px red/blue checker, in focus (z=20) and defocused (z=640, r=3.9 px), the sparse source under both estimators beside the twin with the real hidden samples. Band mean |dR| against the twin (silhouette minus a 19 px inset, premultiplied R -- alpha is 1 there in both, bit-identical), pinned two-sided at the bake-off's own readings with a hard outer range: in focus nearest 0.1446 +/- 0.005 \[0.10, 0.20], average 0.0873 +/- 0.005 \[0.05, 0.12]; defocused nearest 0.0716 \[0.04, 0.10], average 0.0358 \[0.02, 0.06]; and average < nearest -- the ordering is the point of the knob. Foreground mode reads 0.0863 / 0.0648 on the same bands.\n\nNot reproduced here: n4 (explicit fill=foreground == scene (m)'s default-knob m1/m3 renders at 0 ULP; n4b the same three graphs over the checkerboard == the preserved M5-T0 baseline files at 0 ULP, SKIP without the files), n9 (proxy 0.5: the fallback reach is max_radius in proxy pixels -- a background strip past it is not borrowed at either scale), n5 (the card over nothing, scene (d)'s sparse card, two 0.5 fog layers -> 0.75 and an alpha-0.5 card -> 0.5, all the same in both modes) and n6 (the m3 ramp at alpha 0.9, background == foreground at 0 ULP: the slope term keeps a receding surface from borrowing from itself).\n\nMutations, each demonstrated on the harness: synthesis off fails n1/n1b/n2(near band)/n3(ratio)/n7/n8 (the band reads FG colour, max |d| 0.44; n8 reads the foreground number 0.0863 / 0.0648 under both knob states); fallback reach forced to 2 fails n3 (max |d| 0.39 from 3 px in) and n7 (held interior alpha 0.866); kFillSlope=0 fails n6 (near-focus rows 0.99..1.0, max |d| 0.37); the depth predicate widened to any non-empty Q collapses into synthesis off (the nearest such Q is P's own neighbour and the prune discards it) and fails the same cells; widened to any surface at another depth it fails n6 (max |d| 0.31) and moves n5's fog pair to 0.875, and leaves n2 at 0 ULP."
+ note_font_size 14
+ xpos 900
+}

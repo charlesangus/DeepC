@@ -1,6 +1,6 @@
 """Generates the committed validation-scene scripts under tests/nuke/*.nk.
 
-Each scene (a)-(m) is built with the SAME construction helpers scenes.py
+Each scene (a)-(n) is built with the SAME construction helpers scenes.py
 renders through (harness.py's makeDefocus/deepMerge/pointLayer/... and a
 handful of scenes.py's own builders), so a script opened in the GUI shows
 exactly the graph the headless harness measures — not a hand-drawn
@@ -32,14 +32,100 @@ from harness import (                                            # noqa: E402
     resetScript, slab,
 )
 from scenes import (                                              # noqa: E402
-    CHECKER_CELL_PX, GROUND_COLOR, GROUND_FOCUS, HALO_BG, HALO_FG, HALO_FOCUS,
-    HALO_HOLDOUT_ALPHA, HALO_HOLDOUT_Z, HALO_NEAR_Z, HALO_RADIUS, HALO_SIZE,
-    UNEQ_CARD_A, UNEQ_CARD_B,
-    _uneqAnchor, _uneqCard, groundPlane, haloBackground, haloForeground,
-    haloHoldout, haloSparse, overChecker, stripSource, texturedLayer,
+    CHECKER_CELL_PX, FILL_CHECK_CELL_PX, FILL_CHECK_FAR_Z, GROUND_COLOR,
+    GROUND_FOCUS, HALO_BG, HALO_FAR_Z, HALO_FG, HALO_FOCUS, HALO_HOLDOUT_ALPHA,
+    HALO_HOLDOUT_Z, HALO_NEAR_Z, HALO_RADIUS, HALO_SIZE, NEAR_CARD,
+    NEAR_COLOUR, NEAR_FG_EXTENT, NEAR_RADIUS, NEAR_Z, UNEQ_CARD_A, UNEQ_CARD_B,
+    _uneqAnchor, _uneqCard, checkerSparse, checkerTwin, groundPlane,
+    haloBackground, haloForeground, haloHoldout, haloSparse, nearSparse,
+    nearTwin, overChecker, stripSource, texturedLayer,
 )
 
 OUT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+CHECK_N = (
+    "Scene (n) -- background fill: fill=background against the DeepMerge "
+    "twin\n\n"
+    "Every DeepCDefocus here has fill=background (scene (m)'s rigs, which "
+    "leave the knob at its foreground default, are the comparison). For "
+    "each source pixel P with samples the node searches for the nearest "
+    "pixel Q whose surface lies BEHIND P's -- zFront_Q > zBack_P + max(0.02 "
+    "zBack_P, 4 step_P d(P,Q)), step_P the surface's own local depth step -- "
+    "within fill_search (auto = 2r+1) and then out to max_radius, and "
+    "appends ONE synthetic hidden sample (Q's surface) before the "
+    "unchanged flatten. fill_smear (default on) averages the borrowed "
+    "alpha/colour over the qualifying pixels within the primary reach; off "
+    "copies the nearest verbatim. Empties never borrow.\n\n"
+    "Left column, the halo rig (card z=%g, r=%g px, background ON the focal "
+    "plane z=%g):\n"
+    "  n0: the sparse source has no sample behind the card (m1a's crop); "
+    "the twin has.\n"
+    "  n1/n1s: sparse == twin at 0 ULP over the whole frame, under both "
+    "estimators (a uniform background cannot tell them apart; both must "
+    "be exact). n1b: the inside band's R/A is the twin's per pixel and its "
+    "minimum reads the FG:BG mix (0.36), not 0.80 -- the fill IS "
+    "background-coloured; G/A, B/A are the cards' shared 0.55 / 0.30.\n"
+    "  n3: fill_search=2 == the auto render at 0 ULP: pixels deeper than 2 "
+    "px are served by the fallback tier (max_radius) and it finds the same "
+    "nearest Q.\n"
+    "  n7: the held sparse rig == the held twin at 0 ULP (the same "
+    "full-frame %.1f-alpha card at z=%g scene (m) uses). Recorded, not "
+    "gated: inside the silhouette the node reads alpha 1.0 / R/A 0.50 "
+    "under this holdout where DeepHoldout2 reads 0.5 / 0.80 -- a holdout "
+    "in FRONT of a stack with a hidden sample lets that sample through "
+    "unheld; the M5-T0 baseline reads the same in foreground mode and at "
+    "size 0, so it is the node's holdout composite, not the fill's.\n\n"
+    "Middle column, the nearer object (n2): a third card at z=%g (r=%.1f "
+    "px, colour %.2f/%.2f/%.2f) abutting the halo card's right edge, "
+    "against a twin that carries the halo card CONTINUED 32 px under it -- "
+    "exactly the pixels the nearest-Q rule assigns to the FG on this "
+    "geometry. Nearest estimator (fill_smear off): 0 ULP over the whole "
+    "frame; the halo card's right band never borrows the near card (in "
+    "front of it) and reads its %.1f px disc over the halo card (R/A "
+    "0.65..0.79); the near card's left band borrows the halo card and reads "
+    "the near:FG mix through its vacated edge (0.65). With fill_smear on the "
+    "near card's band averages the halo card AND the background within its "
+    "46 px reach and reads 3.6e-02 off the twin: the average estimator on a "
+    "two-depth surround, reported, not gated. Note that on this rig the "
+    "opaque-P prune (r_Q >= r_P: 22.7 >= 16) rejects the near card on its "
+    "own, so widening the depth predicate does not move the cell.\n\n"
+    "Right column, the textured background (n8): the halo card over the "
+    "bake-off's %d px red/blue checker, in focus (z=%g) and defocused "
+    "(z=%g, r=3.9 px), the sparse source under both estimators beside the "
+    "twin with the real hidden samples. Band mean |dR| against the twin "
+    "(silhouette minus a 19 px inset, premultiplied R -- alpha is 1 there "
+    "in both, bit-identical), pinned two-sided at the bake-off's own "
+    "readings with a hard outer range: in focus nearest 0.1446 +/- 0.005 "
+    "[0.10, 0.20], average 0.0873 +/- 0.005 [0.05, 0.12]; defocused "
+    "nearest 0.0716 [0.04, 0.10], average 0.0358 [0.02, 0.06]; and average "
+    "< nearest -- the ordering is the point of the knob. Foreground mode "
+    "reads 0.0863 / 0.0648 on the same bands.\n\n"
+    "Not reproduced here: n4 (explicit fill=foreground == scene (m)'s "
+    "default-knob m1/m3 renders at 0 ULP; n4b the same three graphs over "
+    "the checkerboard == the preserved M5-T0 baseline files at 0 ULP, SKIP "
+    "without the files), n9 (proxy 0.5: the fallback reach is max_radius "
+    "in proxy pixels -- a background strip past it is not borrowed at "
+    "either scale), n5 (the card over nothing, "
+    "scene (d)'s sparse card, two 0.5 fog layers -> 0.75 and an alpha-0.5 "
+    "card -> 0.5, all the same in both modes) and n6 (the m3 ramp at alpha "
+    "0.9, background == foreground at 0 ULP: the slope term keeps a "
+    "receding surface from borrowing from itself).\n\n"
+    "Mutations, each demonstrated on the harness: synthesis off fails "
+    "n1/n1b/n2(near band)/n3(ratio)/n7/n8 (the band reads FG colour, max "
+    "|d| 0.44; n8 reads the foreground number 0.0863 / 0.0648 under both "
+    "knob states); fallback reach forced to 2 fails n3 (max |d| 0.39 from "
+    "3 px in) and n7 (held interior alpha 0.866); kFillSlope=0 fails n6 "
+    "(near-focus rows 0.99..1.0, max |d| 0.37); the depth predicate "
+    "widened to any non-empty Q collapses into synthesis off (the nearest "
+    "such Q is P's own neighbour and the prune discards it) and fails the "
+    "same cells; widened to any surface at another depth it fails n6 (max "
+    "|d| 0.31) and moves n5's fog pair to 0.875, and leaves n2 at 0 ULP."
+    % (HALO_NEAR_Z, HALO_RADIUS, HALO_FAR_Z, HALO_HOLDOUT_ALPHA,
+       HALO_HOLDOUT_Z, NEAR_Z, NEAR_RADIUS, NEAR_COLOUR[0], NEAR_COLOUR[1],
+       NEAR_COLOUR[2], NEAR_RADIUS, FILL_CHECK_CELL_PX, HALO_FAR_Z,
+       FILL_CHECK_FAR_Z)
+)
 
 
 def stickyNote(text, xpos, ypos, width=560):
@@ -754,6 +840,96 @@ def buildSceneM(settings):
     stickyNote(CHECK_M_HOLDOUT, 480, 900)
 
 
+def buildSceneN(settings):
+    resetScript()
+
+    def background(source, **overrides):
+        return makeDefocus(settings, source, size=HALO_SIZE,
+                           focusDistance=HALO_FOCUS, cocMode="manual",
+                           fill="background", **overrides)
+
+    # Left column: the halo rig, sparse vs twin, both estimators, the
+    # fallback reach, and the holdout.
+    sparse = haloSparse()
+    sparse.setXYpos(-560, 0)
+    sparse["label"].setValue("halo rig: ONE sample per pixel, no BG behind "
+                             "the card")
+    twin = deepMerge([haloForeground(), haloBackground()])
+    twin.setXYpos(-330, 0)
+    twin["label"].setValue("twin: the same with the occluded BG PRESENT")
+    for smear, xpos, label in ((True, -560, "n1: == twin at 0 ULP, "
+                                            "fill_smear on (average)"),
+                               (False, -450, "n1s: == twin at 0 ULP, "
+                                             "fill_smear off (nearest)")):
+        node = background(sparse, fill_smear=smear)
+        node.setXYpos(xpos, 120)
+        node["label"].setValue(label)
+    twinNode = background(twin)
+    twinNode.setXYpos(-330, 120)
+    twinNode["label"].setValue("the twin in background mode: the oracle for "
+                               "n1/n1b/n3")
+    fallback = background(sparse, fill_search=2.0)
+    fallback.setXYpos(-560, 240)
+    fallback["label"].setValue("n3: fill_search=2 == n1 at 0 ULP (the "
+                               "fallback tier finds the same Q)")
+    holdout = haloHoldout()
+    holdout.setXYpos(-220, 0)
+    holdout["label"].setValue("n7 holdout: full-frame alpha %.1f card at "
+                              "z=%g" % (HALO_HOLDOUT_ALPHA, HALO_HOLDOUT_Z))
+    heldSparse = background(sparse, holdout=holdout)
+    heldSparse.setXYpos(-450, 360)
+    heldSparse["label"].setValue("n7: held sparse == held twin at 0 ULP")
+    heldTwin = background(twin, holdout=holdout)
+    heldTwin.setXYpos(-330, 360)
+    heldTwin["label"].setValue("n7: the held twin")
+
+    # Middle column: the nearer object.
+    near = nearSparse()
+    near.setXYpos(0, 0)
+    near["label"].setValue("n2: near card z=%g (r=%.1f px) abutting the "
+                           "halo card; one sample per pixel"
+                           % (NEAR_Z, NEAR_RADIUS))
+    nearNode = background(near, fill_smear=False)
+    nearNode.setXYpos(0, 120)
+    nearNode["label"].setValue("n2: nearest estimator; == twin at 0 ULP, "
+                               "the halo card's band never borrows the "
+                               "near card")
+    nearTwinSource = nearTwin()
+    nearTwinSource.setXYpos(180, 0)
+    nearTwinSource["label"].setValue("n2 twin: near card + halo card "
+                                     "continued to x=%d under it + BG"
+                                     % NEAR_FG_EXTENT[2])
+    nearTwinNode = background(nearTwinSource)
+    nearTwinNode.setXYpos(180, 120)
+    nearTwinNode["label"].setValue("n2: the twin")
+    nearSmear = background(near, fill_smear=True)
+    nearSmear.setXYpos(0, 240)
+    nearSmear["label"].setValue("n2, fill_smear on: 3.6e-02 off the twin "
+                                "(reported, not gated)")
+
+    # Right column: the textured background, both rigs.
+    for farZ, ypos, tag in ((HALO_FAR_Z, 0, "n8 in-focus checker"),
+                            (FILL_CHECK_FAR_Z, 360, "n8b defocused checker")):
+        source = checkerSparse(farZ)
+        source.setXYpos(420, ypos)
+        source["label"].setValue("%s (z=%g): sparse, no board behind the "
+                                 "card" % (tag, farZ))
+        for smear, xpos, label in ((False, 420, "nearest: 0.1446 / 0.0716"),
+                                   (True, 560, "average: 0.0873 / 0.0358")):
+            node = background(source, fill_smear=smear)
+            node.setXYpos(xpos, ypos + 120)
+            node["label"].setValue("%s -- band mean |dR| vs twin %s (in "
+                                   "focus / defocused)" % (tag, label))
+        twinSource = checkerTwin(farZ)
+        twinSource.setXYpos(700, ypos)
+        twinSource["label"].setValue("%s twin: the board's real samples "
+                                     "behind the card" % tag)
+        twinNode = background(twinSource)
+        twinNode.setXYpos(700, ypos + 120)
+        twinNode["label"].setValue("%s: the twin" % tag)
+    stickyNote(CHECK_N, 900, 0)
+
+
 SCENE_BUILDERS = [
     ("a", "scene_a_size0_parity.nk", buildSceneA),
     ("b", "scene_b_holdout_in_focus.nk", buildSceneB),
@@ -768,6 +944,7 @@ SCENE_BUILDERS = [
     ("k", "scene_k_proxy_ray_distance.nk", buildSceneK),
     ("l", "scene_l_small_coc_transition.nk", buildSceneL),
     ("m", "scene_m_coverage_halo.nk", buildSceneM),
+    ("n", "scene_n_background_fill.nk", buildSceneN),
 ]
 
 
