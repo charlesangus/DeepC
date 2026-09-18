@@ -7,3 +7,4 @@
 - 2026-09-06 — local-build-is-not-shippable: the local dev build needs GLIBC_2.29 and cannot load on RHEL 8 (4 plugins); only the container build is release-safe → DECISIONS/2026-09-06-local-build-is-not-shippable.md
 - 2026-09-10 — coverage-fill-replaces-honest-dip: v1's "honest coverage dip" is retired; DeepCDefocus renormalizes scatter coverage like pgBokeh, as the only behaviour with no legacy knob → DECISIONS/2026-09-10-coverage-fill-replaces-honest-dip.md
 - 2026-09-10 — plan-branch-stays-local: the `plan` branch is never pushed, overriding PLAN-FORMAT.md §9's push at the milestone gate; code PRs unaffected → DECISIONS/2026-09-10-plan-branch-stays-local.md
+- 2026-09-18 — no-8bit-tolerances: never cite 1/255 (or any 8-bit figure) as a tolerance; solid alpha means `== 1.0`, slack only as a term-count ulp bound → DECISIONS/2026-09-18-no-8bit-tolerances.md

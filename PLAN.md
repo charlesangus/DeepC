@@ -1,6 +1,6 @@
 ---
 title: DeepCDefocus — deep-input, flat-output defocus node
-status: paused
+status: ready
 current: null
 pm_heartbeat: 2026-09-11T22:23:13-04:00
 ship: pr-per-milestone
@@ -88,6 +88,10 @@ Bokeh/pgBokeh don't exhibit; it runs before M2 because it rewrites the kernel st
   coverage than the docker path currently offers.
 - **House style**: 4-space indentation, `_` member prefix, lowerCamelCase (per README
   conventions).
+- **Pins are float-exact or ulp-derived — never 8-bit.** No tolerance anywhere in this project is
+  `1/255` or any other 8-bit-derived figure; solid alpha means `alpha == 1.0`, and any slack is a
+  term-count ulp bound (`N·2⁻²⁴`) measured against an independent oracle
+  (`PLAN/DECISIONS/2026-09-18-no-8bit-tolerances.md`).
 - **The `plan` branch stays LOCAL — never push it.** This overrides PLAN-FORMAT.md §9's
   "then push the plan branch with `git -C .plan push`" at the milestone gate: skip that step, and
   skip it at every other point too. Planning artifacts are not published for this project. The
@@ -108,10 +112,15 @@ Bokeh/pgBokeh don't exhibit; it runs before M2 because it rewrites the kernel st
 | M3 | CUDA backend                                         | todo   | [M3-cuda-backend.md](PLAN/MILESTONES/M3-cuda-backend.md) |
 | M4 | Coverage renormalization (bands + halos)             | done   | [M4-coverage-renormalization.md](PLAN/MILESTONES/M4-coverage-renormalization.md) |
 | M5 | Background-coloured coverage fill (`fill: background`) | done   | [M5-background-fill.md](PLAN/MILESTONES/M5-background-fill.md) |
+| M6 | Solid alpha on opaque geometry — diagnosis (scene (o), Bokeh oracle) | todo   | [M6-solid-alpha-diagnosis.md](PLAN/MILESTONES/M6-solid-alpha-diagnosis.md) |
+| M7 | Solid alpha on opaque geometry — the fix              | todo   | [M7-solid-alpha-fix.md](PLAN/MILESTONES/M7-solid-alpha-fix.md) |
 
-> **Execution order was M4 → M5 → M2 → M3**, not board order. M4 shipped 2026-09-11 as `c9a36d3` (PR #106),
-> M5 the same day as `6a51c8c` (PR #107). Next is M2, whose kernel-field node builds on the blended
-> kernel step M4 left in place — freshness-check its briefs against `scatterKernelBin`'s blended key first.
+> **Execution order is M4 → M5 → M6 → M7 → M2 → M3**, not board order. M4 shipped 2026-09-11 as `c9a36d3` (PR #106),
+> M5 the same day as `6a51c8c` (PR #107). Next is M6 (added 2026-09-18: opaque geometry still reads alpha < 1
+> on a slanted plane with objects in front, where Bokeh reads exactly 1; M6 diagnoses, M7 fixes — M7 is a stub
+> until M6.P2.T2's ruling). Then M2, whose kernel-field node builds on the blended kernel step M4 left in
+> place — freshness-check its briefs against `scatterKernelBin`'s blended key first, and against whatever M7
+> changes in the composite.
 
 # Open questions
 
