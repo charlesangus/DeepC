@@ -1,8 +1,8 @@
 ---
 title: DeepCDefocus — deep-input, flat-output defocus node
-status: ready
-current: null
-pm_heartbeat: 2026-09-11T22:23:13-04:00
+status: running
+current: M6.P1.T1
+pm_heartbeat: 2026-09-19T11:41:35-04:00
 ship: pr-per-milestone
 ---
 
@@ -112,7 +112,7 @@ Bokeh/pgBokeh don't exhibit; it runs before M2 because it rewrites the kernel st
 | M3 | CUDA backend                                         | todo   | [M3-cuda-backend.md](PLAN/MILESTONES/M3-cuda-backend.md) |
 | M4 | Coverage renormalization (bands + halos)             | done   | [M4-coverage-renormalization.md](PLAN/MILESTONES/M4-coverage-renormalization.md) |
 | M5 | Background-coloured coverage fill (`fill: background`) | done   | [M5-background-fill.md](PLAN/MILESTONES/M5-background-fill.md) |
-| M6 | Solid alpha on opaque geometry — diagnosis (scene (o), Bokeh oracle) | todo   | [M6-solid-alpha-diagnosis.md](PLAN/MILESTONES/M6-solid-alpha-diagnosis.md) |
+| M6 | Solid alpha on opaque geometry — diagnosis (scene (o), Bokeh oracle) | doing  | [M6-solid-alpha-diagnosis.md](PLAN/MILESTONES/M6-solid-alpha-diagnosis.md) |
 | M7 | Solid alpha on opaque geometry — the fix              | todo   | [M7-solid-alpha-fix.md](PLAN/MILESTONES/M7-solid-alpha-fix.md) |
 
 > **Execution order is M4 → M5 → M6 → M7 → M2 → M3**, not board order. M4 shipped 2026-09-11 as `c9a36d3` (PR #106),
