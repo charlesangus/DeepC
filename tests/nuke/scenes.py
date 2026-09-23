@@ -1766,20 +1766,55 @@ def sceneG(settings):
     #                                           K=16 2.883e-02 -> 2.980e-07
     #                                           K=64 3.576e-07 -> 1.192e-07
     #
+    # A SECOND FIX LANDED LATER, folding the in-place saturation pass into the
+    # composite so a saturated two-area bucket splits its RAW alpha over its
+    # CLAMPED areas instead of splitting an already-clamped alpha over an
+    # unclamped area sum.  Same scene, same rig, re-pinned to the analytic
+    # term-count bound below rather than to a reading:
+    #
+    #   g1  K=8  3.502e-07 -> 3.193e-09     g2  K=8  3.707e-05 -> 1.788e-07
+    #       K=16 3.033e-08 -> 1.384e-08         K=16 2.086e-06 -> 1.788e-07
+    #       K=64 2.714e-08 -> 2.714e-08     g3  K=8  3.713e-05 -> 5.960e-08
+    #                                           K=16 2.086e-06 -> 1.192e-07
+    #                                           K=64 1.788e-07 -> 1.788e-07
+    #
+    # (m3a, the same ramp in scene (m), K=16 fixed: alpha |a-1| 2.086e-06 ->
+    # 1.192e-07; its colour ratio arm reads the same worst pixel, 3.338e-06,
+    # under both builds -- that pixel sits off the rows the fix touches.)
+    #
     # WHY AN OPAQUE PLANE SHOWED THE ALPHA<1 DEFECT AT ALL, since the fragment
-    # split is a no-op at alpha 1: it is the SATURATION that makes the residual
-    # path live here.  Where a destination pixel's new area and co-located area
-    # sum past 1 the bucket's alpha clamps to 1, so `local = aCov/cov` comes out
-    # at 1/(C_k + D_k) < 1 and the rest of the alpha becomes a residual — which
-    # the pooled `tClaimed` then over-occluded exactly as it did at alpha < 1.
-    # (The K=64 columns barely move because at K=64 few fragments share a bucket,
-    # which is the same convergence g4 now shows.)
+    # split is a no-op at alpha 1: the in-place saturation pass pulled a
+    # bucket's alpha to exactly 1 BEFORE the composite ran, so the composite
+    # split that already-clamped total over new area C_k and co-located area
+    # D_k as if the pair's UNCLAMPED sum were the claimed area -- `aCov/C_k`
+    # read below the new area's true per-unit opacity whenever the raw deposit
+    # had overshot 1, and the pooled residual under-occluded the rest exactly
+    # as it did at alpha < 1.  Folding saturation into the composite keeps the
+    # raw A_k in hand at the split: `u = clamp(A_raw/(C_k+D_k), 0, 1)` scales
+    # both areas by the SAME factor, so the new area's share of opacity is no
+    # longer stripped by a premature clamp -- what is left on this scene is the
+    # accumulation order's own float rounding, the readings above.  (The K=64
+    # columns barely move under either build because at K=64 few fragments
+    # share a bucket to begin with.)
     #
     # They are plain checks again on purpose: an `expectedFailure` that no longer
     # describes a residual is an unbounded licence to fail, and would let a later
     # regression land anywhere below the old hard bound as an XFAIL.  Scene (g)'s
     # own stated criterion — "no visible seams at bucket boundaries at K=16" —
     # is now met outright, at every K, by four decades.
+    # The same analytic bound scene (o) holds its plane rows to --
+    # O_TERMS_PER_TAP * plane taps at that row * 2^-24, from oTolerance with
+    # no cards (this ramp is plane-only).  A ROW MEAN is held to the max of
+    # that per-pixel bound over its own row.
+    planeTol = oTolerance(size, ())
+    rowBoundCache = {}
+
+    def rowBound(y):
+        if y not in rowBoundCache:
+            rowBoundCache[y] = max(planeTol(x, y)
+                                   for x in range(lowBox[0], lowBox[2]))
+        return rowBoundCache[y]
+
     profiles = {}
     seams = {}
     for k in (8, 16, 64):
@@ -1804,9 +1839,16 @@ def sceneG(settings):
         # has now hit three times).
         worstRatio = max(abs(redProfile[i] - GROUND_COLOR[0] * profile[i])
                          for i in range(len(profile)))
-        checks.append(tolCheck(
+        arm = _Excess()
+        for i, a in enumerate(profile):
+            y = profileRow(i)
+            arm.add(abs(a - 1.0), FORMAT_W // 2, y, rowBound(y))
+        checks.append(boolCheck(
             "g", "g1 K=%-2d interior flat-field alpha |a-1|" % k,
-            abs(mean - 1.0), 1.0e-03,
+            arm.at is None, arm.describe(),
+            "row mean <= max per-px bound over its row (%d terms/tap x "
+            "plane taps(y) x 2^-24; worst-case %.2e over these rows)"
+            % (O_TERMS_PER_TAP, arm.maxTol),
             population="%d rows x %d px, |y-128| >= %d"
                        % (rowCount, colCount, band),
             note="mean %.6f (%+.3f%%) min %.6f (y=%d) max %.6f; worst "
@@ -1823,17 +1865,21 @@ def sceneG(settings):
     # (kernel-bin quantisation, the varying-radius scatter residual).
     reference = profiles[64]
     for k in (8, 16):
-        deltas = [abs(a - b) for a, b in zip(profiles[k], reference)]
-        worst = max(deltas)
-        overCount = sum(1 for d in deltas if d > 1.0 / 255.0)
-        checks.append(tolCheck(
+        arm = _Excess()
+        for i, (a, b) in enumerate(zip(profiles[k], reference)):
+            y = profileRow(i)
+            arm.add(abs(a - b), FORMAT_W // 2, y, 2.0 * rowBound(y))
+        worstY = arm.worstAt[1] if arm.worstAt is not None else profileRow(0)
+        checks.append(boolCheck(
             "g", "g2 K=%-2d bucket-attributable banding vs K=64" % k,
-            worst, 1.0 / 255.0,
-            population="%d/%d interior rows over 1/255" % (overCount, rowCount),
+            arm.at is None, arm.describe(),
+            "|rowMean(K=%d) - rowMean(K=64)| <= the sum of both renders' "
+            "row bounds (2 x %d terms/tap x plane taps(y) x 2^-24; "
+            "worst-case %.2e)" % (k, O_TERMS_PER_TAP, arm.maxTol),
+            population="%d interior rows" % rowCount,
             note="max |rowMean(K=%d) - rowMean(K=64)|; worst row y=%d "
                  "(radius %.2f px)"
-                 % (k, profileRow(deltas.index(worst)),
-                    groundRadius(size, profileRow(deltas.index(worst))))))
+                 % (k, worstY, groundRadius(size, worstY))))
 
     # --- g3: the scene's OWN stated criterion — "no visible seams at bucket
     # boundaries at K=16; compare K=8 vs K=64".  g1 (a mean) and g2 (a
@@ -1844,14 +1890,23 @@ def sceneG(settings):
     # against a flat neighbourhood" rather than "the profile is that noisy".
     for k in (8, 16, 64):
         worstStep, medianStep, stepAt = seams[k]
+        profile = profiles[k]
+        arm = _Excess()
+        for i in range(1, len(profile)):
+            y0, y1 = profileRow(i - 1), profileRow(i)
+            arm.add(abs(profile[i] - profile[i - 1]), FORMAT_W // 2, y1,
+                    rowBound(y0) + rowBound(y1))
         row = profileRow(stepAt)
-        checks.append(tolCheck(
+        checks.append(boolCheck(
             "g", "g3 K=%-2d worst seam (row-to-row step in the profile)" % k,
-            worstStep, 1.0 / 255.0,
+            arm.at is None, arm.describe(),
+            "row-to-row step <= the sum of the two rows' bounds (%d "
+            "terms/tap x plane taps(y) x 2^-24 each; worst-case pair sum "
+            "%.2e)" % (O_TERMS_PER_TAP, arm.maxTol),
             population="%d interior rows; median step %.3e"
                        % (rowCount, medianStep),
             note="worst step at y=%d (radius %.2f px), %.0fx the median; "
-                 "1/255 is the step an 8-bit view resolves"
+                 "term-count bound, not an 8-bit tolerance"
                  % (row, groundRadius(size, row),
                     (worstStep / medianStep) if medianStep > 0.0 else 0.0)))
 
@@ -3956,7 +4011,11 @@ def sceneM(settings):
                       "m_ramp_alpha%g%s" % (alpha, "_held" if holdout
                                             else "")), node
 
-    # --- m3a: alpha 1.
+    # --- m3a: alpha 1.  Re-pinned to the same analytic bound scene (o) holds
+    # its plane rows to (this ramp is plane-only, same size as scene (g)'s):
+    # a row mean is held to the max per-pixel bound over its own row, a
+    # single pixel to its own.
+    planeTol = oTolerance(size, ())
     redRatio = sourceRatio(1.0)
     opaque, opaqueNode = rampRender(1.0)
     keepOverChecker(opaqueNode, "m3_ramp_a1", opaque)
@@ -3966,10 +4025,24 @@ def sceneM(settings):
     worstRowY = rampRows[[abs(v - 1.0) for v in opaqueRows].index(worstRow)]
     worstPixel = max(abs(opaquePixels.minimum - 1.0),
                      abs(opaquePixels.maximum - 1.0))
-    checks.append(tolCheck(
+    alphaArm = _Excess()
+    for y, mean in zip(rampRows, opaqueRows):
+        alphaArm.add(abs(mean - 1.0), FORMAT_W // 2, y,
+                     max(planeTol(x, y)
+                         for x in range(rampBox[0], rampBox[2])))
+    for y in rampRows:
+        row = opaque.row("A", y)
+        for x in range(rampBox[0], rampBox[2]):
+            i = x - opaque.x0
+            a = row[i] if 0 <= i < opaque.width else 0.0
+            alphaArm.add(abs(a - 1.0), x, y, planeTol(x, y))
+    checks.append(boolCheck(
         "m", "m3a K=16 alpha 1 ramp, EVERY interior row incl. near focus: "
              "|a-1|",
-        max(worstRow, worstPixel), tol,
+        alphaArm.at is None, alphaArm.describe(),
+        "row mean and per-pixel <= the term-count bound (%d terms/tap x "
+        "plane taps(y) x 2^-24; worst-case %.2e)"
+        % (O_TERMS_PER_TAP, alphaArm.maxTol),
         population="%d rows x %d px, rows %d-%d, near-focus rows INCLUDED"
                    % (len(rampRows), rampBox[2] - rampBox[0], rampRows[0],
                       rampRows[-1]),
@@ -3979,11 +4052,25 @@ def sceneM(settings):
              "where the clamp hides every surplus"
              % (worstRow, worstRowY, worstPixel, opaquePixels.minimum,
                 opaquePixels.minAt)))
-    worstRatio, worstAt, ratioCount = _worstUnpremult(opaque, "R", redRatio,
-                                                      rampBox)
-    checks.append(tolCheck(
+    _, worstAt, ratioCount = _worstUnpremult(opaque, "R", redRatio, rampBox)
+    ratioArm = _Excess()
+    for y in rampRows:
+        alphaRow = opaque.row("A", y)
+        colourRow = opaque.row("R", y)
+        for x in range(rampBox[0], rampBox[2]):
+            i = x - opaque.x0
+            if not (0 <= i < opaque.width):
+                continue
+            alpha = alphaRow[i]
+            if alpha < 1.0e-03:
+                continue
+            ratioArm.add(abs(colourRow[i] / alpha - redRatio), x, y,
+                        planeTol(x, y))
+    checks.append(boolCheck(
         "m", "m3a ...and colour:alpha ratio vs the source (R/A)",
-        worstRatio, tol,
+        ratioArm.at is None, ratioArm.describe(),
+        "|c/a - src| <= the term-count bound (%d terms/tap x plane taps(y) "
+        "x 2^-24; worst-case %.2e)" % (O_TERMS_PER_TAP, ratioArm.maxTol),
         population="%d px" % ratioCount,
         note="source R/A %.4f (stock flatten); worst at (%d,%d)"
              % ((redRatio,) + worstAt)))
