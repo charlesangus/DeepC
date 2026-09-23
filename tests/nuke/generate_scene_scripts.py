@@ -153,12 +153,14 @@ CHECK_O = (
     "alone reads 1 to rounding at every K and every kernel diameter.\n"
     "  o2_probe_r0/2/8/16: one r_obj=16 card at z=%.3f over plane rows whose "
     "own radius is 0/2/8/16. Under the silhouette and in the ring around "
-    "it: 1 to rounding at every r_plane.\n"
+    "it: 1 to rounding at every r_plane; o2_probe_r8_k64 is the r_plane 8 "
+    "ring at K=64, gated separately (o2bm).\n"
     "  o3_rig (K=%d): interior and the pair's disc overlap both read 1 to "
     "rounding; o3_rig_k64 / _k4 / _same (pair at one depth) are the same "
-    "checks at other K / a merged bucket.\n"
+    "checks at other K / a merged bucket, gated separately (o3m/o3bm).\n"
     "  o4_sparse: the same rig with NO plane behind the cards, interior "
-    "and overlap both read 1; o4_sparse_k64 the same at K=64.\n"
+    "and overlap both read 1; o4_sparse_k64 the same at K=64, gated "
+    "separately (o4m).\n"
     "  o5_bokeh: Bokeh on o3's stack reads 1 over the interior to within the "
     "same term-count float-accumulation bound the node is gated on (see "
     "makeBokeh()); o5_diff is DeepCDefocus - Bokeh (alpha), which is what "
@@ -1020,6 +1022,9 @@ def buildSceneO(settings):
         probe["label"].setValue("r_obj 16 over r_plane %d (y=%d)"
                                 % (nominal, row))
         defocus(probe, "o2_probe_r%d" % nominal, -240 + 110 * index, 420)
+        if nominal == 8:
+            defocus(probe, "o2_probe_r8_k64", -240 + 110 * index, 540,
+                    settings.derive(k=64))
 
     rig = deepMerge([oCard(*card) for card in O_CARDS] + [groundPlane()])
     rig.setXYpos(400, 0)

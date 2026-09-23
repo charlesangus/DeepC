@@ -5576,9 +5576,12 @@ def sceneO(settings):
       o1   the plane alone: the run's K and size, a K sweep, and integer vs
            half-integer kernel diameters.
       o2   one card over the plane at r_plane 0/2/8/16 px under it: the band
-           under the silhouette, and the ring around it.
-      o3   the full rig: the whole interior, and the pair's disc overlap.
-      o4   the sparse twin of o3 (no plane behind any card).
+           under the silhouette, and the ring around it; o2bm is the
+           r_plane 8 ring at K=64.
+      o3   the full rig: the whole interior, and the pair's disc overlap;
+           o3m/o3bm gate K=64, K=4 and the pair at one depth over each box.
+      o4   the sparse twin of o3 (no plane behind any card); o4m gates its
+           K=64 reading over both boxes.
       o5   Bokeh on o3's stack must read 1 over the same box; the
            DeepCDefocus - Bokeh alpha map is written to --out-dir.
       o5c  DeepCDefocus - Bokeh alpha, per pixel over the same interior,
@@ -5733,6 +5736,7 @@ def sceneO(settings):
     # o2: one card over the plane, the plane's own CoC under it.
     # ------------------------------------------------------------------
     under, underRatio, around, aroundRatio = [], [], [], []
+    ring8K64 = None
     for nominal, row in O_PLACEMENTS:
         silhouette = oProbeBox(row)
         ring = _outsetBox(silhouette, 18)
@@ -5746,6 +5750,12 @@ def sceneO(settings):
         around.append((label, oDip(image, ring, tolerance, silhouette), None))
         aroundRatio.append((label, oRatio(image, ring, planeTargets,
                                           tolerance, silhouette), None))
+        if nominal == 8:
+            wide = renderOf(lambda: oProbe(row), "o_probe_r%d_k64" % nominal,
+                            settings.derive(k=64))
+            ring8K64 = (label, oDip(wide, ring, tolerance, silhouette),
+                       oRatio(wide, ring, planeTargets, tolerance,
+                             silhouette))
     probePopulation = ("a 32x24 card at z=%.3f (r_obj 16 px) centred on x=%d, "
                        "one render per r_plane" % (O_PROBE_Z, FORMAT_W // 2))
     checks.append(oCheck(
@@ -5763,10 +5773,28 @@ def sceneO(settings):
         "o2b one card over the plane: the ring around the silhouette (18 px)",
         around, "1-a", probePopulation,
         "the four r_plane placements sweep how far the plane's own CoC "
-        "reaches under an opaque card's edge"))
+        "reaches under an opaque card's edge; the near-side r_plane 8 ring "
+        "at K=64 is gated separately at o2bm"))
     checks.append(oCheck(
         "o2br ...colour:alpha ratio around the silhouette", aroundRatio,
         "|c/a - src|", "same pixels", "G/A, B/A vs the source flatten"))
+    checks.append(oCheck(
+        "o2bm ring around the r_plane 8 silhouette (18 px) at K=64",
+        [(ring8K64[0], ring8K64[1], None)], "1-a", probePopulation,
+        "pre-fix (~/deepc-baselines/M7-T0/plugins) reads clean here too "
+        "(0 past bound; worst 2.980e-07 at (98,88)) -- K=64's finer "
+        "bucketing sidesteps o2b's K=16 dip at this placement.  mutation: "
+        "a scratch build halving both the fit/excess transmittance "
+        "(`local`) and the residual alpha term (`aRes*tHeadIn`) reads "
+        "2.500e-01 at (99,126), 3312 of 3312 px past bound 2.2e-04 (M7-P3T2 "
+        "evidence)"))
+    checks.append(oCheck(
+        "o2bmr ...colour:alpha ratio, same ring",
+        [(ring8K64[0], ring8K64[2], None)], "|c/a - src|", "same pixels",
+        "G/A, B/A vs the source flatten; mutation: dropping satScale on the "
+        "fit term's colour (`src[o]` instead of `src[o]*satScale`) reads "
+        "8.647e-02 at (94,129), 720 px past bound 1.9e-06 (M7-P3T2 "
+        "evidence)"))
 
     # ------------------------------------------------------------------
     # o3 / o4: the full rig, complete and sparse.
@@ -5794,10 +5822,9 @@ def sceneO(settings):
     checks.append(oCheck(
         "o3 full rig, complete deep: the whole interior", [
             ("K=%d" % O_K, rig[1], None)], "1-a", rigPopulation,
-        "MUTATIONS: K=64 %s; K=4 %s; pair at one depth %s; plane absent "
-        "behind the cards (o4) %s; worst-case bound %.3e"
-        % (rigK64[1].describe(), rigK4[1].describe(), rigSame[1].describe(),
-           sparse[1].describe(), rig[1].maxTol)))
+        "MUTATIONS: K=64, K=4 and the pair at one depth are gated "
+        "separately at o3m; plane absent behind the cards (o4) %s; "
+        "worst-case bound %.3e" % (sparse[1].describe(), rig[1].maxTol)))
     checks.append(oCheck(
         "o3r ...colour:alpha ratio over the interior", [("K=%d" % O_K,
                                                          rig[3], None)],
@@ -5805,17 +5832,52 @@ def sceneO(settings):
         "source G/A, B/A %.7f / %.7f, flatten spread %.1e"
         % (rigTargets + (rigSpread,))))
     checks.append(oCheck(
+        "o3m full rig interior: K=64, K=4, the pair at one depth", [
+            ("K=64", rigK64[1], None), ("K=4", rigK4[1], None),
+            ("same depth", rigSame[1], None)], "1-a", rigPopulation,
+        "mutation: K=4 and the pair-at-one-depth entries FAIL on "
+        "~/deepc-baselines/M7-T0/plugins at 1.378e-02 / 3.067e-02 (the "
+        "pre-fix saturated-split defect this whole scene guards); K=64's "
+        "finer buckets read clean on that same build (0 past bound) -- a "
+        "scratch mutation halving `local` and `aRes*tHeadIn` together "
+        "moves all three, K=64 to 2.500e-01 (M7-P3T2 evidence)"))
+    checks.append(oCheck(
+        "o3mr ...colour:alpha ratio, same three", [
+            ("K=64", rigK64[3], None), ("K=4", rigK4[3], None),
+            ("same depth", rigSame[3], None)], "|c/a - src|", "same pixels",
+        "G/A, B/A vs the source flatten; mutation: dropping satScale on "
+        "the fit term's colour moves K=64/K=4/same depth to "
+        "8.647e-02/2.209e-01/2.638e-01 (M7-P3T2 evidence), all clean on "
+        "M7-T0/plugins"))
+    checks.append(oCheck(
         "o3b full rig, complete deep: the pair's disc overlap", [
             ("K=%d" % O_K, rig[2], None)], "1-a",
         overlapPopulation,
-        "MUTATIONS: pair at one depth (one bucket) %s; K=64 %s; K=4 %s; "
-        "plane absent (o4b) %s" % (rigSame[2].describe(),
-                                   rigK64[2].describe(), rigK4[2].describe(),
-                                   sparse[2].describe())))
+        "MUTATIONS: pair at one depth (one bucket), K=64 and K=4 are "
+        "gated separately at o3bm; plane absent (o4b) %s"
+        % (sparse[2].describe(),)))
     checks.append(oCheck(
         "o3br ...colour:alpha ratio over the overlap", [("K=%d" % O_K,
                                                          rig[4], None)],
         "|c/a - src|", "same pixels", "G/A, B/A vs the source flatten"))
+    checks.append(oCheck(
+        "o3bm full rig overlap: K=64, K=4, the pair at one depth", [
+            ("K=64", rigK64[2], None), ("K=4", rigK4[2], None),
+            ("same depth", rigSame[2], None)], "1-a", overlapPopulation,
+        "mutation: the pair-at-one-depth entry FAILs on "
+        "~/deepc-baselines/M7-T0/plugins at 2.385e-03 (the pair pools into "
+        "one bucket there, the same defect o3b guards); K=64 and K=4 both "
+        "read clean on that build over this smaller box -- the same "
+        "scratch mutation as o3m (halving `local` and `aRes*tHeadIn`) "
+        "moves all three, K=64 to 2.473e-01 (M7-P3T2 evidence)"))
+    checks.append(oCheck(
+        "o3bmr ...colour:alpha ratio, same three", [
+            ("K=64", rigK64[4], None), ("K=4", rigK4[4], None),
+            ("same depth", rigSame[4], None)], "|c/a - src|", "same pixels",
+        "G/A, B/A vs the source flatten; mutation: dropping satScale on "
+        "the fit term's colour moves K=64/K=4/same depth to "
+        "4.608e-02/2.203e-01/1.900e-01 (M7-P3T2 evidence), all clean on "
+        "M7-T0/plugins"))
 
     resetScript()
     crop = O_Z_B + 0.01
@@ -5848,8 +5910,8 @@ def sceneO(settings):
     checks.append(oCheck(
         "o4 sparse twin: the whole interior", [
             ("K=%d" % O_K, sparse[1], None)], "1-a", rigPopulation,
-        "MUTATIONS: K=64 %s; plane present behind the cards (o3) %s"
-        % (sparseK64[1].describe(), rig[1].describe())))
+        "MUTATIONS: K=64 is gated separately at o4m; plane present behind "
+        "the cards (o3) %s" % (rig[1].describe(),)))
     checks.append(oCheck(
         "o4r ...colour:alpha ratio over the interior", [("K=%d" % O_K,
                                                          sparse[3], None)],
@@ -5858,12 +5920,29 @@ def sceneO(settings):
         "o4b sparse twin: the pair's disc overlap", [
             ("K=%d" % O_K, sparse[2], None)], "1-a",
         overlapPopulation,
-        "MUTATIONS: K=64 %s; plane present (o3b) %s"
-        % (sparseK64[2].describe(), rig[2].describe())))
+        "MUTATIONS: K=64 is gated separately at o4m; plane present (o3b) "
+        "%s" % (rig[2].describe(),)))
     checks.append(oCheck(
         "o4br ...colour:alpha ratio over the overlap", [("K=%d" % O_K,
                                                          sparse[4], None)],
         "|c/a - src|", "same pixels", "G/A, B/A vs the source flatten"))
+    checks.append(oCheck(
+        "o4m sparse twin at K=64: interior and overlap", [
+            ("interior", sparseK64[1], None),
+            ("overlap", sparseK64[2], None)], "1-a", rigPopulation,
+        "mutation: both entries read clean on "
+        "~/deepc-baselines/M7-T0/plugins (K=64's finer buckets sidestep "
+        "the co-located pooling that dips o4/o4b at K=16); the same "
+        "scratch mutation as o3m/o3bm (halving `local` and "
+        "`aRes*tHeadIn`) moves both to 2.500e-01 (M7-P3T2 evidence)"))
+    checks.append(oCheck(
+        "o4mr ...colour:alpha ratio, same two", [
+            ("interior", sparseK64[3], None),
+            ("overlap", sparseK64[4], None)], "|c/a - src|", "same pixels",
+        "G/A, B/A vs the source flatten; mutation: dropping satScale on "
+        "the fit term's colour moves interior/overlap to "
+        "8.647e-02/4.554e-02 (M7-P3T2 evidence), both clean on "
+        "M7-T0/plugins"))
 
     # ------------------------------------------------------------------
     # o5: Bokeh on o3's stack.

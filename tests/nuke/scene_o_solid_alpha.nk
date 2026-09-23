@@ -35,7 +35,7 @@ DeepFromImage {
  name DeepFromImage1
  xpos -900
 }
-set N3c9a1a60 [stack 0]
+set N432ec600 [stack 0]
 DeepCDefocus {
  coc_mode Manual
  size 64
@@ -43,10 +43,10 @@ DeepCDefocus {
  xpos -900
  ypos 120
 }
-push $N3c9a1a60
+push $N432ec600
 push 0
 push 0
-push $N3c9a1a60
+push $N432ec600
 DeepToImage {
  name DeepToImage1
 }
@@ -82,7 +82,7 @@ DeepFromImage {
  name DeepFromImage2
  xpos -790
 }
-set N3ca17ab0 [stack 0]
+set N43361f30 [stack 0]
 DeepCDefocus {
  coc_mode Manual
  size 64
@@ -90,10 +90,10 @@ DeepCDefocus {
  xpos -790
  ypos 120
 }
-push $N3ca17ab0
+push $N43361f30
 push 0
 push 0
-push $N3ca17ab0
+push $N43361f30
 DeepToImage {
  name DeepToImage2
 }
@@ -128,7 +128,7 @@ DeepFromImage {
  label "pair-A alone"
  xpos -680
 }
-set N3ca79b60 [stack 0]
+set N433c3fe0 [stack 0]
 DeepCDefocus {
  coc_mode Manual
  size 64
@@ -136,10 +136,10 @@ DeepCDefocus {
  xpos -680
  ypos 120
 }
-push $N3ca79b60
+push $N433c3fe0
 push 0
 push 0
-push $N3ca79b60
+push $N433c3fe0
 DeepToImage {
  name DeepToImage3
 }
@@ -174,7 +174,7 @@ DeepFromImage {
  label "pair-B alone"
  xpos -570
 }
-set N3cadc0c0 [stack 0]
+set N43426540 [stack 0]
 DeepCDefocus {
  coc_mode Manual
  size 64
@@ -182,10 +182,10 @@ DeepCDefocus {
  xpos -570
  ypos 120
 }
-push $N3cadc0c0
+push $N43426540
 push 0
 push 0
-push $N3cadc0c0
+push $N43426540
 DeepToImage {
  name DeepToImage4
 }
@@ -220,7 +220,7 @@ DeepFromImage {
  label "isolated alone"
  xpos -460
 }
-set N3cb3e620 [stack 0]
+set N43488aa0 [stack 0]
 DeepCDefocus {
  coc_mode Manual
  size 64
@@ -228,10 +228,10 @@ DeepCDefocus {
  xpos -460
  ypos 120
 }
-push $N3cb3e620
+push $N43488aa0
 push 0
 push 0
-push $N3cb3e620
+push $N43488aa0
 DeepToImage {
  name DeepToImage5
 }
@@ -266,7 +266,7 @@ DeepFromImage {
  label "far alone"
  xpos -350
 }
-set N3cba0c90 [stack 0]
+set N434eb110 [stack 0]
 DeepCDefocus {
  coc_mode Manual
  size 64
@@ -274,10 +274,10 @@ DeepCDefocus {
  xpos -350
  ypos 120
 }
-push $N3cba0c90
+push $N434eb110
 push 0
 push 0
-push $N3cba0c90
+push $N434eb110
 DeepToImage {
  name DeepToImage6
 }
@@ -308,7 +308,7 @@ DeepFromImage {
  name DeepFromImage7
  xpos -240
 }
-set N3cc03ee0 [stack 0]
+set N4354e360 [stack 0]
 DeepCDefocus {
  coc_mode Manual
  size 64
@@ -316,7 +316,7 @@ DeepCDefocus {
  xpos -240
  ypos 120
 }
-push $N3cc03ee0
+push $N4354e360
 DeepCDefocus {
  coc_mode Manual
  size 64
@@ -325,7 +325,7 @@ DeepCDefocus {
  xpos -130
  ypos 120
 }
-push $N3cc03ee0
+push $N4354e360
 DeepCDefocus {
  coc_mode Manual
  size 64
@@ -334,7 +334,7 @@ DeepCDefocus {
  xpos -20
  ypos 120
 }
-push $N3cc03ee0
+push $N4354e360
 DeepCDefocus {
  coc_mode Manual
  size 86
@@ -342,7 +342,7 @@ DeepCDefocus {
  xpos 90
  ypos 120
 }
-push $N3cc03ee0
+push $N4354e360
 DeepCDefocus {
  coc_mode Manual
  size 43
@@ -478,12 +478,22 @@ DeepMerge2 {
  xpos -20
  ypos 300
 }
+set N436f7e30 [stack 0]
 DeepCDefocus {
  coc_mode Manual
  size 64
  name o2_probe_r8
  xpos -20
  ypos 420
+}
+push $N436f7e30
+DeepCDefocus {
+ coc_mode Manual
+ size 64
+ depth_layers 64
+ name o2_probe_r8_k64
+ xpos -20
+ ypos 540
 }
 Constant {
  inputs 0
@@ -618,7 +628,7 @@ DeepMerge2 {
  label "the rig: four cards + the plane, complete deep"
  xpos 400
 }
-set N3cf11b50 [stack 0]
+set N4386fdc0 [stack 0]
 DeepCDefocus {
  coc_mode Manual
  size 64
@@ -627,7 +637,7 @@ DeepCDefocus {
  xpos 510
  ypos 120
 }
-push $N3cf11b50
+push $N4386fdc0
 DeepCDefocus {
  coc_mode Manual
  size 64
@@ -754,7 +764,7 @@ DeepFromImage {
  label "sparse twin: nothing behind any card"
  xpos 840
 }
-set N3d07dfb0 [stack 0]
+set N439dc220 [stack 0]
 DeepCDefocus {
  coc_mode Manual
  size 64
@@ -762,7 +772,7 @@ DeepCDefocus {
  xpos 840
  ypos 120
 }
-push $N3d07dfb0
+push $N439dc220
 DeepCDefocus {
  coc_mode Manual
  size 64
@@ -771,7 +781,7 @@ DeepCDefocus {
  xpos 950
  ypos 120
 }
-push $N3cf11b50
+push $N4386fdc0
 DeepCDefocus {
  coc_mode Manual
  size 64
@@ -779,10 +789,10 @@ DeepCDefocus {
  xpos 400
  ypos 120
 }
-push $N3cf11b50
+push $N4386fdc0
 push 0
 push 0
-push $N3cf11b50
+push $N4386fdc0
 DeepToImage {
  name DeepToImage7
 }
@@ -809,7 +819,7 @@ Merge2 {
 StickyNote {
  inputs 0
  name StickyNote1
- label "Scene (o) -- solid alpha on opaque geometry: a slanted plane with small objects, complete deep, against Bokeh\n\nEvery DeepCDefocus here is fill=foreground, coc_mode manual, size 64, focus 10, on scene (g)'s receding ground plane (0.372 CoC px per scanline). The rig merges four opaque 28x28 cards in front of it -- a pair whose blooms overlap (z=8.20 r=14.05, z=8.55 r=10.85), one isolated card over the near-focus rows (z=8.20) and one over the far field (z=8.55) -- with the plane sample still present under every card. Cards share the plane's G and B, so G/A and B/A must read 0.55 / 0.70 everywhere. The only correct alpha over the interior (50-205 both ways) is 1.0; every reading is the worst pixel past its own float-accumulation bound (4 terms per contributing tap x 2^-24).\n\nNode names are the harness cells:\n  o0_* / o0b_*: one plane row (y=60, 200) and each card alone, DeepCDefocus and Bokeh: extents within 1 px of r and of each other.\n  o1_plane (this script's K=16; the harness's own o1 reads back at the run's --k), o1b_plane_k4 / _k64, o1c_plane_s86 / _s43: the plane alone reads 1 to rounding at every K and every kernel diameter.\n  o2_probe_r0/2/8/16: one r_obj=16 card at z=8.000 over plane rows whose own radius is 0/2/8/16. Under the silhouette and in the ring around it: 1 to rounding at every r_plane.\n  o3_rig (K=16): interior and the pair's disc overlap both read 1 to rounding; o3_rig_k64 / _k4 / _same (pair at one depth) are the same checks at other K / a merged bucket.\n  o4_sparse: the same rig with NO plane behind the cards, interior and overlap both read 1; o4_sparse_k64 the same at K=64.\n  o5_bokeh: Bokeh on o3's stack reads 1 over the interior to within the same term-count float-accumulation bound the node is gated on (see makeBokeh()); o5_diff is DeepCDefocus - Bokeh (alpha), which is what the harness's o5c/o5cr gate per pixel -- against that bound plus Bokeh's own measured +-1 ulp, since Bokeh itself does not read literal 1."
+ label "Scene (o) -- solid alpha on opaque geometry: a slanted plane with small objects, complete deep, against Bokeh\n\nEvery DeepCDefocus here is fill=foreground, coc_mode manual, size 64, focus 10, on scene (g)'s receding ground plane (0.372 CoC px per scanline). The rig merges four opaque 28x28 cards in front of it -- a pair whose blooms overlap (z=8.20 r=14.05, z=8.55 r=10.85), one isolated card over the near-focus rows (z=8.20) and one over the far field (z=8.55) -- with the plane sample still present under every card. Cards share the plane's G and B, so G/A and B/A must read 0.55 / 0.70 everywhere. The only correct alpha over the interior (50-205 both ways) is 1.0; every reading is the worst pixel past its own float-accumulation bound (4 terms per contributing tap x 2^-24).\n\nNode names are the harness cells:\n  o0_* / o0b_*: one plane row (y=60, 200) and each card alone, DeepCDefocus and Bokeh: extents within 1 px of r and of each other.\n  o1_plane (this script's K=16; the harness's own o1 reads back at the run's --k), o1b_plane_k4 / _k64, o1c_plane_s86 / _s43: the plane alone reads 1 to rounding at every K and every kernel diameter.\n  o2_probe_r0/2/8/16: one r_obj=16 card at z=8.000 over plane rows whose own radius is 0/2/8/16. Under the silhouette and in the ring around it: 1 to rounding at every r_plane; o2_probe_r8_k64 is the r_plane 8 ring at K=64, gated separately (o2bm).\n  o3_rig (K=16): interior and the pair's disc overlap both read 1 to rounding; o3_rig_k64 / _k4 / _same (pair at one depth) are the same checks at other K / a merged bucket, gated separately (o3m/o3bm).\n  o4_sparse: the same rig with NO plane behind the cards, interior and overlap both read 1; o4_sparse_k64 the same at K=64, gated separately (o4m).\n  o5_bokeh: Bokeh on o3's stack reads 1 over the interior to within the same term-count float-accumulation bound the node is gated on (see makeBokeh()); o5_diff is DeepCDefocus - Bokeh (alpha), which is what the harness's o5c/o5cr gate per pixel -- against that bound plus Bokeh's own measured +-1 ulp, since Bokeh itself does not read literal 1."
  note_font_size 14
  xpos 1100
 }
