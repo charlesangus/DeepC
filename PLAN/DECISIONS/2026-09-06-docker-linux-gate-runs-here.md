@@ -44,3 +44,11 @@ precondition is the only step that needs a `PATH` shim, and its sole use is `zip
 Replacing it with `python3 -m zipfile -c <archive> DeepC` — `python3` is already a de facto
 dependency of the repo's test tooling — would make this gate reproducible here with no `PATH`
 manipulation at all.
+
+**Addendum 2026-09-23.** The 2026-09-06 image and `zip` shim were gone by M7. Rebuilt as a
+**toolchain-only** image (no SDK baked in): the Nuke SDK is bind-mounted read-only at `docker run`
+(`-v /usr/local/Nuke16.0v9:/usr/local/nuke_install:ro`, via `docker-build.sh --nuke-sdk`, M7.P1.T4),
+and `docker-build.sh` archives with `python3 -m zipfile` (`de6429b`), so no `PATH` shim. AlmaLinux 8's
+`mirrors.almalinux.org` mirrorlist is unroutable; the Dockerfile rewrites the repo files to
+`baseurl=https://repo.almalinux.org/...`. Reproducible recipe: `~/deepc-validation/M7-docker/commands.sh`
++ `Dockerfile`.

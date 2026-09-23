@@ -101,7 +101,7 @@ every surviving XFAIL keeps a hard outer bound; every new check is mutation-test
     of each entry.
   - size: S
 
-- [ ] M7.P1.T3 — Rebuild the `nukedockerbuild:16.0-linux` image per the 2026-09-06 recipe and prove the gate on the unchanged tree
+- [x] M7.P1.T3 — Rebuild the `nukedockerbuild:16.0-linux` image per the 2026-09-06 recipe and prove the gate on the unchanged tree
   - files: none in the repo; the edited upstream Dockerfile, exact commands and logs under
     `~/deepc-validation/M7-docker/`; the PM adds a dated addendum to
     `PLAN/DECISIONS/2026-09-06-docker-linux-gate-runs-here.md`
@@ -374,3 +374,9 @@ then PR to `master` from `claude/deep-defocus-node-plan-o0ld83`.
   ~14 GB image layer (plus build-cache copy) on a disk with 33 GB free. P1.T3 now builds only the
   toolchain image; new P1.T4 adds the opt-in `--nuke-sdk` mount to `docker-build.sh` and runs the
   gate. P1.T3's first attempt failed at the image's `dnf install gcc-toolset-11…` step.
+- 2026-09-23 — **M7.P1.T3: toolchain-only image built** — `nukedockerbuild:16.0-linux` (`28421e024520`,
+  851 MB on disk): AlmaLinux 8, gcc-toolset-11 11.2.1, cmake 3.26.5, empty `/usr/local/nuke_install`
+  mount point. dnf root cause: stock repo files use `mirrorlist=` on `mirrors.almalinux.org`
+  (unroutable); a `sed` step comments out `mirrorlist=` and uncomments `# baseurl=` →
+  `repo.almalinux.org` (routable). Evidence and `commands.sh` in `~/deepc-validation/M7-docker/`.
+  `release/`, `install/` are gitignored. The gate run moved to P1.T4.
