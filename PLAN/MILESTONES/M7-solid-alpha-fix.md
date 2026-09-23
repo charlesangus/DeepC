@@ -386,3 +386,16 @@ then PR to `master` from `claude/deep-defocus-node-plan-o0ld83`.
   `./docker-build.sh --linux --nuke-sdk /usr/local/Nuke16.0v9`: EXIT=0, 28 plugins incl.
   `DeepCDefocus.so`, 0 errors, 0 `DeepCDefocus` warnings, SKIP 16.1/17.0; release `.so` loads headless;
   15 AVX2 mnemonics (not rendered here). Log `~/deepc-validation/M7-docker/docker-build.log`.
+- 2026-09-23 — **M7.P2.T1 rule corrected: split the raw alpha over the CLAMPED areas**
+  (`u = clamp(aRaw/(cov+colo),0,1)`), not the raw `C_raw+D_raw` the brief/mut64 used. As briefed, the
+  doctest "share-side arrival identity" (fog over opaque, rear bucket C=0, D=1.99998784, A=1.14224541)
+  read 0.907 vs 1; the implementer's `cov > 0` guard masked it only at C==0 — consultant measured
+  alpha 1 → 0.657 at C=1e-7 (0.693 at C=0.1) and a jump at A crossing 1 (C=0.5, D=2: 0.5556 →
+  0.4400), because D > 1 means stacked layers and raw C+D overstates area. Clamped-area rule: 1.0 for
+  every ε ≤ 0.1, continuous in C at 0 and in A at 1, no special case; doctests 26/26 + 120/120, scene
+  (o) and a,c,d,n rows identical to the guarded build. Residual ambiguity (documented in code): planes
+  can't tell a mixed-opacity stack from uniform layers, so such a stack under a large new area reads
+  slightly low (ε=0.5 fog: 0.919). Also ruled acceptable: 7 non-dip scene (o) rows' *readings* move
+  (o5b 3.067e-2→1.788e-7, o1c 2.086e-6→1.192e-7, o1/o2/o2r/o2br/o3br by 1–2 ulps near α≈1) — the
+  fix's own term, statuses unchanged; the brief's "only six rows move" was too strict.
+  `test_defocus_math` is 26 cases (two saturation cases merged into one `saturationScale` case).
