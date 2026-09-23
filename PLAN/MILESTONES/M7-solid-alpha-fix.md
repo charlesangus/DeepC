@@ -267,7 +267,7 @@ every surviving XFAIL keeps a hard outer bound; every new check is mutation-test
     locations under `~/deepc-validation/M7-P3T3/`.
   - size: L
 
-- [ ] M7.P3.T4 — Re-pin g1/g2/g3 and m3a to term-count bounds, with every move explained against M6-T0
+- [x] M7.P3.T4 — Re-pin g1/g2/g3 and m3a to term-count bounds, with every move explained against M6-T0
   - files: `tests/nuke/scenes.py` (`sceneG()` g1/g2/g3 ~1755–1860 and its before→after comment
     table; `sceneM()` m3a ~3885–3918)
   - approach: these rows improve under the fix (g1 K=16 3.03e-8→1.38e-8, g2 K=16 2.09e-6→1.79e-7,
@@ -463,3 +463,11 @@ then PR to `master` from `claude/deep-defocus-node-plan-o0ld83`.
   renders' pair-bucket terms — deviation from the brief's single-render bound: a difference carries
   both renders' rounding). M7-T0: i7o/i7do FAIL at 0.75 (dev 9.0e-2). **Weak point:** i7d's
   reachability reads only ~1.35× its 7.02e-4 bound. Other i rows identical to M6-P3T1. I = +2.
+- 2026-09-23 — **M7.P3.T4 landed** (`419bf28`): g1/g2/g3/m3a gated at `oTolerance`-derived term-count
+  bounds (row mean ≤ max per-pixel bound; g2/g3 differences ≤ sum of bounds; m3a adds a per-pixel arm).
+  g,m `PASS=28 FAIL=0 XFAIL=6`, same as T0; untouched rows identical to M6-P3T1. All 10 re-pinned rows
+  also PASS on M7-T0 (bound not fitted); each FAILs under a recorded mutation between bound and old
+  gate (e.g. g1 K=8 8.997e-4 vs bound 2.3e-5, old 1e-3) — `~/deepc-validation/M7-P3T4/mutation-summary.txt`.
+  Moves: g2/g3 K=8 3.7e-5 → 1.8e-7 / 6.0e-8; K=16 2.09e-6 → 1.8e-7 / 1.2e-7; m3a alpha 2.09e-6 → 1.19e-7,
+  ratio unmoved. Still 8-bit-gated, left for a later sweep: i2, i3, i4, i5, i5b; m0, m0b, m1, m1b, m2b,
+  m3b, m3c. Also for that sweep: 12 pre-existing plan-ID references (`M1.P3.T20`) in `scenes.py` comments.
