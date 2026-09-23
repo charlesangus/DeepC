@@ -68,7 +68,7 @@ every surviving XFAIL keeps a hard outer bound; every new check is mutation-test
 
 ## Phase 7.1: Baseline and the release gate
 
-- [ ] M7.P1.T1 — Capture M7-T0: the pre-fix plugin set from `088a76f`
+- [x] M7.P1.T1 — Capture M7-T0: the pre-fix plugin set from `088a76f`
   - files: `~/deepc-baselines/M7-T0/` (new, outside the repo)
   - approach: from the clean tree at `088a76f` (master = M6 + PR #108 review fixes):
     `cmake -S . -B build/local-16.0 -D Nuke_ROOT=/usr/local/Nuke16.0v9 -D DEEPC_BUILD_TESTS=ON -D "DEEPC_DEFOCUS_ISA_FLAGS=-mavx;-mfma"`
@@ -349,3 +349,8 @@ then PR to `master` from `claude/deep-defocus-node-plan-o0ld83`.
   pre-reprovision host (AVX2, 17.0v3) and is quoted only as context.
 - 2026-09-23 — **Freshness note for M2:** its briefs must be checked against the composite's new
   saturated branch and the removed `saturateBucketPlanes`.
+- 2026-09-23 — **M7.P1.T1: M7-T0 captured** at `088a76f` → `~/deepc-baselines/M7-T0/` (28 plugins,
+  `PROVENANCE.txt` with every sha256; `DeepCDefocus.so` `06bc7c47…8a6a`). Doctests 27/27 + 117/117;
+  scene (o) 18/0/6/0, all 24 rows equal to M6-P3T1's review-fix log; loads headless.
+  `git diff --stat 71a3ee3 088a76f`: 9 files, all PR #108's review fixes (probe re-composite,
+  `makeBokeh`, scene (o) wording, `run_validation` kept-EXR line, README) — no a–n render path.
