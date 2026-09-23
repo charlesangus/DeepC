@@ -145,7 +145,12 @@ if (UNIX)
     # 2048x1080 20-samples-per-pixel frame -- inside this box's run-to-run
     # noise -- while moving three holdout parity readings off exact 0 to
     # 5.96e-08.
-    target_compile_options(DeepCDefocus PRIVATE -mavx2 -mfma -ffp-contract=off)
+    #
+    # DEEPC_DEFOCUS_ISA_FLAGS overrides the target ISA for hosts without AVX2;
+    # -ffp-contract=off stays unconditional regardless of the override.
+    set(DEEPC_DEFOCUS_ISA_FLAGS "-mavx2;-mfma" CACHE STRING
+        "Target ISA flags for DeepCDefocus's scatter kernel")
+    target_compile_options(DeepCDefocus PRIVATE ${DEEPC_DEFOCUS_ISA_FLAGS} -ffp-contract=off)
 
     option(DEEPC_DEFOCUS_VEC_REPORT
            "Emit GCC vectorizer notes while compiling DeepCDefocus" OFF)
