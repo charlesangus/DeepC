@@ -75,6 +75,8 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include <pthread.h>   // pthread_self(), for the band-claim debug counter
@@ -334,6 +336,29 @@ static const char* const HELP =
     "\n"
     "Part of the DeepC plugin collection.";
 
+// DEEPC_DEFOCUS_DEBUG_PROBE="x,y;x,y;..." — the output pixels to trace.
+// Malformed entries are skipped rather than rejected: this is a debug switch,
+// and one typo should not cost the rest of the list.
+static std::vector<std::pair<int, int>> parseProbePixels(const char* spec)
+{
+    std::vector<std::pair<int, int>> pixels;
+    if (spec == nullptr)
+        return pixels;
+    const char* p = spec;
+    while (*p != '\0') {
+        int x = 0, y = 0, consumed = 0;
+        if (std::sscanf(p, " %d , %d %n", &x, &y, &consumed) == 2 && consumed > 0) {
+            pixels.emplace_back(x, y);
+            p += consumed;
+        }
+        while (*p != '\0' && *p != ';')
+            ++p;
+        if (*p == ';')
+            ++p;
+    }
+    return pixels;
+}
+
 // ---------------------------------------------------------------------------
 // Enum knob label tables
 // ---------------------------------------------------------------------------
@@ -523,6 +548,7 @@ class DeepCDefocus : public DD::Image::Iop
                                            // log band -> thread claims
     bool            _debugStats = false;   // DEEPC_DEFOCUS_DEBUG_STATS=1:
                                            // log per-band scatter work counts
+    std::vector<std::pair<int, int>> _debugProbe;   // DEEPC_DEFOCUS_DEBUG_PROBE
 
 public:
     DeepCDefocus(Node* node) : Iop(node),
@@ -568,6 +594,12 @@ public:
         // the fragment count by a few percent on a thermally throttled box;
         // these counters are exact and machine-independent.
         _debugStats = (std::getenv("DEEPC_DEFOCUS_DEBUG_STATS") != nullptr);
+
+        // Composite instrumentation: for each listed output pixel, the band
+        // that covers it logs the bucket composite's full decomposition to
+        // stderr (printProbe()).  Coordinates are the node's output pixels at
+        // the resolution being rendered, so under proxy they are proxy pixels.
+        _debugProbe = parseProbePixels(std::getenv("DEEPC_DEFOCUS_DEBUG_PROBE"));
     }
 
     int minimum_inputs() const override { return 1; }
@@ -1956,6 +1988,87 @@ private:
     // band (Dirty, never Done), so nothing partial is ever published — this
     // function writes the shared frame only after a fully successful band.
     // ------------------------------------------------------------------
+    // One write per block, so blocks from bands resolving on different
+    // threads never interleave.
+    void printProbe(const deepc::CompositeProbePixel& pp,
+                    const deepc::DepthBuckets& buckets, int y0, int y1) const
+    {
+        const deepc::CompositeTrace& t = pp.trace;
+        const int nc = std::min(t.channelCount, deepc::kCompositeTraceChannels);
+        std::string out;
+        char line[1024];
+        auto emit = [&](int n) {
+            if (n > 0)
+                out.append(line, std::min<std::size_t>(static_cast<std::size_t>(n),
+                                                        sizeof(line) - 1));
+        };
+        auto colours = [&](const float* c) {
+            std::string sOut = "(";
+            for (int i = 0; i < nc; ++i) {
+                char v[32];
+                std::snprintf(v, sizeof(v), i ? " %.9g" : "%.9g", c[i]);
+                sOut += v;
+            }
+            return sOut + ")";
+        };
+
+        emit(std::snprintf(line, sizeof(line),
+             "DeepCDefocus: probe (%d,%d) band rows [%d,%d) K=%d C=%d proxyScale=%.9g\n",
+             pp.x, pp.y, y0, y1, t.bucketCount, t.channelCount, _proxyScale));
+
+        const int nk = std::min(t.bucketCount, deepc::kCompositeTraceBuckets);
+        for (int k = 0; k < nk; ++k) {
+            const deepc::CompositeTracePlanes& p = t.bucket[k].planes;
+            const deepc::CompositeTraceTerms&  m = t.bucket[k].terms;
+            if (!m.visited && p.cRaw == 0.0f && p.aRaw == 0.0f && p.dRaw == 0.0f)
+                continue;
+            const float z = (k < buckets.bucketCount()) ? buckets.centre(k) : 0.0f;
+            emit(std::snprintf(line, sizeof(line),
+                 "  k=%d zCentre=%.9g C_k raw=%.9g clamped=%.9g A_k raw=%.9g sat=%.9g "
+                 "D_k=%.9g colour raw=%s sat=%s%s\n",
+                 k, z, p.cRaw, m.cov, p.aRaw, p.aSat, p.dRaw,
+                 colours(p.colorRaw).c_str(), colours(p.colorSat).c_str(),
+                 m.visited ? "" : (t.stopBucket >= 0 && k > t.stopBucket
+                                       ? " [after early-out]" : " [skipped]")));
+            if (!m.visited)
+                continue;
+            emit(std::snprintf(line, sizeof(line),
+                 "    in: freeArea=%.9g claimedArea=%.9g tClaimed=%.9g accAlpha=%.9g "
+                 "tiles=%d\n",
+                 m.freeAreaIn, m.claimedAreaIn, m.tClaimedIn, m.accAlphaIn,
+                 m.tileCountIn));
+            emit(std::snprintf(line, sizeof(line),
+                 "    cov=%.9g a=%.9g colo=%.9g aCov=%.9g aRes=%.9g resShare=%.9g "
+                 "covShare=%.9g\n",
+                 m.cov, m.a, m.colo, m.aCov, m.aRes, m.resShare, m.covShare));
+            emit(std::snprintf(line, sizeof(line),
+                 "    local=%.9g fit=%.9g excess=%.9g tClaimedFit=%.9g g=%.9g "
+                 "att=%.9g | resArea=%.9g tHead=%.9g allocArea=%.9g claimTake=%.9g "
+                 "resLocal=%.9g\n",
+                 m.local, m.fit, m.excess, m.tClaimedFit, m.g, m.att,
+                 m.resArea, m.tHeadIn, m.allocArea, m.claimTake, m.resLocal));
+            emit(std::snprintf(line, sizeof(line),
+                 "    accAlpha +fit=%.9g +excess=%.9g +res=%.9g | out: freeArea=%.9g "
+                 "claimedArea=%.9g tClaimed=%.9g tiles=%d\n",
+                 m.accAfterFit, m.accAfterExcess, m.accAfterRes,
+                 m.freeAreaOut, m.claimedAreaOut, m.tClaimedOut, m.tileCountOut));
+        }
+        if (t.stopBucket >= 0)
+            emit(std::snprintf(line, sizeof(line),
+                 "  early-out after k=%d (fully opaque)\n", t.stopBucket));
+        emit(std::snprintf(line, sizeof(line),
+             "  arrival D=%.9g fill %s (kFillMinArrival=%.9g < D < 1-kFillDeficitTol=%.9g) "
+             "scale=%.9g\n",
+             t.arrival, t.fillApplied ? "applied" : "not applied",
+             deepc::kFillMinArrival, 1.0f - deepc::kFillDeficitTol, t.fillScale));
+        emit(std::snprintf(line, sizeof(line),
+             "  accAlpha preFill=%.9g postFill=%.9g postClamp=%.9g clampScale=%.9g "
+             "outColour=%s\n",
+             t.accAlphaPreFill, t.accAlphaPostFill, t.outAlpha, t.clampScale,
+             colours(t.outColor).c_str()));
+        std::fputs(out.c_str(), stderr);
+    }
+
     bool computeBand(FrameCache& fc, BandJob& job, int y0, int y1,
                      double* fetchMs = nullptr)
     {
@@ -2168,8 +2281,26 @@ private:
         deepc::scatterBackgroundCPU(job.sp, job.residual, *job.kernel,
                                     job.planes);
 
+        std::vector<deepc::CompositeProbePixel> probePixels;
+        for (const auto& xy : _debugProbe) {
+            if (xy.second >= y0 && xy.second < y1
+                && xy.first >= job.sp.bandX && xy.first < job.sp.bandX + W) {
+                probePixels.emplace_back();
+                probePixels.back().x = xy.first;
+                probePixels.back().y = xy.second;
+            }
+        }
+        deepc::CompositeProbe probe;
+        probe.pixels = probePixels.data();
+        probe.count  = static_cast<int>(probePixels.size());
+
         deepc::resolveBandCPU(job.sp, job.planes,
-                              job.bandColor.data(), job.bandAlpha.data());
+                              job.bandColor.data(), job.bandAlpha.data(),
+                              probePixels.empty() ? nullptr : &probe);
+
+        for (const deepc::CompositeProbePixel& pp : probePixels)
+            if (pp.hit)
+                printProbe(pp, *job.buckets, y0, y1);
 
         if (aborted())
             return false;

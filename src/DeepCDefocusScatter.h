@@ -2829,7 +2829,98 @@ static_assert(kCompositeHeadTiles >= 2,
 constexpr float kFillMinArrival  = 1e-3f;
 constexpr float kFillDeficitTol  = 1e-5f;
 
-DEEPC_HD inline void compositePixelCoveragePartition(
+// ---------------------------------------------------------------------------
+// CompositeTrace — one pixel's decomposition of the bucket composite
+//
+// A diagnostic sink, filled only by compositePixelCoveragePartitionTraced()
+// and by resolveBandCPU()'s probe.  The untraced composite never sees it, so
+// it costs the production path nothing.
+//
+// Per bucket, `planes` is what the scatter left and what the composite read;
+// `terms` is every intermediate the composite derives from them, recorded
+// under the same names the composite uses.  The three `accAfter*` values are
+// the running accAlpha after each of the three terms that add to it, so a
+// reader can recover each increment and redo the sum exactly.
+//
+// Buckets past kCompositeTraceBuckets are composited but not recorded, and
+// colour past kCompositeTraceChannels likewise.
+// ---------------------------------------------------------------------------
+constexpr int kCompositeTraceBuckets  = DepthBuckets::kMaxBuckets;
+constexpr int kCompositeTraceChannels = 4;
+
+struct CompositeTracePlanes {
+    float cRaw = 0.0f;                              // C_k, the new-area plane
+    float aRaw = 0.0f;                              // A_k before saturation
+    float aSat = 0.0f;                              // A_k after saturation
+    float dRaw = 0.0f;                              // D_k, the fourth plane
+    float colorRaw[kCompositeTraceChannels] = {};   // before saturation
+    float colorSat[kCompositeTraceChannels] = {};   // after saturation
+};
+
+struct CompositeTraceTerms {
+    bool  visited = false;          // neither skipped as empty nor past the early-out
+
+    float freeAreaIn    = 0.0f;
+    float claimedAreaIn = 0.0f;
+    float tClaimedIn    = 0.0f;
+    float accAlphaIn    = 0.0f;
+    int   tileCountIn   = 0;
+
+    float cov      = 0.0f;
+    float a        = 0.0f;
+    float colo     = 0.0f;
+    float aCov     = 0.0f;
+    float aRes     = 0.0f;
+    float resShare = 0.0f;
+    float covShare = 0.0f;
+
+    float local       = 0.0f;
+    float fit         = 0.0f;
+    float excess      = 0.0f;
+    float tClaimedFit = 0.0f;       // the tClaimed the excess term is attenuated by
+    float accAfterFit = 0.0f;
+    float g           = 0.0f;
+    float att         = 0.0f;
+    float accAfterExcess = 0.0f;
+
+    float resArea   = 0.0f;
+    float tHeadIn   = 0.0f;
+    float allocArea = 0.0f;         // residual area placed on existing tiles + own claim
+    float claimTake = 0.0f;         // ...of which on this bucket's own claim
+    float resLocal  = 0.0f;
+    float accAfterRes = 0.0f;
+
+    float accAlphaOut    = 0.0f;
+    float freeAreaOut    = 0.0f;
+    float claimedAreaOut = 0.0f;
+    float tClaimedOut    = 0.0f;
+    int   tileCountOut   = 0;
+};
+
+struct CompositeTraceBucket {
+    CompositeTracePlanes planes;
+    CompositeTraceTerms  terms;
+};
+
+struct CompositeTrace {
+    CompositeTraceBucket bucket[kCompositeTraceBuckets];
+
+    int   bucketCount  = 0;
+    int   channelCount = 0;
+    int   stopBucket   = -1;        // the fully-opaque early-out's bucket, or -1
+
+    float arrival          = 0.0f;
+    float accAlphaPreFill  = 0.0f;
+    bool  fillApplied      = false;
+    float fillScale        = 1.0f;
+    float accAlphaPostFill = 0.0f;
+    float clampScale       = 1.0f;  // applied to the colour when accAlpha > 1
+    float outAlpha         = 0.0f;
+    float outColor[kCompositeTraceChannels] = {};
+};
+
+template <bool kTrace>
+DEEPC_HD inline void compositePixelCoveragePartitionImpl(
     const float* __restrict__ bucketColor,
     const float* __restrict__ bucketAlpha,
     const float* __restrict__ bucketWeight,
@@ -2839,8 +2930,20 @@ DEEPC_HD inline void compositePixelCoveragePartition(
     std::ptrdiff_t            pixelCount,
     float* __restrict__       outColor,
     float* __restrict__       outAlpha,
-    float                     arrival = 1.0f)
+    float                     arrival,
+    [[maybe_unused]] CompositeTrace* trace)
 {
+    if constexpr (kTrace) {
+        const int n = (bucketCount < kCompositeTraceBuckets) ? bucketCount
+                                                             : kCompositeTraceBuckets;
+        for (int k = 0; k < n; ++k)
+            trace->bucket[k].terms = CompositeTraceTerms{};
+        trace->bucketCount  = bucketCount;
+        trace->channelCount = channelCount;
+        trace->stopBucket   = -1;
+        trace->arrival      = arrival;
+    }
+
     for (int c = 0; c < channelCount; ++c)
         outColor[static_cast<std::ptrdiff_t>(c) * pixelCount] = 0.0f;
 
@@ -2889,6 +2992,21 @@ DEEPC_HD inline void compositePixelCoveragePartition(
         const float a   = clampf(bucketAlpha[ko], 0.0f, 1.0f);
         if (!(cov > 0.0f) && !(a > 0.0f))   // empty bucket (also rejects NaN)
             continue;
+
+        [[maybe_unused]] CompositeTraceTerms* tb = nullptr;
+        if constexpr (kTrace) {
+            if (k < kCompositeTraceBuckets) {
+                tb = &trace->bucket[k].terms;
+                tb->visited       = true;
+                tb->freeAreaIn    = freeArea;
+                tb->claimedAreaIn = claimedArea;
+                tb->tClaimedIn    = tClaimed;
+                tb->accAlphaIn    = accAlpha;
+                tb->tileCountIn   = tileCount;
+                tb->cov           = cov;
+                tb->a             = a;
+            }
+        }
 
         // The fourth plane: the area this bucket's CO-LOCATED deposits are
         // spread over, which is the residual term's divisor.  Clamped like the
@@ -2951,6 +3069,16 @@ DEEPC_HD inline void compositePixelCoveragePartition(
         const float resShare = (a > 0.0f) ? (aRes / a) : 0.0f;
         const float covShare = 1.0f - resShare;
 
+        if constexpr (kTrace) {
+            if (tb) {
+                tb->colo     = colo;
+                tb->aCov     = aCov;
+                tb->aRes     = aRes;
+                tb->resShare = resShare;
+                tb->covShare = covShare;
+            }
+        }
+
         // The tile this bucket leaves behind for the co-located deposits that
         // follow it: `claimT` over `claimA`, the area it covers itself.  A
         // chain this bucket CONTINUES needs no such pair — its tile is
@@ -3007,6 +3135,17 @@ DEEPC_HD inline void compositePixelCoveragePartition(
                 claimA      = fit;
             }
 
+            if constexpr (kTrace) {
+                if (tb) {
+                    tb->local       = local;
+                    tb->fit         = fit;
+                    tb->excess      = excess;
+                    tb->tClaimedFit = tClaimed;
+                    tb->accAfterFit = accAlpha;
+                    tb->accAfterExcess = accAlpha;
+                }
+            }
+
             // ---- the excess: `over`-attenuated by the claimed share -------
             // excess > 0 implies fit consumed all of freeArea, so the claimed
             // share is the whole pixel and no area re-weighting is needed.
@@ -3028,6 +3167,21 @@ DEEPC_HD inline void compositePixelCoveragePartition(
                     tileT[t] *= att;
                 if (claimT >= 0.0f)
                     claimT *= att;
+
+                if constexpr (kTrace) {
+                    if (tb) {
+                        tb->g              = g;
+                        tb->att            = att;
+                        tb->accAfterExcess = accAlpha;
+                    }
+                }
+            }
+        }
+
+        if constexpr (kTrace) {
+            if (tb && !(cov > 0.0f)) {
+                tb->accAfterFit    = accAlpha;
+                tb->accAfterExcess = accAlpha;
             }
         }
 
@@ -3095,6 +3249,17 @@ DEEPC_HD inline void compositePixelCoveragePartition(
                 need -= claimTake;
             }
             const float tHeadIn = (aSum > 0.0f) ? (tSum / aSum) : 1.0f;
+
+            if constexpr (kTrace) {
+                if (tb) {
+                    tb->resArea   = resArea;
+                    tb->tHeadIn   = tHeadIn;
+                    tb->allocArea = aSum;
+                    tb->claimTake = claimTake;
+                    if (resArea > 0.0f)
+                        tb->resLocal = clampf(aRes / resArea, 0.0f, 1.0f);
+                }
+            }
 
             accAlpha += aRes * tHeadIn;
             for (int c = 0; c < channelCount; ++c) {
@@ -3234,6 +3399,17 @@ DEEPC_HD inline void compositePixelCoveragePartition(
             ++tileCount;
         }
 
+        if constexpr (kTrace) {
+            if (tb) {
+                tb->accAfterRes    = accAlpha;
+                tb->accAlphaOut    = accAlpha;
+                tb->freeAreaOut    = freeArea;
+                tb->claimedAreaOut = claimedArea;
+                tb->tClaimedOut    = tClaimed;
+                tb->tileCountOut   = tileCount;
+            }
+        }
+
         // The mosaic joins the early-out: the claimed mean can round to zero
         // while one tile's own sub-area still transmits, and a residual behind
         // it would then be dropped rather than attenuated.
@@ -3241,10 +3417,16 @@ DEEPC_HD inline void compositePixelCoveragePartition(
             bool tileOpen = false;
             for (int t = 0; t < tileCount; ++t)
                 if (tileT[t] > 0.0f) { tileOpen = true; break; }
-            if (!tileOpen)
+            if (!tileOpen) {
+                if constexpr (kTrace)
+                    trace->stopBucket = k;
                 break;                  // fully opaque: nothing behind shows
+            }
         }
     }
+
+    if constexpr (kTrace)
+        trace->accAlphaPreFill = accAlpha;
 
     // THE COLOUR IS RESCALED WITH THE ALPHA, NOT LEFT BEHIND.
     // accAlpha CAN exceed 1 on the production path: a pixel carrying several
@@ -3274,15 +3456,74 @@ DEEPC_HD inline void compositePixelCoveragePartition(
         accAlpha *= s;
         for (int c = 0; c < channelCount; ++c)
             outColor[static_cast<std::ptrdiff_t>(c) * pixelCount] *= s;
+        if constexpr (kTrace) {
+            trace->fillApplied = true;
+            trace->fillScale   = s;
+        }
     }
+
+    if constexpr (kTrace)
+        trace->accAlphaPostFill = accAlpha;
 
     const float outA = clampf(accAlpha, 0.0f, 1.0f);
     if (accAlpha > outA && accAlpha > 0.0f) {
         const float s = outA / accAlpha;
         for (int c = 0; c < channelCount; ++c)
             outColor[static_cast<std::ptrdiff_t>(c) * pixelCount] *= s;
+        if constexpr (kTrace)
+            trace->clampScale = s;
     }
     *outAlpha = outA;
+
+    if constexpr (kTrace) {
+        trace->outAlpha = outA;
+        const int nc = (channelCount < kCompositeTraceChannels) ? channelCount
+                                                                : kCompositeTraceChannels;
+        for (int c = 0; c < nc; ++c)
+            trace->outColor[c] = outColor[static_cast<std::ptrdiff_t>(c) * pixelCount];
+    }
+}
+
+DEEPC_HD inline void compositePixelCoveragePartition(
+    const float* __restrict__ bucketColor,
+    const float* __restrict__ bucketAlpha,
+    const float* __restrict__ bucketWeight,
+    const float* __restrict__ bucketColocated,
+    int                       bucketCount,
+    int                       channelCount,
+    std::ptrdiff_t            pixelCount,
+    float* __restrict__       outColor,
+    float* __restrict__       outAlpha,
+    float                     arrival = 1.0f)
+{
+    compositePixelCoveragePartitionImpl<false>(bucketColor, bucketAlpha, bucketWeight,
+                                               bucketColocated, bucketCount, channelCount,
+                                               pixelCount, outColor, outAlpha, arrival,
+                                               nullptr);
+}
+
+// The same composite, recording its decomposition into `trace`.  Its output is
+// bit-identical to the untraced form: the recording only reads.
+DEEPC_HD inline void compositePixelCoveragePartitionTraced(
+    const float* __restrict__ bucketColor,
+    const float* __restrict__ bucketAlpha,
+    const float* __restrict__ bucketWeight,
+    const float* __restrict__ bucketColocated,
+    int                       bucketCount,
+    int                       channelCount,
+    std::ptrdiff_t            pixelCount,
+    float* __restrict__       outColor,
+    float* __restrict__       outAlpha,
+    float                     arrival,
+    CompositeTrace&           trace)
+{
+    trace.fillApplied = false;
+    trace.fillScale   = 1.0f;
+    trace.clampScale  = 1.0f;
+    compositePixelCoveragePartitionImpl<true>(bucketColor, bucketAlpha, bucketWeight,
+                                              bucketColocated, bucketCount, channelCount,
+                                              pixelCount, outColor, outAlpha, arrival,
+                                              &trace);
 }
 
 // ---------------------------------------------------------------------------
@@ -3378,11 +3619,30 @@ void scatterBackgroundCPU(const ScatterParams&  params,
 // outColor is `channelCount` planes of `pixelCount` floats
 // (outColor[c*pixelCount + i]); outAlpha is one.  Both are OVERWRITTEN.
 // `planes` is modified in place by the saturation pass.
+//
+// `probe`, when non-null, records a CompositeTrace for each listed pixel that
+// lies inside this band (params.bandX/bandY/bandWidth/bandHeight, absolute
+// coordinates); a listed pixel outside it is left with hit == false.  The band
+// is resolved by the untraced composite first and each probed pixel is then
+// re-composited traced, so the output is the untraced composite's bit for bit.
 // ---------------------------------------------------------------------------
+struct CompositeProbePixel {
+    int            x   = 0;
+    int            y   = 0;
+    bool           hit = false;
+    CompositeTrace trace;
+};
+
+struct CompositeProbe {
+    CompositeProbePixel* pixels = nullptr;
+    int                  count  = 0;
+};
+
 void resolveBandCPU(const ScatterParams& params,
                     BucketPlanes&        planes,
                     float* __restrict__  outColor,
-                    float* __restrict__  outAlpha);
+                    float* __restrict__  outAlpha,
+                    CompositeProbe*      probe = nullptr);
 
 // ===========================================================================
 //

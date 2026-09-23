@@ -1845,21 +1845,66 @@ void scatterBackgroundCPU(const ScatterParams&  params,
 // resolveBandCPU
 // ---------------------------------------------------------------------------
 
+namespace {
+
+// The probed pixel's index in the band, or -1 when the band does not cover it.
+std::ptrdiff_t probePixelIndex(const ScatterParams& params, const BucketPlaneView& view,
+                               int x, int y)
+{
+    const int bx = x - params.bandX;
+    const int by = y - params.bandY;
+    if (bx < 0 || by < 0 || bx >= view.width || by >= view.height)
+        return -1;
+    return static_cast<std::ptrdiff_t>(by) * view.width + bx;
+}
+
+void recordProbePlanes(const BucketPlaneView& view, std::ptrdiff_t i,
+                       CompositeTrace& trace, bool saturated)
+{
+    const int nk = std::min(view.bucketCount, kCompositeTraceBuckets);
+    const int nc = std::min(view.channelCount, kCompositeTraceChannels);
+    for (int k = 0; k < nk; ++k) {
+        const std::ptrdiff_t ko = static_cast<std::ptrdiff_t>(k) * view.pixelCount;
+        const float* color = view.color
+            + static_cast<std::ptrdiff_t>(k) * view.channelCount * view.pixelCount;
+        CompositeTracePlanes& p = trace.bucket[k].planes;
+        if (saturated) {
+            p.aSat = view.alpha[ko + i];
+            for (int c = 0; c < nc; ++c)
+                p.colorSat[c] = color[static_cast<std::ptrdiff_t>(c) * view.pixelCount + i];
+        } else {
+            p.cRaw = view.weight[ko + i];
+            p.aRaw = view.alpha[ko + i];
+            p.dRaw = view.colocated[ko + i];
+            for (int c = 0; c < nc; ++c)
+                p.colorRaw[c] = color[static_cast<std::ptrdiff_t>(c) * view.pixelCount + i];
+        }
+    }
+}
+
+} // namespace
+
 void resolveBandCPU(const ScatterParams& params,
                     BucketPlanes&        planes,
                     float* __restrict__  outColor,
-                    float* __restrict__  outAlpha)
+                    float* __restrict__  outAlpha,
+                    CompositeProbe*      probe)
 {
-    // Unused: there is one bucket composite and nothing to select.  The
-    // parameter stays because scatterBandCPU() and resolveBandCPU() take the
-    // same ScatterParams, and per-band kernel state lands in it.
-    (void)params;
-
     BucketPlaneView view = planes.view();
     if (!view.valid() || outAlpha == nullptr)
         return;
     if (view.channelCount > 0 && outColor == nullptr)
         return;
+
+    if (probe != nullptr) {
+        for (int p = 0; p < probe->count; ++p) {
+            CompositeProbePixel& px = probe->pixels[p];
+            const std::ptrdiff_t i = probePixelIndex(params, view, px.x, px.y);
+            px.hit = (i >= 0);
+            if (px.hit)
+                recordProbePlanes(view, i, px.trace, false);
+        }
+    }
 
     // ALWAYS, on the normal path.  Not a knob, not a debug switch: within-
     // bucket additive accumulation over-counts same-pixel fragments for
@@ -1884,6 +1929,28 @@ void resolveBandCPU(const ScatterParams& params,
                                         outColor + i,
                                         outAlpha + i,
                                         view.arrival[i]);
+    }
+
+    if (probe == nullptr)
+        return;
+
+    for (int p = 0; p < probe->count; ++p) {
+        CompositeProbePixel& px = probe->pixels[p];
+        if (!px.hit)
+            continue;
+        const std::ptrdiff_t i = probePixelIndex(params, view, px.x, px.y);
+        recordProbePlanes(view, i, px.trace, true);
+        compositePixelCoveragePartitionTraced(view.color + i,
+                                              view.alpha + i,
+                                              view.weight + i,
+                                              view.colocated + i,
+                                              view.bucketCount,
+                                              view.channelCount,
+                                              view.pixelCount,
+                                              outColor + i,
+                                              outAlpha + i,
+                                              view.arrival[i],
+                                              px.trace);
     }
 }
 
