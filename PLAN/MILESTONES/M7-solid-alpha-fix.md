@@ -13,10 +13,13 @@ check: they retire to PASS at `1 − α == 0` within a term-count ulp bound, wit
 ratio pinned beside every alpha arm. Not a fill option and not a knob: this is a correctness
 change to the default behaviour, like M4. Runs after M6 and before M2.
 
-Blocked on: M6.P2.T2's mechanism ruling — which of H1–H6 (or what else) produces each dip class,
-and whether the fix is local or structural. The task list, the pins that will legitimately move
-(m3c's surplus band, g4/g5, c1's accumulation bound are the candidates), and the T0 for the
-before/after comparison all follow from that ruling.
+Blocked on: nothing — M6.P2.T2 ruled (2026-09-23, M6 file `## Decisions`): the fix is **local** —
+split a saturated bucket's alpha over new vs co-located area from the *raw* `A_k`
+(`u = min(A_raw/(C_raw+D_raw), 1)`, `aCov = u·C`, `aRes = u·D`, colour by `1/A_raw`) inside
+`compositePixelCoveragePartition()`, not the depth-gated arrival plane. Pins that move: i7/i7d
+(re-pin — their signal is this defect), g1/g2/g3/m3a (improve), scene (o)'s six XFAILs (→ PASS).
+Reference patch: `~/deepc-validation/M6-P2T2/patches/m6-mut-all.patch` bit 64. T0: M6-T0 plus
+M6's closing a–o tally. Elaborate from that ruling at promotion.
 
 Acceptance sketch:
 - scene (o): every dip cell's alpha arm reads `1 − α == 0` within its ulp bound and flips XFAIL → PASS;

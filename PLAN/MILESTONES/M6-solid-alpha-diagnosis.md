@@ -183,7 +183,7 @@ hard outer bound; every new check is mutation-tested; oracles are never the new 
     a headless run with the variable set on scene (o)'s o3 prints one block per listed pixel.
   - size: M
 
-- [ ] M6.P2.T2 — Run the H1–H6 mutation experiments and write the mechanism ruling
+- [x] M6.P2.T2 — Run the H1–H6 mutation experiments and write the mechanism ruling
   - files: none in the repo tree — throwaway scripts and the evidence under
     `~/deepc-validation/M6-P2T2/`; the ruling is the PM's edit to this file's `## Decisions` and
     to `M7-solid-alpha-fix.md`'s `Blocked on:` line
@@ -290,3 +290,45 @@ approach; `./docker-build.sh --linux` green; then PR to `master` from
   0.75, 0.33) attenuated by `tHead` 0.24 / 0.14 / 0.012; `arrival D = 1.0037 > 1` so the fill never
   runs. Points at H6 (saturate-down) + the residual/`tHead` path, with H5's deficit-only gate
   unable to recover it — a lead for P2.T2 to confirm or reject, not a ruling.
+- 2026-09-23 — **M6.P2.T2 MECHANISM RULING: one term, local fix (H6, corrected).** Evidence
+  `~/deepc-validation/M6-P2T2/` (`patches/m6-mut-all.patch` + `INDEX.txt`, runtime bitmask
+  `DEEPC_M6_MUT`; `logs/sum-*.txt`, `logs/cmp-*.txt`, `probes/`, `scripts/m6exp.py`).
+  **Mechanism.** A bucket pools opaque *new* area `C_k` with opaque *co-located* area `D_k` (raw
+  `A_k = C_k + D_k > 1`); saturate pulls `A_k` to 1; the composite then splits the saturated 1
+  across C:D (`Scatter.h` ~3041 `aRes = a*(colo/(cov+colo))`, `a` clamped at ~2992), so the fit
+  term's per-unit opacity `local` drops below 1 (0.753 at (171,103)) and `accAlpha += fit*local`
+  under-adds. `D_k` is fed by (i) the rear half of an opaque fragment's bucket split
+  (`partitionAlpha(1,f) = 1`, both halves full alpha) and (ii) in complete deep, hidden share-0
+  samples, which still deposit full alpha/colour/area (`Scatter.cpp` ~546–549). Every dip pixel
+  has arrival `D > 1` (1.0037–1.61), so the deficit-only fill never engages.
+  **Classes** (worst `1−α` past bound, K=16): P plane interior (o1b, K=4) 1.777e-3; U1 ring o2b
+  5.138e-4; U2 under-edge o3 3.067e-2 (sparse 4.389e-3); O1/O2 overlap 2.493e-3 / 2.199e-3.
+  **Grid** (P / U1 / U2 / O1 / O2): H1 K 4/16/64/128 — dips move, 0 at 64/128 all classes; H1
+  card-on-centre — U2 *worse* (5.115e-2), O1/O2 → 0; H2 size 86/85/43/42 — tracks size, not
+  integer diameter (85 ≈ 86); H3 sparse — U2 3.067e-2 → 2.790e-3, P unchanged; H3 r_plane 0/2/8/16
+  — U1 0/0/5.138e-4/0, r_obj<r_plane 8.2e-4/8.9e-4; H4 same depth — unchanged (O1 2.49e-3 →
+  2.39e-3); H5a `kFillDeficitTol→0` — unchanged all; H5b symmetric 1/D — 10–100× worse all; H6
+  skip-saturate-only — bit-identical (composite clamps at use); **H6' split from raw `A_k` (mut64)
+  — 0 / 0 / 0 / 0 / 0**, and (171,103) reads α exactly 1.000000000. (H3 r_plane/r_obj and H4 have
+  no reading in classes whose geometry they don't vary — n/a by construction.)
+  **Verdicts:** H6 accepted for every class with the corrected term; H1 accepted only as a
+  *source* of `D_k` (P, O), rejected as stated; hidden samples accepted as a `D_k` source for U2;
+  H2, H4, H5 rejected; H3's premise false.
+  **Smallest exact change (mut64):** when `colo > 0` and raw `A_k > 1`, `u = min(A_raw/(C_raw+D_raw),
+  1)`, `aCov = u·C`, `aRes = u·D`, colour scaled by `1/A_raw` as saturation does — no new plane,
+  no memory. **Measured pin moves under mut64:** a, c, d, n, f, b, e, h, j, k, l bit-identical;
+  g1 3.03e-8→1.38e-8, g2 2.09e-6→1.79e-7, g3 2.09e-6→1.19e-7, m3a 2.09e-6→1.19e-7 (all
+  improvements); g4/g5, m0b, m1 unchanged; **i7 0.0900→2.96e-3 and i7d 0.0900→9.53e-4 FAIL** —
+  their "a²/4 collision residual" signal *is* this defect and must be re-pinned; all six o XFAILs
+  read DIP GONE. **Rejected alternatives:** opaque fragment drops its rear deposit (mut16) — U2
+  worsens to 1.41e-1; plus culling hidden samples (mut48) — o clean but m0b edge R/A 0.5119→0.8000,
+  n1b/n8/n8b/n9 FAIL (8 FAILs in a, c, n).
+  **Recommendation for M7: LOCAL** — the corrected C:D split in `compositePixelCoveragePartition()`
+  with saturation's colour scaling folded into it; not the depth-gated arrival plane (the fill
+  cannot be the lever: arrival > 1 at every dip). M7 plans: re-pin i7/i7d against an independent
+  oracle, flip o's six XFAILs to PASS, doctests for the saturated two-area case.
+  **Corrections to "What we know" above:** hidden samples are *not* share-0 in their deposits
+  (share feeds arrival only); an opaque split's rear carries alpha `w`, not `w·(1−f)`; H6's term
+  is the aCov/aRes split, not `fit = min(C_k, freeArea)`; H2's axis is size/CoC slope, not
+  integer diameter. The scene (o) o2 cell note in `scenes.py` repeats the share-0 premise and
+  should be corrected when M7 touches scene (o).
