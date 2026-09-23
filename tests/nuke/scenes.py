@@ -5460,6 +5460,51 @@ O_ULP = 2.0 ** -24
 O_TERMS_PER_TAP = 4
 O_DIFF_NAME = "o5_alpha_diff_defocus_minus_bokeh.exr"
 
+# --- o6: mixed-opacity co-located stack vs Bokeh ------------------------------
+#
+# The clamped-area split divides a saturated bucket's raw alpha over ITS OWN
+# clamped new and co-located areas; the planes cannot tell that a co-located
+# deposit's own opacity differs from the layer that claimed the new area, so
+# a mixed-opacity stack -- an opaque card with a translucent "fog" card at a
+# depth inside the SAME bucket -- under a foreground disc that varies how
+# much of the stack's own area is "new" per pixel can read its arrival
+# colour wrong where its alpha is exact.  MIX_DELTA is derived, not guessed:
+# probing this rig's own bucket centres with DEEPC_DEFOCUS_DEBUG_PROBE at
+# MIX_Z's depth (8.20) gives centre spacing 2.133 at K=4 (6.511/8.644), 0.665
+# at K=16 (8.125/8.790) and 0.153 at K=64 (8.038/8.191); MIX_DELTA=0.02 is
+# 7.6x smaller than the K=64 spacing, the swept K's tightest, so the opaque
+# and fog samples land in the same bucket pair with matching weight at every
+# swept K (confirmed by probe: both samples' raw colour sums land in the
+# same bucket).
+MIX_BOX = (100, 100, 156, 156)
+MIX_NEAR_BOX = (112, 112, 144, 144)
+MIX_Z = O_CARDS[0][1]          # 8.20, reuse the rig's own near-focus depth
+MIX_DELTA = 0.02
+MIX_NEAR_Z = 7.9
+MIX_RED_OPAQUE = 0.90
+MIX_RED_FOG = 0.10
+MIX_RED_NEAR = 0.55
+MIX_FOG_ALPHAS = (0.2, 0.5)
+MIX_KS = (4, 16, 64)
+MIX_CARDS = ((MIX_BOX, MIX_Z, MIX_RED_OPAQUE),
+            (MIX_BOX, MIX_Z - MIX_DELTA, MIX_RED_FOG),
+            (MIX_NEAR_BOX, MIX_NEAR_Z, MIX_RED_NEAR))
+
+# The node vs Bokeh colour:alpha ratio deviation this build reads on o6c, at
+# each (K, fog alpha) cell -- the worst pixel over MIX_BOX: inside the near
+# card at K=4, where the near card and the stack share one bucket; on
+# MIX_BOX's edge at K=16/64, where the stack's own silhouette weight differs
+# from Bokeh's.  A pin is a measurement of a known defect, never a target:
+# whoever moves one re-pins it in the same change.
+O6_PIN_COLOUR = {
+    (4, 0.2): 2.832e-01,
+    (16, 0.2): 2.251e-01,
+    (64, 0.2): 2.251e-01,
+    (4, 0.5): 1.770e-01,
+    (16, 0.5): 1.413e-01,
+    (64, 0.5): 1.413e-01,
+}
+
 
 def oRadius(z, size=O_SIZE):
     return size * abs(1.0 - GROUND_FOCUS / z)
@@ -5482,6 +5527,24 @@ def oCards(sameDepth=False):
 
 def oRig(cards=O_CARDS):
     return deepMerge([oCard(*card) for card in cards] + [groundPlane()])
+
+
+def mixFogCard(box, z, red, alpha):
+    return pointLayer(rectangle2d(box, (red, GROUND_COLOR[1], GROUND_COLOR[2],
+                                        alpha)),
+                      z, keepZeroAlpha=False, premult=True)
+
+
+def mixRig(fogAlpha):
+    """The co-located mixed-opacity stack: an opaque card at ``MIX_Z``, a
+    translucent fog card at ``MIX_Z - MIX_DELTA`` (same box, same bucket),
+    and a small opaque card nearer the camera whose own CoC disc supplies
+    new area over parts of the stack, all over the receding plane."""
+    return deepMerge([oCard(MIX_BOX, MIX_Z, MIX_RED_OPAQUE),
+                      mixFogCard(MIX_BOX, MIX_Z - MIX_DELTA, MIX_RED_FOG,
+                                fogAlpha),
+                      oCard(MIX_NEAR_BOX, MIX_NEAR_Z, MIX_RED_NEAR),
+                      groundPlane()])
 
 
 def oSparse(cards=O_CARDS):
@@ -5747,6 +5810,14 @@ def sceneO(settings):
       o5c  DeepCDefocus - Bokeh alpha, per pixel over the same interior,
            gated on the same bound plus Bokeh's own +-1 ulp.
       o5cr ...colour:alpha ratio (G/A, B/A) between the two, same pixels.
+      o6   a mixed-opacity co-located stack (opaque card + translucent fog
+           card in the same bucket, small opaque card nearer camera for new
+           area) vs Bokeh, K=4/16/64 x fog alpha 0.2/0.5: worst 1-a over the
+           covered box.
+      o6b  ...DeepCDefocus - Bokeh alpha difference, same sweep.
+      o6c  ...colour:alpha ratio vs Bokeh, same sweep -- pinned XFAIL where
+           the node weights the stack against its neighbours differently
+           from Bokeh.
 
     Pinned readings are K = 16 whatever --k says.
     """
@@ -6175,6 +6246,65 @@ def sceneO(settings):
             None)],
         "|c/a_node - c/a_bokeh|", "same pixels",
         "bound is twice o5c's per-pixel tolerance"))
+
+    # ------------------------------------------------------------------
+    # o6: mixed-opacity co-located stack vs Bokeh.
+    # ------------------------------------------------------------------
+    mixTolerance = oTolerance(O_SIZE, MIX_CARDS)
+    mixPopulation = ("MIX_BOX %s: opaque card z=%.2f, fog card z=%.2f "
+                     "(delta %.2f, same bucket), near opaque card z=%.2f "
+                     "over MIX_NEAR_BOX %s, plus the receding plane"
+                     % (MIX_BOX, MIX_Z, MIX_Z - MIX_DELTA, MIX_DELTA,
+                        MIX_NEAR_Z, MIX_NEAR_BOX))
+    mixAlpha, mixAlphaDiff, mixColourDiff = [], [], []
+    for fogAlpha in MIX_FOG_ALPHAS:
+        resetScript()
+        mixSource = mixRig(fogAlpha)
+        mixOracle = makeBokeh(cell, mixSource, GROUND_FOCUS, O_SIZE)
+        mixBokeh = render(cell, mixOracle, "o6_bokeh_a%g" % fogAlpha,
+                          box=box)
+        for k in MIX_KS:
+            s = settings.derive(k=k)
+            label = "K=%d fog=%g" % (k, fogAlpha)
+            mixImg = renderOf(lambda fa=fogAlpha: mixRig(fa),
+                              "o6_node_k%d_a%g" % (k, fogAlpha), s)
+            mixAlpha.append((label, oDip(mixImg, MIX_BOX, mixTolerance),
+                             None))
+            mixDiffAlpha, _ = oAlphaAgainst(
+                mixImg, mixBokeh, MIX_BOX,
+                lambda x, y: mixTolerance(x, y) + O_ULP)
+            mixAlphaDiff.append((label, mixDiffAlpha, None))
+            mixColourDev = oColourAgainst(
+                mixImg, mixBokeh, MIX_BOX,
+                lambda x, y: 2.0 * mixTolerance(x, y))
+            mixColourDiff.append((label, mixColourDev,
+                                  O6_PIN_COLOUR.get((k, fogAlpha))))
+    checks.append(oCheck(
+        "o6 mixed-opacity co-located stack: worst 1-a over the covered "
+        "box, K x fog alpha sweep", mixAlpha, "1-a", mixPopulation,
+        "the opaque card covers every pixel of MIX_BOX by construction, so "
+        "the only correct alpha is 1.0 at every cell"))
+    checks.append(oCheck(
+        "o6b ...DeepCDefocus - Bokeh alpha difference, same sweep",
+        mixAlphaDiff, "|a_node - a_bokeh|", "same pixels",
+        "bound is o6's term-count tolerance plus Bokeh's own measured +-1 "
+        "ulp, as o5c"))
+    checks.append(oCheck(
+        "o6c ...node vs Bokeh colour:alpha ratio (G/A, B/A), same sweep",
+        mixColourDiff, "|c/a_node - c/a_bokeh|", "same pixels",
+        "bound is twice o6's per-pixel tolerance, as o5cr. The fog card's "
+        "colour is not premultiplied by its alpha, so fog-over-card "
+        "flattens to (2 - fog alpha) times the G/A and B/A of the near card "
+        "and the plane; at fog alpha 0 every layer shares one ratio and "
+        "this reads ~2e-5 whatever the mixing weights. Two weights differ "
+        "from Bokeh's. Where the near card and the stack share a bucket "
+        "(K=4; the near card's depth-split share at K=16/64) the bucket's "
+        "summed alpha is saturated as one, mixing the near card with the "
+        "stack it hides by alpha (0.89 : 1.0) instead of in depth order. "
+        "On the stack's own defocused silhouette the node weights it by its "
+        "disc coverage (0.52 half a pixel inside the edge) where Bokeh "
+        "reads 0.84. The deficit fill scales colour and alpha together, so "
+        "it cannot move the ratio"))
     return checks
 
 
