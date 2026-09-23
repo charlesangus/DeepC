@@ -207,7 +207,7 @@ hard outer bound; every new check is mutation-tested; oracles are never the new 
 
 ## Phase 6.3: Gate
 
-- [ ] M6.P3.T1 — Full suite, cross-`.so` identity, and the PR
+- [x] M6.P3.T1 — Full suite, cross-`.so` identity, and the PR
   - files: none — verification only; any fix lands in the task that owns the code
   - approach: clean rebuild of `build/local-17.0`; both doctest suites; the full a–o harness in two
     halves under `scripts/hostguard.sh --mem-gb 5.5` with `DEEPC_PLUGIN_DIR` pinned to the fresh
@@ -332,3 +332,14 @@ approach; `./docker-build.sh --linux` green; then PR to `master` from
   is the aCov/aRes split, not `fit = min(C_k, freeArea)`; H2's axis is size/CoC slope, not
   integer diameter. The scene (o) o2 cell note in `scenes.py` repeats the share-0 premise and
   should be corrected when M7 touches scene (o).
+- 2026-09-23 — **M6.P3.T1 gate green, docker gate waived for M6 (user).** Clean rebuild of
+  `build/local-16.0` at `71a3ee3`; doctests 27/27 + 117/117; a–o `PASS=152 FAIL=2 XFAIL=17 SKIP=2`
+  = M6-T0's 134/2/11/2 + scene (o)'s 18/0/6/0, every a–n row byte-identical to the baseline logs
+  (g–n after whitespace normalisation — the harness ran g–j / k–n / o as separate batches because
+  hostguard's host-memory floor killed the combined g–o run); scene (m)'s three EXRs 0 ulps vs M6-T0.
+  Evidence `~/deepc-validation/M6-P3T1/`. `./docker-build.sh --linux` not run: no local images
+  remain and the 2026-09-06 hand-built AlmaLinux image and `zip` shim are gone, so the stock script
+  would fail on the unroutable Foundry download. The user accepted the local build as M6's gate (M6
+  ships only harness, oracle and an env-gated debug probe); the image must be rebuilt before a
+  milestone that changes shipped behaviour (M7) can pass its docker gate. No project-wide decisions
+  published: no earlier milestone published to `docs/decisions/` and planning artifacts stay local.
