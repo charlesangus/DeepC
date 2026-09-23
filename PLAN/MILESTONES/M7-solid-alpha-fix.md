@@ -291,7 +291,7 @@ every surviving XFAIL keeps a hard outer bound; every new check is mutation-test
     under its recorded mutation; the comment table carries both columns.
   - size: M
 
-- [ ] M7.P3.T5 — Mixed-opacity co-located stack vs Bokeh: measure the clamped-split rule's residual gap
+- [x] M7.P3.T5 — Mixed-opacity co-located stack vs Bokeh: measure the clamped-split rule's residual gap
   - files: `tests/nuke/scenes.py` (a new scene-(o) cell or a small new scene — follow how scene (o)
     registers cells and uses `makeBokeh()`), `tests/nuke/generate_scene_scripts.py` (StickyNote /
     `.nk` if the scene gets a script), the regenerated `.nk`
@@ -471,3 +471,19 @@ then PR to `master` from `claude/deep-defocus-node-plan-o0ld83`.
   Moves: g2/g3 K=8 3.7e-5 → 1.8e-7 / 6.0e-8; K=16 2.09e-6 → 1.8e-7 / 1.2e-7; m3a alpha 2.09e-6 → 1.19e-7,
   ratio unmoved. Still 8-bit-gated, left for a later sweep: i2, i3, i4, i5, i5b; m0, m0b, m1, m1b, m2b,
   m3b, m3c. Also for that sweep: 12 pre-existing plan-ID references (`M1.P3.T20`) in `scenes.py` comments.
+- 2026-09-23 — **M7.P3.T5 landed** (`ed98e68`): rig = opaque card z=8.20 + fog card z=8.18 (δ=0.02,
+  same bucket at K=4/16/64, probe-confirmed) + opaque near card z=7.90, fog α ∈ {0.2, 0.5}. Scene (o)
+  `PASS=36 FAIL=0 XFAIL=1` → F = 2 (o6, o6b), X = 1 (o6c, 6 pinned cells). **Alpha: exact and equal to
+  Bokeh everywhere** (worst 1−α 1.19e-7) — the doctest-predicted residual (0.919) does not appear on a
+  real render (per-pixel flatten composites fog over card before bucketing, so the stack arrives as
+  one exact `over`). **Colour ratio vs Bokeh: 0.14–0.28, pre-existing** (same on M7-T0). Mechanism
+  (consultant, probe-verified, predictions match every pin): (1) K=4 — the near card and the stack
+  share a bucket and are saturated as one, mixing by alpha (0.89 : 1.0) instead of depth order
+  (predicted B/A 0.996, node 0.986, Bokeh 0.703 → 0.283); milder at K=16/64 via the near card's
+  depth-split share. (2) K=16/64 worst pixels — on the stack's defocused silhouette the node weights
+  it by thin-lens disc coverage (0.52, geometric) where Bokeh reads 0.84 → 0.227 / 0.142; a disagreement
+  with the oracle, not clearly a node bug. Deficit fill uninvolved (scales colour and alpha together).
+  The implementer's first note (fill-based) and the PM's pooling hypothesis were both refuted.
+  Fix options for (1): per-tile adaptive bucket boundaries (cheapest, CUDA-neutral), or extra per-bucket
+  depth-moment planes (~2× plane memory); per-fragment order within a bucket rejected (breaks the
+  additive-plane/atomic-splat design). Evidence `~/deepc-validation/M7-P3T5/` (+ `o6c-mechanism/`).
