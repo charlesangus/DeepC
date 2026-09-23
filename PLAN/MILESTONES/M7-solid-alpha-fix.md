@@ -141,7 +141,7 @@ every surviving XFAIL keeps a hard outer bound; every new check is mutation-test
 
 ## Phase 7.2: The composite fix
 
-- [ ] M7.P2.T1 — Fold saturation into `compositePixelCoveragePartitionImpl()` and split a saturated two-area bucket from the raw `A_k`
+- [x] M7.P2.T1 — Fold saturation into `compositePixelCoveragePartitionImpl()` and split a saturated two-area bucket from the raw `A_k`
   - files: `src/DeepCDefocusScatter.h` (`compositePixelCoveragePartitionImpl` ~2921–3485, its
     contract block ~2221–2330, `CompositeTrace*` structs ~2851–2919, the `resolveBandCPU` comment
     ~3606), `src/DeepCDefocusScatter.cpp` (`resolveBandCPU` ~1887, `recordProbePlanes` ~1860),
@@ -432,3 +432,9 @@ then PR to `master` from `claude/deep-defocus-node-plan-o0ld83`.
 - 2026-09-23 — **User: add M7.P3.T5** — measure the clamped-split rule's residual gap
   (mixed-opacity co-located stack under large new area) on a real render against Bokeh; pin it as a
   two-sided XFAIL if Bokeh reads 1 and the node dips. Final tally gains `F` PASS / `X` XFAIL rows.
+- 2026-09-23 — **M7.P2.T1 landed** (`af9fd59`): doctests math 26/26, scatter 121/121 (117 + three
+  saturated two-area cases + one continuity case: fog-stack C∈{0,1e-7,1e-2,0.1} alpha == 1, A-crossing
+  |Δα| ≤ 180·2⁻²⁴ measured 18 ulps; both fail under the guarded raw-area rule at 0.657 / 0.556→0.440);
+  mutation (split reverted) fails (a)–(d) and (g); scene (o) PASS=18 FAIL=6 — exactly o1b/o2b/o3/o3b/
+  o4/o4b reading DIP GONE; a,c,d,n 39/39 rows identical to M6-P3T1. Evidence `~/deepc-validation/M7-P2T1/`
+  (`rule2/` = final rule).
