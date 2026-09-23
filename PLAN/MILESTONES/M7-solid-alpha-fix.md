@@ -349,7 +349,7 @@ every surviving XFAIL keeps a hard outer bound; every new check is mutation-test
     probing the worst pixel of each (a saturated bucket with `D > 0` on the ramp — the fix's own term).
     `./docker-build.sh --linux` on the M7 head with P1.T3's checks. Then the PR from
     `claude/deep-defocus-node-plan-o0ld83` to `master`.
-  - verify: doctests `27/27` + `117+n`; a–o tally **`PASS=160+I+M+F FAIL=2 XFAIL=11+X SKIP=2`** — T0's
+  - verify: doctests `26/26` + scatter count from P2.T1 (120+n); a–o tally **`PASS=160+I+M+F FAIL=2 XFAIL=11+X SKIP=2`** — T0's
     152/2/17/2 with scene (o)'s six XFAILs → PASS (+6), o5c/o5cr (+2), `I` = net new i rows (P3.T3:
     +2), `M` = P3.T2's rows, `F`/`X` = P3.T5's PASS/XFAIL rows; restate the exact number from the task reports before checking; FAILs
     f3e/f3f only; the 11 surviving XFAILs (f's five, g4, g5×4, m3c) byte-identical with hard bounds;
