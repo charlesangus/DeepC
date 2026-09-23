@@ -133,7 +133,7 @@ hard outer bound; every new check is mutation-tested; oracles are never the new 
     non-vacuity guard, recorded in the docstring; headless run under `scripts/hostguard.sh`.
   - size: M
 
-- [ ] M6.P1.T3 — Scene (o): slanted plane + small objects, complete deep, dips pinned as XFAILs
+- [x] M6.P1.T3 — Scene (o): slanted plane + small objects, complete deep, dips pinned as XFAILs
   - files: `tests/nuke/scenes.py` (new `sceneO()` reusing `groundPlane()`/`groundPlaneRow()`
     ~1597–1612, `pointLayer`/`rectangle2d`/`deepMerge` and the `_worstUnpremult()` idiom; register
     in `SCENES` at ~5268), `tests/nuke/generate_scene_scripts.py` (register at ~947 as
@@ -262,3 +262,21 @@ approach; `./docker-build.sh --linux` green; then PR to `master` from
   thin-lens), and the two verify sizes are the calibration points themselves — o0b must check the
   1 px agreement at scene (o)'s own sizes, not only these two. Halo non-vacuity: Bokeh alpha exactly
   1.0 over `(61,61)-(195,195)` on the M4 halo rig.
+- 2026-09-22 — **M6.P1.T3: scene (o) landed** (`52c02d5`), `PASS=18 FAIL=0 XFAIL=6 SKIP=0`; evidence
+  `~/deepc-validation/M6-P1T3/` (`logs/run2.log`, `renders/o5_alpha_diff_defocus_minus_bokeh.exr`).
+  Rig: size 64, focus 10, four 28×28 opaque cards at z 8.20 (r 14.05) / 8.55 (r 10.85), pinned cells
+  at K=16. Per-pixel bound `4·taps·2⁻²⁴` from the geometry. Pinned dips (XFAIL, outer bound 2×):
+  **o1b** plane alone at K=4 1.777e-3 (K=16/64 clean); **o2b** ring round a card, r_plane 8 only,
+  5.138e-4; **o3** full rig 3.067e-2 at (171,103), under the isolated card's lower edge; **o3b**
+  overlap 2.493e-3; **o4/o4b** sparse twin 4.389e-3 / 2.199e-3. Findings that steer P2.T2:
+  (1) **the plane alone does not dip at K=16** (any size 43/64/86, integer or half-integer
+  diameter — H2 looks rejected at this rig); (2) **K=64 removes every K=16 dip**, K=4 moves them —
+  strong first evidence for H1 (bucket split); (3) complete deep is *worse* than sparse (3.07e-2 vs
+  4.39e-3); (4) same vs different pair depth barely moves the overlap (2.49e-3 → 2.39e-3 — H4 weak);
+  (5) dips sit in horizontal row bands (96–105, 118–120) on the near-focus side of card blooms;
+  colour ratio holds everywhere (worst 1.4e-5), so colour and alpha dip together.
+  **Deviations:** Bokeh reads 1 ± 1 ulp (0.999999881..1.000000119 on 339/24336 px), not
+  bit-exactly 1.0 — o5's oracle arm is gated on the same term-count ulp bound, consistent with the
+  no-8-bit ruling; o0b's size-64 calibration sits exactly at the 1 px limit on row 200 (26 vs 27),
+  `BOKEH_FSTOP_CAL` left at 64. Scenes.py gained a two-sided XFAIL helper (FAIL above 2× pin *and*
+  FAIL with "DIP GONE" if the dip vanishes). Default scene list is now a–o.
