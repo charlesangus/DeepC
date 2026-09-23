@@ -199,7 +199,7 @@ every surviving XFAIL keeps a hard outer bound; every new check is mutation-test
 
 ## Phase 7.3: Re-pin, and retire scene (o)'s XFAILs
 
-- [ ] M7.P3.T1 — Scene (o): the six dips → PASS, o5's node−Bokeh alpha gated, the o2 note corrected
+- [x] M7.P3.T1 — Scene (o): the six dips → PASS, o5's node−Bokeh alpha gated, the o2 note corrected
   - files: `tests/nuke/scenes.py` (`O_PIN_*` ~5526–5531, `sceneO()` ~5534, `oCheck` ~5492),
     `tests/nuke/generate_scene_scripts.py` (imports ~39–40, o StickyNote ~169–175, ~1027),
     `tests/nuke/scene_o_solid_alpha.nk` (regenerated)
@@ -442,3 +442,9 @@ then PR to `master` from `claude/deep-defocus-node-plan-o0ld83`.
   bucket 5 reads aRaw 1.329, satScale 0.753, D 0.328, **u = 1** — expected under the clamped-area rule
   (u < 1 only when min(C,1)+min(D,1) > A_raw); the brief's "u < 1 where D > 0" was written for the
   raw-area rule. Scene (m) EXRs 0 ulps vs `af9fd59`. `~/deepc-validation/M7-P2T2/probe_o3.txt`.
+- 2026-09-23 — **M7.P3.T1 landed** (`77778b2`): scene (o) `PASS=26 FAIL=0 XFAIL=0` (24 + o5c/o5cr);
+  o0/o0b/o5/o5r unchanged. On M7-T0 plugins: 19/7 — o1b 1.777e-3, o2b 5.138e-4, o3 3.067e-2 @ (171,103),
+  o3b 2.493e-3, o4 4.389e-3, o4b 2.199e-3, o5c 3.067e-2 — each equal to M6's pins. The o2b K=64
+  re-probe (gated on the removed pin) was dropped; P3.T2's `o2bm` re-adds it unconditionally.
+  Regenerating scripts also rewrote the other 14 `.nk` (17.0v3 → 16.0v9 header, random stack names) —
+  reverted as out of scope.
