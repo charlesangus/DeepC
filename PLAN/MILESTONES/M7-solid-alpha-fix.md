@@ -124,6 +124,21 @@ every surviving XFAIL keeps a hard outer bound; every new check is mutation-test
     the evidence dir.
   - size: M
 
+- [ ] M7.P1.T4 — `docker-build.sh`: opt-in read-only bind mount of a local Nuke SDK, then prove the gate
+  - files: `docker-build.sh`, `README.md` (build section, one line if it documents docker-build flags)
+  - approach: add an opt-in `--nuke-sdk <dir>` flag (and/or `DEEPC_NUKE_SDK` env) that, when set,
+    adds `-v <dir>:${NUKE_SDK_PATH}:ro` to the Linux `docker run` and skips NukeDockerBuild's
+    installer-based image build in `ensure_image` (the image must already exist, toolchain-only, from
+    P1.T3). Default behaviour (no flag) unchanged. Windows path untouched. Then run
+    `./docker-build.sh --linux --nuke-sdk /usr/local/Nuke16.0v9` on the tree at P1.T2's head + this
+    change, nothing heavy alongside.
+  - verify: `bash -n`; without the flag the generated `docker run` line is byte-identical to before
+    (echo/dry-run or diff of the script's command construction); with it, exit 0,
+    `release/DeepC-Linux-Nuke16.0.zip` lists **28** plugins incl. `DeepCDefocus.so`, 0 errors and no
+    `DeepCDefocus*` warnings in the log, `SKIP` for 16.1/17.0; the unzipped `DeepCDefocus.so` loads
+    headless in 16.0v9 (no render — AVX2 build; confirm AVX2 via `objdump` mnemonics).
+  - size: S
+
 ## Phase 7.2: The composite fix
 
 - [ ] M7.P2.T1 — Fold saturation into `compositePixelCoveragePartitionImpl()` and split a saturated two-area bucket from the raw `A_k`
@@ -354,3 +369,8 @@ then PR to `master` from `claude/deep-defocus-node-plan-o0ld83`.
   scene (o) 18/0/6/0, all 24 rows equal to M6-P3T1's review-fix log; loads headless.
   `git diff --stat 71a3ee3 088a76f`: 9 files, all PR #108's review fixes (probe re-composite,
   `makeBokeh`, scene (o) wording, `run_validation` kept-EXR line, README) — no a–n render path.
+- 2026-09-23 — **Docker image is toolchain-only; the SDK is bind-mounted read-only at `docker run`**
+  (user's suggestion) instead of `COPY`ed into the image via a BuildKit named context — avoids a
+  ~14 GB image layer (plus build-cache copy) on a disk with 33 GB free. P1.T3 now builds only the
+  toolchain image; new P1.T4 adds the opt-in `--nuke-sdk` mount to `docker-build.sh` and runs the
+  gate. P1.T3's first attempt failed at the image's `dnf install gcc-toolset-11…` step.
