@@ -86,7 +86,7 @@ every surviving XFAIL keeps a hard outer bound; every new check is mutation-test
     and sha256 reported to the PM for `## Decisions`.
   - size: S
 
-- [ ] M7.P1.T2 — Make `docker-build.sh` archive with `python3 -m zipfile` instead of `zip`
+- [x] M7.P1.T2 — Make `docker-build.sh` archive with `python3 -m zipfile` instead of `zip`
   - files: `docker-build.sh`
   - approach: replace both `(cd … && zip -r <archive> "DeepC")` calls (Linux and Windows) with
     `(cd … && python3 -m zipfile -c <archive> "DeepC")`; replace the `command -v zip` prerequisite
