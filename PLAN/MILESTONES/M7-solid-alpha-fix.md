@@ -222,7 +222,7 @@ every surviving XFAIL keeps a hard outer bound; every new check is mutation-test
     `sceneO`-scoped lines and the generator; the regenerated `.nk` loads headless.
   - size: M
 
-- [ ] M7.P3.T2 — Gate scene (o)'s mutation runs (K=64, K=4, same depth, sparse K=64, probe ring K=64) as unpinned rows
+- [x] M7.P3.T2 — Gate scene (o)'s mutation runs (K=64, K=4, same depth, sparse K=64, probe ring K=64) as unpinned rows
   - files: `tests/nuke/scenes.py` (`sceneO()`: the o2b K=64 render ~5720, the o3/o3b/o4/o4b
     `MUTATIONS:` notes), `tests/nuke/generate_scene_scripts.py` (StickyNote row list)
   - approach: PR #108 review finding #12, deferred here. Promote each note-only reading to its own
@@ -448,3 +448,10 @@ then PR to `master` from `claude/deep-defocus-node-plan-o0ld83`.
   re-probe (gated on the removed pin) was dropped; P3.T2's `o2bm` re-adds it unconditionally.
   Regenerating scripts also rewrote the other 14 `.nk` (17.0v3 → 16.0v9 header, random stack names) —
   reverted as out of scope.
+- 2026-09-23 — **M7.P3.T2 landed** (`a2f6136`): M = 8 rows (o3m/o3mr, o3bm/o3bmr, o4m/o4mr, o2bm/o2bmr);
+  scene (o) `PASS=34 FAIL=0 XFAIL=0`, the 26 prior rows identical. Mutations: o3m/o3bm fail on M7-T0
+  (K=4 1.378e-2, same depth 3.067e-2 / 2.385e-3); every ratio row fails with `satScale` dropped on the
+  fit colour (4.6e-2–2.6e-1). **Weak point:** the K=64 alpha entries (o4m, o2bm, o3m's K=64 arm) are
+  immune to the historical defect and to small perturbations (raw-area split, bit-16, `local` capped
+  at 0.9/0.999) — fine bucketing self-heals per-bucket deficits — and only fail under a 50% cut of both
+  fit and residual alpha (2.5e-1). They guard against gross breakage only. Evidence `~/deepc-validation/M7-P3T2/`.
