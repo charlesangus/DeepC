@@ -31,4 +31,8 @@ Acceptance sketch:
   commutation (m4a/m4b, n7) hold; `fill: background`'s twin identity (n1) holds.
 - profile within noise of M5's foreground figure (28.0 s median at 2K/20spp, 2 threads) unless
   the ruling's approach is structural, in which case the cost is measured and reported.
-- `./docker-build.sh --linux` green; PR to `master`.
+- scene (o)'s mutation runs (K=64, same-depth, sparse) are gated rather than note-only (PR #108
+  review finding, deferred here): unpinned `oCheck` rows requiring 0 px past the bound.
+- `./docker-build.sh --linux` green; PR to `master`. The hand-built AlmaLinux image and `zip`
+  shim from `PLAN/DECISIONS/2026-09-06-docker-linux-gate-runs-here.md` are gone (no local images
+  as of 2026-09-23) — rebuild them per that recipe first; M6 waived this gate, M7 cannot.
