@@ -124,7 +124,7 @@ every surviving XFAIL keeps a hard outer bound; every new check is mutation-test
     the evidence dir.
   - size: M
 
-- [ ] M7.P1.T4 — `docker-build.sh`: opt-in read-only bind mount of a local Nuke SDK, then prove the gate
+- [x] M7.P1.T4 — `docker-build.sh`: opt-in read-only bind mount of a local Nuke SDK, then prove the gate
   - files: `docker-build.sh`, `README.md` (build section, one line if it documents docker-build flags)
   - approach: add an opt-in `--nuke-sdk <dir>` flag (and/or `DEEPC_NUKE_SDK` env) that, when set,
     adds `-v <dir>:${NUKE_SDK_PATH}:ro` to the Linux `docker run` and skips NukeDockerBuild's
@@ -380,3 +380,9 @@ then PR to `master` from `claude/deep-defocus-node-plan-o0ld83`.
   (unroutable); a `sed` step comments out `mirrorlist=` and uncomments `# baseurl=` →
   `repo.almalinux.org` (routable). Evidence and `commands.sh` in `~/deepc-validation/M7-docker/`.
   `release/`, `install/` are gitignored. The gate run moved to P1.T4.
+- 2026-09-23 — **M7.P1.T4: docker gate green on the pre-fix tree** (`656f9eb`). `--nuke-sdk DIR` /
+  `DEEPC_NUKE_SDK` mounts the SDK `:ro`; missing image with the flag → SKIP, no installer fallback;
+  combined with a Windows build → exit 1; no-flag `docker run` line identical (stub-verified).
+  `./docker-build.sh --linux --nuke-sdk /usr/local/Nuke16.0v9`: EXIT=0, 28 plugins incl.
+  `DeepCDefocus.so`, 0 errors, 0 `DeepCDefocus` warnings, SKIP 16.1/17.0; release `.so` loads headless;
+  15 AVX2 mnemonics (not rendered here). Log `~/deepc-validation/M7-docker/docker-build.log`.
