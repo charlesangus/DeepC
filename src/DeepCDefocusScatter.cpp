@@ -1934,12 +1934,24 @@ void resolveBandCPU(const ScatterParams& params,
     if (probe == nullptr)
         return;
 
+    // The traced call below recomputes compositePixelCoveragePartition and
+    // writes its result into these same outColor/outAlpha slots, so the
+    // shipped value at a probed pixel is saved before the call and restored
+    // after: the untraced composite's result is what ships by construction,
+    // not merely because the traced arithmetic happens to match it.
+    std::vector<float> savedColor(static_cast<std::size_t>(view.channelCount));
     for (int p = 0; p < probe->count; ++p) {
         CompositeProbePixel& px = probe->pixels[p];
         if (!px.hit)
             continue;
         const std::ptrdiff_t i = probePixelIndex(params, view, px.x, px.y);
         recordProbePlanes(view, i, px.trace, true);
+
+        const float savedAlpha = outAlpha[i];
+        for (int c = 0; c < view.channelCount; ++c)
+            savedColor[static_cast<std::size_t>(c)] =
+                outColor[static_cast<std::ptrdiff_t>(c) * view.pixelCount + i];
+
         compositePixelCoveragePartitionTraced(view.color + i,
                                               view.alpha + i,
                                               view.weight + i,
@@ -1951,6 +1963,11 @@ void resolveBandCPU(const ScatterParams& params,
                                               outAlpha + i,
                                               view.arrival[i],
                                               px.trace);
+
+        outAlpha[i] = savedAlpha;
+        for (int c = 0; c < view.channelCount; ++c)
+            outColor[static_cast<std::ptrdiff_t>(c) * view.pixelCount + i] =
+                savedColor[static_cast<std::size_t>(c)];
     }
 }
 

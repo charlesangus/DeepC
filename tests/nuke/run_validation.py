@@ -27,7 +27,8 @@ it to ``sys.argv``.
     --tmp-dir DIR           where renders go             (default: a temp dir)
     --keep-renders          do not delete the EXRs
     --out-dir DIR           where renders meant to OUTLIVE the run go (scene
-                            (m)'s m5 over-checkerboard EXRs)
+                            (m)'s m5 over-checkerboard EXRs; scene (o)'s o5b
+                            DeepCDefocus - Bokeh alpha diff map)
                                                          (default: ~/deepc-validation)
     --full-sweep            widen scene (f)'s f3f unequal-density sweep to
                             the whole grid (~26s more; the default run keeps
@@ -198,8 +199,13 @@ def main(argv):
     print("settings: %s" % settings.describe())
     print("renders:  %s%s" % (tmpDir,
                               "" if options["keepRenders"] else " (deleted)"))
+    keepers = []
     if "m" in options["scenes"]:
-        print("kept:     %s (scene (m) m5)" % settings.outDir)
+        keepers.append("scene (m) m5")
+    if "o" in options["scenes"]:
+        keepers.append("scene (o) o5b")
+    if keepers:
+        print("kept:     %s (%s)" % (settings.outDir, ", ".join(keepers)))
     print("")
 
     checks = []

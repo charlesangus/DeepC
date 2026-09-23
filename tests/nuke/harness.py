@@ -331,12 +331,13 @@ def makeBokeh(settings, source, focusDistance, size, channels="rgba",
     it for the calibration numbers) at a fixed lens (``BOKEH_FOCAL_LENGTH``,
     ``BOKEH_FILM_FORMAT``, ``BOKEH_WORLD_SCALE``).
 
-    On the M4 halo rig (``haloForeground()`` merged with ``haloBackground()``,
-    both opaque, in ``scenes.py``) this reads alpha exactly 1.0 across the
-    halo band -- min and max both 1.000000000 over box (61,61)-(195,195), the
-    silhouette (80,80)-(176,176) outset by its CoC reach (19 px) -- the
-    oracle's own non-vacuity guard: an opaque foreground fully over an opaque
-    background stays opaque under any defocus, however blurred.
+    On scene (m)'s halo rig (``haloForeground()`` merged with
+    ``haloBackground()``, both opaque, in ``scenes.py``) this reads alpha
+    exactly 1.0 across the halo band -- min and max both 1.000000000 over
+    box (61,61)-(195,195), the silhouette (80,80)-(176,176) outset by its
+    CoC reach (19 px) -- the oracle's own non-vacuity guard: an opaque
+    foreground fully over an opaque background stays opaque under any
+    defocus, however blurred.
 
     Raises ``BokehUnavailable`` if the node cannot be created or refuses
     either input; never silently returns a sharp or half-built node.
@@ -356,21 +357,24 @@ def makeBokeh(settings, source, focusDistance, size, channels="rgba",
     if not node.setInput(3, source):
         raise BokehUnavailable("Bokeh refused the deep stack on input 3")
 
-    node["depthStyle"].setValue("Real")
-    node["kernelType"].setValue("Circular")
-    node["bloom"].setValue(0.0)
-    node["max_kernelsize"].setValue(max(2.0 * settings.maxRadius, 1.0))
-    node["realWorldLens"].setValue(True)
-    node["focalLength"].setValue(BOKEH_FOCAL_LENGTH)
-    node["filmFormat"].setValue(BOKEH_FILM_FORMAT)
-    node["worldScale"].setValue(BOKEH_WORLD_SCALE)
-    node["worldScaleMultiplier"].setValue(1.0)
-    node["focalPlane"].setValue(float(focusDistance))
-    node["fStop"].setValue(BOKEH_FSTOP_CAL / float(size))
-    node["bokehChannels"].setValue(channels)
+    try:
+        node["depthStyle"].setValue("Real")
+        node["kernelType"].setValue("Circular")
+        node["bloom"].setValue(0.0)
+        node["max_kernelsize"].setValue(max(2.0 * settings.maxRadius, 1.0))
+        node["realWorldLens"].setValue(True)
+        node["focalLength"].setValue(BOKEH_FOCAL_LENGTH)
+        node["filmFormat"].setValue(BOKEH_FILM_FORMAT)
+        node["worldScale"].setValue(BOKEH_WORLD_SCALE)
+        node["worldScaleMultiplier"].setValue(1.0)
+        node["focalPlane"].setValue(float(focusDistance))
+        node["fStop"].setValue(BOKEH_FSTOP_CAL / float(size))
+        node["bokehChannels"].setValue(channels)
 
-    for knobName, value in overrides.items():
-        node[knobName].setValue(value)
+        for knobName, value in overrides.items():
+            node[knobName].setValue(value)
+    except (NameError, TypeError, ValueError) as exc:
+        raise BokehUnavailable("Bokeh refused a knob setting: %r" % (exc,))
     return node
 
 

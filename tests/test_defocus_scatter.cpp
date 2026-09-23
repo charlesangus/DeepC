@@ -11897,7 +11897,6 @@ TEST_CASE("resolveBandCPU probe: the trace holds the planes and every composite 
                                              0.0f), 1.0f);
             }
             CHECK(m.accAfterRes == acc);
-            CHECK(m.accAlphaOut == acc);
             CHECK(m.freeAreaOut == freeArea);
             CHECK(m.claimedAreaOut == claimedArea);
             CHECK(m.tClaimedOut == tClaimed);

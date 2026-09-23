@@ -2890,7 +2890,6 @@ struct CompositeTraceTerms {
     float resLocal  = 0.0f;
     float accAfterRes = 0.0f;
 
-    float accAlphaOut    = 0.0f;
     float freeAreaOut    = 0.0f;
     float claimedAreaOut = 0.0f;
     float tClaimedOut    = 0.0f;
@@ -2942,6 +2941,9 @@ DEEPC_HD inline void compositePixelCoveragePartitionImpl(
         trace->channelCount = channelCount;
         trace->stopBucket   = -1;
         trace->arrival      = arrival;
+        trace->fillApplied  = false;
+        trace->fillScale    = 1.0f;
+        trace->clampScale   = 1.0f;
     }
 
     for (int c = 0; c < channelCount; ++c)
@@ -3256,8 +3258,6 @@ DEEPC_HD inline void compositePixelCoveragePartitionImpl(
                     tb->tHeadIn   = tHeadIn;
                     tb->allocArea = aSum;
                     tb->claimTake = claimTake;
-                    if (resArea > 0.0f)
-                        tb->resLocal = clampf(aRes / resArea, 0.0f, 1.0f);
                 }
             }
 
@@ -3269,6 +3269,10 @@ DEEPC_HD inline void compositePixelCoveragePartitionImpl(
 
             if (resArea > 0.0f) {
                 const float resLocal = clampf(aRes / resArea, 0.0f, 1.0f);
+                if constexpr (kTrace) {
+                    if (tb)
+                        tb->resLocal = resLocal;
+                }
 
                 // EACH TILE THE RESIDUAL REACHED LOSES `resLocal` — its
                 // OWN per-unit opacity `aRes / D_k`, which THE FOURTH PLANE
@@ -3402,7 +3406,6 @@ DEEPC_HD inline void compositePixelCoveragePartitionImpl(
         if constexpr (kTrace) {
             if (tb) {
                 tb->accAfterRes    = accAlpha;
-                tb->accAlphaOut    = accAlpha;
                 tb->freeAreaOut    = freeArea;
                 tb->claimedAreaOut = claimedArea;
                 tb->tClaimedOut    = tClaimed;
@@ -3517,9 +3520,6 @@ DEEPC_HD inline void compositePixelCoveragePartitionTraced(
     float                     arrival,
     CompositeTrace&           trace)
 {
-    trace.fillApplied = false;
-    trace.fillScale   = 1.0f;
-    trace.clampScale  = 1.0f;
     compositePixelCoveragePartitionImpl<true>(bucketColor, bucketAlpha, bucketWeight,
                                               bucketColocated, bucketCount, channelCount,
                                               pixelCount, outColor, outAlpha, arrival,
@@ -3623,8 +3623,12 @@ void scatterBackgroundCPU(const ScatterParams&  params,
 // `probe`, when non-null, records a CompositeTrace for each listed pixel that
 // lies inside this band (params.bandX/bandY/bandWidth/bandHeight, absolute
 // coordinates); a listed pixel outside it is left with hit == false.  The band
-// is resolved by the untraced composite first and each probed pixel is then
-// re-composited traced, so the output is the untraced composite's bit for bit.
+// is resolved by the untraced composite first, and each probed pixel is then
+// re-composited traced for its trace; that traced call writes into the same
+// outColor/outAlpha slots, so the caller saves those C+1 values before the
+// call and restores them after, keeping the shipped output the untraced
+// composite's bit for bit BY CONSTRUCTION, not merely because the traced
+// arithmetic happens to match.
 // ---------------------------------------------------------------------------
 struct CompositeProbePixel {
     int            x   = 0;

@@ -1973,21 +1973,6 @@ private:
         }
     };
 
-    // ------------------------------------------------------------------
-    // computeBand() — one horizontal band, end to end
-    //
-    //   fetch band +/- padY source rows -> (fill: background) one synthetic
-    //     hidden sample from the frame's map, appended to the pixel
-    //     -> flattenPixelToSoA
-    //   (only if it can matter) fetch the band's own rows of holdout
-    //     -> HoldoutSampleSoA -> HoldoutLut at the FRAME-GLOBAL boundary set
-    //   scatterBandCPU -> resolveBandCPU (saturate + composite)
-    //   write the band's disjoint region of the frame
-    //
-    // Returns false on abort / upstream failure; the caller then abandons the
-    // band (Dirty, never Done), so nothing partial is ever published — this
-    // function writes the shared frame only after a fully successful band.
-    // ------------------------------------------------------------------
     // One write per block, so blocks from bands resolving on different
     // threads never interleave.
     void printProbe(const deepc::CompositeProbePixel& pp,
@@ -2069,6 +2054,21 @@ private:
         std::fputs(out.c_str(), stderr);
     }
 
+    // ------------------------------------------------------------------
+    // computeBand() — one horizontal band, end to end
+    //
+    //   fetch band +/- padY source rows -> (fill: background) one synthetic
+    //     hidden sample from the frame's map, appended to the pixel
+    //     -> flattenPixelToSoA
+    //   (only if it can matter) fetch the band's own rows of holdout
+    //     -> HoldoutSampleSoA -> HoldoutLut at the FRAME-GLOBAL boundary set
+    //   scatterBandCPU -> resolveBandCPU (saturate + composite)
+    //   write the band's disjoint region of the frame
+    //
+    // Returns false on abort / upstream failure; the caller then abandons the
+    // band (Dirty, never Done), so nothing partial is ever published — this
+    // function writes the shared frame only after a fully successful band.
+    // ------------------------------------------------------------------
     bool computeBand(FrameCache& fc, BandJob& job, int y0, int y1,
                      double* fetchMs = nullptr)
     {
@@ -2281,14 +2281,14 @@ private:
         deepc::scatterBackgroundCPU(job.sp, job.residual, *job.kernel,
                                     job.planes);
 
+        // resolveBandCPU()'s probePixelIndex() already bounds-checks each
+        // pixel against the band and leaves an out-of-band one with
+        // hit == false, so the list handed to it is unfiltered.
         std::vector<deepc::CompositeProbePixel> probePixels;
         for (const auto& xy : _debugProbe) {
-            if (xy.second >= y0 && xy.second < y1
-                && xy.first >= job.sp.bandX && xy.first < job.sp.bandX + W) {
-                probePixels.emplace_back();
-                probePixels.back().x = xy.first;
-                probePixels.back().y = xy.second;
-            }
+            probePixels.emplace_back();
+            probePixels.back().x = xy.first;
+            probePixels.back().y = xy.second;
         }
         deepc::CompositeProbe probe;
         probe.pixels = probePixels.data();

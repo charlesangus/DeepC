@@ -5537,8 +5537,10 @@ def sceneO(settings):
     With a source sample under every ray and opaque geometry everywhere in
     view the only correct alpha is 1.0; the slack allowed anywhere here is
     the float accumulation bound of the sums behind a pixel (``oTolerance``),
-    never a fixed decimal.  Every reading is the worst pixel PAST that bound,
-    so 0.0 means "exactly 1 to rounding".
+    never a fixed decimal -- it is linear in the term count behind the pixel
+    (~8.4e-04 at interior edge rows, 2.3e-04-3.8e-04 on the probe rows).
+    Every reading is the worst pixel PAST that bound, so 0.0 means "within
+    the worst-case N*2^-24 accumulation bound", not "exactly 1".
 
       o0   non-vacuity: a single plane row and each card alone bloom to the
            CoC the scene is claimed at.
@@ -5665,7 +5667,8 @@ def sceneO(settings):
         "%d x %d px, interior %s" % (interior[2] - interior[0],
                                      interior[3] - interior[1], interior),
         rowText + "; opaque plane, complete by construction (one sample "
-                  "per pixel, nothing to hide)"))
+                  "per pixel, nothing to hide); worst-case bound %.3e"
+                  % alpha[1].maxTol))
     checks.append(oCheck(
         "o1r ...colour:alpha ratio (G/A, B/A) vs the source flatten", [ratio],
         "|c/a - src|", "same pixels",
@@ -5734,11 +5737,16 @@ def sceneO(settings):
     checks.append(oCheck(
         "o2r ...colour:alpha ratio under the silhouette", underRatio,
         "|c/a - src|", "same pixels", "G/A, B/A vs the source flatten"))
+    pinBound = next((r.maxTol for _, r, pin in around if pin is not None),
+                    None)
     checks.append(oCheck(
         "o2b one card over the plane: the ring around the silhouette (18 px)",
         around, "1-a", probePopulation,
         "MUTATIONS: r_plane itself (only the near-side r_plane 8 ring dips); "
-        + "; ".join(mutated)))
+        + "; ".join(mutated) + (
+            "; pin %.3e is within %.1fx its own bound %.3e" %
+            (O_PIN_PROBE_AROUND[8], O_PIN_PROBE_AROUND[8] / pinBound,
+             pinBound) if pinBound else "")))
     checks.append(oCheck(
         "o2br ...colour:alpha ratio around the silhouette", aroundRatio,
         "|c/a - src|", "same pixels", "G/A, B/A vs the source flatten"))
@@ -5770,10 +5778,9 @@ def sceneO(settings):
         "o3 full rig, complete deep: the whole interior", [
             ("K=%d" % O_K, rig[1], O_PIN_RIG)], "1-a", rigPopulation,
         "MUTATIONS: K=64 %s; K=4 %s; pair at one depth %s; plane absent "
-        "behind the cards (o4) %s" % (rigK64[1].describe(),
-                                      rigK4[1].describe(),
-                                      rigSame[1].describe(),
-                                      sparse[1].describe())))
+        "behind the cards (o4) %s; worst-case bound %.3e"
+        % (rigK64[1].describe(), rigK4[1].describe(), rigSame[1].describe(),
+           sparse[1].describe(), rig[1].maxTol)))
     checks.append(oCheck(
         "o3r ...colour:alpha ratio over the interior", [("K=%d" % O_K,
                                                          rig[3], None)],

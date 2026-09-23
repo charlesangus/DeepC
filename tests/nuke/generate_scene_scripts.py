@@ -40,8 +40,8 @@ from scenes import (                                              # noqa: E402
     O_PIN_SPARSE, O_PIN_SPARSE_OVERLAP, O_PLACEMENTS, O_PROBE_Z, O_SIZE,
     UNEQ_CARD_A, UNEQ_CARD_B, _uneqAnchor, _uneqCard, checkerSparse,
     checkerTwin, groundPlane, groundPlaneRow, haloBackground, haloForeground,
-    haloHoldout, haloSparse, nearSparse, nearTwin, oCard, oCards, oProbe,
-    oRadius, oSparse, overChecker, stripSource, texturedLayer,
+    haloHoldout, haloSparse, nearSparse, nearTwin, oCard, oCards, oInterior,
+    oProbe, oRadius, oSparse, overChecker, stripSource, texturedLayer,
 )
 
 OUT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -131,43 +131,48 @@ CHECK_N = (
 )
 
 
+_O_INTERIOR = oInterior(O_SIZE)
+
 CHECK_O = (
     "Scene (o) -- solid alpha on opaque geometry: a slanted plane with small "
     "objects, complete deep, against Bokeh\n\n"
     "Every DeepCDefocus here is fill=foreground, coc_mode manual, size %g, "
-    "focus 10, on scene (g)'s receding ground plane (0.372 CoC px per "
+    "focus %g, on scene (g)'s receding ground plane (0.372 CoC px per "
     "scanline). The rig merges four opaque 28x28 cards in front of it -- a "
     "pair whose blooms overlap (z=%.2f r=%.2f, z=%.2f r=%.2f), one isolated "
     "card over the near-focus rows (z=%.2f) and one over the far field "
     "(z=%.2f) -- with the plane sample still present under every card. "
-    "Cards share the plane's G and B, so G/A and B/A must read 0.55 / 0.70 "
-    "everywhere. The only correct alpha over the interior (50-205 both "
+    "Cards share the plane's G and B, so G/A and B/A must read %.2f / %.2f "
+    "everywhere. The only correct alpha over the interior (%d-%d both "
     "ways) is 1.0; every reading is the worst pixel past its own "
     "float-accumulation bound (4 terms per contributing tap x 2^-24).\n\n"
     "Node names are the harness cells:\n"
     "  o0_* / o0b_*: one plane row (y=60, 200) and each card alone, "
     "DeepCDefocus and Bokeh: extents within 1 px of r and of each other.\n"
-    "  o1_plane (K=16), o1b_plane_k4 / _k64, o1c_plane_s86 / _s43: the plane "
+    "  o1_plane (this script's K=%d; the harness's own o1 reads back at "
+    "the run's --k), o1b_plane_k4 / _k64, o1c_plane_s86 / _s43: the plane "
     "alone reads 1 to rounding except at K=4 (pinned %.3e).\n"
     "  o2_probe_r0/2/8/16: one r_obj=16 card at z=%.3f over plane rows whose "
     "own radius is 0/2/8/16. Under the silhouette: 1 to rounding at every "
     "r_plane. The ring around it dips only at r_plane 8 (near side, pinned "
     "%.3e); o2b_probe_r8_k64 reads 1.\n"
-    "  o3_rig (K=16): interior dip pinned %.3e under the isolated card's "
+    "  o3_rig (K=%d): interior dip pinned %.3e under the isolated card's "
     "lower edge, pair overlap %.3e. o3_rig_k64 reads 1 on both; "
     "o3_rig_same (pair at one depth) leaves the overlap dip in place; "
     "o3_rig_k4 dips elsewhere.\n"
     "  o4_sparse: the same with NO plane behind the cards: interior %.3e, "
     "overlap %.3e; o4_sparse_k64 reads 1.\n"
-    "  o5_bokeh: Bokeh on o3's stack reads 1 to within one float ulp "
-    "(0.999999881..1.000000119) over the interior; o5_diff is "
-    "DeepCDefocus - Bokeh (alpha), negative where the node dips.\n\n"
+    "  o5_bokeh: Bokeh on o3's stack reads 1 over the interior to within the "
+    "same term-count float-accumulation bound the node is gated on (see "
+    "makeBokeh()); o5_diff is DeepCDefocus - Bokeh (alpha), negative where "
+    "the node dips.\n\n"
     "Pins are XFAILs with a hard outer bound at 2x; a pinned dip that "
     "reads back inside its bound FAILs too, so it is re-examined."
-    % (O_SIZE, O_CARDS[0][1], oRadius(O_CARDS[0][1]), O_CARDS[1][1],
-       oRadius(O_CARDS[1][1]), O_CARDS[2][1], O_CARDS[3][1],
-       O_PIN_PLANE_K[4], O_PROBE_Z, O_PIN_PROBE_AROUND[8], O_PIN_RIG,
-       O_PIN_RIG_OVERLAP, O_PIN_SPARSE, O_PIN_SPARSE_OVERLAP)
+    % (O_SIZE, GROUND_FOCUS, O_CARDS[0][1], oRadius(O_CARDS[0][1]),
+       O_CARDS[1][1], oRadius(O_CARDS[1][1]), O_CARDS[2][1], O_CARDS[3][1],
+       GROUND_COLOR[1], GROUND_COLOR[2], _O_INTERIOR[0], _O_INTERIOR[2] - 1,
+       O_K, O_PIN_PLANE_K[4], O_PROBE_Z, O_PIN_PROBE_AROUND[8], O_K,
+       O_PIN_RIG, O_PIN_RIG_OVERLAP, O_PIN_SPARSE, O_PIN_SPARSE_OVERLAP)
 )
 
 
@@ -979,14 +984,14 @@ def buildSceneO(settings):
 
     def defocus(source, name, xpos, ypos, s=None, size=O_SIZE):
         node = makeDefocus(s or cell, source, size=size,
-                           focusDistance=10.0, cocMode="manual",
+                           focusDistance=GROUND_FOCUS, cocMode="manual",
                            fill="foreground")
         node.setName(name)
         node.setXYpos(xpos, ypos)
         return node
 
     def bokeh(source, name, xpos, ypos):
-        node = makeBokeh(cell, source, 10.0, O_SIZE)
+        node = makeBokeh(cell, source, GROUND_FOCUS, O_SIZE)
         node.setName(name)
         node.setXYpos(xpos, ypos)
         return node
