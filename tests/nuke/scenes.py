@@ -2604,43 +2604,40 @@ def sceneI(settings):
                  "sample per pixel, so the pre-merge has nothing to group. "
                  "i7 is the reachability proof"))
 
-    # --- i7: pre_merge REACHABILITY.  M1.P3.T12's review could not move a
-    # single pixel with this knob on any content it tried, so it is settled
-    # here with content built against the documented predicate rather than by
-    # trying more scenes.
+    # --- i7: pre_merge REACHABILITY.  The pre-merge groups adjacent same-pixel
+    # fragments when they share a containing bucket, a FragmentKind and a
+    # holdout bracket, and their radii are within merge_tolerance; the group
+    # then rasterises ONE disc, at its front member's radius.  The scatter
+    # rasterises a radius as a blend of the two kernel-grid nodes bracketing
+    # it, so two radii rasterise one kernel only when they are EQUAL
+    # (`sameScatterKernel`), and the merge is lossy whenever the grouped radii
+    # differ at all -- which the 0.25px DEFAULT tolerance permits.  A pair the
+    # default never groups reads 0 because nothing merged, not because merging
+    # is free, so the pair below sits 0.20px apart.
     #
-    # The pre-merge groups adjacent same-pixel fragments when they share a
-    # containing bucket, a FragmentKind and a holdout bracket, and their radii
-    # are within merge_tolerance; the group then rasterises ONE disc, at its
-    # front member's radius.  The scatter rasterises a radius as a blend of the
-    # two kernel-grid nodes bracketing it, so two radii rasterise one kernel
-    # only when they are EQUAL (`sameScatterKernel`), and the merge is lossy
-    # whenever the grouped radii differ at all -- which the 0.25px DEFAULT
-    # tolerance permits.  (M1.P3.T16's first pass asserted the opposite --
-    # "anything grouped at 0.25px rasterises the same disc, so the default is
-    # exactly lossless" -- and gated it on a pair 1.47px apart, which the
-    # default tolerance never groups at all: the check read 0 because nothing
-    # merged, not because merging was free.  Measured here instead.)
+    # WHERE THE DELTA IS.  Both layers are full-frame constants at alpha 0.6.
+    # Wherever nothing else reaches a pixel, grouped and ungrouped both
+    # composite the pair to its `over`, 1 - (1 - a)^2: the group arrives as
+    # one fragment of that alpha, the ungrouped pair as one saturated
+    # two-area bucket whose raw alpha is split over its clamped areas, which
+    # is the same `over` when the pixel's area is all free.  That is an
+    # independent oracle -- alpha from the algebra, colour ratio from a stock
+    # flatten of the same source -- and both renders are held to it (the
+    # interior arms).  The pair differs only under the z=3 corner element's
+    # bloom, where the corner's partial front coverage has already claimed
+    # some of the pixel's area: the grouped fragment pays for its excess
+    # through the fit/excess path, the ungrouped pair partly through the
+    # co-located residual, and the two weight the claimed area differently.
+    # That delta has no independent value, so the reachability arms state
+    # only that it exists, above the term-count bound, and that its argmax
+    # lies inside the corner bloom -- the magnitude is reported, not pinned.
     #
-    # WHAT THE DELTA IS.  Both layers are full-frame constants at alpha 0.6, so
-    # the interior reads the same alpha whatever disc it is scattered with,
-    # and the pre_merge on/off difference is not a bokeh-size effect: with
-    # pre_merge OFF the pair lands in one bucket as two DIFFERENT-kernel
-    # deposits, whose co-located area split falls a^2/4 short of the `over`
-    # (the collision residual the header documents: two opaque layers read
-    # 0.75 against 1) -- 0.09 at a = 0.6.  A pair the predicate calls one
-    # kernel is instead `over`-composited whether or not it pre-merges, and
-    # reads 0.  So the delta is a^2/4 with the kernels distinguished and
-    # exactly 0 with them identified, and both halves are pinned below.
-    #
-    # A corner element at z=3 widens the frame's measured CoC range so the pair
-    # still shares one containing ΔCoC bucket.
+    # The corner element also widens the frame's measured CoC range so the
+    # pair still shares one containing ΔCoC bucket.
     SIZE, FOCUS = 20.0, 10.0
     LAYER_ALPHA = 0.60
-    collisionResidual = LAYER_ALPHA * LAYER_ALPHA / 4.0     # 0.09
-    # a^2/4 is the co-location term alone; two distinct discs add a kernel-
-    # shape term of a few 1e-5 near the corner element, and the band admits it.
-    residualBand = 1.0e-03
+    pairOver = 1.0 - (1.0 - LAYER_ALPHA) ** 2              # 0.84
+    CORNER, CORNER_Z = (0, 0, 24, 24), 3.0
 
     def zForRadius(radiusPx):
         """Behind focus: r = size*(1 - focus/z)."""
@@ -2648,7 +2645,19 @@ def sceneI(settings):
 
     reachBox = (32, 32, 224, 224)
 
+    def reachSource(radiusA, radiusB):
+        return deepMerge([
+            pointLayer(constant2d((0.30, 0.30, 0.30, LAYER_ALPHA)),
+                       zForRadius(radiusA), keepZeroAlpha=False,
+                       premult=False),
+            pointLayer(constant2d((0.30, 0.30, 0.30, LAYER_ALPHA)),
+                       zForRadius(radiusB), keepZeroAlpha=False,
+                       premult=False),
+            pointLayer(rectangle2d(CORNER, (0.5, 0.5, 0.5, 1.0)),
+                       CORNER_Z, keepZeroAlpha=False, premult=True)])
+
     def reachability(radiusA, radiusB, tolerance, maxRadius=None):
+        """(pre_merge on, pre_merge off, their difference) over reachBox."""
         rendered = []
         for preMerge in (True, False):
             overrides = dict(preMerge=preMerge, mergeTolerance=tolerance)
@@ -2656,41 +2665,108 @@ def sceneI(settings):
                 overrides["maxRadius"] = maxRadius
             cell = settings.derive(**overrides)
             resetScript()
-            source = deepMerge([
-                pointLayer(constant2d((0.30, 0.30, 0.30, LAYER_ALPHA)),
-                           zForRadius(radiusA), keepZeroAlpha=False,
-                           premult=False),
-                pointLayer(constant2d((0.30, 0.30, 0.30, LAYER_ALPHA)),
-                           zForRadius(radiusB), keepZeroAlpha=False,
-                           premult=False),
-                pointLayer(rectangle2d((0, 0, 24, 24), (0.5, 0.5, 0.5, 1.0)),
-                           3.0, keepZeroAlpha=False, premult=True)])
             rendered.append(render(
-                cell, makeDefocus(cell, source, size=SIZE,
-                                  focusDistance=FOCUS, cocMode="manual"),
+                cell, makeDefocus(cell, reachSource(radiusA, radiusB),
+                                  size=SIZE, focusDistance=FOCUS,
+                                  cocMode="manual"),
                 "i_reach_%s_%g_%g_%s" % (preMerge, radiusB - radiusA,
                                          tolerance, maxRadius),
                 box=reachBox))
-        return compareImages(rendered[0], rendered[1], box=reachBox)
+        return (rendered[0], rendered[1],
+                compareImages(rendered[0], rendered[1], box=reachBox))
+
+    def discTaps(radiusPx):
+        """oTolerance's count: source pixels a disc reaches, rim included."""
+        return int(math.ceil(math.pi * (radiusPx + 1.0) ** 2))
+
+    def reachRows(label, guardLabel, radiusA, radiusB, maxRadius, note):
+        """The reachability arm and the interior arm for one pair."""
+        clamp = settings.maxRadius if maxRadius is None else maxRadius
+        radii = [min(r, clamp) for r in (radiusA, radiusB)]
+        cornerRadius = min(SIZE * abs(1.0 - FOCUS / CORNER_Z), clamp)
+        bloom = _outsetBox(CORNER, int(math.ceil(cornerRadius)) + 1)
+        perRender = O_TERMS_PER_TAP * sum(discTaps(r) for r in radii) * O_ULP
+        # Only the pair's bucket differs between the renders: the corner is
+        # never grouped with it, so its deposits are identical in both and
+        # drop out of the difference.  The grouped render rasterises the pair
+        # once, at the front radius, and the ungrouped render both discs.
+        diffBound = perRender + O_TERMS_PER_TAP * discTaps(radii[0]) * O_ULP
+
+        on, off, diff = reachability(radiusA, radiusB,
+                                     settings.mergeTolerance, maxRadius)
+        resetScript()
+        flat = render(settings, deepToImage(reachSource(radiusA, radiusB)),
+                      "i_reach_flatten_%g_%g" % (radiusA, radiusB),
+                      box=reachBox)
+
+        arms = [(name, image, _Excess(), _Excess())
+                for name, image in (("on", on), ("off", off))]
+        outside, outsideAt = 0.0, None
+        for y in range(reachBox[1], reachBox[3]):
+            for x in range(reachBox[0], reachBox[2]):
+                if _inBox(bloom, x, y):
+                    continue
+                flatAlpha = flat.at("A", x, y)
+                for _, image, alphaArm, ratioArm in arms:
+                    alpha = image.at("A", x, y)
+                    alphaArm.add(abs(alpha - pairOver), x, y, perRender)
+                    if alpha < 1.0e-03:
+                        continue
+                    ratioArm.add(max(abs(image.at(c, x, y) / alpha
+                                         - flat.at(c, x, y) / flatAlpha)
+                                     for c in ("R", "G", "B")),
+                                 x, y, perRender)
+                step = max(abs(on.at(c, x, y) - off.at(c, x, y))
+                           for c in RGBA)
+                if step > outside:
+                    outside, outsideAt = step, (x, y)
+
+        at = diff.maxAt
+        inBloom = at is not None and _inBox(bloom, at[0], at[1])
+        checks.append(boolCheck(
+            "i", label,
+            inBloom and diff.maxAbs > diffBound,
+            "%.4e at %s" % (diff.maxAbs, at),
+            "> %.2e, argmax inside the corner bloom %s"
+            % (diffBound, bloom),
+            population=diff.population(),
+            note="%s; max |on - off| outside the corner bloom %.3e at %s; "
+                 "the magnitude is reported, not pinned: it has no "
+                 "independent oracle" % (note, outside, outsideAt)))
+        parts = []
+        clean = True
+        for name, _, alphaArm, ratioArm in arms:
+            clean = clean and alphaArm.at is None and ratioArm.at is None
+            parts.append("%s alpha %s; %s R/A %s"
+                         % (name, alphaArm.describe(), name,
+                            ratioArm.describe()))
+        checks.append(boolCheck(
+            "i", guardLabel, clean, "; ".join(parts),
+            "|A - %.2f| and |c/A - flatten c/A| <= %.2e per px"
+            % (pairOver, perRender),
+            population="%d px, reachBox %s less the corner bloom"
+                       % (arms[0][2].count, reachBox),
+            note="alpha oracle 1 - (1 - %.2f)^2; colour oracle the stock "
+                 "flatten's own ratio (%.4f at the box centre); bound "
+                 "%d terms/tap x (%d + %d taps, radii %.1f/%.1f px) x 2^-24"
+                 % (LAYER_ALPHA,
+                    flat.at("R", 128, 128) / flat.at("A", 128, 128),
+                    O_TERMS_PER_TAP, discTaps(radii[0]), discTaps(radii[1]),
+                    radii[0], radii[1])))
+        return diff
 
     # 1.2 and 1.4 CoC px: 0.20 apart, i.e. inside the SHIPPING DEFAULT
     # tolerance, and two different kernels.
-    atDefault = reachability(1.2, 1.4, settings.mergeTolerance)
-    checks.append(boolCheck(
-        "i", "i7 pre_merge reaches the render at the DEFAULT merge_tolerance",
-        abs(atDefault.maxAbs - collisionResidual) <= residualBand,
-        "%.4e" % atDefault.maxAbs,
-        "%.4f +/- %.0e at merge_tolerance %.2f"
-        % (collisionResidual, residualBand, settings.mergeTolerance),
-        population=atDefault.population(),
-        note="two full-frame same-pixel layers at CoC radius 1.2 and 1.4 px -- "
-             "0.20 px apart, so within tolerance, but different kernels, so "
-             "the group rasterises a different disc than the pair would; the "
-             "delta is the pair's collision residual a^2/4 = %.4f at a = %.2f"
-             % (collisionResidual, LAYER_ALPHA)))
+    reachRows("i7 pre_merge reaches the render at the DEFAULT merge_tolerance",
+              "i7o ...and outside the corner bloom both renders are the "
+              "pair's `over`",
+              1.2, 1.4, None,
+              "two full-frame same-pixel layers at CoC radius 1.2 and 1.4 px "
+              "-- 0.20 px apart, so within merge_tolerance %.2f, but different "
+              "kernels" % settings.mergeTolerance)
     # The control: identical content, tolerance 0, so nothing may group. It is
     # what makes i7 a statement about the merge rather than about the geometry.
-    noGrouping = reachability(1.2, 1.4, 0.0)
+    _, _, noGrouping = reachability(1.2, 1.4, 0.0)
     checks.append(tolCheck(
         "i", "i7b control: same content at merge_tolerance 0 cannot move",
         noGrouping.maxAbs, 1.0e-07, population=noGrouping.population(),
@@ -2702,8 +2778,8 @@ def sceneI(settings):
     # the pair sits 0.20 px apart in unclamped CoC like i7 and max_radius is
     # lowered onto the front member: both then scatter at exactly 17.0 px.
     SAME_KERNEL_CLAMP = 17
-    sameKernel = reachability(17.0, 17.2, settings.mergeTolerance,
-                              maxRadius=SAME_KERNEL_CLAMP)
+    _, _, sameKernel = reachability(17.0, 17.2, settings.mergeTolerance,
+                                    maxRadius=SAME_KERNEL_CLAMP)
     checks.append(tolCheck(
         "i", "i7c ...and is lossless when the grouped radii rasterise one kernel",
         sameKernel.maxAbs, 1.0e-07, population=sameKernel.population(),
@@ -2717,19 +2793,16 @@ def sceneI(settings):
     # tests -- same radius scale, same 0.20px separation, same tolerance, same
     # max_radius, same content -- and differs only in sitting just UNDER the
     # clamp, so its two radii stay distinct.
-    straddle = reachability(16.6, 16.8, settings.mergeTolerance,
-                            maxRadius=SAME_KERNEL_CLAMP)
-    checks.append(boolCheck(
-        "i", "i7d guard: the same pair 0.4px under the clamp, two kernels, DOES move",
-        abs(straddle.maxAbs - collisionResidual) <= residualBand,
-        "%.4e" % straddle.maxAbs,
-        "%.4f +/- %.0e" % (collisionResidual, residualBand),
-        population=straddle.population(),
-        note="16.6 and 16.8 px at max_radius %d are unclamped and distinct, "
-             "so two kernels: this content at this tolerance really is "
-             "eligible to group and reads the collision residual -- which is "
-             "what makes i7c's zero a statement about losslessness rather "
-             "than about nothing having merged" % SAME_KERNEL_CLAMP))
+    reachRows("i7d guard: the same pair 0.4px under the clamp, two kernels, "
+              "DOES move",
+              "i7do ...and outside the corner bloom both renders are the "
+              "pair's `over`",
+              16.6, 16.8, SAME_KERNEL_CLAMP,
+              "16.6 and 16.8 px at max_radius %d are unclamped and distinct, "
+              "so two kernels: this content at this tolerance really is "
+              "eligible to group, which is what makes i7c's zero a statement "
+              "about losslessness rather than about nothing having merged"
+              % SAME_KERNEL_CLAMP)
     return checks
 
 
