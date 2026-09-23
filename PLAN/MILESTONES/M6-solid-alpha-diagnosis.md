@@ -97,7 +97,7 @@ hard outer bound; every new check is mutation-tested; oracles are never the new 
 
 ## Phase 6.1: Oracle and scene
 
-- [ ] M6.P1.T1 — Recapture the T0 `.so` and reference renders from HEAD
+- [x] M6.P1.T1 — Recapture the T0 `.so` and reference renders from HEAD
   - files: `~/deepc-baselines/M6-T0/` (new, outside the repo)
   - approach: the previous baseline directories are gone. Configure and build
     `cmake -S . -B build/local-17.0 -D Nuke_ROOT=/usr/local/Nuke17.0v3 -D DEEPC_BUILD_TESTS=ON` and
@@ -213,7 +213,7 @@ hard outer bound; every new check is mutation-tested; oracles are never the new 
     halves under `scripts/hostguard.sh --mem-gb 5.5` with `DEEPC_PLUGIN_DIR` pinned to the fresh
     build; `exrdiff.py` on scene (m)'s kept EXRs against `~/deepc-baselines/M6-T0/renders`
     (the probe must be output-neutral); `./docker-build.sh --linux`.
-  - verify: doctests green; tally `PASS=135+N FAIL=2 XFAIL=11+X SKIP=1` with N/X scene (o)'s
+  - verify: doctests green; tally `PASS=134+N FAIL=2 XFAIL=11+X SKIP=2` (the M6-T0 16.0v9 baseline) with N/X scene (o)'s
     PASS/XFAIL counts and **no a–n row moving**; 0 ulps on all three (m) EXRs; docker gate green.
   - size: M
 
@@ -243,3 +243,13 @@ approach; `./docker-build.sh --linux` green; then PR to `master` from
   throwaway (`/tmp/bokeh_probe*.py`); P1.T2 makes the helper real.
 - 2026-09-18 — **The M4/M5 baseline directories are gone from this host** (`~/deepc-baselines/`,
   `~/deepc-validation/`); M6 recaptures T0 from `46421fa` and no brief may rely on the old paths.
+- 2026-09-22 — **M6-T0 recaptured on the reprovisioned host** (Nuke 16.0v9, no AVX2 — see
+  `PLAN/DECISIONS/2026-09-22-sdk-is-16.0v9.md` and `…-no-avx2-on-dev-host.md`). Built from `8da4f9d`
+  (tree = `46421fa` + the `DEEPC_DEFOCUS_ISA_FLAGS` option) in `build/local-16.0` with
+  `-D "DEEPC_DEFOCUS_ISA_FLAGS=-mavx;-mfma"`; `~/deepc-baselines/M6-T0/DeepCDefocus.so` sha256
+  `61d63aab…316a9d`, `PROVENANCE.txt`, scene (m)'s three kept EXRs in `renders/`, all logs in `logs/`.
+  Doctests 27/27 + 116/116. Harness (a–f, g–n under `hostguard --mem-gb 5.5`, `DEEPC_NUKE` =
+  16.0v9): **`PASS=134 FAIL=2 XFAIL=11 SKIP=2`** vs M5's 135/2/11/1 — the one delta is **n4b**
+  PASS→SKIP because `~/deepc-baselines/M5-T0/renders` no longer exists (environment, not code). FAILs
+  f3e/f3f and all 11 XFAILs unchanged. The `.so` loads headless from its baseline path; `exrdiff.py`
+  self-diff 0 ulps. **This is the reference tally for P3.T1** (edited there to 134/2/11/2).
