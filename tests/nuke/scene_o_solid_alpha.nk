@@ -1,0 +1,825 @@
+version 16.0 v9
+Root {
+ inputs 0
+ name scene_o_solid_alpha.nk
+ last_frame 1
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ proxy_type scale
+ proxy_format "1024 778 0 0 1024 778 1 1K_Super_35(full-ap)"
+ colorManagement Nuke
+ workingSpaceLUT linear
+ monitorLut sRGB
+ monitorOutLUT rec709
+ int8Lut sRGB
+ int16Lut sRGB
+ logLut Cineon
+ floatLut linear
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant1
+}
+Rectangle {
+ area {0 60 256 61}
+ color {0.4 0.55 0.7 1}
+ name Rectangle1
+}
+Expression {
+ channel0 depth
+ expr0 1.0/(1720.000000/(300.0-y))
+ name Expression1
+}
+DeepFromImage {
+ name DeepFromImage1
+ xpos -900
+}
+set N184ed4f0 [stack 0]
+DeepCDefocus {
+ coc_mode Manual
+ size 64
+ name o0_row60
+ xpos -900
+ ypos 120
+}
+push $N184ed4f0
+push 0
+push 0
+push $N184ed4f0
+DeepToImage {
+ name DeepToImage1
+}
+Bokeh {
+ inputs 4
+ focalPlane 10
+ realWorldLens true
+ focalLength 300
+ fStop 1
+ worldScale m
+ max_kernelsize 200
+ name o0b_bokeh_row60
+ xpos -900
+ ypos 240
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant2
+}
+Rectangle {
+ area {0 200 256 201}
+ color {0.4 0.55 0.7 1}
+ name Rectangle2
+}
+Expression {
+ channel0 depth
+ expr0 1.0/(1720.000000/(300.0-y))
+ name Expression2
+}
+DeepFromImage {
+ name DeepFromImage2
+ xpos -790
+}
+set N18563c60 [stack 0]
+DeepCDefocus {
+ coc_mode Manual
+ size 64
+ name o0_row200
+ xpos -790
+ ypos 120
+}
+push $N18563c60
+push 0
+push 0
+push $N18563c60
+DeepToImage {
+ name DeepToImage2
+}
+Bokeh {
+ inputs 4
+ focalPlane 10
+ realWorldLens true
+ focalLength 300
+ fStop 1
+ worldScale m
+ max_kernelsize 200
+ name o0b_bokeh_row200
+ xpos -790
+ ypos 240
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant3
+}
+Rectangle {
+ area {60 108 88 136}
+ color {0.8 0.55 0.7 1}
+ name Rectangle3
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 8.2
+ name DeepFromImage3
+ label "pair-A alone"
+ xpos -680
+}
+set N185c5cf0 [stack 0]
+DeepCDefocus {
+ coc_mode Manual
+ size 64
+ name o0_card0
+ xpos -680
+ ypos 120
+}
+push $N185c5cf0
+push 0
+push 0
+push $N185c5cf0
+DeepToImage {
+ name DeepToImage3
+}
+Bokeh {
+ inputs 4
+ focalPlane 10
+ realWorldLens true
+ focalLength 300
+ fStop 1
+ worldScale m
+ max_kernelsize 200
+ name o0b_bokeh_card0
+ xpos -680
+ ypos 240
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant4
+}
+Rectangle {
+ area {96 112 124 140}
+ color {0.2 0.55 0.7 1}
+ name Rectangle4
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 8.55
+ name DeepFromImage4
+ label "pair-B alone"
+ xpos -570
+}
+set N18628230 [stack 0]
+DeepCDefocus {
+ coc_mode Manual
+ size 64
+ name o0_card1
+ xpos -570
+ ypos 120
+}
+push $N18628230
+push 0
+push 0
+push $N18628230
+DeepToImage {
+ name DeepToImage4
+}
+Bokeh {
+ inputs 4
+ focalPlane 10
+ realWorldLens true
+ focalLength 300
+ fStop 1
+ worldScale m
+ max_kernelsize 200
+ name o0b_bokeh_card1
+ xpos -570
+ ypos 240
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant5
+}
+Rectangle {
+ area {160 100 188 128}
+ color {0.95 0.55 0.7 1}
+ name Rectangle5
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 8.2
+ name DeepFromImage5
+ label "isolated alone"
+ xpos -460
+}
+set N1868a770 [stack 0]
+DeepCDefocus {
+ coc_mode Manual
+ size 64
+ name o0_card2
+ xpos -460
+ ypos 120
+}
+push $N1868a770
+push 0
+push 0
+push $N1868a770
+DeepToImage {
+ name DeepToImage5
+}
+Bokeh {
+ inputs 4
+ focalPlane 10
+ realWorldLens true
+ focalLength 300
+ fStop 1
+ worldScale m
+ max_kernelsize 200
+ name o0b_bokeh_card2
+ xpos -460
+ ypos 240
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant6
+}
+Rectangle {
+ area {160 164 188 192}
+ color {0.1 0.55 0.7 1}
+ name Rectangle6
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 8.55
+ name DeepFromImage6
+ label "far alone"
+ xpos -350
+}
+set N186ecdc0 [stack 0]
+DeepCDefocus {
+ coc_mode Manual
+ size 64
+ name o0_card3
+ xpos -350
+ ypos 120
+}
+push $N186ecdc0
+push 0
+push 0
+push $N186ecdc0
+DeepToImage {
+ name DeepToImage6
+}
+Bokeh {
+ inputs 4
+ focalPlane 10
+ realWorldLens true
+ focalLength 300
+ fStop 1
+ worldScale m
+ max_kernelsize 200
+ name o0b_bokeh_card3
+ xpos -350
+ ypos 240
+}
+Constant {
+ inputs 0
+ color {0.4 0.55 0.7 1}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant7
+}
+Expression {
+ channel0 depth
+ expr0 1.0/(1720.000000/(300.0-y))
+ name Expression3
+}
+DeepFromImage {
+ name DeepFromImage7
+ xpos -240
+}
+set N1874fff0 [stack 0]
+DeepCDefocus {
+ coc_mode Manual
+ size 64
+ name o1_plane
+ xpos -240
+ ypos 120
+}
+push $N1874fff0
+DeepCDefocus {
+ coc_mode Manual
+ size 64
+ depth_layers 4
+ name o1b_plane_k4
+ xpos -130
+ ypos 120
+}
+push $N1874fff0
+DeepCDefocus {
+ coc_mode Manual
+ size 64
+ depth_layers 64
+ name o1b_plane_k64
+ xpos -20
+ ypos 120
+}
+push $N1874fff0
+DeepCDefocus {
+ coc_mode Manual
+ size 86
+ name o1c_plane_s86
+ xpos 90
+ ypos 120
+}
+push $N1874fff0
+DeepCDefocus {
+ coc_mode Manual
+ size 43
+ name o1c_plane_s43
+ xpos 200
+ ypos 120
+}
+Constant {
+ inputs 0
+ color {0.4 0.55 0.7 1}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant9
+}
+Expression {
+ channel0 depth
+ expr0 1.0/(1720.000000/(300.0-y))
+ name Expression4
+}
+DeepFromImage {
+ name DeepFromImage9
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant8
+}
+Rectangle {
+ area {112 116 144 140}
+ color {0.8 0.55 0.7 1}
+ name Rectangle7
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 8
+ name DeepFromImage8
+}
+DeepMerge2 {
+ inputs 2
+ name DeepMerge1
+ label "r_obj 16 over r_plane 0 (y=128)"
+ xpos -240
+ ypos 300
+}
+DeepCDefocus {
+ coc_mode Manual
+ size 64
+ name o2_probe_r0
+ xpos -240
+ ypos 420
+}
+Constant {
+ inputs 0
+ color {0.4 0.55 0.7 1}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant11
+}
+Expression {
+ channel0 depth
+ expr0 1.0/(1720.000000/(300.0-y))
+ name Expression5
+}
+DeepFromImage {
+ name DeepFromImage11
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant10
+}
+Rectangle {
+ area {112 111 144 135}
+ color {0.8 0.55 0.7 1}
+ name Rectangle8
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 8
+ name DeepFromImage10
+}
+DeepMerge2 {
+ inputs 2
+ name DeepMerge2
+ label "r_obj 16 over r_plane 2 (y=123)"
+ xpos -130
+ ypos 300
+}
+DeepCDefocus {
+ coc_mode Manual
+ size 64
+ name o2_probe_r2
+ xpos -130
+ ypos 420
+}
+Constant {
+ inputs 0
+ color {0.4 0.55 0.7 1}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant13
+}
+Expression {
+ channel0 depth
+ expr0 1.0/(1720.000000/(300.0-y))
+ name Expression6
+}
+DeepFromImage {
+ name DeepFromImage13
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant12
+}
+Rectangle {
+ area {112 95 144 119}
+ color {0.8 0.55 0.7 1}
+ name Rectangle9
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 8
+ name DeepFromImage12
+}
+DeepMerge2 {
+ inputs 2
+ name DeepMerge3
+ label "r_obj 16 over r_plane 8 (y=107)"
+ xpos -20
+ ypos 300
+}
+set N188f99e0 [stack 0]
+DeepCDefocus {
+ coc_mode Manual
+ size 64
+ name o2_probe_r8
+ xpos -20
+ ypos 420
+}
+push $N188f99e0
+DeepCDefocus {
+ coc_mode Manual
+ size 64
+ depth_layers 64
+ name o2b_probe_r8_k64
+ xpos -20
+ ypos 520
+}
+Constant {
+ inputs 0
+ color {0.4 0.55 0.7 1}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant15
+}
+Expression {
+ channel0 depth
+ expr0 1.0/(1720.000000/(300.0-y))
+ name Expression7
+}
+DeepFromImage {
+ name DeepFromImage15
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant14
+}
+Rectangle {
+ area {112 159 144 183}
+ color {0.8 0.55 0.7 1}
+ name Rectangle10
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 8
+ name DeepFromImage14
+}
+DeepMerge2 {
+ inputs 2
+ name DeepMerge4
+ label "r_obj 16 over r_plane 16 (y=171)"
+ xpos 90
+ ypos 300
+}
+DeepCDefocus {
+ coc_mode Manual
+ size 64
+ name o2_probe_r16
+ xpos 90
+ ypos 420
+}
+Constant {
+ inputs 0
+ color {0.4 0.55 0.7 1}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant20
+}
+Expression {
+ channel0 depth
+ expr0 1.0/(1720.000000/(300.0-y))
+ name Expression8
+}
+DeepFromImage {
+ name DeepFromImage20
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant19
+}
+Rectangle {
+ area {160 164 188 192}
+ color {0.1 0.55 0.7 1}
+ name Rectangle14
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 8.55
+ name DeepFromImage19
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant18
+}
+Rectangle {
+ area {160 100 188 128}
+ color {0.95 0.55 0.7 1}
+ name Rectangle13
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 8.2
+ name DeepFromImage18
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant17
+}
+Rectangle {
+ area {96 112 124 140}
+ color {0.2 0.55 0.7 1}
+ name Rectangle12
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 8.55
+ name DeepFromImage17
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant16
+}
+Rectangle {
+ area {60 108 88 136}
+ color {0.8 0.55 0.7 1}
+ name Rectangle11
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 8.2
+ name DeepFromImage16
+}
+DeepMerge2 {
+ inputs 5
+ name DeepMerge5
+ label "the rig: four cards + the plane, complete deep"
+ xpos 400
+}
+set N18a71930 [stack 0]
+DeepCDefocus {
+ coc_mode Manual
+ size 64
+ depth_layers 64
+ name o3_rig_k64
+ xpos 510
+ ypos 120
+}
+push $N18a71930
+DeepCDefocus {
+ coc_mode Manual
+ size 64
+ depth_layers 4
+ name o3_rig_k4
+ xpos 620
+ ypos 120
+}
+Constant {
+ inputs 0
+ color {0.4 0.55 0.7 1}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant25
+}
+Expression {
+ channel0 depth
+ expr0 1.0/(1720.000000/(300.0-y))
+ name Expression9
+}
+DeepFromImage {
+ name DeepFromImage25
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant24
+}
+Rectangle {
+ area {160 164 188 192}
+ color {0.1 0.55 0.7 1}
+ name Rectangle18
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 8.55
+ name DeepFromImage24
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant23
+}
+Rectangle {
+ area {160 100 188 128}
+ color {0.95 0.55 0.7 1}
+ name Rectangle17
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 8.2
+ name DeepFromImage23
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant22
+}
+Rectangle {
+ area {96 112 124 140}
+ color {0.2 0.55 0.7 1}
+ name Rectangle16
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 8.2
+ name DeepFromImage22
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant21
+}
+Rectangle {
+ area {60 108 88 136}
+ color {0.8 0.55 0.7 1}
+ name Rectangle15
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 8.2
+ name DeepFromImage21
+}
+DeepMerge2 {
+ inputs 5
+ name DeepMerge6
+ label "mutation: the pair at one depth"
+ xpos 730
+}
+DeepCDefocus {
+ coc_mode Manual
+ size 64
+ name o3_rig_same
+ xpos 730
+ ypos 120
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant26
+}
+Expression {
+ expr0 "((x>=160 && x<188 && y>=164 && y<192) ? 0.1 : ((x>=160 && x<188 && y>=100 && y<128) ? 0.95 : ((x>=96 && x<124 && y>=112 && y<140) ? 0.2 : ((x>=60 && x<88 && y>=108 && y<136) ? 0.8 : 0.4))))"
+ expr1 0.55
+ expr2 0.7
+ expr3 1.0
+ name Expression10
+}
+Expression {
+ channel0 depth
+ expr0 "1.0/(((x>=160 && x<188 && y>=164 && y<192) ? 8.550000 : ((x>=160 && x<188 && y>=100 && y<128) ? 8.200000 : ((x>=96 && x<124 && y>=112 && y<140) ? 8.550000 : ((x>=60 && x<88 && y>=108 && y<136) ? 8.200000 : (1720.000000/(300.0-y)))))))"
+ name Expression11
+}
+DeepFromImage {
+ name DeepFromImage26
+ label "sparse twin: nothing behind any card"
+ xpos 840
+}
+set N18bddd10 [stack 0]
+DeepCDefocus {
+ coc_mode Manual
+ size 64
+ name o4_sparse
+ xpos 840
+ ypos 120
+}
+push $N18bddd10
+DeepCDefocus {
+ coc_mode Manual
+ size 64
+ depth_layers 64
+ name o4_sparse_k64
+ xpos 950
+ ypos 120
+}
+push $N18a71930
+DeepCDefocus {
+ coc_mode Manual
+ size 64
+ name o3_rig
+ xpos 400
+ ypos 120
+}
+push $N18a71930
+push 0
+push 0
+push $N18a71930
+DeepToImage {
+ name DeepToImage7
+}
+Bokeh {
+ inputs 4
+ focalPlane 10
+ realWorldLens true
+ focalLength 300
+ fStop 1
+ worldScale m
+ max_kernelsize 200
+ name o5_bokeh
+ xpos 400
+ ypos 240
+}
+Merge2 {
+ inputs 2
+ operation minus
+ name o5_diff
+ label "DeepCDefocus - Bokeh"
+ xpos 460
+ ypos 360
+}
+StickyNote {
+ inputs 0
+ name StickyNote1
+ label "Scene (o) -- solid alpha on opaque geometry: a slanted plane with small objects, complete deep, against Bokeh\n\nEvery DeepCDefocus here is fill=foreground, coc_mode manual, size 64, focus 10, on scene (g)'s receding ground plane (0.372 CoC px per scanline). The rig merges four opaque 28x28 cards in front of it -- a pair whose blooms overlap (z=8.20 r=14.05, z=8.55 r=10.85), one isolated card over the near-focus rows (z=8.20) and one over the far field (z=8.55) -- with the plane sample still present under every card. Cards share the plane's G and B, so G/A and B/A must read 0.55 / 0.70 everywhere. The only correct alpha over the interior (50-205 both ways) is 1.0; every reading is the worst pixel past its own float-accumulation bound (4 terms per contributing tap x 2^-24).\n\nNode names are the harness cells:\n  o0_* / o0b_*: one plane row (y=60, 200) and each card alone, DeepCDefocus and Bokeh: extents within 1 px of r and of each other.\n  o1_plane (K=16), o1b_plane_k4 / _k64, o1c_plane_s86 / _s43: the plane alone reads 1 to rounding except at K=4 (pinned 1.777e-03).\n  o2_probe_r0/2/8/16: one r_obj=16 card at z=8.000 over plane rows whose own radius is 0/2/8/16. Under the silhouette: 1 to rounding at every r_plane. The ring around it dips only at r_plane 8 (near side, pinned 5.138e-04); o2b_probe_r8_k64 reads 1.\n  o3_rig (K=16): interior dip pinned 3.067e-02 under the isolated card's lower edge, pair overlap 2.493e-03. o3_rig_k64 reads 1 on both; o3_rig_same (pair at one depth) leaves the overlap dip in place; o3_rig_k4 dips elsewhere.\n  o4_sparse: the same with NO plane behind the cards: interior 4.389e-03, overlap 2.199e-03; o4_sparse_k64 reads 1.\n  o5_bokeh: Bokeh on o3's stack reads 1 to within one float ulp (0.999999881..1.000000119) over the interior; o5_diff is DeepCDefocus - Bokeh (alpha), negative where the node dips.\n\nPins are XFAILs with a hard outer bound at 2x; a pinned dip that reads back inside its bound FAILs too, so it is re-examined."
+ note_font_size 14
+ xpos 1100
+}

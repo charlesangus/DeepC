@@ -123,6 +123,8 @@ cmake --build build/local -j"$(nproc)"
 
 Set `Nuke_ROOT` to any installed Nuke SDK (e.g., `/usr/local/Nuke16.0v9`, `/usr/local/Nuke16.1v3`, or `/usr/local/Nuke17.0v3`). This provides the fast iteration loop for day-to-day development. Note that `./docker-build.sh` remains the path for release packaging, Windows cross-compilation, and exact multi-Nuke-version toolchain parity, and requires a running Docker daemon. Where this project's planning docs refer to a "docker compile gate," use this local build day-to-day, and run `./docker-build.sh` as the pre-merge/release check wherever Docker is available.
 
+On a host without AVX2, add `-D DEEPC_DEFOCUS_ISA_FLAGS="-mavx"` (the project floor) to the `cmake -S` command above; on a CPU with FMA3 but without AVX2, use `-D DEEPC_DEFOCUS_ISA_FLAGS="-mavx;-mfma"` instead.
+
 ## Examples
 We created a repository which includes some example deep render scenes to try/test/use this plugin.<br>
 In futur we will add nuke project files to show how the plugins work.<br>

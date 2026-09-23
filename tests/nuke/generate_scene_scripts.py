@@ -1,6 +1,6 @@
 """Generates the committed validation-scene scripts under tests/nuke/*.nk.
 
-Each scene (a)-(n) is built with the SAME construction helpers scenes.py
+Each scene (a)-(o) is built with the SAME construction helpers scenes.py
 renders through (harness.py's makeDefocus/deepMerge/pointLayer/... and a
 handful of scenes.py's own builders), so a script opened in the GUI shows
 exactly the graph the headless harness measures — not a hand-drawn
@@ -28,17 +28,20 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from harness import (                                            # noqa: E402
     FORMAT_H, FORMAT_W, Settings, constant2d, deepHoldout, deepMerge,
-    deepToImage, depthRampLayer, makeDefocus, pointLayer, rectangle2d,
-    resetScript, slab,
+    deepToImage, depthRampLayer, makeBokeh, makeDefocus, pointLayer,
+    rectangle2d, resetScript, slab,
 )
 from scenes import (                                              # noqa: E402
     CHECKER_CELL_PX, FILL_CHECK_CELL_PX, FILL_CHECK_FAR_Z, GROUND_COLOR,
     GROUND_FOCUS, HALO_BG, HALO_FAR_Z, HALO_FG, HALO_FOCUS, HALO_HOLDOUT_ALPHA,
     HALO_HOLDOUT_Z, HALO_NEAR_Z, HALO_RADIUS, HALO_SIZE, NEAR_CARD,
-    NEAR_COLOUR, NEAR_FG_EXTENT, NEAR_RADIUS, NEAR_Z, UNEQ_CARD_A, UNEQ_CARD_B,
-    _uneqAnchor, _uneqCard, checkerSparse, checkerTwin, groundPlane,
-    haloBackground, haloForeground, haloHoldout, haloSparse, nearSparse,
-    nearTwin, overChecker, stripSource, texturedLayer,
+    NEAR_COLOUR, NEAR_FG_EXTENT, NEAR_RADIUS, NEAR_Z, O_CARD_NAMES, O_CARDS,
+    O_K, O_PIN_PLANE_K, O_PIN_PROBE_AROUND, O_PIN_RIG, O_PIN_RIG_OVERLAP,
+    O_PIN_SPARSE, O_PIN_SPARSE_OVERLAP, O_PLACEMENTS, O_PROBE_Z, O_SIZE,
+    UNEQ_CARD_A, UNEQ_CARD_B, _uneqAnchor, _uneqCard, checkerSparse,
+    checkerTwin, groundPlane, groundPlaneRow, haloBackground, haloForeground,
+    haloHoldout, haloSparse, nearSparse, nearTwin, oCard, oCards, oInterior,
+    oProbe, oRadius, oSparse, overChecker, stripSource, texturedLayer,
 )
 
 OUT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -125,6 +128,51 @@ CHECK_N = (
        HALO_HOLDOUT_Z, NEAR_Z, NEAR_RADIUS, NEAR_COLOUR[0], NEAR_COLOUR[1],
        NEAR_COLOUR[2], NEAR_RADIUS, FILL_CHECK_CELL_PX, HALO_FAR_Z,
        FILL_CHECK_FAR_Z)
+)
+
+
+_O_INTERIOR = oInterior(O_SIZE)
+
+CHECK_O = (
+    "Scene (o) -- solid alpha on opaque geometry: a slanted plane with small "
+    "objects, complete deep, against Bokeh\n\n"
+    "Every DeepCDefocus here is fill=foreground, coc_mode manual, size %g, "
+    "focus %g, on scene (g)'s receding ground plane (0.372 CoC px per "
+    "scanline). The rig merges four opaque 28x28 cards in front of it -- a "
+    "pair whose blooms overlap (z=%.2f r=%.2f, z=%.2f r=%.2f), one isolated "
+    "card over the near-focus rows (z=%.2f) and one over the far field "
+    "(z=%.2f) -- with the plane sample still present under every card. "
+    "Cards share the plane's G and B, so G/A and B/A must read %.2f / %.2f "
+    "everywhere. The only correct alpha over the interior (%d-%d both "
+    "ways) is 1.0; every reading is the worst pixel past its own "
+    "float-accumulation bound (4 terms per contributing tap x 2^-24).\n\n"
+    "Node names are the harness cells:\n"
+    "  o0_* / o0b_*: one plane row (y=60, 200) and each card alone, "
+    "DeepCDefocus and Bokeh: extents within 1 px of r and of each other.\n"
+    "  o1_plane (this script's K=%d; the harness's own o1 reads back at "
+    "the run's --k), o1b_plane_k4 / _k64, o1c_plane_s86 / _s43: the plane "
+    "alone reads 1 to rounding except at K=4 (pinned %.3e).\n"
+    "  o2_probe_r0/2/8/16: one r_obj=16 card at z=%.3f over plane rows whose "
+    "own radius is 0/2/8/16. Under the silhouette: 1 to rounding at every "
+    "r_plane. The ring around it dips only at r_plane 8 (near side, pinned "
+    "%.3e); o2b_probe_r8_k64 reads 1.\n"
+    "  o3_rig (K=%d): interior dip pinned %.3e under the isolated card's "
+    "lower edge, pair overlap %.3e. o3_rig_k64 reads 1 on both; "
+    "o3_rig_same (pair at one depth) leaves the overlap dip in place; "
+    "o3_rig_k4 dips elsewhere.\n"
+    "  o4_sparse: the same with NO plane behind the cards: interior %.3e, "
+    "overlap %.3e; o4_sparse_k64 reads 1.\n"
+    "  o5_bokeh: Bokeh on o3's stack reads 1 over the interior to within the "
+    "same term-count float-accumulation bound the node is gated on (see "
+    "makeBokeh()); o5_diff is DeepCDefocus - Bokeh (alpha), negative where "
+    "the node dips.\n\n"
+    "Pins are XFAILs with a hard outer bound at 2x; a pinned dip that "
+    "reads back inside its bound FAILs too, so it is re-examined."
+    % (O_SIZE, GROUND_FOCUS, O_CARDS[0][1], oRadius(O_CARDS[0][1]),
+       O_CARDS[1][1], oRadius(O_CARDS[1][1]), O_CARDS[2][1], O_CARDS[3][1],
+       GROUND_COLOR[1], GROUND_COLOR[2], _O_INTERIOR[0], _O_INTERIOR[2] - 1,
+       O_K, O_PIN_PLANE_K[4], O_PROBE_Z, O_PIN_PROBE_AROUND[8], O_K,
+       O_PIN_RIG, O_PIN_RIG_OVERLAP, O_PIN_SPARSE, O_PIN_SPARSE_OVERLAP)
 )
 
 
@@ -930,6 +978,81 @@ def buildSceneN(settings):
     stickyNote(CHECK_N, 900, 0)
 
 
+def buildSceneO(settings):
+    resetScript()
+    cell = settings.derive(k=O_K)
+
+    def defocus(source, name, xpos, ypos, s=None, size=O_SIZE):
+        node = makeDefocus(s or cell, source, size=size,
+                           focusDistance=GROUND_FOCUS, cocMode="manual",
+                           fill="foreground")
+        node.setName(name)
+        node.setXYpos(xpos, ypos)
+        return node
+
+    def bokeh(source, name, xpos, ypos):
+        node = makeBokeh(cell, source, GROUND_FOCUS, O_SIZE)
+        node.setName(name)
+        node.setXYpos(xpos, ypos)
+        return node
+
+    for index, y in enumerate((60, 200)):
+        row = groundPlaneRow(y)
+        row.setXYpos(-900 + 110 * index, 0)
+        defocus(row, "o0_row%d" % y, -900 + 110 * index, 120)
+        bokeh(row, "o0b_bokeh_row%d" % y, -900 + 110 * index, 240)
+    for index, card in enumerate(O_CARDS):
+        source = oCard(*card)
+        source.setXYpos(-680 + 110 * index, 0)
+        source["label"].setValue("%s alone" % O_CARD_NAMES[index])
+        defocus(source, "o0_card%d" % index, -680 + 110 * index, 120)
+        bokeh(source, "o0b_bokeh_card%d" % index, -680 + 110 * index, 240)
+
+    plane = groundPlane()
+    plane.setXYpos(-240, 0)
+    for index, (name, s, size) in enumerate((
+            ("o1_plane", cell, O_SIZE),
+            ("o1b_plane_k4", settings.derive(k=4), O_SIZE),
+            ("o1b_plane_k64", settings.derive(k=64), O_SIZE),
+            ("o1c_plane_s86", cell, 86.0),
+            ("o1c_plane_s43", cell, 43.0))):
+        defocus(plane, name, -240 + 110 * index, 120, s, size)
+
+    for index, (nominal, row) in enumerate(O_PLACEMENTS):
+        probe = oProbe(row)
+        probe.setXYpos(-240 + 110 * index, 300)
+        probe["label"].setValue("r_obj 16 over r_plane %d (y=%d)"
+                                % (nominal, row))
+        defocus(probe, "o2_probe_r%d" % nominal, -240 + 110 * index, 420)
+        if nominal in O_PIN_PROBE_AROUND:
+            defocus(probe, "o2b_probe_r%d_k64" % nominal,
+                    -240 + 110 * index, 520, settings.derive(k=64))
+
+    rig = deepMerge([oCard(*card) for card in O_CARDS] + [groundPlane()])
+    rig.setXYpos(400, 0)
+    rig["label"].setValue("the rig: four cards + the plane, complete deep")
+    ours = defocus(rig, "o3_rig", 400, 120)
+    defocus(rig, "o3_rig_k64", 510, 120, settings.derive(k=64))
+    defocus(rig, "o3_rig_k4", 620, 120, settings.derive(k=4))
+    same = deepMerge([oCard(*card) for card in oCards(sameDepth=True)]
+                     + [groundPlane()])
+    same.setXYpos(730, 0)
+    same["label"].setValue("mutation: the pair at one depth")
+    defocus(same, "o3_rig_same", 730, 120)
+    sparse = oSparse()
+    sparse.setXYpos(840, 0)
+    sparse["label"].setValue("sparse twin: nothing behind any card")
+    defocus(sparse, "o4_sparse", 840, 120)
+    defocus(sparse, "o4_sparse_k64", 950, 120, settings.derive(k=64))
+    oracle = bokeh(rig, "o5_bokeh", 400, 240)
+    difference = nuke.nodes.Merge2(inputs=[oracle, ours])
+    difference["operation"].setValue("minus")
+    difference.setName("o5_diff")
+    difference.setXYpos(460, 360)
+    difference["label"].setValue("DeepCDefocus - Bokeh")
+    stickyNote(CHECK_O, 1100, 0)
+
+
 SCENE_BUILDERS = [
     ("a", "scene_a_size0_parity.nk", buildSceneA),
     ("b", "scene_b_holdout_in_focus.nk", buildSceneB),
@@ -945,6 +1068,7 @@ SCENE_BUILDERS = [
     ("l", "scene_l_small_coc_transition.nk", buildSceneL),
     ("m", "scene_m_coverage_halo.nk", buildSceneM),
     ("n", "scene_n_background_fill.nk", buildSceneN),
+    ("o", "scene_o_solid_alpha.nk", buildSceneO),
 ]
 
 

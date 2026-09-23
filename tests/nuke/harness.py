@@ -292,6 +292,92 @@ def deepToImage(source, volumetric=True):
     return node
 
 
+class BokehUnavailable(Exception):
+    """Raised by ``makeBokeh()`` when Foundry's bundled Bokeh node cannot be
+    built or refuses the deep stack. Scene code catches this and reports
+    SKIP rather than letting the scene raise."""
+
+
+# Bokeh's real-world-lens model, with the deep stack on its own input 3, reads
+# a receding plane's CoC as |1 - focalPlane/z| -- the same shape as
+# DeepCDefocus's coc_mode=manual (`size * |1 - focus/z|`) -- so a single
+# scale constant maps ``size`` to Bokeh's ``fStop`` once the rest of the lens
+# is fixed.  Measured on ``groundPlaneRow(200)`` at focusDistance=
+# GROUND_FOCUS=10 with the lens below (focalLength=300mm, filmFormat=35mm,
+# worldScale=m, worldScaleMultiplier=1, depthStyle=Real, kernelType=Circular,
+# bloom=0): DeepCDefocus size=86.0 reads a half-extent of 36.000 px; Bokeh's
+# fStop, swept in [0.70, 1.56] at focalLength=300mm, holds fStop*radius at
+# 26.25-27.00 (not perfectly constant -- the real-world-lens model is only
+# approximately thin-lens in that range), with fStop=0.740 landing on the
+# same 36.000 px and fStop=1.480-1.500 on DeepCDefocus size=43.0's 18.000 px.
+# BOKEH_FSTOP_CAL = 64.0 is fStop*size averaged over those two cells
+# (0.740*86=63.6, 1.480*43=63.6..1.500*43=64.5); at fStop =
+# BOKEH_FSTOP_CAL / size both cells read back within 1 px.
+BOKEH_FSTOP_CAL = 64.0
+BOKEH_FOCAL_LENGTH = 300.0
+BOKEH_FILM_FORMAT = "35mm"
+BOKEH_WORLD_SCALE = "m"
+
+
+def makeBokeh(settings, source, focusDistance, size, channels="rgba",
+              **overrides):
+    """Build Foundry's bundled Bokeh (pgBokeh) as the deep-defocus oracle.
+
+    The deep stack goes on input 3 (the only input that takes a deep node);
+    input 0 gets a flat ``deepToImage(source)`` for channel/format info, which
+    Bokeh needs even though the deep data on input 3 drives the actual
+    defocus.  ``size`` is a DeepCDefocus ``coc_mode=manual`` size, converted
+    to Bokeh's ``fStop`` through ``BOKEH_FSTOP_CAL`` (see the comment above
+    it for the calibration numbers) at a fixed lens (``BOKEH_FOCAL_LENGTH``,
+    ``BOKEH_FILM_FORMAT``, ``BOKEH_WORLD_SCALE``).
+
+    On scene (m)'s halo rig (``haloForeground()`` merged with
+    ``haloBackground()``, both opaque, in ``scenes.py``) this reads alpha
+    exactly 1.0 across the halo band -- min and max both 1.000000000 over
+    box (61,61)-(195,195), the silhouette (80,80)-(176,176) outset by its
+    CoC reach (19 px) -- the oracle's own non-vacuity guard: an opaque
+    foreground fully over an opaque background stays opaque under any
+    defocus, however blurred.
+
+    Raises ``BokehUnavailable`` if the node cannot be created or refuses
+    either input; never silently returns a sharp or half-built node.
+    """
+    if size <= 0.0:
+        raise ValueError("makeBokeh: size must be > 0 (fStop = "
+                         "BOKEH_FSTOP_CAL / size)")
+    try:
+        node = nuke.nodes.Bokeh()
+    except Exception as exc:
+        raise BokehUnavailable("Bokeh node unavailable in this Nuke build: "
+                               "%r" % (exc,))
+
+    image = deepToImage(source)
+    if not node.setInput(0, image):
+        raise BokehUnavailable("Bokeh refused the 2D channels input (0)")
+    if not node.setInput(3, source):
+        raise BokehUnavailable("Bokeh refused the deep stack on input 3")
+
+    try:
+        node["depthStyle"].setValue("Real")
+        node["kernelType"].setValue("Circular")
+        node["bloom"].setValue(0.0)
+        node["max_kernelsize"].setValue(max(2.0 * settings.maxRadius, 1.0))
+        node["realWorldLens"].setValue(True)
+        node["focalLength"].setValue(BOKEH_FOCAL_LENGTH)
+        node["filmFormat"].setValue(BOKEH_FILM_FORMAT)
+        node["worldScale"].setValue(BOKEH_WORLD_SCALE)
+        node["worldScaleMultiplier"].setValue(1.0)
+        node["focalPlane"].setValue(float(focusDistance))
+        node["fStop"].setValue(BOKEH_FSTOP_CAL / float(size))
+        node["bokehChannels"].setValue(channels)
+
+        for knobName, value in overrides.items():
+            node[knobName].setValue(value)
+    except (NameError, TypeError, ValueError) as exc:
+        raise BokehUnavailable("Bokeh refused a knob setting: %r" % (exc,))
+    return node
+
+
 def render(settings, node, tag, channels="rgba", box=None):
     """Flatten an Op to an uncompressed 32-bit-float EXR and read it back."""
     if box is None:

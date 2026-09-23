@@ -11697,3 +11697,225 @@ TEST_CASE("the share-side arrival identity at large CoC: a fully-covered field's
         }
     }
 }
+
+// ===========================================================================
+// The composite probe
+// ===========================================================================
+
+TEST_CASE("resolveBandCPU probe: the trace holds the planes and every composite term, "
+          "and redoing the arithmetic from it reproduces the output bit for bit")
+{
+    const int K = 2, C = 3, W = 3, H = 2;
+    const std::ptrdiff_t P = static_cast<std::ptrdiff_t>(W) * H;
+    ScatterParams sp;
+    sp.bandX = 10;
+    sp.bandY = 20;
+    sp.bandWidth  = W;
+    sp.bandHeight = H;
+
+    // Bucket 0 is pure `fit`; bucket 1 saturates (A_k 1.3), overflows the free
+    // area into `excess`, carries a co-located residual, and arrival < 1 then
+    // fills the result past 1 so the clamp fires too.
+    const float c0[C] = {0.25f, 0.5f, 0.125f};
+    const float c1[C] = {0.65f, 1.3f, 0.39f};
+    auto build = [&](BucketPlanes& planes) {
+        planes.allocate(K, C, W, H);
+        BucketPlaneView v = planes.view();
+        for (std::ptrdiff_t i = 0; i < P; ++i) {
+            const float s = 0.1f + 0.15f * static_cast<float>(i);
+            v.weight[0 * P + i] = 0.6f * s;
+            v.alpha[0 * P + i]  = 0.5f * s;
+            v.weight[1 * P + i] = 0.7f;
+            v.alpha[1 * P + i]  = 0.9f;
+            v.colocated[1 * P + i] = 0.2f;
+            v.arrival[i] = 0.95f;
+            for (int c = 0; c < C; ++c) {
+                v.color[(0 * C + c) * P + i] = c0[c] * s;
+                v.color[(1 * C + c) * P + i] = c1[c] * 0.5f;
+            }
+        }
+        const std::ptrdiff_t i = 4;
+        v.weight[0 * P + i] = 0.6f;
+        v.alpha[0 * P + i]  = 0.5f;
+        v.colocated[0 * P + i] = 0.0f;
+        v.weight[1 * P + i] = 0.7f;
+        v.alpha[1 * P + i]  = 1.3f;
+        v.colocated[1 * P + i] = 0.4f;
+        v.arrival[i] = 0.9f;
+        for (int c = 0; c < C; ++c) {
+            v.color[(0 * C + c) * P + i] = c0[c];
+            v.color[(1 * C + c) * P + i] = c1[c];
+        }
+    };
+
+    BucketPlanes plain, probed;
+    build(plain);
+    build(probed);
+
+    std::vector<float> colorPlain(static_cast<std::size_t>(C * P), -777.0f);
+    std::vector<float> alphaPlain(static_cast<std::size_t>(P), -777.0f);
+    std::vector<float> colorProbed(colorPlain), alphaProbed(alphaPlain);
+
+    resolveBandCPU(sp, plain, colorPlain.data(), alphaPlain.data());
+
+    std::vector<CompositeProbePixel> pixels(3);
+    pixels[0].x = 11; pixels[0].y = 21;     // band pixel 4
+    pixels[1].x = 13; pixels[1].y = 21;     // one past the band's right edge
+    pixels[2].x = 10; pixels[2].y = 19;     // one below the band
+    CompositeProbe probe;
+    probe.pixels = pixels.data();
+    probe.count  = static_cast<int>(pixels.size());
+    resolveBandCPU(sp, probed, colorProbed.data(), alphaProbed.data(), &probe);
+
+    SUBCASE("the probe changes no output and fires only inside the band") {
+        CHECK(std::memcmp(colorPlain.data(), colorProbed.data(),
+                          colorPlain.size() * sizeof(float)) == 0);
+        CHECK(std::memcmp(alphaPlain.data(), alphaProbed.data(),
+                          alphaPlain.size() * sizeof(float)) == 0);
+        CHECK(pixels[0].hit);
+        CHECK_FALSE(pixels[1].hit);
+        CHECK_FALSE(pixels[2].hit);
+        CHECK(pixels[1].trace.bucketCount == 0);
+        CHECK(pixels[2].trace.bucketCount == 0);
+    }
+
+    const CompositeTrace& t = pixels[0].trace;
+    const std::ptrdiff_t i = 4;
+    const BucketPlaneView sat = probed.view();
+
+    SUBCASE("per-bucket plane values are the planes'") {
+        REQUIRE(t.bucketCount == K);
+        REQUIRE(t.channelCount == C);
+        CHECK(t.bucket[0].planes.cRaw == 0.6f);
+        CHECK(t.bucket[0].planes.aRaw == 0.5f);
+        CHECK(t.bucket[0].planes.dRaw == 0.0f);
+        CHECK(t.bucket[1].planes.cRaw == 0.7f);
+        CHECK(t.bucket[1].planes.aRaw == 1.3f);
+        CHECK(t.bucket[1].planes.dRaw == 0.4f);
+        for (int k = 0; k < K; ++k) {
+            CHECK(t.bucket[k].planes.aSat == sat.alpha[k * P + i]);
+            for (int c = 0; c < C; ++c) {
+                CHECK(t.bucket[k].planes.colorRaw[c] == (k == 0 ? c0[c] : c1[c]));
+                CHECK(t.bucket[k].planes.colorSat[c] == sat.color[(k * C + c) * P + i]);
+            }
+        }
+        CHECK(t.bucket[1].planes.aSat == 1.0f);
+        for (int c = 0; c < C; ++c)
+            CHECK(t.bucket[1].planes.colorSat[c] == c1[c] * (1.0f / 1.3f));
+        CHECK(t.arrival == 0.9f);
+        CHECK(t.outAlpha == alphaPlain[static_cast<std::size_t>(i)]);
+        for (int c = 0; c < C; ++c)
+            CHECK(t.outColor[c] == colorPlain[static_cast<std::size_t>(c * P + i)]);
+    }
+
+    SUBCASE("every branch of the composite is exercised") {
+        const CompositeTraceTerms& b0 = t.bucket[0].terms;
+        const CompositeTraceTerms& b1 = t.bucket[1].terms;
+        CHECK(b0.visited);
+        CHECK(b1.visited);
+        CHECK(b0.fit > 0.0f);
+        CHECK(b0.excess == 0.0f);
+        CHECK(b0.aRes == 0.0f);
+        CHECK(b1.fit > 0.0f);
+        CHECK(b1.excess > 0.0f);
+        CHECK(b1.aRes > 0.0f);
+        CHECK(t.fillApplied);
+        CHECK(t.accAlphaPostFill > 1.0f);
+        CHECK(t.clampScale < 1.0f);
+        CHECK(t.outAlpha == 1.0f);
+        CHECK(t.stopBucket == -1);
+    }
+
+    SUBCASE("redoing the composite from the trace is bit-exact") {
+        float freeArea = 1.0f, claimedArea = 0.0f, tClaimed = 1.0f, acc = 0.0f;
+        float tile0T = 0.0f;
+        for (int k = 0; k < K; ++k) {
+            const CompositeTracePlanes& p = t.bucket[k].planes;
+            const CompositeTraceTerms&  m = t.bucket[k].terms;
+            CAPTURE(k);
+
+            const float cov  = std::min(std::max(p.cRaw, 0.0f), 1.0f);
+            const float a    = std::min(std::max(p.aSat, 0.0f), 1.0f);
+            const float colo = std::min(std::max(p.dRaw, 0.0f), 1.0f);
+            CHECK(m.cov == cov);
+            CHECK(m.a == a);
+            CHECK(m.colo == colo);
+            CHECK(m.freeAreaIn == freeArea);
+            CHECK(m.claimedAreaIn == claimedArea);
+            CHECK(m.tClaimedIn == tClaimed);
+            CHECK(m.accAlphaIn == acc);
+
+            float aCov, aRes;
+            if (colo > 0.0f) {
+                aRes = a * (colo / (cov + colo));
+                aCov = a - aRes;
+                if (aCov > cov) { aCov = cov; aRes = a - aCov; }
+            } else {
+                aCov = std::min(a, cov);
+                aRes = a - aCov;
+            }
+            CHECK(m.aCov == aCov);
+            CHECK(m.aRes == aRes);
+
+            const float local  = std::min(std::max(aCov / cov, 0.0f), 1.0f);
+            const float fit    = std::min(cov, freeArea);
+            const float excess = cov - fit;
+            CHECK(m.local == local);
+            CHECK(m.fit == fit);
+            CHECK(m.excess == excess);
+
+            acc += fit * local;
+            CHECK(m.accAfterFit == acc);
+            const float claimedNew = claimedArea + fit;
+            tClaimed    = (claimedArea * tClaimed + fit * (1.0f - local)) / claimedNew;
+            freeArea   -= fit;
+            claimedArea = claimedNew;
+            CHECK(m.tClaimedFit == tClaimed);
+
+            float att = 1.0f;
+            if (excess > 0.0f) {
+                const float g = excess / cov;
+                CHECK(m.g == g);
+                acc += aCov * g * tClaimed;
+                att = std::min(std::max(1.0f - excess * local, 0.0f), 1.0f);
+                CHECK(m.att == att);
+                tClaimed *= att;
+            }
+            CHECK(m.accAfterExcess == acc);
+
+            if (aRes > 0.0f) {
+                // The only tile on the stack is bucket 0's fit share, and the
+                // residual's 0.4 of area fits inside its 0.6.
+                const float tile = tile0T * att;
+                const float tHead = (colo * tile) / colo;
+                CHECK(m.resArea == colo);
+                CHECK(m.allocArea == colo);
+                CHECK(m.claimTake == 0.0f);
+                CHECK(m.tHeadIn == tHead);
+                acc += aRes * tHead;
+                tClaimed = std::min(std::max(tClaimed - (aRes * tHead) / claimedArea,
+                                             0.0f), 1.0f);
+            }
+            CHECK(m.accAfterRes == acc);
+            CHECK(m.freeAreaOut == freeArea);
+            CHECK(m.claimedAreaOut == claimedArea);
+            CHECK(m.tClaimedOut == tClaimed);
+
+            if (k == 0)
+                tile0T = 1.0f - local;
+        }
+
+        CHECK(t.accAlphaPreFill == acc);
+        const float arrival = t.arrival;
+        REQUIRE(arrival > kFillMinArrival);
+        REQUIRE(arrival < 1.0f - kFillDeficitTol);
+        const float s = 1.0f / arrival;
+        CHECK(t.fillScale == s);
+        acc *= s;
+        CHECK(t.accAlphaPostFill == acc);
+        const float outA = std::min(std::max(acc, 0.0f), 1.0f);
+        const float returned = alphaPlain[static_cast<std::size_t>(i)];
+        CHECK(std::memcmp(&outA, &returned, sizeof(float)) == 0);
+        CHECK(t.clampScale == outA / acc);
+    }
+}

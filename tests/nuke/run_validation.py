@@ -19,7 +19,7 @@ INTEGER value (``--k=64``, ``--max-radius=40``), because Nuke's own terminal
 argument parser consumes a bare integer as a frame range and never forwards
 it to ``sys.argv``.
 
-    --scenes a,b,...,n      which scenes to run          (default: all)
+    --scenes a,b,...,o      which scenes to run          (default: all)
     --k N                   depth_layers                 (default: 16)
     --pre-merge on|off                                   (default: on)
     --merge-tolerance F                                  (default: 0.25)
@@ -27,7 +27,8 @@ it to ``sys.argv``.
     --tmp-dir DIR           where renders go             (default: a temp dir)
     --keep-renders          do not delete the EXRs
     --out-dir DIR           where renders meant to OUTLIVE the run go (scene
-                            (m)'s m5 over-checkerboard EXRs)
+                            (m)'s m5 over-checkerboard EXRs; scene (o)'s o5b
+                            DeepCDefocus - Bokeh alpha diff map)
                                                          (default: ~/deepc-validation)
     --full-sweep            widen scene (f)'s f3f unequal-density sweep to
                             the whole grid (~26s more; the default run keeps
@@ -58,7 +59,7 @@ from scenes import SCENES                                       # noqa: E402
 
 def parseArgs(argv):
     options = {
-        "scenes": "abcdefghijklmn",
+        "scenes": "abcdefghijklmno",
         "k": 16,
         "preMerge": True,
         "mergeTolerance": 0.25,
@@ -194,12 +195,17 @@ def main(argv):
                         fullSweep=options["fullSweep"],
                         outDir=options["outDir"])
 
-    print("DeepCDefocus headless validation — scenes (a)-(n)")
+    print("DeepCDefocus headless validation — scenes (a)-(o)")
     print("settings: %s" % settings.describe())
     print("renders:  %s%s" % (tmpDir,
                               "" if options["keepRenders"] else " (deleted)"))
+    keepers = []
     if "m" in options["scenes"]:
-        print("kept:     %s (scene (m) m5)" % settings.outDir)
+        keepers.append("scene (m) m5")
+    if "o" in options["scenes"]:
+        keepers.append("scene (o) o5b")
+    if keepers:
+        print("kept:     %s (%s)" % (settings.outDir, ", ".join(keepers)))
     print("")
 
     checks = []
