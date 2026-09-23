@@ -2,7 +2,7 @@
 title: DeepCDefocus — deep-input, flat-output defocus node
 status: running
 current: M6.P1.T1
-pm_heartbeat: 2026-09-22T21:56:52-04:00
+pm_heartbeat: 2026-09-22T22:12:38-04:00
 ship: pr-per-milestone
 ---
 
@@ -73,6 +73,8 @@ Bokeh/pgBokeh don't exhibit; it runs before M2 because it rewrites the kernel st
   container build only.
   **As of 2026-09-22 only `/usr/local/Nuke16.0v9` is installed** — read every 17.0v3 path below and in
   milestone briefs as 16.0v9 / `build/local-16.0` (`PLAN/DECISIONS/2026-09-22-sdk-is-16.0v9.md`).
+  The host CPU has **no AVX2**: every local configure adds `-D "DEEPC_DEFOCUS_ISA_FLAGS=-mavx;-mfma"`
+  or the scatter kernel SIGILLs (`PLAN/DECISIONS/2026-09-22-no-avx2-on-dev-host.md`).
   Previously, **licensed Nuke SDK installs were present locally** at `/usr/local/Nuke16.0v9`,
   `/usr/local/Nuke16.1v3`, and `/usr/local/Nuke17.0v3` — full NDK headers plus `libDDImage.so`
   et al. — so NDK-facing code compiles and links directly via

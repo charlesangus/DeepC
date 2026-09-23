@@ -9,3 +9,4 @@
 - 2026-09-10 — plan-branch-stays-local: the `plan` branch is never pushed, overriding PLAN-FORMAT.md §9's push at the milestone gate; code PRs unaffected → DECISIONS/2026-09-10-plan-branch-stays-local.md
 - 2026-09-18 — no-8bit-tolerances: never cite 1/255 (or any 8-bit figure) as a tolerance; solid alpha means `== 1.0`, slack only as a term-count ulp bound → DECISIONS/2026-09-18-no-8bit-tolerances.md
 - 2026-09-22 — sdk-is-16.0v9: host reprovisioned, only Nuke16.0v9 installed; all builds/runs use it (`build/local-16.0`), 17.0v3 references read as 16.0v9 → DECISIONS/2026-09-22-sdk-is-16.0v9.md
+- 2026-09-22 — no-avx2-on-dev-host: host CPU lacks AVX2; local builds pass `-D "DEEPC_DEFOCUS_ISA_FLAGS=-mavx;-mfma"` (option added 8da4f9d, default unchanged); AVX-vs-AVX2 identity argued, not measured → DECISIONS/2026-09-22-no-avx2-on-dev-host.md
