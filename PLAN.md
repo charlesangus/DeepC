@@ -71,7 +71,9 @@ Bokeh/pgBokeh don't exhibit; it runs before M2 because it rewrites the kernel st
   RHEL 8, which Nuke 16/17 is supported on; four plugins are affected, `DeepCDefocus` among them
   (`PLAN/DECISIONS/2026-09-06-local-build-is-not-shippable.md`). Cut release artifacts from the
   container build only.
-  However, **licensed Nuke SDK installs are present locally** at `/usr/local/Nuke16.0v9`,
+  **As of 2026-09-22 only `/usr/local/Nuke16.0v9` is installed** — read every 17.0v3 path below and in
+  milestone briefs as 16.0v9 / `build/local-16.0` (`PLAN/DECISIONS/2026-09-22-sdk-is-16.0v9.md`).
+  Previously, **licensed Nuke SDK installs were present locally** at `/usr/local/Nuke16.0v9`,
   `/usr/local/Nuke16.1v3`, and `/usr/local/Nuke17.0v3` — full NDK headers plus `libDDImage.so`
   et al. — so NDK-facing code compiles and links directly via
   `cmake -S . -B build/local -D Nuke_ROOT=/usr/local/Nuke17.0v3 && cmake --build build/local`
