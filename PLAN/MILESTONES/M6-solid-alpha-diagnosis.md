@@ -166,7 +166,7 @@ hard outer bound; every new check is mutation-tested; oracles are never the new 
 
 ## Phase 6.2: Decompose and rule
 
-- [ ] M6.P2.T1 — Per-pixel decomposition probe (`DEEPC_DEFOCUS_DEBUG_PROBE`)
+- [x] M6.P2.T1 — Per-pixel decomposition probe (`DEEPC_DEFOCUS_DEBUG_PROBE`)
   - files: `src/DeepCDefocus.cpp` (env-var read beside `_debugBands`/`_debugStats` at ~522–570; the
     band resolve call), `src/DeepCDefocusScatter.h` (`resolveBandCPU()` ~3382 and
     `compositePixelCoveragePartition()` ~2832: an optional per-pixel trace sink), `tests/test_defocus_scatter.cpp`
@@ -280,3 +280,13 @@ approach; `./docker-build.sh --linux` green; then PR to `master` from
   no-8-bit ruling; o0b's size-64 calibration sits exactly at the 1 px limit on row 200 (26 vs 27),
   `BOKEH_FSTOP_CAL` left at 64. Scenes.py gained a two-sided XFAIL helper (FAIL above 2× pin *and*
   FAIL with "DIP GONE" if the dip vanishes). Default scene list is now a–o.
+- 2026-09-22 — **M6.P2.T1: probe landed** (`71a3ee3`). `compositePixelCoveragePartitionImpl<kTrace>`;
+  `resolveBandCPU(..., CompositeProbe*)` re-composites probed pixels traced after the untraced loop.
+  Coordinates are output pixels at render resolution (proxy pixels under proxy; `proxyScale` printed).
+  Doctests 27/27 + 117/117; scene (m) 0 ulps vs M6-T0; scene (o) unchanged 18/0/6/0. Evidence
+  `~/deepc-validation/M6-P2T1/probe_o3.txt` (+ `probe_o3.py`, the reusable single-cell runner).
+  **First reading at o3's worst pixel (171,103), α 0.969:** buckets 5–7 (the card at 8.12, the plane
+  at 8.79/9.57) are *saturated* (raw `A_k` 1.33, 1.65) with large co-located residuals (`aRes` 0.25,
+  0.75, 0.33) attenuated by `tHead` 0.24 / 0.14 / 0.012; `arrival D = 1.0037 > 1` so the fill never
+  runs. Points at H6 (saturate-down) + the residual/`tHead` path, with H5's deficit-only gate
+  unable to recover it — a lead for P2.T2 to confirm or reject, not a ruling.
