@@ -6,7 +6,7 @@ set -euo pipefail
 # Builds DeepC for all target Nuke versions on Linux and/or Windows using
 # pre-built NukeDockerBuild containers. No local Nuke SDK installation required.
 #
-# Prerequisites: docker, zip, git
+# Prerequisites: docker, python3, git
 # NukeDockerBuild images are built automatically on first use (requires ~1 GB
 # Nuke installer download and acceptance of Foundry's EULA).
 #
@@ -108,8 +108,8 @@ if ! command -v docker &>/dev/null; then
     exit 1
 fi
 
-if ! command -v zip &>/dev/null; then
-    echo "ERROR: zip is not installed or not in PATH" >&2
+if ! command -v python3 &>/dev/null; then
+    echo "ERROR: python3 is not installed or not in PATH" >&2
     exit 1
 fi
 
@@ -216,7 +216,7 @@ for nuke_version in "${NUKE_VERSIONS[@]}"; do
                 cmake --install /nuke_build_directory/build/${nuke_version}-linux
             "
 
-        (cd "${BASEDIR}/install/${nuke_version}-linux" && zip -r "${BASEDIR}/release/DeepC-Linux-Nuke${nuke_version}.zip" "DeepC")
+        (cd "${BASEDIR}/install/${nuke_version}-linux" && rm -f "${BASEDIR}/release/DeepC-Linux-Nuke${nuke_version}.zip" && python3 -m zipfile -c "${BASEDIR}/release/DeepC-Linux-Nuke${nuke_version}.zip" "DeepC")
         echo "  Linux build complete: release/DeepC-Linux-Nuke${nuke_version}.zip"
     fi
 
@@ -252,7 +252,7 @@ for nuke_version in "${NUKE_VERSIONS[@]}"; do
                 cmake --install /nuke_build_directory/build/${nuke_version}-windows
             "
 
-        (cd "${BASEDIR}/install/${nuke_version}-windows" && zip -r "${BASEDIR}/release/DeepC-Windows-Nuke${nuke_version}.zip" "DeepC")
+        (cd "${BASEDIR}/install/${nuke_version}-windows" && rm -f "${BASEDIR}/release/DeepC-Windows-Nuke${nuke_version}.zip" && python3 -m zipfile -c "${BASEDIR}/release/DeepC-Windows-Nuke${nuke_version}.zip" "DeepC")
         echo "  Windows build complete: release/DeepC-Windows-Nuke${nuke_version}.zip"
     fi
 
