@@ -185,7 +185,7 @@ every surviving XFAIL keeps a hard outer bound; every new check is mutation-test
     moving stops the task.
   - size: L
 
-- [ ] M7.P2.T2 — Probe printout and pipeline comments follow the fold
+- [x] M7.P2.T2 — Probe printout and pipeline comments follow the fold
   - files: `src/DeepCDefocus.cpp` (`printProbe` ~1978; pipeline comments ~24, ~1359, ~2065)
   - approach: print `u` and `satScale` beside each bucket's `aRaw/aSat`; label `aSat`/`colorSat` as
     the composite's clamped alpha and scaled colour (no longer read from planes). Update the three
@@ -438,3 +438,7 @@ then PR to `master` from `claude/deep-defocus-node-plan-o0ld83`.
   mutation (split reverted) fails (a)–(d) and (g); scene (o) PASS=18 FAIL=6 — exactly o1b/o2b/o3/o3b/
   o4/o4b reading DIP GONE; a,c,d,n 39/39 rows identical to M6-P3T1. Evidence `~/deepc-validation/M7-P2T1/`
   (`rule2/` = final rule).
+- 2026-09-23 — **M7.P2.T2 landed** (`59c9231`): probe at o3 (171,103) prints `satScale`/`u`, alpha 1;
+  bucket 5 reads aRaw 1.329, satScale 0.753, D 0.328, **u = 1** — expected under the clamped-area rule
+  (u < 1 only when min(C,1)+min(D,1) > A_raw); the brief's "u < 1 where D > 0" was written for the
+  raw-area rule. Scene (m) EXRs 0 ulps vs `af9fd59`. `~/deepc-validation/M7-P2T2/probe_o3.txt`.
