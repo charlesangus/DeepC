@@ -5467,6 +5467,44 @@ def oRatio(image, box, targets, tolerance, exclude=None, floor=1.0e-03):
     return out
 
 
+def oAlphaAgainst(node, oracle, box, tolerance):
+    """|node.A - oracle.A| against ``tolerance(x, y)`` over ``box``, and the
+    count of pixels where the two read bit-identical."""
+    out = _Excess()
+    exact = 0
+    for y in range(box[1], box[3]):
+        nodeRow, oracleRow = node.row("A", y), oracle.row("A", y)
+        for x in range(box[0], box[2]):
+            ni, oi = x - node.x0, x - oracle.x0
+            a = nodeRow[ni] if 0 <= ni < node.width else 0.0
+            b = oracleRow[oi] if 0 <= oi < oracle.width else 0.0
+            deviation = abs(a - b)
+            if deviation == 0.0:
+                exact += 1
+            out.add(deviation, x, y, tolerance(x, y))
+    return out, exact
+
+
+def oColourAgainst(node, oracle, box, tolerance, floor=1.0e-03):
+    """|node c/a - oracle c/a| on G and B against ``tolerance(x, y)``."""
+    out = _Excess()
+    for y in range(box[1], box[3]):
+        nodeAlpha, oracleAlpha = node.row("A", y), oracle.row("A", y)
+        nodeChans = [node.row(c, y) for c in ("G", "B")]
+        oracleChans = [oracle.row(c, y) for c in ("G", "B")]
+        for x in range(box[0], box[2]):
+            ni, oi = x - node.x0, x - oracle.x0
+            if not (0 <= ni < node.width) or not (0 <= oi < oracle.width):
+                continue
+            na, oa = nodeAlpha[ni], oracleAlpha[oi]
+            if na < floor or oa < floor:
+                continue
+            deviation = max(abs(nc[ni] / na - oc[oi] / oa)
+                            for nc, oc in zip(nodeChans, oracleChans))
+            out.add(deviation, x, y, tolerance(x, y))
+    return out
+
+
 def oRowMinimum(image, box):
     """(1 - the lowest row minimum, its row) over ``box``."""
     worst, worstY = 0.0, box[1]
@@ -5520,17 +5558,6 @@ def oCheck(name, entries, what, population, note):
                      population=population, note=note)
 
 
-# The dips this build reads on scene (o), K = 16, each the worst pixel past
-# its own term-count bound.  A pin is a measurement of a known defect, never
-# a target: whoever moves one re-pins it in the same change.
-O_PIN_PLANE_K = {4: 1.777e-03}
-O_PIN_PROBE_AROUND = {8: 5.138e-04}
-O_PIN_RIG = 3.067e-02
-O_PIN_RIG_OVERLAP = 2.493e-03
-O_PIN_SPARSE = 4.389e-03
-O_PIN_SPARSE_OVERLAP = 2.199e-03
-
-
 def sceneO(settings):
     """Solid alpha on opaque geometry: a slanted plane with small objects.
 
@@ -5554,6 +5581,9 @@ def sceneO(settings):
       o4   the sparse twin of o3 (no plane behind any card).
       o5   Bokeh on o3's stack must read 1 over the same box; the
            DeepCDefocus - Bokeh alpha map is written to --out-dir.
+      o5c  DeepCDefocus - Bokeh alpha, per pixel over the same interior,
+           gated on the same bound plus Bokeh's own +-1 ulp.
+      o5cr ...colour:alpha ratio (G/A, B/A) between the two, same pixels.
 
     Pinned readings are K = 16 whatever --k says.
     """
@@ -5660,8 +5690,7 @@ def sceneO(settings):
             "%s: worst row min 1-a %.3e at y=%d" % ((label,) + worstRow)
 
     alpha, ratio, rowText = planeCell("K=%d size %g" % (settings.k, O_SIZE),
-                                      settings, O_SIZE,
-                                      O_PIN_PLANE_K.get(settings.k))
+                                      settings, O_SIZE)
     checks.append(oCheck(
         "o1 the plane alone, the run's K and size", [alpha], "1-a",
         "%d x %d px, interior %s" % (interior[2] - interior[0],
@@ -5674,16 +5703,13 @@ def sceneO(settings):
         "|c/a - src|", "same pixels",
         "source G/A, B/A %.7f / %.7f, spread %.1e over the flatten"
         % (planeTargets + (planeSpread,))))
-    sweep = [planeCell("K=%d" % k, settings.derive(k=k), O_SIZE,
-                       O_PIN_PLANE_K.get(k))
+    sweep = [planeCell("K=%d" % k, settings.derive(k=k), O_SIZE)
              for k in (4, 16, 64)]
     checks.append(oCheck(
         "o1b the plane alone, K sweep 4/16/64 at size %g" % O_SIZE,
         [a for a, _, _ in sweep], "1-a", "interior %s" % (interior,),
-        "; ".join(t for _, _, t in sweep) + ".  Only K=4 dips, along the "
-        "plane's top interior rows; K=16 and K=64 read the plane exactly to "
-        "rounding -- the plane alone does not reproduce the reported dips at "
-        "the default K"))
+        "; ".join(t for _, _, t in sweep) + "; K=4, K=16 and K=64 all read "
+        "the plane exactly to rounding"))
     checks.append(oCheck(
         "o1br ...colour:alpha ratio, same sweep", [r for _, r, _ in sweep],
         "|c/a - src|", "same pixels", "G/A, B/A vs the source flatten"))
@@ -5706,7 +5732,7 @@ def sceneO(settings):
     # ------------------------------------------------------------------
     # o2: one card over the plane, the plane's own CoC under it.
     # ------------------------------------------------------------------
-    under, underRatio, around, aroundRatio, mutated = [], [], [], [], []
+    under, underRatio, around, aroundRatio = [], [], [], []
     for nominal, row in O_PLACEMENTS:
         silhouette = oProbeBox(row)
         ring = _outsetBox(silhouette, 18)
@@ -5717,36 +5743,27 @@ def sceneO(settings):
         under.append((label, oDip(image, silhouette, tolerance), None))
         underRatio.append((label, oRatio(image, silhouette, planeTargets,
                                          tolerance), None))
-        pin = O_PIN_PROBE_AROUND.get(nominal)
-        around.append((label, oDip(image, ring, tolerance, silhouette), pin))
+        around.append((label, oDip(image, ring, tolerance, silhouette), None))
         aroundRatio.append((label, oRatio(image, ring, planeTargets,
                                           tolerance, silhouette), None))
-        if pin is not None:
-            wide = renderOf(lambda: oProbe(row), "o_probe_r%d_k64" % nominal,
-                            settings.derive(k=64))
-            mutated.append("%s at K=64: %s" % (
-                label, oDip(wide, ring, tolerance, silhouette).describe()))
     probePopulation = ("a 32x24 card at z=%.3f (r_obj 16 px) centred on x=%d, "
                        "one render per r_plane" % (O_PROBE_Z, FORMAT_W // 2))
     checks.append(oCheck(
         "o2 one card over the plane: the band UNDER the silhouette",
         under, "1-a", probePopulation,
-        "the plane's own samples there have share 0, so its coverage "
-        "arrives only from neighbouring plane pixels at the plane's radius; "
+        "the plane's own samples under the card still deposit full alpha, "
+        "colour and area into their bucket -- share (zero here) feeds only "
+        "arrival, not the deposit -- so coverage there comes from the card "
+        "itself plus neighbouring plane pixels at the plane's radius; "
         "r_plane 0 is scene (m)'s m1 regime (background on the focal plane)"))
     checks.append(oCheck(
         "o2r ...colour:alpha ratio under the silhouette", underRatio,
         "|c/a - src|", "same pixels", "G/A, B/A vs the source flatten"))
-    pinBound = next((r.maxTol for _, r, pin in around if pin is not None),
-                    None)
     checks.append(oCheck(
         "o2b one card over the plane: the ring around the silhouette (18 px)",
         around, "1-a", probePopulation,
-        "MUTATIONS: r_plane itself (only the near-side r_plane 8 ring dips); "
-        + "; ".join(mutated) + (
-            "; pin %.3e is within %.1fx its own bound %.3e" %
-            (O_PIN_PROBE_AROUND[8], O_PIN_PROBE_AROUND[8] / pinBound,
-             pinBound) if pinBound else "")))
+        "the four r_plane placements sweep how far the plane's own CoC "
+        "reaches under an opaque card's edge"))
     checks.append(oCheck(
         "o2br ...colour:alpha ratio around the silhouette", aroundRatio,
         "|c/a - src|", "same pixels", "G/A, B/A vs the source flatten"))
@@ -5776,7 +5793,7 @@ def sceneO(settings):
     overlapPopulation = "the pair's disc overlap %s" % (overlap,)
     checks.append(oCheck(
         "o3 full rig, complete deep: the whole interior", [
-            ("K=%d" % O_K, rig[1], O_PIN_RIG)], "1-a", rigPopulation,
+            ("K=%d" % O_K, rig[1], None)], "1-a", rigPopulation,
         "MUTATIONS: K=64 %s; K=4 %s; pair at one depth %s; plane absent "
         "behind the cards (o4) %s; worst-case bound %.3e"
         % (rigK64[1].describe(), rigK4[1].describe(), rigSame[1].describe(),
@@ -5789,7 +5806,7 @@ def sceneO(settings):
         % (rigTargets + (rigSpread,))))
     checks.append(oCheck(
         "o3b full rig, complete deep: the pair's disc overlap", [
-            ("K=%d" % O_K, rig[2], O_PIN_RIG_OVERLAP)], "1-a",
+            ("K=%d" % O_K, rig[2], None)], "1-a",
         overlapPopulation,
         "MUTATIONS: pair at one depth (one bucket) %s; K=64 %s; K=4 %s; "
         "plane absent (o4b) %s" % (rigSame[2].describe(),
@@ -5830,7 +5847,7 @@ def sceneO(settings):
              "covers every pixel once, so its flatten is opaque"))
     checks.append(oCheck(
         "o4 sparse twin: the whole interior", [
-            ("K=%d" % O_K, sparse[1], O_PIN_SPARSE)], "1-a", rigPopulation,
+            ("K=%d" % O_K, sparse[1], None)], "1-a", rigPopulation,
         "MUTATIONS: K=64 %s; plane present behind the cards (o3) %s"
         % (sparseK64[1].describe(), rig[1].describe())))
     checks.append(oCheck(
@@ -5839,7 +5856,7 @@ def sceneO(settings):
         "|c/a - src|", "same pixels", "G/A, B/A vs the source flatten"))
     checks.append(oCheck(
         "o4b sparse twin: the pair's disc overlap", [
-            ("K=%d" % O_K, sparse[2], O_PIN_SPARSE_OVERLAP)], "1-a",
+            ("K=%d" % O_K, sparse[2], None)], "1-a",
         overlapPopulation,
         "MUTATIONS: K=64 %s; plane present (o3b) %s"
         % (sparseK64[2].describe(), rig[2].describe())))
@@ -5852,7 +5869,8 @@ def sceneO(settings):
     # o5: Bokeh on o3's stack.
     # ------------------------------------------------------------------
     if not bokehOk:
-        for name in ("o5 Bokeh on the rig", "o5r", "o5b difference map"):
+        for name in ("o5 Bokeh on the rig", "o5r", "o5b difference map",
+                     "o5c", "o5cr"):
             checks.append(Check("o", name, "-", "-", SKIP,
                                 note="Bokeh unavailable (o0b)"))
         return checks
@@ -5900,6 +5918,24 @@ def sceneO(settings):
         population="interior %s" % (interior,),
         note="%s (Merge2 minus: A = DeepCDefocus, B = Bokeh; negative where "
              "the node dips)" % path))
+
+    diffAlpha, exactMatches = oAlphaAgainst(
+        rig[0], bokeh, interior, lambda x, y: rigTolerance(x, y) + O_ULP)
+    checks.append(oCheck(
+        "o5c DeepCDefocus - Bokeh alpha over the interior", [
+            ("K=%d" % O_K, diffAlpha, None)], "|a_node - a_bokeh|",
+        rigPopulation,
+        "%d of %d px read exactly 0 difference; the bound is the term-count "
+        "tolerance plus Bokeh's own measured +-1 ulp (o5 reads 1 +- 1 ulp "
+        "itself, so literal zero isn't attainable at every pixel)"
+        % (exactMatches, diffAlpha.count)))
+    checks.append(oCheck(
+        "o5cr ...node vs Bokeh colour:alpha ratio (G/A, B/A) over the "
+        "interior", [("K=%d" % O_K, oColourAgainst(
+            rig[0], bokeh, interior, lambda x, y: 2.0 * rigTolerance(x, y)),
+            None)],
+        "|c/a_node - c/a_bokeh|", "same pixels",
+        "bound is twice o5c's per-pixel tolerance"))
     return checks
 
 

@@ -36,8 +36,7 @@ from scenes import (                                              # noqa: E402
     GROUND_FOCUS, HALO_BG, HALO_FAR_Z, HALO_FG, HALO_FOCUS, HALO_HOLDOUT_ALPHA,
     HALO_HOLDOUT_Z, HALO_NEAR_Z, HALO_RADIUS, HALO_SIZE, NEAR_CARD,
     NEAR_COLOUR, NEAR_FG_EXTENT, NEAR_RADIUS, NEAR_Z, O_CARD_NAMES, O_CARDS,
-    O_K, O_PIN_PLANE_K, O_PIN_PROBE_AROUND, O_PIN_RIG, O_PIN_RIG_OVERLAP,
-    O_PIN_SPARSE, O_PIN_SPARSE_OVERLAP, O_PLACEMENTS, O_PROBE_Z, O_SIZE,
+    O_K, O_PLACEMENTS, O_PROBE_Z, O_SIZE,
     UNEQ_CARD_A, UNEQ_CARD_B, _uneqAnchor, _uneqCard, checkerSparse,
     checkerTwin, groundPlane, groundPlaneRow, haloBackground, haloForeground,
     haloHoldout, haloSparse, nearSparse, nearTwin, oCard, oCards, oInterior,
@@ -151,28 +150,25 @@ CHECK_O = (
     "DeepCDefocus and Bokeh: extents within 1 px of r and of each other.\n"
     "  o1_plane (this script's K=%d; the harness's own o1 reads back at "
     "the run's --k), o1b_plane_k4 / _k64, o1c_plane_s86 / _s43: the plane "
-    "alone reads 1 to rounding except at K=4 (pinned %.3e).\n"
+    "alone reads 1 to rounding at every K and every kernel diameter.\n"
     "  o2_probe_r0/2/8/16: one r_obj=16 card at z=%.3f over plane rows whose "
-    "own radius is 0/2/8/16. Under the silhouette: 1 to rounding at every "
-    "r_plane. The ring around it dips only at r_plane 8 (near side, pinned "
-    "%.3e); o2b_probe_r8_k64 reads 1.\n"
-    "  o3_rig (K=%d): interior dip pinned %.3e under the isolated card's "
-    "lower edge, pair overlap %.3e. o3_rig_k64 reads 1 on both; "
-    "o3_rig_same (pair at one depth) leaves the overlap dip in place; "
-    "o3_rig_k4 dips elsewhere.\n"
-    "  o4_sparse: the same with NO plane behind the cards: interior %.3e, "
-    "overlap %.3e; o4_sparse_k64 reads 1.\n"
+    "own radius is 0/2/8/16. Under the silhouette and in the ring around "
+    "it: 1 to rounding at every r_plane.\n"
+    "  o3_rig (K=%d): interior and the pair's disc overlap both read 1 to "
+    "rounding; o3_rig_k64 / _k4 / _same (pair at one depth) are the same "
+    "checks at other K / a merged bucket.\n"
+    "  o4_sparse: the same rig with NO plane behind the cards, interior "
+    "and overlap both read 1; o4_sparse_k64 the same at K=64.\n"
     "  o5_bokeh: Bokeh on o3's stack reads 1 over the interior to within the "
     "same term-count float-accumulation bound the node is gated on (see "
-    "makeBokeh()); o5_diff is DeepCDefocus - Bokeh (alpha), negative where "
-    "the node dips.\n\n"
-    "Pins are XFAILs with a hard outer bound at 2x; a pinned dip that "
-    "reads back inside its bound FAILs too, so it is re-examined."
+    "makeBokeh()); o5_diff is DeepCDefocus - Bokeh (alpha), which is what "
+    "the harness's o5c/o5cr gate per pixel -- against that bound plus "
+    "Bokeh's own measured +-1 ulp, since Bokeh itself does not read "
+    "literal 1."
     % (O_SIZE, GROUND_FOCUS, O_CARDS[0][1], oRadius(O_CARDS[0][1]),
        O_CARDS[1][1], oRadius(O_CARDS[1][1]), O_CARDS[2][1], O_CARDS[3][1],
        GROUND_COLOR[1], GROUND_COLOR[2], _O_INTERIOR[0], _O_INTERIOR[2] - 1,
-       O_K, O_PIN_PLANE_K[4], O_PROBE_Z, O_PIN_PROBE_AROUND[8], O_K,
-       O_PIN_RIG, O_PIN_RIG_OVERLAP, O_PIN_SPARSE, O_PIN_SPARSE_OVERLAP)
+       O_K, O_PROBE_Z, O_K)
 )
 
 
@@ -1024,9 +1020,6 @@ def buildSceneO(settings):
         probe["label"].setValue("r_obj 16 over r_plane %d (y=%d)"
                                 % (nominal, row))
         defocus(probe, "o2_probe_r%d" % nominal, -240 + 110 * index, 420)
-        if nominal in O_PIN_PROBE_AROUND:
-            defocus(probe, "o2b_probe_r%d_k64" % nominal,
-                    -240 + 110 * index, 520, settings.derive(k=64))
 
     rig = deepMerge([oCard(*card) for card in O_CARDS] + [groundPlane()])
     rig.setXYpos(400, 0)
