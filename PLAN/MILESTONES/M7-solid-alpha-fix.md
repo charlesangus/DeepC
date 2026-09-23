@@ -241,7 +241,7 @@ every surviving XFAIL keeps a hard outer bound; every new check is mutation-test
     `~/deepc-validation/M7-P3T2/`; regenerated `.nk` loads headless.
   - size: M
 
-- [ ] M7.P3.T3 — Re-derive i7/i7d from an independent oracle: `over` in the interior, reachability as a non-zero floor
+- [x] M7.P3.T3 — Re-derive i7/i7d from an independent oracle: `over` in the interior, reachability as a non-zero floor
   - files: `tests/nuke/scenes.py` (`sceneI()` i7/i7d ~2607–2735, the
     `collisionResidual`/`residualBand` block and its comment)
   - approach: i7/i7d pinned `a²/4 = 0.09` — this defect (a pooled co-located pair saturated to 1
@@ -455,3 +455,11 @@ then PR to `master` from `claude/deep-defocus-node-plan-o0ld83`.
   immune to the historical defect and to small perturbations (raw-area split, bit-16, `local` capped
   at 0.9/0.999) — fine bucketing self-heals per-bucket deficits — and only fail under a 50% cut of both
   fit and residual alpha (2.5e-1). They guard against gross breakage only. Evidence `~/deepc-validation/M7-P3T2/`.
+- 2026-09-23 — **M7.P3.T3 landed** (`5e568b0`): hypothesis confirmed — pre_merge on/off delta lives only in
+  the z=3 corner bloom; argmax (32,32) for both, in bucket k=15 (grouped pair pays via fit/excess,
+  ungrouped via the co-located residual under the corner's partial coverage). i7 2.9608e-3, i7d 9.4765e-4.
+  Scene (i) 13 → 15 rows, `PASS=15`: new interior arms i7o/i7do (|A−0.84| and R/A vs stock flatten ≤
+  N·2⁻²⁴; i7 N=140 → 8.34e-6, i7d 4.70e-4), i7/i7d become reachability arms (bound = sum of both
+  renders' pair-bucket terms — deviation from the brief's single-render bound: a difference carries
+  both renders' rounding). M7-T0: i7o/i7do FAIL at 0.75 (dev 9.0e-2). **Weak point:** i7d's
+  reachability reads only ~1.35× its 7.02e-4 bound. Other i rows identical to M6-P3T1. I = +2.
