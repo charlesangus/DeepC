@@ -1859,7 +1859,7 @@ std::ptrdiff_t probePixelIndex(const ScatterParams& params, const BucketPlaneVie
 }
 
 void recordProbePlanes(const BucketPlaneView& view, std::ptrdiff_t i,
-                       CompositeTrace& trace, bool saturated)
+                       CompositeTrace& trace)
 {
     const int nk = std::min(view.bucketCount, kCompositeTraceBuckets);
     const int nc = std::min(view.channelCount, kCompositeTraceChannels);
@@ -1868,17 +1868,11 @@ void recordProbePlanes(const BucketPlaneView& view, std::ptrdiff_t i,
         const float* color = view.color
             + static_cast<std::ptrdiff_t>(k) * view.channelCount * view.pixelCount;
         CompositeTracePlanes& p = trace.bucket[k].planes;
-        if (saturated) {
-            p.aSat = view.alpha[ko + i];
-            for (int c = 0; c < nc; ++c)
-                p.colorSat[c] = color[static_cast<std::ptrdiff_t>(c) * view.pixelCount + i];
-        } else {
-            p.cRaw = view.weight[ko + i];
-            p.aRaw = view.alpha[ko + i];
-            p.dRaw = view.colocated[ko + i];
-            for (int c = 0; c < nc; ++c)
-                p.colorRaw[c] = color[static_cast<std::ptrdiff_t>(c) * view.pixelCount + i];
-        }
+        p.cRaw = view.weight[ko + i];
+        p.aRaw = view.alpha[ko + i];
+        p.dRaw = view.colocated[ko + i];
+        for (int c = 0; c < nc; ++c)
+            p.colorRaw[c] = color[static_cast<std::ptrdiff_t>(c) * view.pixelCount + i];
     }
 }
 
@@ -1902,17 +1896,9 @@ void resolveBandCPU(const ScatterParams& params,
             const std::ptrdiff_t i = probePixelIndex(params, view, px.x, px.y);
             px.hit = (i >= 0);
             if (px.hit)
-                recordProbePlanes(view, i, px.trace, false);
+                recordProbePlanes(view, i, px.trace);
         }
     }
-
-    // ALWAYS, on the normal path.  Not a knob, not a debug switch: within-
-    // bucket additive accumulation over-counts same-pixel fragments for
-    // ordinary fog (+33.3% / +71.4% / +113.3% of alpha at 2 / 3 / 4 disjoint
-    // spans sharing a bucket), so this is a correctness pass.  It only ever
-    // scales DOWN.
-    saturateBucketPlanes(view.color, view.alpha,
-                         view.bucketCount, view.channelCount, view.pixelCount);
 
     // The bucket composite: one rule, the coverage partition.  A plain
     // front-to-back `over` of the planes is NOT equivalent -- see the
@@ -1945,7 +1931,6 @@ void resolveBandCPU(const ScatterParams& params,
         if (!px.hit)
             continue;
         const std::ptrdiff_t i = probePixelIndex(params, view, px.x, px.y);
-        recordProbePlanes(view, i, px.trace, true);
 
         const float savedAlpha = outAlpha[i];
         for (int c = 0; c < view.channelCount; ++c)

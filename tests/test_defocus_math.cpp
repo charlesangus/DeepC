@@ -1094,132 +1094,42 @@ TEST_CASE("Flat opaque field: fractional two-bucket deposit + front-to-back comp
     CHECK(outAlpha == doctest::Approx(1.0f).epsilon(1e-6));
 }
 
-TEST_CASE("saturateBucketPixel: alpha>1 saturates to exactly 1 with colour/alpha ratio preserved; alpha<=1 untouched")
+TEST_CASE("saturationScale: 1/alpha above 1, exactly 1 at or below it and for NaN -- down only")
 {
-    SUBCASE("overlap case: alpha=2, colour=(2,2,2) (i.e. unpremult colour (1,1,1)) -> alpha=1, colour=(1,1,1)")
+    SUBCASE("alpha > 1 returns the reciprocal, so colour * scale is the colour:alpha ratio")
     {
-        float color[3] = {2.0f, 2.0f, 2.0f};
-        float alpha = 2.0f;
-        saturateBucketPixel(color, &alpha, 3, 1);
+        // Exact in binary: every operand a power of two.
+        CHECK(saturationScale(2.0f) == 0.5f);
+        CHECK(2.0f * saturationScale(2.0f) == 1.0f);
 
-        CHECK(alpha == 1.0f);
-        CHECK(color[0] == doctest::Approx(1.0f));
-        CHECK(color[1] == doctest::Approx(1.0f));
-        CHECK(color[2] == doctest::Approx(1.0f));
-    }
-
-    SUBCASE("colour:alpha ratio is preserved for NON-trivial values, to the measured 1e-6 bound")
-    {
-        // The alpha=2 / colour=2 case above is exact in binary floating point
-        // (every operand is a power of two), so on its own it cannot detect a
-        // systematic ratio drift at all -- a mutation multiplying the colour by
-        // an extra (1 + 1e-5) survives it. This case uses alphas and channel
-        // values with no exact binary representation, and asserts the
-        // unpremultiplied colour (= the colour:alpha ratio, which is what
-        // "ratio preserved" means) to a tolerance derived from this form's
-        // measured 7.45e-08 drift: worst RELATIVE drift over alpha in (1, 6]
-        // here is 1.39e-07, so 1e-6 is ~7x headroom.
+        // Non-dyadic alphas: the scale is the float reciprocal to the bit, and
+        // colour * scale recovers the unpremultiplied value through three
+        // roundings (a*c, 1/a, their product), each <= 2^-24 relative; 4 terms
+        // leaves room for the second-order cross terms.
         const float unpremult[3] = {0.3f, 0.77f, 0.999f};
         for (float a : {1.0000001f, 1.3f, 1.7f, 2.9f, 5.5f}) {
-            float color[3] = {a * unpremult[0], a * unpremult[1], a * unpremult[2]};
-            float alpha = a;
-            saturateBucketPixel(color, &alpha, 3, 1);
-
-            CHECK(alpha == 1.0f);   // assigned exactly 1, never a * (1/a)
+            CAPTURE(a);
+            const float scale = saturationScale(a);
+            CHECK(scale == 1.0f / a);
+            CHECK(scale < 1.0f);
             for (int c = 0; c < 3; ++c) {
-                // alpha is now exactly 1, so the premultiplied colour IS the
-                // ratio; it must equal the original unpremultiplied value.
-                CHECK(std::fabs(color[c] - unpremult[c]) <= 1e-6f * unpremult[c]);
+                const float premult = a * unpremult[c];
+                CHECK(std::fabs(premult * scale - unpremult[c])
+                      <= 4.0f * std::ldexp(1.0f, -24) * unpremult[c]);
             }
         }
     }
 
-    SUBCASE("a coverage deficit (alpha < 1) is left strictly alone by this pass -- never scaled up here")
+    SUBCASE("alpha <= 1 is never scaled up: a coverage deficit is the fill's to restore")
     {
-        float color[3] = {0.15f, 0.10f, 0.05f};
-        float alpha = 0.5f;
-        saturateBucketPixel(color, &alpha, 3, 1);
-
-        CHECK(alpha == 0.5f);
-        CHECK(color[0] == 0.15f);
-        CHECK(color[1] == 0.10f);
-        CHECK(color[2] == 0.05f);
+        for (float a : {1.0f, 0.9999999f, 0.5f, 0.0f, -0.25f})
+            CHECK(saturationScale(a) == 1.0f);
     }
 
-    SUBCASE("alpha == 1 exactly: no-op")
+    SUBCASE("NaN fails the > 1 test and scales nothing")
     {
-        float color[1] = {0.5f};
-        float alpha = 1.0f;
-        saturateBucketPixel(color, &alpha, 1, 1);
-        CHECK(alpha == 1.0f);
-        CHECK(color[0] == 0.5f);
-    }
-
-    SUBCASE("NaN alpha fails the >1 test and is left untouched")
-    {
-        float color[1] = {0.3f};
-        float alpha = std::numeric_limits<float>::quiet_NaN();
-        saturateBucketPixel(color, &alpha, 1, 1);
-        CHECK(std::isnan(alpha));
-        CHECK(color[0] == 0.3f);
-    }
-}
-
-TEST_CASE("saturateBucketPlanes: the whole-band driver indexes the documented plane layout")
-{
-    // saturateBucketPixel() above is the per-pixel primitive; this is the
-    // driver the scatter core actually calls, and its bucket/channel/pixel
-    // index arithmetic is untested by the per-pixel cases (a mutation passing
-    // the wrong channel stride down survives all of them). Layout, per
-    // DeepCDefocusMath.h's "Bucket plane layout" comment:
-    //     color[(k * channelCount + c) * pixelCount + i]
-    //     alpha[k * pixelCount + i]
-    const int bucketCount = 3;
-    const int channelCount = 2;
-    const std::ptrdiff_t pixelCount = 4;
-
-    std::vector<float> color(static_cast<std::size_t>(bucketCount * channelCount) * 4);
-    std::vector<float> alpha(static_cast<std::size_t>(bucketCount) * 4);
-
-    auto colorAt = [&](int k, int c, int i) -> float& {
-        return color[static_cast<std::size_t>((k * channelCount + c) * pixelCount + i)];
-    };
-    auto alphaAt = [&](int k, int i) -> float& {
-        return alpha[static_cast<std::size_t>(k * pixelCount + i)];
-    };
-
-    // Distinct alpha per (bucket, pixel): pixel 0 and 2 oversaturate, 1 and 3
-    // don't -- so a driver that read the wrong pixel would saturate the wrong
-    // entries. Unpremultiplied colour is distinct per channel too.
-    const float alphaIn[3][4] = {{2.0f, 0.5f, 1.6f, 1.0f},
-                                 {1.25f, 0.9f, 3.0f, 0.25f},
-                                 {4.0f, 0.1f, 1.1f, 0.75f}};
-    const float unpremult[2] = {0.4f, 0.85f};
-
-    for (int k = 0; k < bucketCount; ++k)
-        for (int i = 0; i < pixelCount; ++i) {
-            alphaAt(k, static_cast<int>(i)) = alphaIn[k][i];
-            for (int c = 0; c < channelCount; ++c)
-                colorAt(k, c, static_cast<int>(i)) = alphaIn[k][i] * unpremult[c];
-        }
-
-    saturateBucketPlanes(color.data(), alpha.data(), bucketCount, channelCount, pixelCount);
-
-    for (int k = 0; k < bucketCount; ++k) {
-        for (int i = 0; i < pixelCount; ++i) {
-            const float in = alphaIn[k][i];
-            if (in > 1.0f) {
-                CHECK(alphaAt(k, static_cast<int>(i)) == 1.0f);
-                for (int c = 0; c < channelCount; ++c)
-                    CHECK(std::fabs(colorAt(k, c, static_cast<int>(i)) - unpremult[c])
-                          <= 1e-6f * unpremult[c]);
-            } else {
-                // Never scaled up here: a deficit is the composite's fill to restore.
-                CHECK(alphaAt(k, static_cast<int>(i)) == in);
-                for (int c = 0; c < channelCount; ++c)
-                    CHECK(colorAt(k, c, static_cast<int>(i)) == in * unpremult[c]);
-            }
-        }
+        CHECK(saturationScale(std::numeric_limits<float>::quiet_NaN()) == 1.0f);
+        CHECK(saturationScale(std::numeric_limits<float>::infinity()) == 0.0f);
     }
 }
 

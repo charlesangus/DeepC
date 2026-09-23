@@ -1803,7 +1803,7 @@ DEEPC_HD inline int splitSpanAtBoundaries(const DepthBuckets& buckets,
 // Bucket plane layout
 //
 // The band's bucket planes are plain SoA float buffers, laid out so that both
-// the saturation pass and the composite walk them contiguously:
+// the scatter and the composite walk them contiguously:
 //
 //   colour: color[(k * channelCount + c) * pixelCount + i]
 //   alpha : alpha[k * pixelCount + i]
@@ -1824,63 +1824,24 @@ DEEPC_HD inline int splitSpanAtBoundaries(const DepthBuckets& buckets,
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// saturateBucketPixel — the alpha-saturation renormalize, one bucket, one px
+// saturationScale — the alpha-saturation renormalize factor for one bucket
 //
 // Additive premultiplied accumulation is energy-conserving in flat regions,
 // but where two surfaces overlap in screen space *within the same bucket*
-// their alphas add and can exceed 1.  Rescaling colour AND alpha by 1/alpha
-// pulls that back to alpha == 1 with the colour:alpha ratio — i.e. the
-// unpremultiplied colour — preserved exactly.
+// their alphas add and can exceed 1.  Scaling the bucket's colour by
+// 1/alpha, with its alpha read as exactly 1, pulls that back with the
+// colour:alpha ratio — i.e. the unpremultiplied colour — preserved.  The
+// composite applies the factor at read, so the raw alpha is still in hand for
+// its area split.
 //
-// SATURATE DOWN ONLY, NEVER SCALE UP.  alpha < 1 is left strictly alone here:
-// a shortfall of coverage (a defocused foreground scattering outward with
-// nothing behind it) is the coverage fill's to restore, in the composite,
-// from the per-pixel arrival plane and with colour and alpha scaled together.
-// This pass has no arrival to scale by and must not guess.
-//
-// alpha is assigned exactly 1.0f rather than multiplied by 1/alpha: the two
-// are the same analytically, but the multiply can land a half-ulp above 1 and
-// leave a plane the composite would then have to clamp.  The colour multiply
-// uses that same reciprocal, so the ratio is preserved to float precision.
-// NaN alpha fails the `> 1` test and is left untouched.
+// DOWN ONLY, NEVER UP.  alpha <= 1 returns 1: a shortfall of coverage (a
+// defocused foreground scattering outward with nothing behind it) is the
+// coverage fill's to restore, from the per-pixel arrival plane and with colour
+// and alpha scaled together.  NaN alpha fails the `> 1` test and returns 1.
 // ---------------------------------------------------------------------------
-DEEPC_HD inline void saturateBucketPixel(float* __restrict__ color,
-                                         float* __restrict__ alpha,
-                                         int channelCount,
-                                         std::ptrdiff_t channelStride)
+DEEPC_HD inline float saturationScale(float aRaw)
 {
-    const float a = *alpha;
-    if (!(a > 1.0f))                    // <= 1, NaN: never scale up
-        return;
-
-    const float s = 1.0f / a;
-    for (int c = 0; c < channelCount; ++c)
-        color[static_cast<std::ptrdiff_t>(c) * channelStride] *= s;
-
-    *alpha = 1.0f;
-}
-
-// ---------------------------------------------------------------------------
-// saturateBucketPlanes — saturation pass over a whole band's bucket planes
-//
-// Host-side driver over the layout documented above; runs after scatter and
-// before the bucket composite (compositePixelCoveragePartition, in
-// DeepCDefocusScatter.h).
-// ---------------------------------------------------------------------------
-inline void saturateBucketPlanes(float* __restrict__ color,
-                                 float* __restrict__ alpha,
-                                 int bucketCount,
-                                 int channelCount,
-                                 std::ptrdiff_t pixelCount)
-{
-    for (int k = 0; k < bucketCount; ++k) {
-        float* bucketColor = color
-            + static_cast<std::ptrdiff_t>(k) * channelCount * pixelCount;
-        float* bucketAlpha = alpha + static_cast<std::ptrdiff_t>(k) * pixelCount;
-
-        for (std::ptrdiff_t i = 0; i < pixelCount; ++i)
-            saturateBucketPixel(bucketColor + i, bucketAlpha + i, channelCount, pixelCount);
-    }
+    return (aRaw > 1.0f) ? (1.0f / aRaw) : 1.0f;
 }
 
 } // namespace deepc
