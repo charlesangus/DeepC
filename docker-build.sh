@@ -15,6 +15,9 @@ set -euo pipefail
 #   --linux                    Build Linux artifacts only
 #   --windows                  Build Windows artifacts only
 #   --all                      Build both platforms (default)
+#   --nuke-sdk DIR             Mount a local Nuke SDK into the Linux build
+#                              container instead of relying on NukeDockerBuild's
+#                              installer-based image (Linux only)
 #   -h, --help                 Show this help
 
 # ---------------------------------------------------------------------------
@@ -37,6 +40,12 @@ DEEPC_WINDOWS_IMAGE="deepc-build"
 # NOT used automatically — Nuke_ROOT must be passed explicitly to CMake.
 NUKE_SDK_PATH="/usr/local/nuke_install"
 
+# Optional host directory with a local Nuke SDK, mounted read-only over
+# NUKE_SDK_PATH in the Linux container. Lets a toolchain-only image (no SDK
+# baked in) be used without NukeDockerBuild's installer-based fallback build.
+# --nuke-sdk overrides; DEEPC_NUKE_SDK sets the default.
+NUKE_SDK_HOST_DIR="${DEEPC_NUKE_SDK:-}"
+
 # ---------------------------------------------------------------------------
 # Usage
 # ---------------------------------------------------------------------------
@@ -54,6 +63,10 @@ OPTIONS:
   --linux                    Build Linux artifacts only (.so)
   --windows                  Build Windows artifacts only (.dll)
   --all                      Build both platforms (default)
+  --nuke-sdk DIR             Mount DIR as the Linux container's Nuke SDK
+                              instead of using NukeDockerBuild's installer-
+                              based image (Linux only; also settable via the
+                              DEEPC_NUKE_SDK env var, --nuke-sdk wins)
   -h, --help                 Show this help and exit
 
 OUTPUT:
@@ -87,6 +100,10 @@ while [[ $# -gt 0 ]]; do
             BUILD_WINDOWS=true
             shift
             ;;
+        --nuke-sdk)
+            NUKE_SDK_HOST_DIR="$2"
+            shift 2
+            ;;
         -h|--help)
             usage
             exit 0
@@ -118,6 +135,18 @@ if ! command -v git &>/dev/null; then
     exit 1
 fi
 
+if [[ -n "${NUKE_SDK_HOST_DIR}" ]]; then
+    if [[ "${BUILD_WINDOWS}" == "true" ]]; then
+        echo "ERROR: --nuke-sdk / DEEPC_NUKE_SDK apply to Linux builds only." \
+             "Combine with --linux (not --windows or the default --all)." >&2
+        exit 1
+    fi
+    if [[ ! -d "${NUKE_SDK_HOST_DIR}" ]]; then
+        echo "ERROR: --nuke-sdk directory does not exist: ${NUKE_SDK_HOST_DIR}" >&2
+        exit 1
+    fi
+fi
+
 # ---------------------------------------------------------------------------
 # Image bootstrap
 # ---------------------------------------------------------------------------
@@ -131,6 +160,12 @@ ensure_image() {
 
     if docker image inspect "${image_tag}" &>/dev/null; then
         return 0
+    fi
+
+    if [[ -n "${NUKE_SDK_HOST_DIR}" ]]; then
+        echo "  SKIP: image '${image_tag}' not found locally, and --nuke-sdk mode does not fall" \
+             "back to NukeDockerBuild's installer-based build. Build '${image_tag}' first." >&2
+        return 1
     fi
 
     echo "  Image '${image_tag}' not found locally — building via NukeDockerBuild..."
@@ -204,8 +239,13 @@ for nuke_version in "${NUKE_VERSIONS[@]}"; do
         ensure_image "${nuke_version}" "linux" || { echo "  Skipping Linux build for Nuke ${nuke_version}."; continue; }
         echo "  [Linux] Starting build..."
 
+        DOCKER_LINUX_MOUNTS=(-v "${BASEDIR}:/nuke_build_directory")
+        if [[ -n "${NUKE_SDK_HOST_DIR}" ]]; then
+            DOCKER_LINUX_MOUNTS+=(-v "${NUKE_SDK_HOST_DIR}:${NUKE_SDK_PATH}:ro")
+        fi
+
         docker run --rm \
-            -v "${BASEDIR}:/nuke_build_directory" \
+            "${DOCKER_LINUX_MOUNTS[@]}" \
             "${NUKEDOCKERBUILD_IMAGE}:${nuke_version}-linux" \
             bash -c "
                 cmake -S /nuke_build_directory \

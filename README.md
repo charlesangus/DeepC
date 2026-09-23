@@ -103,6 +103,8 @@ Build for specific Nuke versions:
 ./docker-build.sh --versions 16.0 16.1
 ```
 
+To build Linux artifacts against a local Nuke SDK instead of NukeDockerBuild's installer-based image (a toolchain-only image must already exist locally), pass `--nuke-sdk <dir>` or set `DEEPC_NUKE_SDK`, e.g. `./docker-build.sh --linux --nuke-sdk /usr/local/Nuke16.0v9`.
+
 ### Output
 
 Release archives are placed in the `release/` directory:
