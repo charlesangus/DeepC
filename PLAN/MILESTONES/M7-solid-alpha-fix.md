@@ -291,6 +291,36 @@ every surviving XFAIL keeps a hard outer bound; every new check is mutation-test
     under its recorded mutation; the comment table carries both columns.
   - size: M
 
+- [ ] M7.P3.T5 — Mixed-opacity co-located stack vs Bokeh: measure the clamped-split rule's residual gap
+  - files: `tests/nuke/scenes.py` (a new scene-(o) cell or a small new scene — follow how scene (o)
+    registers cells and uses `makeBokeh()`), `tests/nuke/generate_scene_scripts.py` (StickyNote /
+    `.nk` if the scene gets a script), the regenerated `.nk`
+  - approach: the P2.T1 split rule divides a saturated bucket's raw alpha over the clamped new and
+    co-located areas; planes cannot distinguish a mixed-opacity stack from uniform layers, so an
+    opaque surface with a fog card co-located in the same bucket, under a large new-area share, is
+    predicted to read slightly low (doctest planes: ε=0.5 fog → 0.919 vs 1). Measure it on a real
+    render against Bokeh. Rig: complete deep, `fill: foreground`; an opaque card at depth z, a
+    translucent "fog" card (alpha ∈ {0.2, 0.5}) at z − δ with δ inside one bucket's depth span at
+    K=16, and a small opaque object nearer the camera with its own CoC so its disc supplies new area
+    over the stack; sweep K ∈ {4, 16, 64} and the two fog alphas. Render `DeepCDefocus` and
+    `makeBokeh()` on the identical deep input. Rows: per cell, worst `1 − α` over the covered box
+    where the opaque card is present (oracle: alpha 1 — the opaque card covers every such pixel), node
+    vs Bokeh alpha difference (bound `tol + 2⁻²⁴` as o5c), and a colour-ratio arm beside each.
+    Outcome rules: a cell within bound PASSes; a cell that dips while Bokeh reads 1 becomes a
+    two-sided XFAIL pinned at its measured value with a hard outer bound (2× pin) and a note naming the
+    mechanism (bucket-sum loses per-layer opacity) — the gap is documented, not fixed, in M7. Report
+    Bokeh's own readings for every cell. If δ-vs-bucket placement is fragile, derive δ from the
+    node's bucket centres at each K (read how scene (o)/(g) place depths) rather than guessing.
+    Mutation-test every new row: XFAIL rows must FAIL "DIP GONE" when the dip is removed (e.g. a
+    scratch build with the per-layer-exact alpha for the rig's two layers, or placing the fog in a
+    different bucket), PASS rows must fail under the pre-fix `~/deepc-baselines/M7-T0/plugins` or a
+    named scratch mutation — no vacuous gates.
+  - verify: `--scenes o` (or the new scene) on the P2 build: tally stated in the report as
+    `PASS=… FAIL=0 XFAIL=X` with every pre-existing row unchanged from P3.T2's log; per-cell table of
+    node alpha, Bokeh alpha and node−Bokeh difference, logged under `~/deepc-validation/M7-P3T5/`;
+    each new row's mutation run recorded; regenerated `.nk` loads headless.
+  - size: M
+
 ## Phase 7.4: Gate
 
 - [ ] M7.P4.T1 — Profile against M7-T0 under the same conditions
@@ -319,9 +349,9 @@ every surviving XFAIL keeps a hard outer bound; every new check is mutation-test
     probing the worst pixel of each (a saturated bucket with `D > 0` on the ramp — the fix's own term).
     `./docker-build.sh --linux` on the M7 head with P1.T3's checks. Then the PR from
     `claude/deep-defocus-node-plan-o0ld83` to `master`.
-  - verify: doctests `27/27` + `117+n`; a–o tally **`PASS=160+I+M FAIL=2 XFAIL=11 SKIP=2`** — T0's
+  - verify: doctests `27/27` + `117+n`; a–o tally **`PASS=160+I+M+F FAIL=2 XFAIL=11+X SKIP=2`** — T0's
     152/2/17/2 with scene (o)'s six XFAILs → PASS (+6), o5c/o5cr (+2), `I` = net new i rows (P3.T3:
-    +2), `M` = P3.T2's rows; restate the exact number from the task reports before checking; FAILs
+    +2), `M` = P3.T2's rows, `F`/`X` = P3.T5's PASS/XFAIL rows; restate the exact number from the task reports before checking; FAILs
     f3e/f3f only; the 11 surviving XFAILs (f's five, g4, g5×4, m3c) byte-identical with hard bounds;
     size-0 parity (a) bit-exact, (d) empties exactly black, m4a/m4b, n1, n7 PASS; every changed a–n
     row on the explained list; EXR ulp figures recorded and explained; docker gate green.
@@ -333,7 +363,7 @@ former dips read `1 − α` within their per-pixel `N·2⁻²⁴` bound, o5c's n
 within bound over the interior, every colour-ratio arm PASS; the K=64/K=4/same-depth/sparse/ring
 mutation runs are gated rows each shown to fail under a named mutation; i7/i7d re-derived (`over`
 interior arm + reachability floor); g1/g2/g3/m3a re-pinned to term-count bounds; every surviving
-XFAIL unchanged with its hard bound; a–o tally `PASS=160+I+M FAIL=2 XFAIL=11 SKIP=2` with every moved
+XFAIL unchanged with its hard bound; a–o tally `PASS=160+I+M+F FAIL=2 XFAIL=11+X SKIP=2` with every moved
 a–n row explained against M6-T0/M6-P3T1; scene (a) bit-exact, (d) black, m4a/m4b/n1/n7 hold;
 profile within noise of M7-T0 on this host; `./docker-build.sh --linux` green on the rebuilt image;
 then PR to `master` from `claude/deep-defocus-node-plan-o0ld83`.
@@ -399,3 +429,6 @@ then PR to `master` from `claude/deep-defocus-node-plan-o0ld83`.
   (o5b 3.067e-2→1.788e-7, o1c 2.086e-6→1.192e-7, o1/o2/o2r/o2br/o3br by 1–2 ulps near α≈1) — the
   fix's own term, statuses unchanged; the brief's "only six rows move" was too strict.
   `test_defocus_math` is 26 cases (two saturation cases merged into one `saturationScale` case).
+- 2026-09-23 — **User: add M7.P3.T5** — measure the clamped-split rule's residual gap
+  (mixed-opacity co-located stack under large new area) on a real render against Bokeh; pin it as a
+  two-sided XFAIL if Bokeh reads 1 and the node dips. Final tally gains `F` PASS / `X` XFAIL rows.
