@@ -113,7 +113,7 @@ hard outer bound; every new check is mutation-tested; oracles are never the new 
     in `## Decisions`.
   - size: S
 
-- [ ] M6.P1.T2 — `makeBokeh()`: the Bokeh oracle in the harness, CoC-calibrated to `DeepCDefocus`
+- [x] M6.P1.T2 — `makeBokeh()`: the Bokeh oracle in the harness, CoC-calibrated to `DeepCDefocus`
   - files: `tests/nuke/harness.py` (new `makeBokeh(settings, source, focusDistance, size, ...)`
     beside `makeDefocus()` at ~251 and `deepToImage()` at ~286), `tests/nuke/scenes.py` (a
     calibration cell inside `sceneO()`'s file, see P1.T3 — the helper's own check lives with the
@@ -253,3 +253,12 @@ approach; `./docker-build.sh --linux` green; then PR to `master` from
   PASS→SKIP because `~/deepc-baselines/M5-T0/renders` no longer exists (environment, not code). FAILs
   f3e/f3f and all 11 XFAILs unchanged. The `.so` loads headless from its baseline path; `exrdiff.py`
   self-diff 0 ulps. **This is the reference tally for P3.T1** (edited there to 134/2/11/2).
+- 2026-09-22 — **M6.P1.T2: Bokeh oracle calibrated** (`2780056`). Bokeh behaves on 16.0v9 as on 17.0
+  (deep on input 3). `makeBokeh()` fixes `realWorldLens`, `focalLength=300mm`, `filmFormat=35mm`,
+  `worldScale=m`, `depthStyle=Real`, circular, bloom off, and sets `fStop = BOKEH_FSTOP_CAL/size`
+  with `BOKEH_FSTOP_CAL = 64.0`; unavailable → `BokehUnavailable` (scene SKIPs). Calibration on
+  `groundPlaneRow(200)`, focus 10: size 86 → 36.000 px both nodes, size 43 → 18.000 px both. **Caveat
+  for P1.T3:** Bokeh's `fStop·radius` drifted 26.25–27.00 across the sweep (only approximately
+  thin-lens), and the two verify sizes are the calibration points themselves — o0b must check the
+  1 px agreement at scene (o)'s own sizes, not only these two. Halo non-vacuity: Bokeh alpha exactly
+  1.0 over `(61,61)-(195,195)` on the M4 halo rig.
