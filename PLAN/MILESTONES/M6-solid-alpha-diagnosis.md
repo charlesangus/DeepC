@@ -343,3 +343,9 @@ approach; `./docker-build.sh --linux` green; then PR to `master` from
   ships only harness, oracle and an env-gated debug probe); the image must be rebuilt before a
   milestone that changes shipped behaviour (M7) can pass its docker gate. No project-wide decisions
   published: no earlier milestone published to `docs/decisions/` and planning artifacts stay local.
+- 2026-09-23 — **Shipped: PR #108 merged as `088a76f`.** Review round (Claude/Opus; Codex not logged
+  in): 14 findings, 13 fixed in `0d647d8` (probe neutrality now by construction — the traced
+  re-composite restores the untraced pixel; trace/field cleanups; `makeBokeh` knob errors →
+  `BokehUnavailable`; scene (o) bound wording; README `-mavx`), re-verified (doctests green, scenes
+  m/o row-identical, m 0 ulps). Declined #12 (gate o's K=64/same-depth/sparse mutations) → carried
+  into M7's acceptance sketch.
