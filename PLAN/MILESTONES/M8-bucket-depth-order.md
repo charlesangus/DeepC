@@ -219,7 +219,8 @@ at the pixel centre. CoC is `64·|1 − 10/z|`: near card 17.01 px, stack 14.05 
       - a new milestone stub (e.g. M9, correlated occlusion in the coverage partition);
       - accept and document it.
 
-    Phase 8.2 does not wait on this ruling.
+    Phase 8.2's design and implementation (T1–T4) do not wait on this ruling. Its acceptance does:
+    P2.T5 checks the fix against whatever oracle this ruling picks (user ruling 2026-09-24).
   - verify: the answers are recorded verbatim in `## Decisions`; Phase 8.3's tasks are rewritten
     from the stub below to match (IDs kept, new ones appended); the board shows any new milestone
     stub the ruling creates.
@@ -411,7 +412,7 @@ thin-lens and Bokeh comparisons are Phase 8.3's.
     - every mutation run is logged under `~/deepc-validation/M8-P2T5/`;
     - the regenerated `.nk` loads headless.
   - size: M
-  - depends: M8.P2.T4
+  - depends: M8.P2.T4, M8.P1.T3 (user ruling 2026-09-24: mechanism (1) acceptance waits for the reference — see `## Decisions`)
 
 - [ ] M8.P2.T6 — Full a–o run on the mechanism-(1) build: every moved row explained, re-pinned where M8 moves it
   - files: `tests/nuke/scenes.py` (only rows that move past their gate or whose pinned value moves;
@@ -543,3 +544,5 @@ thin-lens and Bokeh comparisons are Phase 8.3's.
 - **Docker:** `./docker-build.sh --linux --nuke-sdk /usr/local/Nuke16.0v9` is green.
 
 ## Decisions
+
+- 2026-09-24 — **User ruling: mechanism (1) acceptance waits for the independent reference.** Offered o6d (node vs its own single-layer renders composited in depth order) as a ruling-independent oracle, since the fix is predicted to move the node away from Bokeh (G/A ≈ 0.598 vs Bokeh 0.552 at (125,130) K=4). The user chose "Wait for the reference" over accepting o6d and over keeping Bokeh. Consequence: P2.T1–T4 still run in parallel with the spike; P2.T5 now depends on P1.T3, and o6d's oracle is whatever P1.T3 picks (o6d may still be kept as a secondary self-consistency row if the ruling agrees).
