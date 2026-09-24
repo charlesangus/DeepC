@@ -504,3 +504,4 @@ then PR to `master` from `claude/deep-defocus-node-plan-o0ld83`.
   satScale 0.937, u 1, the fix's own term. Docker `--linux --nuke-sdk`: EXIT=0, 28 plugins, 0 errors,
   0 DeepCDefocus warnings, loads headless. Harness a–f needed `--floor-gb 1.0` (host shared; ~21 GB held
   outside this container). Evidence `~/deepc-validation/M7-P4T2/`.
+- 2026-09-24 — **PR #109 review round closed** (Claude Opus reviewer; Codex not logged in): 13 findings, all fixed in `91de156` (`--nuke-sdk` single-version guard + arg/path hardening, probe replica mirrors the clamped split, continuity doctest re-gated against a double closed form / alpha-over oracle at stated term counts, history and plan-ID comments removed). Re-verified post-fix: build, doctests, harness g/i/m 43/0/6 and o 36/0/1, docker `--linux` EXIT=0 (`~/deepc-validation/M7-review-fix/`). Merged as `2ac3550`.
