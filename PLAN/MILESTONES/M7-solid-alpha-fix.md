@@ -337,7 +337,7 @@ every surviving XFAIL keeps a hard outer bound; every new check is mutation-test
     goes to the user before P4.T2.
   - size: S
 
-- [ ] M7.P4.T2 — Full a–o suite, cross-`.so` accounting, the docker gate, and the PR
+- [x] M7.P4.T2 — Full a–o suite, cross-`.so` accounting, the docker gate, and the PR
   - files: none — verification only; any fix lands in the task that owns the code
   - approach: clean rebuild of `build/local-16.0` at the M7 head; both doctest binaries; the a–o
     harness in four batches under `scripts/hostguard.sh --mem-gb 5.5`, `DEEPC_PLUGIN_DIR=build/local-16.0/src`,
@@ -495,3 +495,12 @@ then PR to `master` from `claude/deep-defocus-node-plan-o0ld83`.
   near-surface/hidden-surface bucket sharing — recommended approach per-tile adaptive bucket boundaries;
   (2) the silhouette-edge weighting disagreement with Bokeh is **investigated first** with an independent
   reference (e.g. brute-force ray-traced rig) before deciding which is correct.
+- 2026-09-23 — **M7.P4.T2 gate green** at `ed98e68`: clean rebuild; doctests 26/26 + 121/121; a–o
+  `PASS=172 FAIL=2 XFAIL=12 SKIP=2` (a–f 31/2/5/1, g–j 43/0/5/0, k–n 62/0/1/1, o 36/0/1/0) = 160+I(2)+M(8)+F(2),
+  11+X(1). Exactly 9 a–n rows changed vs M6-P3T1, all explained (g1 K=16/64, g2 K=16, g3 K=16/64, m3a alpha
+  — metric now worst-pixel per P3.T4; i7/i7d → reachability, + i7o/i7do); a, d byte-identical; m4a/m4b/
+  n1/n7 PASS; 11 surviving a–n XFAILs byte-identical; scene (o) = P3.T5's log. Scene (m) EXRs vs M6-T0:
+  m1_halo 0, m3_ramp_a0.9 0, m3_ramp_a1 32 ulps at (16,140) — probe: bucket 8 A_raw 1.067, D 0.026,
+  satScale 0.937, u 1, the fix's own term. Docker `--linux --nuke-sdk`: EXIT=0, 28 plugins, 0 errors,
+  0 DeepCDefocus warnings, loads headless. Harness a–f needed `--floor-gb 1.0` (host shared; ~21 GB held
+  outside this container). Evidence `~/deepc-validation/M7-P4T2/`.
