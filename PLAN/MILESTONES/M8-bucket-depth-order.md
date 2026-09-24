@@ -120,7 +120,7 @@ at the pixel centre. CoC is `64·|1 − 10/z|`: near card 17.01 px, stack 14.05 
 
 ## Phase 8.1: Baseline, the independent reference, and the ruling
 
-- [ ] M8.P1.T1 — Capture M8-T0: the pre-M8 plugin set and a full a–o reference at `2ac3550`
+- [x] M8.P1.T1 — Capture M8-T0: the pre-M8 plugin set and a full a–o reference at `2ac3550`
   - files: `~/deepc-baselines/M8-T0/` (new, outside the repo)
   - approach: from the clean tree at `2ac3550`, configure `build/local-16.0` with the board's line
     and build with `scripts/hostguard.sh -- cmake --build build/local-16.0 -j2`. Copy **every**
@@ -229,9 +229,9 @@ at the pixel centre. CoC is `64·|1 − 10/z|`: near card 17.01 px, stack 14.05 
 
 ## Phase 8.2: Mechanism (1) — per-tile adaptive depth buckets
 
-Runs in parallel with P1.T2/T3. Its acceptance oracle does not depend on the ruling: the
-**layer-ordered partition** composes single-layer renders of the node in true depth order. The
-thin-lens and Bokeh comparisons are Phase 8.3's.
+Design and implementation (T1–T4) run in parallel with P1.T2/T3. **Acceptance (T5) uses the oracle
+P1.T3 picks** (user ruling 2026-09-24). The **layer-ordered partition** (single-layer node renders
+composed in true depth order) stays as a prototype sanity bar and a candidate secondary row.
 
 - [ ] M8.P2.T1 — Design and derivation: per-tile depth tables, the gap-aware split, and a go/no-go
   - files: design note `~/deepc-validation/M8-P2T1/DESIGN.md` plus scratch prototype patches (never
@@ -546,3 +546,4 @@ thin-lens and Bokeh comparisons are Phase 8.3's.
 ## Decisions
 
 - 2026-09-24 — **User ruling: mechanism (1) acceptance waits for the independent reference.** Offered o6d (node vs its own single-layer renders composited in depth order) as a ruling-independent oracle, since the fix is predicted to move the node away from Bokeh (G/A ≈ 0.598 vs Bokeh 0.552 at (125,130) K=4). The user chose "Wait for the reference" over accepting o6d and over keeping Bokeh. Consequence: P2.T1–T4 still run in parallel with the spike; P2.T5 now depends on P1.T3, and o6d's oracle is whatever P1.T3 picks (o6d may still be kept as a secondary self-consistency row if the ruling agrees).
+- 2026-09-24 — **M8.P1.T1 done (evidence only):** M8-T0 at `2ac3550` in `~/deepc-baselines/M8-T0/` (PROVENANCE.txt sha256 `8ca9142b…`, DeepCDefocus.so `282130b6…`). Doctests 26/26 + 121/121; a–o `PASS=172 FAIL=2 XFAIL=12 SKIP=2`, every row whitespace-identical to M7-P4T2 (a–n) and M7-review-fix (o). The a–f batch and the build needed `--floor-gb 1.0` and a retry because of memory pressure from elsewhere on the shared host.
