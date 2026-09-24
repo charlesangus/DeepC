@@ -1,8 +1,8 @@
 ---
 title: DeepCDefocus — deep-input, flat-output defocus node
 status: running
-current: M7.P4.T1
-pm_heartbeat: 2026-09-23T11:35:09-04:00
+current: M7.P4.T2
+pm_heartbeat: 2026-09-23T22:04:46-04:00
 ship: pr-per-milestone
 ---
 
@@ -118,8 +118,9 @@ Bokeh/pgBokeh don't exhibit; it runs before M2 because it rewrites the kernel st
 | M5 | Background-coloured coverage fill (`fill: background`) | done   | [M5-background-fill.md](PLAN/MILESTONES/M5-background-fill.md) |
 | M6 | Solid alpha on opaque geometry — diagnosis (scene (o), Bokeh oracle) | done   | [M6-solid-alpha-diagnosis.md](PLAN/MILESTONES/M6-solid-alpha-diagnosis.md) |
 | M7 | Solid alpha on opaque geometry — the fix              | doing  | [M7-solid-alpha-fix.md](PLAN/MILESTONES/M7-solid-alpha-fix.md) |
+| M8 | Depth-ordered colour within a bucket + silhouette-edge oracle | todo | [M8-bucket-depth-order.md](PLAN/MILESTONES/M8-bucket-depth-order.md) |
 
-> **Execution order is M4 → M5 → M6 → M7 → M2 → M3**, not board order. M4 shipped 2026-09-11 as `c9a36d3` (PR #106),
+> **Execution order is M4 → M5 → M6 → M7 → M8 → M2 → M3**, not board order. M4 shipped 2026-09-11 as `c9a36d3` (PR #106),
 > M5 the same day as `6a51c8c` (PR #107), M6 on 2026-09-23 as `088a76f` (PR #108). M6 was (added 2026-09-18: opaque geometry still reads alpha < 1
 > on a slanted plane with objects in front, where Bokeh reads exactly 1; M6 diagnoses, M7 fixes — M7 is a stub
 > ruled local by M6.P2.T2). Then M2, whose kernel-field node builds on the blended kernel step M4 left in

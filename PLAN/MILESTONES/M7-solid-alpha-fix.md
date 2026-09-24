@@ -323,7 +323,7 @@ every surviving XFAIL keeps a hard outer bound; every new check is mutation-test
 
 ## Phase 7.4: Gate
 
-- [ ] M7.P4.T1 — Profile against M7-T0 under the same conditions
+- [x] M7.P4.T1 — Profile against M7-T0 under the same conditions
   - files: none; evidence under `~/deepc-validation/M7-P4T1/`
   - approach: M5's 28.0 s (2K/20spp, 2 threads) was on the pre-reprovision host (AVX2, 17.0v3) —
     context only. Measure M7 vs M7-T0 on this host, interleaved T0, M7, T0, M7, each
@@ -487,3 +487,11 @@ then PR to `master` from `claude/deep-defocus-node-plan-o0ld83`.
   Fix options for (1): per-tile adaptive bucket boundaries (cheapest, CUDA-neutral), or extra per-bucket
   depth-moment planes (~2× plane memory); per-fragment order within a bucket rejected (breaks the
   additive-plane/atomic-splat design). Evidence `~/deepc-validation/M7-P3T5/` (+ `o6c-mechanism/`).
+- 2026-09-23 — **M7.P4.T1: profile within noise** (2048×1080, 20 spp, K=16, 2 threads, 5 reps, interleaved
+  T0/M7/T0/M7 on this host): wall median T0 42.35 s vs M7 42.57 s (Δ +0.22 s, noise 0.77 s); CPU 75.18 vs
+  75.55 s (noise 1.78 s); peak RSS 1.456 vs 1.478 GB (noise 65 MB). M5's 28.0 s is old-host context
+  (AVX2, 17.0v3). Logs `~/deepc-validation/M7-P4T1/`.
+- 2026-09-23 — **User: o6c's colour defects become M8** (runs after M7, before M2): (1) fix the
+  near-surface/hidden-surface bucket sharing — recommended approach per-tile adaptive bucket boundaries;
+  (2) the silhouette-edge weighting disagreement with Bokeh is **investigated first** with an independent
+  reference (e.g. brute-force ray-traced rig) before deciding which is correct.
