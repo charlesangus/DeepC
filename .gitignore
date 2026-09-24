@@ -1,3 +1,6 @@
+# Ignore local-only files
+.local/
+
 # Prerequisites
 *.d
 

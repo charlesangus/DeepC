@@ -34,8 +34,9 @@
 //                      Absent/unconnected holdout is an empty view and costs
 //                      nothing.
 //    - scatterBandCPU() : the scatter core proper — fragments -> planes.
-//    - resolveBandCPU() : saturate-down, then combine the planes into the
-//                      band's flat output by the bucket composite.
+//    - resolveBandCPU() : combine the planes into the band's flat output by
+//                      the bucket composite, which saturates each bucket down
+//                      at read.
 //
 //  The per-fragment / per-span / per-pixel BODIES of all of the above live in
 //  this header marked DEEPC_HD; only the loop drivers and the allocations are
@@ -1062,12 +1063,12 @@ bool checkCompositionContract(const SampleSoA& soa,
 //
 //    planes.allocate(K, C, W*B)          // once, then zero() per band
 //    scatterBandCPU(...)                 // fragments -> K*(C+3) planes
-//    resolveBandCPU(...)                 // saturate down, then combine
+//    resolveBandCPU(...)                 // saturate at read and combine
 //
 //  scatterBandCPU() only ACCUMULATES, so a band may be scattered from several
 //  SoA chunks (the design fetches source rows band +/- ceil(maxRadius*aspect)
 //  and may flatten them in pieces).  resolveBandCPU() is what must run exactly
-//  once at the end, and it ALWAYS runs the saturate-down pass — that pass is
+//  once at the end, and it ALWAYS saturates each bucket down — that step is
 //  load-bearing for ordinary fog, not a safety net (within-bucket additive
 //  accumulation over-counts same-pixel fragments by +33.3% / +71.4% / +113.3%
 //  of alpha at 2 / 3 / 4 disjoint fog spans sharing a bucket, and `pre_merge`
@@ -1105,7 +1106,7 @@ bool checkCompositionContract(const SampleSoA& soa,
 //     random (alpha, fraction, radius) triples, i.e. an isolated opaque bokeh
 //     at DOUBLE energy, and a defocused opaque edge's alpha/colour ramp
 //     inflated from 0.437 to 0.683.  Erring HIGH is an over-read nothing in
-//     this node licenses: the saturation pass scales down only, and the
+//     this node licenses: saturation scales down only, and the
 //     coverage fill restores only a shortfall of arrival.
 //
 // `over` has no plane to correct any of that with, which is the structural
@@ -1157,8 +1158,8 @@ bool checkCompositionContract(const SampleSoA& soa,
 // wrong whenever they differ; see that function for the derivation and the
 // measured error.
 //
-// Both area planes are ALPHA-INDEPENDENT and are never touched by the
-// saturation pass, exactly like the third.
+// Both area planes are ALPHA-INDEPENDENT and are never touched by
+// saturation, exactly like the third.
 //
 // THE FIFTH PLANE, `arrival`, IS K-INDEPENDENT: one float per band pixel, not
 // per bucket (`arrival[i]`, no `k` term). It is the coverage fill's
@@ -2286,10 +2287,12 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 // licenses it: this composite accounts for what was deposited, and the
 // coverage fill that follows it scales the pair by arrival, never one of
 // them.  Removing it cannot
-// over-count either: per bucket the three terms still sum to at most
-// aCov + aRes = A_k, so accAlpha never exceeds the alpha the scatter
-// deposited.  Every documented identity below is bit-unchanged by this
-// (verified: two 50% fog layers 0.750000, receding opaque 1.000000, scene (i)
+// over-count either: per bucket the three terms sum to at most aCov + aRes,
+// which is A_k (clamped to 1) for every bucket but a saturated two-area one,
+// and u*(C_k + D_k) <= A_raw for that one (see below), so accAlpha never
+// exceeds the alpha the scatter deposited; the post-walk clamp then scales
+// the premultiplied pair together.  Every documented identity below is
+// bit-unchanged by this (verified: two 50% fog layers 0.750000, receding opaque 1.000000, scene (i)
 // 60% coverage 0.600000, fractional split exact at every (alpha, fraction)).
 // The CLAMP IS RETAINED for the transmittance update, where it is a genuine
 // bound: the claimed area cannot be more than fully blocked.
@@ -2316,9 +2319,25 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 //     the coverage itself; the deficit-only fill after the walk then divides
 //     the pair by the arrival plane.  Nothing in the bucket walk scales alpha
 //     UP.
-//   * over-covered bucket (C_k > 1, i.e. the case the saturate-down pass
-//     exists for) — C_k is clamped to 1 at use, which is what keeps
-//     a_k = A_k/C_k <= 1 after saturation has pulled A_k down to 1.
+//   * over-covered bucket (A_k > 1: same-pixel deposits pooled in one
+//     bucket).  Saturation happens at read: alpha is clamped to exactly 1
+//     and every colour read is scaled by saturationScale(A_k) = 1/A_k, the
+//     colour:alpha ratio preserved.  C_k and D_k are clamped to 1 at use, so
+//     a_k = aCov/C_k <= 1 on every branch.
+//   * SATURATED TWO-AREA BUCKET (A_raw > 1, D_k > 0: a co-located deposit
+//     shares the bucket with a new-area one, or occupies it alone).  A_raw is
+//     split over the CLAMPED areas — sum then clamp, exactly as saturation
+//     already does per pixel — u = clampf(A_raw / (C_k + D_k), 0, 1),
+//     aCov = u*C_k, aRes = u*D_k, covShare = aCov/1, resShare = aRes/1.  D_k
+//     > 0 means co-located layers are stacked on the same area, so D_raw can
+//     exceed 1; splitting over the raw areas instead of the clamped ones
+//     would under-scale u.  Opaque deposits give u == 1, so the new area
+//     lands fully opaque and the residual behind it is occluded by it;
+//     colour is the per-unit colour at the same shares, so the ratio holds.
+//     Per bucket the alpha added is at most u*(C_k + D_k) <= A_raw.  One
+//     residual ambiguity: the planes cannot tell a mixed-opacity stack from
+//     uniform layers of the same total, so such a stack under a large new
+//     area can read slightly low.
 //   * A DEPTH RAMP — many fragments at DIFFERENT depths reaching one
 //     destination pixel, each split across its own bucket pair, kernel weights
 //     summing to 1.  The answer is the surface's own alpha, exactly, at every
@@ -2836,9 +2855,12 @@ constexpr float kFillDeficitTol  = 1e-5f;
 // and by resolveBandCPU()'s probe.  The untraced composite never sees it, so
 // it costs the production path nothing.
 //
-// Per bucket, `planes` is what the scatter left and what the composite read;
-// `terms` is every intermediate the composite derives from them, recorded
-// under the same names the composite uses.  The three `accAfter*` values are
+// Per bucket, `planes` is what the scatter left (the `*Raw` fields, recorded
+// by the probe) and what the composite read from it (`aSat`, `colorSat`: the
+// alpha clamped to [0,1] and the colour scaled by saturationScale(), written
+// by the traced composite itself); `terms` is every intermediate the
+// composite derives from them, recorded under the same names the composite
+// uses.  The three `accAfter*` values are
 // the running accAlpha after each of the three terms that add to it, so a
 // reader can recover each increment and redo the sum exactly.
 //
@@ -2850,11 +2872,11 @@ constexpr int kCompositeTraceChannels = 4;
 
 struct CompositeTracePlanes {
     float cRaw = 0.0f;                              // C_k, the new-area plane
-    float aRaw = 0.0f;                              // A_k before saturation
-    float aSat = 0.0f;                              // A_k after saturation
+    float aRaw = 0.0f;                              // A_k as deposited
+    float aSat = 0.0f;                              // A_k clamped to [0,1]
     float dRaw = 0.0f;                              // D_k, the fourth plane
-    float colorRaw[kCompositeTraceChannels] = {};   // before saturation
-    float colorSat[kCompositeTraceChannels] = {};   // after saturation
+    float colorRaw[kCompositeTraceChannels] = {};   // as deposited
+    float colorSat[kCompositeTraceChannels] = {};   // times saturationScale(A_k)
 };
 
 struct CompositeTraceTerms {
@@ -2868,6 +2890,8 @@ struct CompositeTraceTerms {
 
     float cov      = 0.0f;
     float a        = 0.0f;
+    float satScale = 0.0f;
+    float u        = 0.0f;          // saturated two-area split's per-unit opacity; 0 when not taken
     float colo     = 0.0f;
     float aCov     = 0.0f;
     float aRes     = 0.0f;
@@ -2935,8 +2959,19 @@ DEEPC_HD inline void compositePixelCoveragePartitionImpl(
     if constexpr (kTrace) {
         const int n = (bucketCount < kCompositeTraceBuckets) ? bucketCount
                                                              : kCompositeTraceBuckets;
-        for (int k = 0; k < n; ++k)
+        const int nc = (channelCount < kCompositeTraceChannels) ? channelCount
+                                                                : kCompositeTraceChannels;
+        for (int k = 0; k < n; ++k) {
             trace->bucket[k].terms = CompositeTraceTerms{};
+            const std::ptrdiff_t ko = static_cast<std::ptrdiff_t>(k) * pixelCount;
+            const float* src = bucketColor
+                + static_cast<std::ptrdiff_t>(k) * channelCount * pixelCount;
+            const float satScale = saturationScale(bucketAlpha[ko]);
+            CompositeTracePlanes& planes = trace->bucket[k].planes;
+            planes.aSat = clampf(bucketAlpha[ko], 0.0f, 1.0f);
+            for (int c = 0; c < nc; ++c)
+                planes.colorSat[c] = src[static_cast<std::ptrdiff_t>(c) * pixelCount] * satScale;
+        }
         trace->bucketCount  = bucketCount;
         trace->channelCount = channelCount;
         trace->stopBucket   = -1;
@@ -2990,10 +3025,16 @@ DEEPC_HD inline void compositePixelCoveragePartitionImpl(
     for (int k = 0; k < bucketCount; ++k) {
         const std::ptrdiff_t ko = static_cast<std::ptrdiff_t>(k) * pixelCount;
 
-        const float cov = clampf(bucketWeight[ko], 0.0f, 1.0f);
-        const float a   = clampf(bucketAlpha[ko], 0.0f, 1.0f);
+        const float cov  = clampf(bucketWeight[ko], 0.0f, 1.0f);
+        const float aRaw = bucketAlpha[ko];
+        const float a    = clampf(aRaw, 0.0f, 1.0f);
         if (!(cov > 0.0f) && !(a > 0.0f))   // empty bucket (also rejects NaN)
             continue;
+
+        // Every colour read below is `(src[o] * satScale)`, parenthesised so
+        // colour is rounded once by satScale before any other factor
+        // touches it.
+        const float satScale = saturationScale(aRaw);
 
         [[maybe_unused]] CompositeTraceTerms* tb = nullptr;
         if constexpr (kTrace) {
@@ -3007,14 +3048,15 @@ DEEPC_HD inline void compositePixelCoveragePartitionImpl(
                 tb->tileCountIn   = tileCount;
                 tb->cov           = cov;
                 tb->a             = a;
+                tb->satScale      = satScale;
             }
         }
 
         // The fourth plane: the area this bucket's CO-LOCATED deposits are
         // spread over, which is the residual term's divisor.  Clamped like the
-        // coverage plane and for the same reason — the saturation pass bounds
-        // alpha, not area, so an over-covered pixel can carry more than a
-        // pixel's worth of it.
+        // coverage plane and for the same reason — saturation bounds alpha,
+        // not area, so an over-covered pixel can carry more than a pixel's
+        // worth of it.
         const float colo = clampf(bucketColocated[ko], 0.0f, 1.0f);
 
         const float* __restrict__ src = bucketColor
@@ -3039,7 +3081,22 @@ DEEPC_HD inline void compositePixelCoveragePartitionImpl(
         // aRes == A_k exactly.
         float aCov;
         float aRes;
-        if (colo > 0.0f) {
+        bool  twoAreaSaturated = false;
+        if (colo > 0.0f && aRaw > 1.0f) {
+            // SATURATED TWO-AREA BUCKET: split A_raw over the CLAMPED areas,
+            // not the raw ones — D_k > 0 means co-located layers are stacked
+            // on one area, so D_raw can exceed 1 and under-scale u if used
+            // directly.  See "WHY IT REDUCES CORRECTLY" above for the full
+            // derivation.
+            const float u = clampf(aRaw / (cov + colo), 0.0f, 1.0f);
+            aCov = u * cov;
+            aRes = u * colo;
+            twoAreaSaturated = true;
+            if constexpr (kTrace) {
+                if (tb)
+                    tb->u = u;
+            }
+        } else if (colo > 0.0f) {
             aRes = a * (colo / (cov + colo));
             aCov = a - aRes;
 
@@ -3068,8 +3125,10 @@ DEEPC_HD inline void compositePixelCoveragePartitionImpl(
             aRes = a - aCov;
         }
 
+        // The saturated split's shares are each taken against a == 1 and need
+        // not sum to 1, so covShare cannot be derived as the complement there.
         const float resShare = (a > 0.0f) ? (aRes / a) : 0.0f;
-        const float covShare = 1.0f - resShare;
+        const float covShare = twoAreaSaturated ? (aCov / a) : (1.0f - resShare);
 
         if constexpr (kTrace) {
             if (tb) {
@@ -3107,7 +3166,7 @@ DEEPC_HD inline void compositePixelCoveragePartitionImpl(
                 accAlpha += fit * local;                // == aCov * fit/cov
                 for (int c = 0; c < channelCount; ++c) {
                     const std::ptrdiff_t o = static_cast<std::ptrdiff_t>(c) * pixelCount;
-                    outColor[o] += f * src[o];
+                    outColor[o] += f * (src[o] * satScale);
                 }
 
                 tClaimed    = (claimedOld * tClaimed + fit * (1.0f - local)) / claimedNew;
@@ -3157,7 +3216,7 @@ DEEPC_HD inline void compositePixelCoveragePartitionImpl(
                 accAlpha += aCov * g * tClaimed;
                 for (int c = 0; c < channelCount; ++c) {
                     const std::ptrdiff_t o = static_cast<std::ptrdiff_t>(c) * pixelCount;
-                    outColor[o] += g * covShare * tClaimed * src[o];
+                    outColor[o] += g * covShare * tClaimed * (src[o] * satScale);
                 }
 
                 const float att = clampf(1.0f - excess * local, 0.0f, 1.0f);
@@ -3264,7 +3323,7 @@ DEEPC_HD inline void compositePixelCoveragePartitionImpl(
             accAlpha += aRes * tHeadIn;
             for (int c = 0; c < channelCount; ++c) {
                 const std::ptrdiff_t o = static_cast<std::ptrdiff_t>(c) * pixelCount;
-                outColor[o] += resShare * tHeadIn * src[o];
+                outColor[o] += resShare * tHeadIn * (src[o] * satScale);
             }
 
             if (resArea > 0.0f) {
@@ -3443,8 +3502,8 @@ DEEPC_HD inline void compositePixelCoveragePartitionImpl(
     // 0.9959 against the true 0.5975, i.e. +66% too bright.  Overlapping
     // volumetric fog reaches it easily; it is not a hand-built-planes case.
     //
-    // Scaling both by the same factor is what the node already does one pass
-    // earlier in saturateBucketPixel() and is DOWN-ONLY, so it fabricates no
+    // Scaling both by the same factor is what per-bucket saturation already
+    // does at read (saturationScale()) and is DOWN-ONLY, so it fabricates no
     // coverage; the deficit-only fill just below is the one place the pair
     // is scaled UP, by the arrival plane and together.  It is a no-op
     // wherever accAlpha <= 1, which is every identity documented above --
@@ -3603,22 +3662,19 @@ void scatterBackgroundCPU(const ScatterParams&  params,
                           BucketPlanes&          planes);
 
 // ---------------------------------------------------------------------------
-// resolveBandCPU — saturate down, then combine, into the band's flat output
+// resolveBandCPU — combine the bucket planes into the band's flat output
 //
-// Runs, in order:
-//   1. saturateBucketPlanes() — wherever a bucket's alpha exceeds 1, rescale
-//      its colour AND alpha by 1/alpha.  DOWN ONLY, NEVER UP.  This is not
-//      optional and is not behind a flag: see the header of the scatter
-//      section for the measured over-count it exists to correct.  A shortfall
-//      is not this pass's to fix: the coverage fill inside step 2 restores it
-//      from the arrival plane, with the pair scaled together, and this pass
-//      has no per-pixel arrival to scale by.
-//   2. compositePixelCoveragePartition(), the bucket composite, ending in
-//      the deficit-only coverage fill.
+// Runs compositePixelCoveragePartition(), the bucket composite, per pixel.
+// It saturates each bucket at read — wherever a bucket's alpha exceeds 1 its
+// alpha is read as 1 and its colour scaled by 1/alpha, DOWN ONLY, NEVER UP,
+// and not behind a flag: see the header of the scatter section for the
+// measured over-count it exists to correct — and ends in the deficit-only
+// coverage fill, which restores a shortfall from the arrival plane with the
+// pair scaled together.  Saturating at read rather than in a pass over the
+// planes keeps the raw alpha for the composite's saturated two-area split.
 //
 // outColor is `channelCount` planes of `pixelCount` floats
 // (outColor[c*pixelCount + i]); outAlpha is one.  Both are OVERWRITTEN.
-// `planes` is modified in place by the saturation pass.
 //
 // `probe`, when non-null, records a CompositeTrace for each listed pixel that
 // lies inside this band (params.bandX/bandY/bandWidth/bandHeight, absolute

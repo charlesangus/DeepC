@@ -6897,8 +6897,8 @@ TEST_CASE("saturation is down-only and preserves the colour:alpha ratio, on the 
             "across THREE channels and several pixels")
     {
         // Multi-channel and multi-pixel on purpose: with one channel the
-        // saturation driver's channel stride is never exercised, and with one
-        // saturating pixel neither is its pixel indexing.
+        // composite's per-channel saturation scale is never exercised, and
+        // with one saturating pixel neither is its pixel indexing.
         const int C = 3;
         const float unpre[3] = {0.35f, 0.62f, 0.97f};
         struct Spot { int x, y, count; };
@@ -6931,7 +6931,7 @@ TEST_CASE("saturation is down-only and preserves the colour:alpha ratio, on the 
         HoldoutSoA noHoldout;
         scatterOnThread(sp, soa, noHoldout, lut, band.planes);
 
-        // Additive within a bucket: honestly `count` before the pass.
+        // Additive within a bucket: honestly `count`, before resolve and after.
         for (const Spot& s : spots)
             CHECK(band.planeAlpha(3, s.x, s.y)
                   == doctest::Approx(static_cast<float>(s.count)));
@@ -6943,13 +6943,13 @@ TEST_CASE("saturation is down-only and preserves the colour:alpha ratio, on the 
         for (const Spot& s : spots) {
             CAPTURE(s.x);
             CAPTURE(s.count);
-            CHECK(band.planeAlpha(3, s.x, s.y) == 1.0f);        // exactly 1, assigned
+            CHECK(band.planeAlpha(3, s.x, s.y) == static_cast<float>(s.count));
             CHECK(band.outAlpha(s.x, s.y) == doctest::Approx(1.0f));
             for (int c = 0; c < C; ++c)
                 CHECK(std::fabs(band.outColor(c, s.x, s.y) - unpre[c]) <= 1e-06);
         }
 
-        // Everywhere else stayed empty -- the pass touched only what it should.
+        // Everywhere else stayed empty.
         CHECK(band.outAlpha(0, 0) == 0.0f);
         CHECK(band.outColor(1, 0, 0) == 0.0f);
     }
@@ -7756,6 +7756,312 @@ TEST_CASE("the four hand-built composite identities, with the fourth plane both 
         REQUIRE(a > 0.0f);
         CHECK(std::fabs(c / a - unpremult) <= 1e-05);
         CHECK(a <= 1.0f);
+    }
+}
+
+TEST_CASE("a saturated two-area bucket keeps its own per-unit opacity: opaque pools read "
+          "alpha 1, and colour stays in ratio")
+{
+    // Oracles are geometric: opaque deposits covering at least the whole pixel
+    // read alpha 1, and the colour:alpha ratio of the output is a convex
+    // combination of the buckets' own ratios.  Bounds are float term counts:
+    // the composite spends at most kOpsPerBucket roundings on each bucket's
+    // alpha or colour (split, local, fit, excess and residual terms).
+    constexpr float kUlp = 0x1p-24f;
+    constexpr int   kOpsPerBucket = 8;
+    const int C = 2;
+
+    auto composite = [&](int K, const float* cov, const float* alpha,
+                         const float* colocated, const float* color,
+                         float arrival, float* outColor, float* outAlpha) {
+        compositePixelCoveragePartition(color, alpha, cov, colocated, K, C, 1,
+                                        outColor, outAlpha, arrival);
+    };
+
+    SUBCASE("one bucket, C = D = 1, A = 2, opaque colour 2*cbar: alpha 1, colour cbar")
+    {
+        // Per-unit opacity is 1/(C+D) = 0.5 on the new area; the residual
+        // behind it is attenuated by the 0.5 that lets through, so the two
+        // areas end up at the same opacity and the pixel reads opaque.
+        const float cbar[C] = {0.3f, 0.7f};
+        const float cov[1] = {1.0f}, alpha[1] = {2.0f}, colo[1] = {1.0f};
+        const float color[C] = {2.0f * cbar[0], 2.0f * cbar[1]};
+        float oc[C] = {-1.0f, -1.0f}, oa = -1.0f;
+        composite(1, cov, alpha, colo, color, 1.0f, oc, &oa);
+
+        CHECK(oa == 1.0f);
+        for (int c = 0; c < C; ++c)
+            CHECK(std::fabs(oc[c] / oa - cbar[c]) <= kOpsPerBucket * kUlp * cbar[c]);
+    }
+
+    SUBCASE("front C=0.4 A=0.4, rear C=0.7 D=0.5 A=1.2, all opaque: alpha 1, "
+            "colour the area-weighted mix")
+    {
+        // The front claims 0.4 of the pixel opaquely; the rear's new area fills
+        // the remaining 0.6 opaquely and everything else it carries lands on
+        // opaque area.  Colour: 0.4 of the front's, 0.6 of the rear's.
+        const float c0[C] = {0.2f, 0.9f};
+        const float c1[C] = {0.6f, 0.35f};
+        const float cov[2]   = {0.4f, 0.7f};
+        const float alpha[2] = {0.4f, 1.2f};
+        const float colo[2]  = {0.0f, 0.5f};
+        const float color[2 * C] = {0.4f * c0[0], 0.4f * c0[1], 1.2f * c1[0], 1.2f * c1[1]};
+        float oc[C] = {-1.0f, -1.0f}, oa = -1.0f;
+        composite(2, cov, alpha, colo, color, 1.0f, oc, &oa);
+
+        const float bound = 2 * kOpsPerBucket * kUlp;
+        CHECK(std::fabs(oa - 1.0f) <= bound);
+        for (int c = 0; c < C; ++c) {
+            const float want = 0.4f * c0[c] + 0.6f * c1[c];
+            CHECK(std::fabs(oc[c] / oa - want) <= bound * want);
+        }
+    }
+
+    SUBCASE("saturated bucket with no co-located area (C=1, A=1.5): colour scaled by "
+            "1/A bit-exactly, alpha 1")
+    {
+        const float cov[1] = {1.0f}, alpha[1] = {1.5f}, colo[1] = {0.0f};
+        const float color[C] = {0.45f, 1.35f};
+        float oc[C] = {-1.0f, -1.0f}, oa = -1.0f;
+        composite(1, cov, alpha, colo, color, 1.0f, oc, &oa);
+
+        CHECK(oa == 1.0f);
+        for (int c = 0; c < C; ++c) {
+            const float want = color[c] * (1.0f / 1.5f);
+            CHECK(std::memcmp(&oc[c], &want, sizeof(float)) == 0);
+        }
+    }
+}
+
+TEST_CASE("the saturated two-area split is continuous: no jump at C == 0 and none as "
+          "A_raw crosses 1")
+{
+    // Both fixtures are hand-built planes, called directly through
+    // compositePixelCoveragePartition(). Tolerances are stated term counts,
+    // in units of kUlp = 2^-24 (the float unit roundoff near 1.0), gated
+    // against an independent closed form or physical oracle rather than the
+    // implementation's own output.
+    constexpr float kUlp = 0x1p-24f;
+
+    SUBCASE("fog-stack: an opaque+fog rear bucket reads alpha 1 as its new area grows "
+            "off zero")
+    {
+        // Front bucket: C = 1, A = 0.2, a semi-transparent layer (alpha 0.2,
+        // colour cbarFront) covering the whole pixel. Rear bucket: D =
+        // 1.99998784, A = 1.14224541 -- the "share-side arrival identity"
+        // fixture's fogOverOpaque planes (an opaque sample with fog
+        // co-located on it), opaque enough that the pixel reads alpha 1 at
+        // every rear coverage C tried below. Oracle: standard alpha-over of
+        // the front atop an opaque rear gives colour:alpha ratio
+        // frontAlpha*cbarFront + (1 - frontAlpha)*cbarRear, independent of
+        // the rear's own C.
+        const int K = 2, C = 1;
+        const float cbarFront = 0.3f, cbarRear = 0.8f;
+        const float frontAlpha = 0.2f;
+        const float alpha[2] = {frontAlpha, 1.14224541f};
+        const float colo[2]  = {0.0f, 1.99998784f};
+        const float color[2] = {frontAlpha * cbarFront, 1.14224541f * cbarRear};
+        const float oracleRatio = frontAlpha * cbarFront + (1.0f - frontAlpha) * cbarRear;
+
+        for (float eps : {0.0f, 1e-7f, 1e-2f, 0.1f}) {
+            CAPTURE(eps);
+            const float cov[2] = {1.0f, eps};
+            float oc = -1.0f, oa = -1.0f;
+            compositePixelCoveragePartition(color, alpha, cov, colo, K, C, 1, &oc, &oa, 1.0f);
+            CHECK(oa == 1.0f);
+
+            // N = 24: kOpsPerBucket for the front bucket's split, plus 2x
+            // kOpsPerBucket for the rear bucket's saturated split, excess
+            // attenuation and residual allocation, that its colour passes
+            // through on the way into the ratio.
+            constexpr float N = 24.0f;
+            CHECK(std::fabs((oc / oa) - oracleRatio) <= N * kUlp);
+        }
+    }
+
+    SUBCASE("A-crossing: a single two-area bucket's alpha does not jump as A_raw "
+            "crosses 1")
+    {
+        // C = 0.5, D = 2 (clamped to colo = 1), a single bucket with nothing
+        // ahead of it (freeArea == 1). For that shape the composite's own
+        // arithmetic reduces, term for term, to a closed form:
+        //   u        = clamp(A_raw / (cov + colo), 0, 1)
+        //   accAlpha = cov*u + colo*u*(1 - u)
+        // (fit == cov and local == u because freeArea == 1 >= cov; tHeadIn ==
+        // 1 - u because the residual's only tile is this bucket's own claim,
+        // whose transmittance is 1 - local regardless of how claimA and colo
+        // compare). That closed form is continuous in A_raw across A_raw ==
+        // 1, so gating each side's float result against it independently
+        // establishes continuity without comparing the two sides directly.
+        const int K = 1, C = 1;
+        const float cov[1]  = {0.5f};
+        const float colo[1] = {2.0f};
+        const double covD = 0.5, coloD = 1.0;  // colo clamps to 1 inside the composite
+        const double cbar  = 0.6;
+
+        auto closedAlpha = [&](double aRaw) {
+            const double u = std::min(std::max(aRaw / (covD + coloD), 0.0), 1.0);
+            return covD * u + coloD * u * (1.0 - u);
+        };
+
+        float ocLo = -1.0f, oaLo = -1.0f, ocHi = -1.0f, oaHi = -1.0f;
+        {
+            const float alpha[1] = {1.0f};
+            const float color[1] = {1.0f * 0.6f};
+            compositePixelCoveragePartition(color, alpha, cov, colo, K, C, 1, &ocLo, &oaLo, 1.0f);
+        }
+        {
+            const float alpha[1] = {1.00001f};
+            const float color[1] = {1.00001f * 0.6f};
+            compositePixelCoveragePartition(color, alpha, cov, colo, K, C, 1, &ocHi, &oaHi, 1.0f);
+        }
+        CAPTURE(oaLo);
+        CAPTURE(oaHi);
+
+        // N = 16: the sequential roundings of a single saturated bucket's
+        // split (u, aCov, aRes), fit/local and the head-tile residual
+        // allocation (claimT, tHeadIn) that feed accAlpha and the colour --
+        // twice kOpsPerBucket's per-bucket count above, for the residual
+        // stage a two-area bucket goes through on top of the plain split.
+        constexpr float N = 16.0f;
+        CHECK(std::fabs(oaLo - static_cast<float>(closedAlpha(1.0))) <= N * kUlp);
+        CHECK(std::fabs(oaHi - static_cast<float>(closedAlpha(1.00001))) <= N * kUlp);
+        CHECK(std::fabs((ocLo / oaLo) - static_cast<float>(cbar)) <= N * kUlp);
+        CHECK(std::fabs((ocHi / oaHi) - static_cast<float>(cbar)) <= N * kUlp);
+    }
+}
+
+TEST_CASE("the recorded opaque-plane dip pixel reads alpha 1 from its raw planes")
+{
+    // The raw planes of one output pixel of the opaque-plane scene, printed
+    // %.9g (which round-trips a float exactly) by the composite probe. Buckets
+    // 5 and 6 are saturated pools with co-located area. Every deposit here is
+    // opaque and the new area alone sums past 1, so the truth is alpha 1.
+    const int K = 16, C = 3;
+    std::vector<float> cov(K, 0.0f), alpha(K, 0.0f), colo(K, 0.0f);
+    std::vector<float> color(static_cast<std::size_t>(K * C), 0.0f);
+    struct Row { int k; float c, a, d; float col[3]; };
+    const Row rows[] = {
+        {4, 0.00274571986f, 0.00274571986f, 0.0f,
+         {0.00109828799f, 0.00151014607f, 0.00192200381f}},
+        {5, 1.00099027f, 1.3288188f, 0.327826649f,
+         {0.87302506f, 0.730842888f, 0.930164874f}},
+        {6, 0.328548491f, 1.65462136f, 1.32607317f,
+         {1.00334585f, 0.910033762f, 1.15822566f}},
+        {7, 0.0f, 0.328548491f, 0.328548491f,
+         {0.131419361f, 0.180701569f, 0.229983717f}},
+    };
+    for (const Row& r : rows) {
+        cov[static_cast<std::size_t>(r.k)]   = r.c;
+        alpha[static_cast<std::size_t>(r.k)] = r.a;
+        colo[static_cast<std::size_t>(r.k)]  = r.d;
+        for (int c = 0; c < C; ++c)
+            color[static_cast<std::size_t>(r.k * C + c)] = r.col[c];
+    }
+    const float arrival = 1.00373614f;
+
+    float oc[3] = {-1.0f, -1.0f, -1.0f}, oa = -1.0f;
+    compositePixelCoveragePartition(color.data(), alpha.data(), cov.data(), colo.data(),
+                                    K, C, 1, oc, &oa, arrival);
+
+    CHECK(oa == 1.0f);
+
+    // G and B are the ground plane's own ratio in every bucket (R differs per
+    // object), so the output's G/A and B/A must lie within the buckets' range
+    // of it, widened by the composite's roundings over the four buckets.
+    constexpr float kUlp = 0x1p-24f;
+    const float bound = 4 * 8 * kUlp;
+    for (int c = 1; c < C; ++c) {
+        float lo = 1e30f, hi = -1e30f;
+        for (const Row& r : rows) {
+            const float ratio = r.col[c] / r.a;
+            lo = std::min(lo, ratio);
+            hi = std::max(hi, ratio);
+        }
+        CAPTURE(c);
+        CHECK(oc[c] / oa >= lo * (1.0f - bound));
+        CHECK(oc[c] / oa <= hi * (1.0f + bound));
+    }
+}
+
+TEST_CASE("two full-field layers of different kernel radii pooled in one bucket read "
+          "`over`, end to end through scatter and resolve")
+{
+    // Every source pixel carries two fragments at one bucket rasterising
+    // different discs, the shape the flatten emits for a different-kernel
+    // collision: the first claims new area, the second arrives co-located and
+    // unattenuated.  Over the interior both discs' weights sum to 1, so the
+    // planes read C = D = 1, A = 2a: saturated at every a > 0.5.  The truth is
+    // two layers of alpha a composited `over`: 1 - (1 - a)^2, colour in the
+    // source's ratio.
+    const int W = 20, H = 20, K = 4, C = 2;
+    const int bucket = 1;
+    const float r0 = 2.0f, r1 = 4.0f;
+    REQUIRE(kernelGridRadius(kernelGridIndex(r0)) == r0);
+    REQUIRE(kernelGridRadius(kernelGridIndex(r1)) == r1);
+    DiscKernelLUT lut(0.0f, 8.0f, 1.0f, 1.0f);
+    const float cbar[C] = {0.3f, 0.7f};
+
+    auto taps = [&](float r) {
+        const KernelView kv = lut.kernel(r, 0, 0, 0.0f, 0);
+        int n = 0;
+        for (int row = 0; row < kv.rowCount; ++row)
+            if (!kv.row(row).empty())
+                n += kv.row(row).xEnd - kv.row(row).xStart + 1;
+        return n;
+    };
+    const int reach = lut.kernel(r1, 0, 0, 0.0f, 0).radiusX;
+
+    // Each tap adds a product and a sum to every plane it lands in, and the
+    // output moves by at most twice a plane's error (d/du of 1-(1-u)^2 <= 2),
+    // so four roundings per tap, the count the scene harness uses.
+    constexpr float kUlp = 0x1p-24f;
+    const float bound = 4.0f * static_cast<float>(taps(r0) + taps(r1)) * kUlp;
+
+    for (float a : {0.6f, 1.0f}) {
+        CAPTURE(a);
+        SampleSoA soa;
+        soa.begin(C, makeSingleChannelGroup(C));
+        for (int y = 0; y < H; ++y) {
+            for (int x = 0; x < W; ++x) {
+                for (int layer = 0; layer < 2; ++layer) {
+                    FragmentRecord f;
+                    f.x = x; f.y = y;
+                    f.radius = (layer == 0) ? r0 : r1;
+                    f.depth  = 5.0f;
+                    f.alpha  = a;
+                    BucketWeight bw;
+                    bw.index = bucket;
+                    bw.frac  = 0.0f;
+                    f.deposit = fragmentDeposit(bw, a);
+                    f.kind = FragmentKind::Point;
+                    f.coverageHead = (layer == 0);
+                    const float ch[C] = {a * cbar[0], a * cbar[1]};
+                    soa.appendFragment(f, ch);
+                }
+            }
+        }
+
+        const ScatterParams sp = makeScatterParams(W, H);
+        Band band;
+        band.K = K; band.C = C; band.W = W; band.H = H;
+        HoldoutSoA noHoldout;
+        runBand(band, sp, soa, noHoldout, lut);
+
+        const float truth = 1.0f - (1.0f - a) * (1.0f - a);
+        int checked = 0;
+        for (int y = reach; y < H - reach; ++y) {
+            for (int x = reach; x < W - reach; ++x) {
+                CAPTURE(x);
+                CAPTURE(y);
+                const float oa = band.outAlpha(x, y);
+                CHECK(std::fabs(oa - truth) <= bound);
+                for (int c = 0; c < C; ++c)
+                    CHECK(std::fabs(band.outColor(c, x, y) / oa - cbar[c]) <= bound * cbar[c]);
+                ++checked;
+            }
+        }
+        CHECK(checked > 0);
     }
 }
 
@@ -11713,9 +12019,11 @@ TEST_CASE("resolveBandCPU probe: the trace holds the planes and every composite 
     sp.bandWidth  = W;
     sp.bandHeight = H;
 
-    // Bucket 0 is pure `fit`; bucket 1 saturates (A_k 1.3), overflows the free
-    // area into `excess`, carries a co-located residual, and arrival < 1 then
-    // fills the result past 1 so the clamp fires too.
+    // Bucket 0 is pure `fit`; bucket 1 saturates (A_k 1.3) with both areas
+    // present, so it takes the saturated two-area split at u == 1
+    // (1.3 / (0.7 + 0.4) > 1), overflows the free area into `excess`, carries
+    // a co-located residual, and arrival < 1 then fills the result past 1 so
+    // the clamp fires too.
     const float c0[C] = {0.25f, 0.5f, 0.125f};
     const float c1[C] = {0.65f, 1.3f, 0.39f};
     auto build = [&](BucketPlanes& planes) {
@@ -11781,9 +12089,9 @@ TEST_CASE("resolveBandCPU probe: the trace holds the planes and every composite 
 
     const CompositeTrace& t = pixels[0].trace;
     const std::ptrdiff_t i = 4;
-    const BucketPlaneView sat = probed.view();
+    const BucketPlaneView planesAfter = probed.view();
 
-    SUBCASE("per-bucket plane values are the planes'") {
+    SUBCASE("per-bucket plane values are the planes', and resolve leaves the planes as scattered") {
         REQUIRE(t.bucketCount == K);
         REQUIRE(t.channelCount == C);
         CHECK(t.bucket[0].planes.cRaw == 0.6f);
@@ -11793,15 +12101,22 @@ TEST_CASE("resolveBandCPU probe: the trace holds the planes and every composite 
         CHECK(t.bucket[1].planes.aRaw == 1.3f);
         CHECK(t.bucket[1].planes.dRaw == 0.4f);
         for (int k = 0; k < K; ++k) {
-            CHECK(t.bucket[k].planes.aSat == sat.alpha[k * P + i]);
+            CHECK(planesAfter.alpha[k * P + i] == t.bucket[k].planes.aRaw);
             for (int c = 0; c < C; ++c) {
                 CHECK(t.bucket[k].planes.colorRaw[c] == (k == 0 ? c0[c] : c1[c]));
-                CHECK(t.bucket[k].planes.colorSat[c] == sat.color[(k * C + c) * P + i]);
+                CHECK(planesAfter.color[(k * C + c) * P + i] == t.bucket[k].planes.colorRaw[c]);
             }
         }
+        CHECK(t.bucket[0].planes.aSat == 0.5f);
+        for (int c = 0; c < C; ++c)
+            CHECK(t.bucket[0].planes.colorSat[c] == c0[c]);
         CHECK(t.bucket[1].planes.aSat == 1.0f);
         for (int c = 0; c < C; ++c)
             CHECK(t.bucket[1].planes.colorSat[c] == c1[c] * (1.0f / 1.3f));
+        CHECK(t.bucket[0].terms.satScale == 1.0f);
+        CHECK(t.bucket[1].terms.satScale == 1.0f / 1.3f);
+        CHECK(t.bucket[0].terms.u == 0.0f);
+        CHECK(t.bucket[1].terms.u == 1.0f);
         CHECK(t.arrival == 0.9f);
         CHECK(t.outAlpha == alphaPlain[static_cast<std::size_t>(i)]);
         for (int c = 0; c < C; ++c)
@@ -11846,7 +12161,12 @@ TEST_CASE("resolveBandCPU probe: the trace holds the planes and every composite 
             CHECK(m.accAlphaIn == acc);
 
             float aCov, aRes;
-            if (colo > 0.0f) {
+            if (colo > 0.0f && p.aRaw > 1.0f) {
+                const float u = std::min(std::max(p.aRaw / (cov + colo), 0.0f), 1.0f);
+                CHECK(m.u == u);
+                aCov = u * cov;
+                aRes = u * colo;
+            } else if (colo > 0.0f) {
                 aRes = a * (colo / (cov + colo));
                 aCov = a - aRes;
                 if (aCov > cov) { aCov = cov; aRes = a - aCov; }

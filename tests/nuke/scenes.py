@@ -1766,20 +1766,29 @@ def sceneG(settings):
     #                                           K=16 2.883e-02 -> 2.980e-07
     #                                           K=64 3.576e-07 -> 1.192e-07
     #
-    # WHY AN OPAQUE PLANE SHOWED THE ALPHA<1 DEFECT AT ALL, since the fragment
-    # split is a no-op at alpha 1: it is the SATURATION that makes the residual
-    # path live here.  Where a destination pixel's new area and co-located area
-    # sum past 1 the bucket's alpha clamps to 1, so `local = aCov/cov` comes out
-    # at 1/(C_k + D_k) < 1 and the rest of the alpha becomes a residual — which
-    # the pooled `tClaimed` then over-occluded exactly as it did at alpha < 1.
-    # (The K=64 columns barely move because at K=64 few fragments share a bucket,
-    # which is the same convergence g4 now shows.)
+    # The bound below is re-pinned to an analytic term count -- float rounding
+    # per accumulation term in the bucket composite -- rather than to a fixed
+    # reading, so it holds independent of the composite's own accumulation
+    # order.
     #
     # They are plain checks again on purpose: an `expectedFailure` that no longer
     # describes a residual is an unbounded licence to fail, and would let a later
     # regression land anywhere below the old hard bound as an XFAIL.  Scene (g)'s
     # own stated criterion — "no visible seams at bucket boundaries at K=16" —
     # is now met outright, at every K, by four decades.
+    # The same analytic bound scene (o) holds its plane rows to --
+    # O_TERMS_PER_TAP * plane taps at that row * 2^-24, from oTolerance with
+    # no cards (this ramp is plane-only).  A ROW MEAN is held to the max of
+    # that per-pixel bound over its own row.
+    planeTol = oTolerance(size, ())
+    rowBoundCache = {}
+
+    def rowBound(y):
+        if y not in rowBoundCache:
+            rowBoundCache[y] = max(planeTol(x, y)
+                                   for x in range(lowBox[0], lowBox[2]))
+        return rowBoundCache[y]
+
     profiles = {}
     seams = {}
     for k in (8, 16, 64):
@@ -1804,9 +1813,16 @@ def sceneG(settings):
         # has now hit three times).
         worstRatio = max(abs(redProfile[i] - GROUND_COLOR[0] * profile[i])
                          for i in range(len(profile)))
-        checks.append(tolCheck(
+        arm = _Excess()
+        for i, a in enumerate(profile):
+            y = profileRow(i)
+            arm.add(abs(a - 1.0), FORMAT_W // 2, y, rowBound(y))
+        checks.append(boolCheck(
             "g", "g1 K=%-2d interior flat-field alpha |a-1|" % k,
-            abs(mean - 1.0), 1.0e-03,
+            arm.at is None, arm.describe(),
+            "row mean <= max per-px bound over its row (%d terms/tap x "
+            "plane taps(y) x 2^-24; worst-case %.2e over these rows)"
+            % (O_TERMS_PER_TAP, arm.maxTol),
             population="%d rows x %d px, |y-128| >= %d"
                        % (rowCount, colCount, band),
             note="mean %.6f (%+.3f%%) min %.6f (y=%d) max %.6f; worst "
@@ -1823,17 +1839,21 @@ def sceneG(settings):
     # (kernel-bin quantisation, the varying-radius scatter residual).
     reference = profiles[64]
     for k in (8, 16):
-        deltas = [abs(a - b) for a, b in zip(profiles[k], reference)]
-        worst = max(deltas)
-        overCount = sum(1 for d in deltas if d > 1.0 / 255.0)
-        checks.append(tolCheck(
+        arm = _Excess()
+        for i, (a, b) in enumerate(zip(profiles[k], reference)):
+            y = profileRow(i)
+            arm.add(abs(a - b), FORMAT_W // 2, y, 2.0 * rowBound(y))
+        worstY = arm.worstAt[1] if arm.worstAt is not None else profileRow(0)
+        checks.append(boolCheck(
             "g", "g2 K=%-2d bucket-attributable banding vs K=64" % k,
-            worst, 1.0 / 255.0,
-            population="%d/%d interior rows over 1/255" % (overCount, rowCount),
+            arm.at is None, arm.describe(),
+            "|rowMean(K=%d) - rowMean(K=64)| <= the sum of both renders' "
+            "row bounds (2 x %d terms/tap x plane taps(y) x 2^-24; "
+            "worst-case %.2e)" % (k, O_TERMS_PER_TAP, arm.maxTol),
+            population="%d interior rows" % rowCount,
             note="max |rowMean(K=%d) - rowMean(K=64)|; worst row y=%d "
                  "(radius %.2f px)"
-                 % (k, profileRow(deltas.index(worst)),
-                    groundRadius(size, profileRow(deltas.index(worst))))))
+                 % (k, worstY, groundRadius(size, worstY))))
 
     # --- g3: the scene's OWN stated criterion — "no visible seams at bucket
     # boundaries at K=16; compare K=8 vs K=64".  g1 (a mean) and g2 (a
@@ -1844,14 +1864,23 @@ def sceneG(settings):
     # against a flat neighbourhood" rather than "the profile is that noisy".
     for k in (8, 16, 64):
         worstStep, medianStep, stepAt = seams[k]
+        profile = profiles[k]
+        arm = _Excess()
+        for i in range(1, len(profile)):
+            y0, y1 = profileRow(i - 1), profileRow(i)
+            arm.add(abs(profile[i] - profile[i - 1]), FORMAT_W // 2, y1,
+                    rowBound(y0) + rowBound(y1))
         row = profileRow(stepAt)
-        checks.append(tolCheck(
+        checks.append(boolCheck(
             "g", "g3 K=%-2d worst seam (row-to-row step in the profile)" % k,
-            worstStep, 1.0 / 255.0,
+            arm.at is None, arm.describe(),
+            "row-to-row step <= the sum of the two rows' bounds (%d "
+            "terms/tap x plane taps(y) x 2^-24 each; worst-case pair sum "
+            "%.2e)" % (O_TERMS_PER_TAP, arm.maxTol),
             population="%d interior rows; median step %.3e"
                        % (rowCount, medianStep),
             note="worst step at y=%d (radius %.2f px), %.0fx the median; "
-                 "1/255 is the step an 8-bit view resolves"
+                 "term-count bound, not an 8-bit tolerance"
                  % (row, groundRadius(size, row),
                     (worstStep / medianStep) if medianStep > 0.0 else 0.0)))
 
@@ -2604,43 +2633,40 @@ def sceneI(settings):
                  "sample per pixel, so the pre-merge has nothing to group. "
                  "i7 is the reachability proof"))
 
-    # --- i7: pre_merge REACHABILITY.  M1.P3.T12's review could not move a
-    # single pixel with this knob on any content it tried, so it is settled
-    # here with content built against the documented predicate rather than by
-    # trying more scenes.
+    # --- i7: pre_merge REACHABILITY.  The pre-merge groups adjacent same-pixel
+    # fragments when they share a containing bucket, a FragmentKind and a
+    # holdout bracket, and their radii are within merge_tolerance; the group
+    # then rasterises ONE disc, at its front member's radius.  The scatter
+    # rasterises a radius as a blend of the two kernel-grid nodes bracketing
+    # it, so two radii rasterise one kernel only when they are EQUAL
+    # (`sameScatterKernel`), and the merge is lossy whenever the grouped radii
+    # differ at all -- which the 0.25px DEFAULT tolerance permits.  A pair the
+    # default never groups reads 0 because nothing merged, not because merging
+    # is free, so the pair below sits 0.20px apart.
     #
-    # The pre-merge groups adjacent same-pixel fragments when they share a
-    # containing bucket, a FragmentKind and a holdout bracket, and their radii
-    # are within merge_tolerance; the group then rasterises ONE disc, at its
-    # front member's radius.  The scatter rasterises a radius as a blend of the
-    # two kernel-grid nodes bracketing it, so two radii rasterise one kernel
-    # only when they are EQUAL (`sameScatterKernel`), and the merge is lossy
-    # whenever the grouped radii differ at all -- which the 0.25px DEFAULT
-    # tolerance permits.  (M1.P3.T16's first pass asserted the opposite --
-    # "anything grouped at 0.25px rasterises the same disc, so the default is
-    # exactly lossless" -- and gated it on a pair 1.47px apart, which the
-    # default tolerance never groups at all: the check read 0 because nothing
-    # merged, not because merging was free.  Measured here instead.)
+    # WHERE THE DELTA IS.  Both layers are full-frame constants at alpha 0.6.
+    # Wherever nothing else reaches a pixel, grouped and ungrouped both
+    # composite the pair to its `over`, 1 - (1 - a)^2: the group arrives as
+    # one fragment of that alpha, the ungrouped pair as one saturated
+    # two-area bucket whose raw alpha is split over its clamped areas, which
+    # is the same `over` when the pixel's area is all free.  That is an
+    # independent oracle -- alpha from the algebra, colour ratio from a stock
+    # flatten of the same source -- and both renders are held to it (the
+    # interior arms).  The pair differs only under the z=3 corner element's
+    # bloom, where the corner's partial front coverage has already claimed
+    # some of the pixel's area: the grouped fragment pays for its excess
+    # through the fit/excess path, the ungrouped pair partly through the
+    # co-located residual, and the two weight the claimed area differently.
+    # That delta has no independent value, so the reachability arms state
+    # only that it exists, above the term-count bound, and that its argmax
+    # lies inside the corner bloom -- the magnitude is reported, not pinned.
     #
-    # WHAT THE DELTA IS.  Both layers are full-frame constants at alpha 0.6, so
-    # the interior reads the same alpha whatever disc it is scattered with,
-    # and the pre_merge on/off difference is not a bokeh-size effect: with
-    # pre_merge OFF the pair lands in one bucket as two DIFFERENT-kernel
-    # deposits, whose co-located area split falls a^2/4 short of the `over`
-    # (the collision residual the header documents: two opaque layers read
-    # 0.75 against 1) -- 0.09 at a = 0.6.  A pair the predicate calls one
-    # kernel is instead `over`-composited whether or not it pre-merges, and
-    # reads 0.  So the delta is a^2/4 with the kernels distinguished and
-    # exactly 0 with them identified, and both halves are pinned below.
-    #
-    # A corner element at z=3 widens the frame's measured CoC range so the pair
-    # still shares one containing ΔCoC bucket.
+    # The corner element also widens the frame's measured CoC range so the
+    # pair still shares one containing ΔCoC bucket.
     SIZE, FOCUS = 20.0, 10.0
     LAYER_ALPHA = 0.60
-    collisionResidual = LAYER_ALPHA * LAYER_ALPHA / 4.0     # 0.09
-    # a^2/4 is the co-location term alone; two distinct discs add a kernel-
-    # shape term of a few 1e-5 near the corner element, and the band admits it.
-    residualBand = 1.0e-03
+    pairOver = 1.0 - (1.0 - LAYER_ALPHA) ** 2              # 0.84
+    CORNER, CORNER_Z = (0, 0, 24, 24), 3.0
 
     def zForRadius(radiusPx):
         """Behind focus: r = size*(1 - focus/z)."""
@@ -2648,7 +2674,19 @@ def sceneI(settings):
 
     reachBox = (32, 32, 224, 224)
 
+    def reachSource(radiusA, radiusB):
+        return deepMerge([
+            pointLayer(constant2d((0.30, 0.30, 0.30, LAYER_ALPHA)),
+                       zForRadius(radiusA), keepZeroAlpha=False,
+                       premult=False),
+            pointLayer(constant2d((0.30, 0.30, 0.30, LAYER_ALPHA)),
+                       zForRadius(radiusB), keepZeroAlpha=False,
+                       premult=False),
+            pointLayer(rectangle2d(CORNER, (0.5, 0.5, 0.5, 1.0)),
+                       CORNER_Z, keepZeroAlpha=False, premult=True)])
+
     def reachability(radiusA, radiusB, tolerance, maxRadius=None):
+        """(pre_merge on, pre_merge off, their difference) over reachBox."""
         rendered = []
         for preMerge in (True, False):
             overrides = dict(preMerge=preMerge, mergeTolerance=tolerance)
@@ -2656,41 +2694,108 @@ def sceneI(settings):
                 overrides["maxRadius"] = maxRadius
             cell = settings.derive(**overrides)
             resetScript()
-            source = deepMerge([
-                pointLayer(constant2d((0.30, 0.30, 0.30, LAYER_ALPHA)),
-                           zForRadius(radiusA), keepZeroAlpha=False,
-                           premult=False),
-                pointLayer(constant2d((0.30, 0.30, 0.30, LAYER_ALPHA)),
-                           zForRadius(radiusB), keepZeroAlpha=False,
-                           premult=False),
-                pointLayer(rectangle2d((0, 0, 24, 24), (0.5, 0.5, 0.5, 1.0)),
-                           3.0, keepZeroAlpha=False, premult=True)])
             rendered.append(render(
-                cell, makeDefocus(cell, source, size=SIZE,
-                                  focusDistance=FOCUS, cocMode="manual"),
+                cell, makeDefocus(cell, reachSource(radiusA, radiusB),
+                                  size=SIZE, focusDistance=FOCUS,
+                                  cocMode="manual"),
                 "i_reach_%s_%g_%g_%s" % (preMerge, radiusB - radiusA,
                                          tolerance, maxRadius),
                 box=reachBox))
-        return compareImages(rendered[0], rendered[1], box=reachBox)
+        return (rendered[0], rendered[1],
+                compareImages(rendered[0], rendered[1], box=reachBox))
+
+    def discTaps(radiusPx):
+        """oTolerance's count: source pixels a disc reaches, rim included."""
+        return int(math.ceil(math.pi * (radiusPx + 1.0) ** 2))
+
+    def reachRows(label, guardLabel, radiusA, radiusB, maxRadius, note):
+        """The reachability arm and the interior arm for one pair."""
+        clamp = settings.maxRadius if maxRadius is None else maxRadius
+        radii = [min(r, clamp) for r in (radiusA, radiusB)]
+        cornerRadius = min(SIZE * abs(1.0 - FOCUS / CORNER_Z), clamp)
+        bloom = _outsetBox(CORNER, int(math.ceil(cornerRadius)) + 1)
+        perRender = O_TERMS_PER_TAP * sum(discTaps(r) for r in radii) * O_ULP
+        # Only the pair's bucket differs between the renders: the corner is
+        # never grouped with it, so its deposits are identical in both and
+        # drop out of the difference.  The grouped render rasterises the pair
+        # once, at the front radius, and the ungrouped render both discs.
+        diffBound = perRender + O_TERMS_PER_TAP * discTaps(radii[0]) * O_ULP
+
+        on, off, diff = reachability(radiusA, radiusB,
+                                     settings.mergeTolerance, maxRadius)
+        resetScript()
+        flat = render(settings, deepToImage(reachSource(radiusA, radiusB)),
+                      "i_reach_flatten_%g_%g" % (radiusA, radiusB),
+                      box=reachBox)
+
+        arms = [(name, image, _Excess(), _Excess())
+                for name, image in (("on", on), ("off", off))]
+        outside, outsideAt = 0.0, None
+        for y in range(reachBox[1], reachBox[3]):
+            for x in range(reachBox[0], reachBox[2]):
+                if _inBox(bloom, x, y):
+                    continue
+                flatAlpha = flat.at("A", x, y)
+                for _, image, alphaArm, ratioArm in arms:
+                    alpha = image.at("A", x, y)
+                    alphaArm.add(abs(alpha - pairOver), x, y, perRender)
+                    if alpha < 1.0e-03:
+                        continue
+                    ratioArm.add(max(abs(image.at(c, x, y) / alpha
+                                         - flat.at(c, x, y) / flatAlpha)
+                                     for c in ("R", "G", "B")),
+                                 x, y, perRender)
+                step = max(abs(on.at(c, x, y) - off.at(c, x, y))
+                           for c in RGBA)
+                if step > outside:
+                    outside, outsideAt = step, (x, y)
+
+        at = diff.maxAt
+        inBloom = at is not None and _inBox(bloom, at[0], at[1])
+        checks.append(boolCheck(
+            "i", label,
+            inBloom and diff.maxAbs > diffBound,
+            "%.4e at %s" % (diff.maxAbs, at),
+            "> %.2e, argmax inside the corner bloom %s"
+            % (diffBound, bloom),
+            population=diff.population(),
+            note="%s; max |on - off| outside the corner bloom %.3e at %s; "
+                 "the magnitude is reported, not pinned: it has no "
+                 "independent oracle" % (note, outside, outsideAt)))
+        parts = []
+        clean = True
+        for name, _, alphaArm, ratioArm in arms:
+            clean = clean and alphaArm.at is None and ratioArm.at is None
+            parts.append("%s alpha %s; %s R/A %s"
+                         % (name, alphaArm.describe(), name,
+                            ratioArm.describe()))
+        checks.append(boolCheck(
+            "i", guardLabel, clean, "; ".join(parts),
+            "|A - %.2f| and |c/A - flatten c/A| <= %.2e per px"
+            % (pairOver, perRender),
+            population="%d px, reachBox %s less the corner bloom"
+                       % (arms[0][2].count, reachBox),
+            note="alpha oracle 1 - (1 - %.2f)^2; colour oracle the stock "
+                 "flatten's own ratio (%.4f at the box centre); bound "
+                 "%d terms/tap x (%d + %d taps, radii %.1f/%.1f px) x 2^-24"
+                 % (LAYER_ALPHA,
+                    flat.at("R", 128, 128) / flat.at("A", 128, 128),
+                    O_TERMS_PER_TAP, discTaps(radii[0]), discTaps(radii[1]),
+                    radii[0], radii[1])))
+        return diff
 
     # 1.2 and 1.4 CoC px: 0.20 apart, i.e. inside the SHIPPING DEFAULT
     # tolerance, and two different kernels.
-    atDefault = reachability(1.2, 1.4, settings.mergeTolerance)
-    checks.append(boolCheck(
-        "i", "i7 pre_merge reaches the render at the DEFAULT merge_tolerance",
-        abs(atDefault.maxAbs - collisionResidual) <= residualBand,
-        "%.4e" % atDefault.maxAbs,
-        "%.4f +/- %.0e at merge_tolerance %.2f"
-        % (collisionResidual, residualBand, settings.mergeTolerance),
-        population=atDefault.population(),
-        note="two full-frame same-pixel layers at CoC radius 1.2 and 1.4 px -- "
-             "0.20 px apart, so within tolerance, but different kernels, so "
-             "the group rasterises a different disc than the pair would; the "
-             "delta is the pair's collision residual a^2/4 = %.4f at a = %.2f"
-             % (collisionResidual, LAYER_ALPHA)))
+    reachRows("i7 pre_merge reaches the render at the DEFAULT merge_tolerance",
+              "i7o ...and outside the corner bloom both renders are the "
+              "pair's `over`",
+              1.2, 1.4, None,
+              "two full-frame same-pixel layers at CoC radius 1.2 and 1.4 px "
+              "-- 0.20 px apart, so within merge_tolerance %.2f, but different "
+              "kernels" % settings.mergeTolerance)
     # The control: identical content, tolerance 0, so nothing may group. It is
     # what makes i7 a statement about the merge rather than about the geometry.
-    noGrouping = reachability(1.2, 1.4, 0.0)
+    _, _, noGrouping = reachability(1.2, 1.4, 0.0)
     checks.append(tolCheck(
         "i", "i7b control: same content at merge_tolerance 0 cannot move",
         noGrouping.maxAbs, 1.0e-07, population=noGrouping.population(),
@@ -2702,8 +2807,8 @@ def sceneI(settings):
     # the pair sits 0.20 px apart in unclamped CoC like i7 and max_radius is
     # lowered onto the front member: both then scatter at exactly 17.0 px.
     SAME_KERNEL_CLAMP = 17
-    sameKernel = reachability(17.0, 17.2, settings.mergeTolerance,
-                              maxRadius=SAME_KERNEL_CLAMP)
+    _, _, sameKernel = reachability(17.0, 17.2, settings.mergeTolerance,
+                                    maxRadius=SAME_KERNEL_CLAMP)
     checks.append(tolCheck(
         "i", "i7c ...and is lossless when the grouped radii rasterise one kernel",
         sameKernel.maxAbs, 1.0e-07, population=sameKernel.population(),
@@ -2717,19 +2822,16 @@ def sceneI(settings):
     # tests -- same radius scale, same 0.20px separation, same tolerance, same
     # max_radius, same content -- and differs only in sitting just UNDER the
     # clamp, so its two radii stay distinct.
-    straddle = reachability(16.6, 16.8, settings.mergeTolerance,
-                            maxRadius=SAME_KERNEL_CLAMP)
-    checks.append(boolCheck(
-        "i", "i7d guard: the same pair 0.4px under the clamp, two kernels, DOES move",
-        abs(straddle.maxAbs - collisionResidual) <= residualBand,
-        "%.4e" % straddle.maxAbs,
-        "%.4f +/- %.0e" % (collisionResidual, residualBand),
-        population=straddle.population(),
-        note="16.6 and 16.8 px at max_radius %d are unclamped and distinct, "
-             "so two kernels: this content at this tolerance really is "
-             "eligible to group and reads the collision residual -- which is "
-             "what makes i7c's zero a statement about losslessness rather "
-             "than about nothing having merged" % SAME_KERNEL_CLAMP))
+    reachRows("i7d guard: the same pair 0.4px under the clamp, two kernels, "
+              "DOES move",
+              "i7do ...and outside the corner bloom both renders are the "
+              "pair's `over`",
+              16.6, 16.8, SAME_KERNEL_CLAMP,
+              "16.6 and 16.8 px at max_radius %d are unclamped and distinct, "
+              "so two kernels: this content at this tolerance really is "
+              "eligible to group, which is what makes i7c's zero a statement "
+              "about losslessness rather than about nothing having merged"
+              % SAME_KERNEL_CLAMP)
     return checks
 
 
@@ -3883,7 +3985,11 @@ def sceneM(settings):
                       "m_ramp_alpha%g%s" % (alpha, "_held" if holdout
                                             else "")), node
 
-    # --- m3a: alpha 1.
+    # --- m3a: alpha 1.  Held to the same analytic bound scene (o) holds its
+    # plane rows to (this ramp is plane-only, same size as scene (g)'s): a
+    # row mean is held to the max per-pixel bound over its own row, a single
+    # pixel to its own.
+    planeTol = oTolerance(size, ())
     redRatio = sourceRatio(1.0)
     opaque, opaqueNode = rampRender(1.0)
     keepOverChecker(opaqueNode, "m3_ramp_a1", opaque)
@@ -3893,10 +3999,24 @@ def sceneM(settings):
     worstRowY = rampRows[[abs(v - 1.0) for v in opaqueRows].index(worstRow)]
     worstPixel = max(abs(opaquePixels.minimum - 1.0),
                      abs(opaquePixels.maximum - 1.0))
-    checks.append(tolCheck(
+    alphaArm = _Excess()
+    for y, mean in zip(rampRows, opaqueRows):
+        alphaArm.add(abs(mean - 1.0), FORMAT_W // 2, y,
+                     max(planeTol(x, y)
+                         for x in range(rampBox[0], rampBox[2])))
+    for y in rampRows:
+        row = opaque.row("A", y)
+        for x in range(rampBox[0], rampBox[2]):
+            i = x - opaque.x0
+            a = row[i] if 0 <= i < opaque.width else 0.0
+            alphaArm.add(abs(a - 1.0), x, y, planeTol(x, y))
+    checks.append(boolCheck(
         "m", "m3a K=16 alpha 1 ramp, EVERY interior row incl. near focus: "
              "|a-1|",
-        max(worstRow, worstPixel), tol,
+        alphaArm.at is None, alphaArm.describe(),
+        "row mean and per-pixel <= the term-count bound (%d terms/tap x "
+        "plane taps(y) x 2^-24; worst-case %.2e)"
+        % (O_TERMS_PER_TAP, alphaArm.maxTol),
         population="%d rows x %d px, rows %d-%d, near-focus rows INCLUDED"
                    % (len(rampRows), rampBox[2] - rampBox[0], rampRows[0],
                       rampRows[-1]),
@@ -3906,11 +4026,25 @@ def sceneM(settings):
              "where the clamp hides every surplus"
              % (worstRow, worstRowY, worstPixel, opaquePixels.minimum,
                 opaquePixels.minAt)))
-    worstRatio, worstAt, ratioCount = _worstUnpremult(opaque, "R", redRatio,
-                                                      rampBox)
-    checks.append(tolCheck(
+    _, worstAt, ratioCount = _worstUnpremult(opaque, "R", redRatio, rampBox)
+    ratioArm = _Excess()
+    for y in rampRows:
+        alphaRow = opaque.row("A", y)
+        colourRow = opaque.row("R", y)
+        for x in range(rampBox[0], rampBox[2]):
+            i = x - opaque.x0
+            if not (0 <= i < opaque.width):
+                continue
+            alpha = alphaRow[i]
+            if alpha < 1.0e-03:
+                continue
+            ratioArm.add(abs(colourRow[i] / alpha - redRatio), x, y,
+                        planeTol(x, y))
+    checks.append(boolCheck(
         "m", "m3a ...and colour:alpha ratio vs the source (R/A)",
-        worstRatio, tol,
+        ratioArm.at is None, ratioArm.describe(),
+        "|c/a - src| <= the term-count bound (%d terms/tap x plane taps(y) "
+        "x 2^-24; worst-case %.2e)" % (O_TERMS_PER_TAP, ratioArm.maxTol),
         population="%d px" % ratioCount,
         note="source R/A %.4f (stock flatten); worst at (%d,%d)"
              % ((redRatio,) + worstAt)))
@@ -5300,6 +5434,51 @@ O_ULP = 2.0 ** -24
 O_TERMS_PER_TAP = 4
 O_DIFF_NAME = "o5_alpha_diff_defocus_minus_bokeh.exr"
 
+# --- o6: mixed-opacity co-located stack vs Bokeh ------------------------------
+#
+# The clamped-area split divides a saturated bucket's raw alpha over ITS OWN
+# clamped new and co-located areas; the planes cannot tell that a co-located
+# deposit's own opacity differs from the layer that claimed the new area, so
+# a mixed-opacity stack -- an opaque card with a translucent "fog" card at a
+# depth inside the SAME bucket -- under a foreground disc that varies how
+# much of the stack's own area is "new" per pixel can read its arrival
+# colour wrong where its alpha is exact.  MIX_DELTA is derived, not guessed:
+# probing this rig's own bucket centres with DEEPC_DEFOCUS_DEBUG_PROBE at
+# MIX_Z's depth (8.20) gives centre spacing 2.133 at K=4 (6.511/8.644), 0.665
+# at K=16 (8.125/8.790) and 0.153 at K=64 (8.038/8.191); MIX_DELTA=0.02 is
+# 7.6x smaller than the K=64 spacing, the swept K's tightest, so the opaque
+# and fog samples land in the same bucket pair with matching weight at every
+# swept K (confirmed by probe: both samples' raw colour sums land in the
+# same bucket).
+MIX_BOX = (100, 100, 156, 156)
+MIX_NEAR_BOX = (112, 112, 144, 144)
+MIX_Z = O_CARDS[0][1]          # 8.20, reuse the rig's own near-focus depth
+MIX_DELTA = 0.02
+MIX_NEAR_Z = 7.9
+MIX_RED_OPAQUE = 0.90
+MIX_RED_FOG = 0.10
+MIX_RED_NEAR = 0.55
+MIX_FOG_ALPHAS = (0.2, 0.5)
+MIX_KS = (4, 16, 64)
+MIX_CARDS = ((MIX_BOX, MIX_Z, MIX_RED_OPAQUE),
+            (MIX_BOX, MIX_Z - MIX_DELTA, MIX_RED_FOG),
+            (MIX_NEAR_BOX, MIX_NEAR_Z, MIX_RED_NEAR))
+
+# The node vs Bokeh colour:alpha ratio deviation this build reads on o6c, at
+# each (K, fog alpha) cell -- the worst pixel over MIX_BOX: inside the near
+# card at K=4, where the near card and the stack share one bucket; on
+# MIX_BOX's edge at K=16/64, where the stack's own silhouette weight differs
+# from Bokeh's.  A pin is a measurement of a known defect, never a target:
+# whoever moves one re-pins it in the same change.
+O6_PIN_COLOUR = {
+    (4, 0.2): 2.832e-01,
+    (16, 0.2): 2.251e-01,
+    (64, 0.2): 2.251e-01,
+    (4, 0.5): 1.770e-01,
+    (16, 0.5): 1.413e-01,
+    (64, 0.5): 1.413e-01,
+}
+
 
 def oRadius(z, size=O_SIZE):
     return size * abs(1.0 - GROUND_FOCUS / z)
@@ -5322,6 +5501,24 @@ def oCards(sameDepth=False):
 
 def oRig(cards=O_CARDS):
     return deepMerge([oCard(*card) for card in cards] + [groundPlane()])
+
+
+def mixFogCard(box, z, red, alpha):
+    return pointLayer(rectangle2d(box, (red, GROUND_COLOR[1], GROUND_COLOR[2],
+                                        alpha)),
+                      z, keepZeroAlpha=False, premult=True)
+
+
+def mixRig(fogAlpha):
+    """The co-located mixed-opacity stack: an opaque card at ``MIX_Z``, a
+    translucent fog card at ``MIX_Z - MIX_DELTA`` (same box, same bucket),
+    and a small opaque card nearer the camera whose own CoC disc supplies
+    new area over parts of the stack, all over the receding plane."""
+    return deepMerge([oCard(MIX_BOX, MIX_Z, MIX_RED_OPAQUE),
+                      mixFogCard(MIX_BOX, MIX_Z - MIX_DELTA, MIX_RED_FOG,
+                                fogAlpha),
+                      oCard(MIX_NEAR_BOX, MIX_NEAR_Z, MIX_RED_NEAR),
+                      groundPlane()])
 
 
 def oSparse(cards=O_CARDS):
@@ -5467,6 +5664,44 @@ def oRatio(image, box, targets, tolerance, exclude=None, floor=1.0e-03):
     return out
 
 
+def oAlphaAgainst(node, oracle, box, tolerance):
+    """|node.A - oracle.A| against ``tolerance(x, y)`` over ``box``, and the
+    count of pixels where the two read bit-identical."""
+    out = _Excess()
+    exact = 0
+    for y in range(box[1], box[3]):
+        nodeRow, oracleRow = node.row("A", y), oracle.row("A", y)
+        for x in range(box[0], box[2]):
+            ni, oi = x - node.x0, x - oracle.x0
+            a = nodeRow[ni] if 0 <= ni < node.width else 0.0
+            b = oracleRow[oi] if 0 <= oi < oracle.width else 0.0
+            deviation = abs(a - b)
+            if deviation == 0.0:
+                exact += 1
+            out.add(deviation, x, y, tolerance(x, y))
+    return out, exact
+
+
+def oColourAgainst(node, oracle, box, tolerance, floor=1.0e-03):
+    """|node c/a - oracle c/a| on G and B against ``tolerance(x, y)``."""
+    out = _Excess()
+    for y in range(box[1], box[3]):
+        nodeAlpha, oracleAlpha = node.row("A", y), oracle.row("A", y)
+        nodeChans = [node.row(c, y) for c in ("G", "B")]
+        oracleChans = [oracle.row(c, y) for c in ("G", "B")]
+        for x in range(box[0], box[2]):
+            ni, oi = x - node.x0, x - oracle.x0
+            if not (0 <= ni < node.width) or not (0 <= oi < oracle.width):
+                continue
+            na, oa = nodeAlpha[ni], oracleAlpha[oi]
+            if na < floor or oa < floor:
+                continue
+            deviation = max(abs(nc[ni] / na - oc[oi] / oa)
+                            for nc, oc in zip(nodeChans, oracleChans))
+            out.add(deviation, x, y, tolerance(x, y))
+    return out
+
+
 def oRowMinimum(image, box):
     """(1 - the lowest row minimum, its row) over ``box``."""
     worst, worstY = 0.0, box[1]
@@ -5520,17 +5755,6 @@ def oCheck(name, entries, what, population, note):
                      population=population, note=note)
 
 
-# The dips this build reads on scene (o), K = 16, each the worst pixel past
-# its own term-count bound.  A pin is a measurement of a known defect, never
-# a target: whoever moves one re-pins it in the same change.
-O_PIN_PLANE_K = {4: 1.777e-03}
-O_PIN_PROBE_AROUND = {8: 5.138e-04}
-O_PIN_RIG = 3.067e-02
-O_PIN_RIG_OVERLAP = 2.493e-03
-O_PIN_SPARSE = 4.389e-03
-O_PIN_SPARSE_OVERLAP = 2.199e-03
-
-
 def sceneO(settings):
     """Solid alpha on opaque geometry: a slanted plane with small objects.
 
@@ -5549,11 +5773,25 @@ def sceneO(settings):
       o1   the plane alone: the run's K and size, a K sweep, and integer vs
            half-integer kernel diameters.
       o2   one card over the plane at r_plane 0/2/8/16 px under it: the band
-           under the silhouette, and the ring around it.
-      o3   the full rig: the whole interior, and the pair's disc overlap.
-      o4   the sparse twin of o3 (no plane behind any card).
+           under the silhouette, and the ring around it; o2bm is the
+           r_plane 8 ring at K=64.
+      o3   the full rig: the whole interior, and the pair's disc overlap;
+           o3m/o3bm gate K=64, K=4 and the pair at one depth over each box.
+      o4   the sparse twin of o3 (no plane behind any card); o4m gates its
+           K=64 reading over both boxes.
       o5   Bokeh on o3's stack must read 1 over the same box; the
            DeepCDefocus - Bokeh alpha map is written to --out-dir.
+      o5c  DeepCDefocus - Bokeh alpha, per pixel over the same interior,
+           gated on the same bound plus Bokeh's own +-1 ulp.
+      o5cr ...colour:alpha ratio (G/A, B/A) between the two, same pixels.
+      o6   a mixed-opacity co-located stack (opaque card + translucent fog
+           card in the same bucket, small opaque card nearer camera for new
+           area) vs Bokeh, K=4/16/64 x fog alpha 0.2/0.5: worst 1-a over the
+           covered box.
+      o6b  ...DeepCDefocus - Bokeh alpha difference, same sweep.
+      o6c  ...colour:alpha ratio vs Bokeh, same sweep -- pinned XFAIL where
+           the node weights the stack against its neighbours differently
+           from Bokeh.
 
     Pinned readings are K = 16 whatever --k says.
     """
@@ -5660,8 +5898,7 @@ def sceneO(settings):
             "%s: worst row min 1-a %.3e at y=%d" % ((label,) + worstRow)
 
     alpha, ratio, rowText = planeCell("K=%d size %g" % (settings.k, O_SIZE),
-                                      settings, O_SIZE,
-                                      O_PIN_PLANE_K.get(settings.k))
+                                      settings, O_SIZE)
     checks.append(oCheck(
         "o1 the plane alone, the run's K and size", [alpha], "1-a",
         "%d x %d px, interior %s" % (interior[2] - interior[0],
@@ -5674,16 +5911,13 @@ def sceneO(settings):
         "|c/a - src|", "same pixels",
         "source G/A, B/A %.7f / %.7f, spread %.1e over the flatten"
         % (planeTargets + (planeSpread,))))
-    sweep = [planeCell("K=%d" % k, settings.derive(k=k), O_SIZE,
-                       O_PIN_PLANE_K.get(k))
+    sweep = [planeCell("K=%d" % k, settings.derive(k=k), O_SIZE)
              for k in (4, 16, 64)]
     checks.append(oCheck(
         "o1b the plane alone, K sweep 4/16/64 at size %g" % O_SIZE,
         [a for a, _, _ in sweep], "1-a", "interior %s" % (interior,),
-        "; ".join(t for _, _, t in sweep) + ".  Only K=4 dips, along the "
-        "plane's top interior rows; K=16 and K=64 read the plane exactly to "
-        "rounding -- the plane alone does not reproduce the reported dips at "
-        "the default K"))
+        "; ".join(t for _, _, t in sweep) + "; K=4, K=16 and K=64 all read "
+        "the plane exactly to rounding"))
     checks.append(oCheck(
         "o1br ...colour:alpha ratio, same sweep", [r for _, r, _ in sweep],
         "|c/a - src|", "same pixels", "G/A, B/A vs the source flatten"))
@@ -5706,7 +5940,8 @@ def sceneO(settings):
     # ------------------------------------------------------------------
     # o2: one card over the plane, the plane's own CoC under it.
     # ------------------------------------------------------------------
-    under, underRatio, around, aroundRatio, mutated = [], [], [], [], []
+    under, underRatio, around, aroundRatio = [], [], [], []
+    ring8K64 = None
     for nominal, row in O_PLACEMENTS:
         silhouette = oProbeBox(row)
         ring = _outsetBox(silhouette, 18)
@@ -5717,39 +5952,52 @@ def sceneO(settings):
         under.append((label, oDip(image, silhouette, tolerance), None))
         underRatio.append((label, oRatio(image, silhouette, planeTargets,
                                          tolerance), None))
-        pin = O_PIN_PROBE_AROUND.get(nominal)
-        around.append((label, oDip(image, ring, tolerance, silhouette), pin))
+        around.append((label, oDip(image, ring, tolerance, silhouette), None))
         aroundRatio.append((label, oRatio(image, ring, planeTargets,
                                           tolerance, silhouette), None))
-        if pin is not None:
+        if nominal == 8:
             wide = renderOf(lambda: oProbe(row), "o_probe_r%d_k64" % nominal,
                             settings.derive(k=64))
-            mutated.append("%s at K=64: %s" % (
-                label, oDip(wide, ring, tolerance, silhouette).describe()))
+            ring8K64 = (label, oDip(wide, ring, tolerance, silhouette),
+                       oRatio(wide, ring, planeTargets, tolerance,
+                             silhouette))
     probePopulation = ("a 32x24 card at z=%.3f (r_obj 16 px) centred on x=%d, "
                        "one render per r_plane" % (O_PROBE_Z, FORMAT_W // 2))
     checks.append(oCheck(
         "o2 one card over the plane: the band UNDER the silhouette",
         under, "1-a", probePopulation,
-        "the plane's own samples there have share 0, so its coverage "
-        "arrives only from neighbouring plane pixels at the plane's radius; "
+        "the plane's own samples under the card still deposit full alpha, "
+        "colour and area into their bucket -- share (zero here) feeds only "
+        "arrival, not the deposit -- so coverage there comes from the card "
+        "itself plus neighbouring plane pixels at the plane's radius; "
         "r_plane 0 is scene (m)'s m1 regime (background on the focal plane)"))
     checks.append(oCheck(
         "o2r ...colour:alpha ratio under the silhouette", underRatio,
         "|c/a - src|", "same pixels", "G/A, B/A vs the source flatten"))
-    pinBound = next((r.maxTol for _, r, pin in around if pin is not None),
-                    None)
     checks.append(oCheck(
         "o2b one card over the plane: the ring around the silhouette (18 px)",
         around, "1-a", probePopulation,
-        "MUTATIONS: r_plane itself (only the near-side r_plane 8 ring dips); "
-        + "; ".join(mutated) + (
-            "; pin %.3e is within %.1fx its own bound %.3e" %
-            (O_PIN_PROBE_AROUND[8], O_PIN_PROBE_AROUND[8] / pinBound,
-             pinBound) if pinBound else "")))
+        "the four r_plane placements sweep how far the plane's own CoC "
+        "reaches under an opaque card's edge; the near-side r_plane 8 ring "
+        "at K=64 is gated separately at o2bm"))
     checks.append(oCheck(
         "o2br ...colour:alpha ratio around the silhouette", aroundRatio,
         "|c/a - src|", "same pixels", "G/A, B/A vs the source flatten"))
+    checks.append(oCheck(
+        "o2bm ring around the r_plane 8 silhouette (18 px) at K=64",
+        [(ring8K64[0], ring8K64[1], None)], "1-a", probePopulation,
+        "on the pre-fix build this reads clean here too "
+        "(0 past bound; worst 2.980e-07 at (98,88)) -- K=64's finer "
+        "bucketing sidesteps o2b's K=16 dip at this placement.  mutation: "
+        "a scratch build halving both the fit/excess transmittance "
+        "(`local`) and the residual alpha term (`aRes*tHeadIn`) reads "
+        "2.500e-01 at (99,126), 3312 of 3312 px past bound 2.2e-04"))
+    checks.append(oCheck(
+        "o2bmr ...colour:alpha ratio, same ring",
+        [(ring8K64[0], ring8K64[2], None)], "|c/a - src|", "same pixels",
+        "G/A, B/A vs the source flatten; mutation: dropping satScale on the "
+        "fit term's colour (`src[o]` instead of `src[o]*satScale`) reads "
+        "8.647e-02 at (94,129), 720 px past bound 1.9e-06"))
 
     # ------------------------------------------------------------------
     # o3 / o4: the full rig, complete and sparse.
@@ -5776,11 +6024,10 @@ def sceneO(settings):
     overlapPopulation = "the pair's disc overlap %s" % (overlap,)
     checks.append(oCheck(
         "o3 full rig, complete deep: the whole interior", [
-            ("K=%d" % O_K, rig[1], O_PIN_RIG)], "1-a", rigPopulation,
-        "MUTATIONS: K=64 %s; K=4 %s; pair at one depth %s; plane absent "
-        "behind the cards (o4) %s; worst-case bound %.3e"
-        % (rigK64[1].describe(), rigK4[1].describe(), rigSame[1].describe(),
-           sparse[1].describe(), rig[1].maxTol)))
+            ("K=%d" % O_K, rig[1], None)], "1-a", rigPopulation,
+        "MUTATIONS: K=64, K=4 and the pair at one depth are gated "
+        "separately at o3m; plane absent behind the cards (o4) %s; "
+        "worst-case bound %.3e" % (sparse[1].describe(), rig[1].maxTol)))
     checks.append(oCheck(
         "o3r ...colour:alpha ratio over the interior", [("K=%d" % O_K,
                                                          rig[3], None)],
@@ -5788,17 +6035,50 @@ def sceneO(settings):
         "source G/A, B/A %.7f / %.7f, flatten spread %.1e"
         % (rigTargets + (rigSpread,))))
     checks.append(oCheck(
+        "o3m full rig interior: K=64, K=4, the pair at one depth", [
+            ("K=64", rigK64[1], None), ("K=4", rigK4[1], None),
+            ("same depth", rigSame[1], None)], "1-a", rigPopulation,
+        "mutation: on the pre-fix build, K=4 and the pair-at-one-depth "
+        "entries FAIL at 1.378e-02 / 3.067e-02 (the pre-fix saturated-split "
+        "defect this whole scene guards); K=64's finer buckets read clean "
+        "on that same build (0 past bound) -- a scratch mutation halving "
+        "`local` and `aRes*tHeadIn` together moves all three, K=64 to "
+        "2.500e-01"))
+    checks.append(oCheck(
+        "o3mr ...colour:alpha ratio, same three", [
+            ("K=64", rigK64[3], None), ("K=4", rigK4[3], None),
+            ("same depth", rigSame[3], None)], "|c/a - src|", "same pixels",
+        "G/A, B/A vs the source flatten; mutation: dropping satScale on "
+        "the fit term's colour moves K=64/K=4/same depth to "
+        "8.647e-02/2.209e-01/2.638e-01, all clean on the pre-fix build"))
+    checks.append(oCheck(
         "o3b full rig, complete deep: the pair's disc overlap", [
-            ("K=%d" % O_K, rig[2], O_PIN_RIG_OVERLAP)], "1-a",
+            ("K=%d" % O_K, rig[2], None)], "1-a",
         overlapPopulation,
-        "MUTATIONS: pair at one depth (one bucket) %s; K=64 %s; K=4 %s; "
-        "plane absent (o4b) %s" % (rigSame[2].describe(),
-                                   rigK64[2].describe(), rigK4[2].describe(),
-                                   sparse[2].describe())))
+        "MUTATIONS: pair at one depth (one bucket), K=64 and K=4 are "
+        "gated separately at o3bm; plane absent (o4b) %s"
+        % (sparse[2].describe(),)))
     checks.append(oCheck(
         "o3br ...colour:alpha ratio over the overlap", [("K=%d" % O_K,
                                                          rig[4], None)],
         "|c/a - src|", "same pixels", "G/A, B/A vs the source flatten"))
+    checks.append(oCheck(
+        "o3bm full rig overlap: K=64, K=4, the pair at one depth", [
+            ("K=64", rigK64[2], None), ("K=4", rigK4[2], None),
+            ("same depth", rigSame[2], None)], "1-a", overlapPopulation,
+        "mutation: on the pre-fix build the pair-at-one-depth entry FAILs "
+        "at 2.385e-03 (the pair pools into one bucket there, the same "
+        "defect o3b guards); K=64 and K=4 both read clean on that build "
+        "over this smaller box -- the same scratch mutation as o3m "
+        "(halving `local` and `aRes*tHeadIn`) moves all three, K=64 to "
+        "2.473e-01"))
+    checks.append(oCheck(
+        "o3bmr ...colour:alpha ratio, same three", [
+            ("K=64", rigK64[4], None), ("K=4", rigK4[4], None),
+            ("same depth", rigSame[4], None)], "|c/a - src|", "same pixels",
+        "G/A, B/A vs the source flatten; mutation: dropping satScale on "
+        "the fit term's colour moves K=64/K=4/same depth to "
+        "4.608e-02/2.203e-01/1.900e-01, all clean on the pre-fix build"))
 
     resetScript()
     crop = O_Z_B + 0.01
@@ -5830,29 +6110,45 @@ def sceneO(settings):
              "covers every pixel once, so its flatten is opaque"))
     checks.append(oCheck(
         "o4 sparse twin: the whole interior", [
-            ("K=%d" % O_K, sparse[1], O_PIN_SPARSE)], "1-a", rigPopulation,
-        "MUTATIONS: K=64 %s; plane present behind the cards (o3) %s"
-        % (sparseK64[1].describe(), rig[1].describe())))
+            ("K=%d" % O_K, sparse[1], None)], "1-a", rigPopulation,
+        "MUTATIONS: K=64 is gated separately at o4m; plane present behind "
+        "the cards (o3) %s" % (rig[1].describe(),)))
     checks.append(oCheck(
         "o4r ...colour:alpha ratio over the interior", [("K=%d" % O_K,
                                                          sparse[3], None)],
         "|c/a - src|", "same pixels", "G/A, B/A vs the source flatten"))
     checks.append(oCheck(
         "o4b sparse twin: the pair's disc overlap", [
-            ("K=%d" % O_K, sparse[2], O_PIN_SPARSE_OVERLAP)], "1-a",
+            ("K=%d" % O_K, sparse[2], None)], "1-a",
         overlapPopulation,
-        "MUTATIONS: K=64 %s; plane present (o3b) %s"
-        % (sparseK64[2].describe(), rig[2].describe())))
+        "MUTATIONS: K=64 is gated separately at o4m; plane present (o3b) "
+        "%s" % (rig[2].describe(),)))
     checks.append(oCheck(
         "o4br ...colour:alpha ratio over the overlap", [("K=%d" % O_K,
                                                          sparse[4], None)],
         "|c/a - src|", "same pixels", "G/A, B/A vs the source flatten"))
+    checks.append(oCheck(
+        "o4m sparse twin at K=64: interior and overlap", [
+            ("interior", sparseK64[1], None),
+            ("overlap", sparseK64[2], None)], "1-a", rigPopulation,
+        "mutation: both entries read clean on the pre-fix build (K=64's "
+        "finer buckets sidestep the co-located pooling that dips o4/o4b "
+        "at K=16); the same scratch mutation as o3m/o3bm (halving `local` "
+        "and `aRes*tHeadIn`) moves both to 2.500e-01"))
+    checks.append(oCheck(
+        "o4mr ...colour:alpha ratio, same two", [
+            ("interior", sparseK64[3], None),
+            ("overlap", sparseK64[4], None)], "|c/a - src|", "same pixels",
+        "G/A, B/A vs the source flatten; mutation: dropping satScale on "
+        "the fit term's colour moves interior/overlap to "
+        "8.647e-02/4.554e-02, both clean on the pre-fix build"))
 
     # ------------------------------------------------------------------
     # o5: Bokeh on o3's stack.
     # ------------------------------------------------------------------
     if not bokehOk:
-        for name in ("o5 Bokeh on the rig", "o5r", "o5b difference map"):
+        for name in ("o5 Bokeh on the rig", "o5r", "o5b difference map",
+                     "o5c", "o5cr"):
             checks.append(Check("o", name, "-", "-", SKIP,
                                 note="Bokeh unavailable (o0b)"))
         return checks
@@ -5900,6 +6196,83 @@ def sceneO(settings):
         population="interior %s" % (interior,),
         note="%s (Merge2 minus: A = DeepCDefocus, B = Bokeh; negative where "
              "the node dips)" % path))
+
+    diffAlpha, exactMatches = oAlphaAgainst(
+        rig[0], bokeh, interior, lambda x, y: rigTolerance(x, y) + O_ULP)
+    checks.append(oCheck(
+        "o5c DeepCDefocus - Bokeh alpha over the interior", [
+            ("K=%d" % O_K, diffAlpha, None)], "|a_node - a_bokeh|",
+        rigPopulation,
+        "%d of %d px read exactly 0 difference; the bound is the term-count "
+        "tolerance plus Bokeh's own measured +-1 ulp (o5 reads 1 +- 1 ulp "
+        "itself, so literal zero isn't attainable at every pixel)"
+        % (exactMatches, diffAlpha.count)))
+    checks.append(oCheck(
+        "o5cr ...node vs Bokeh colour:alpha ratio (G/A, B/A) over the "
+        "interior", [("K=%d" % O_K, oColourAgainst(
+            rig[0], bokeh, interior, lambda x, y: 2.0 * rigTolerance(x, y)),
+            None)],
+        "|c/a_node - c/a_bokeh|", "same pixels",
+        "bound is twice o5c's per-pixel tolerance"))
+
+    # ------------------------------------------------------------------
+    # o6: mixed-opacity co-located stack vs Bokeh.
+    # ------------------------------------------------------------------
+    mixTolerance = oTolerance(O_SIZE, MIX_CARDS)
+    mixPopulation = ("MIX_BOX %s: opaque card z=%.2f, fog card z=%.2f "
+                     "(delta %.2f, same bucket), near opaque card z=%.2f "
+                     "over MIX_NEAR_BOX %s, plus the receding plane"
+                     % (MIX_BOX, MIX_Z, MIX_Z - MIX_DELTA, MIX_DELTA,
+                        MIX_NEAR_Z, MIX_NEAR_BOX))
+    mixAlpha, mixAlphaDiff, mixColourDiff = [], [], []
+    for fogAlpha in MIX_FOG_ALPHAS:
+        resetScript()
+        mixSource = mixRig(fogAlpha)
+        mixOracle = makeBokeh(cell, mixSource, GROUND_FOCUS, O_SIZE)
+        mixBokeh = render(cell, mixOracle, "o6_bokeh_a%g" % fogAlpha,
+                          box=box)
+        for k in MIX_KS:
+            s = settings.derive(k=k)
+            label = "K=%d fog=%g" % (k, fogAlpha)
+            mixImg = renderOf(lambda fa=fogAlpha: mixRig(fa),
+                              "o6_node_k%d_a%g" % (k, fogAlpha), s)
+            mixAlpha.append((label, oDip(mixImg, MIX_BOX, mixTolerance),
+                             None))
+            mixDiffAlpha, _ = oAlphaAgainst(
+                mixImg, mixBokeh, MIX_BOX,
+                lambda x, y: mixTolerance(x, y) + O_ULP)
+            mixAlphaDiff.append((label, mixDiffAlpha, None))
+            mixColourDev = oColourAgainst(
+                mixImg, mixBokeh, MIX_BOX,
+                lambda x, y: 2.0 * mixTolerance(x, y))
+            mixColourDiff.append((label, mixColourDev,
+                                  O6_PIN_COLOUR.get((k, fogAlpha))))
+    checks.append(oCheck(
+        "o6 mixed-opacity co-located stack: worst 1-a over the covered "
+        "box, K x fog alpha sweep", mixAlpha, "1-a", mixPopulation,
+        "the opaque card covers every pixel of MIX_BOX by construction, so "
+        "the only correct alpha is 1.0 at every cell"))
+    checks.append(oCheck(
+        "o6b ...DeepCDefocus - Bokeh alpha difference, same sweep",
+        mixAlphaDiff, "|a_node - a_bokeh|", "same pixels",
+        "bound is o6's term-count tolerance plus Bokeh's own measured +-1 "
+        "ulp, as o5c"))
+    checks.append(oCheck(
+        "o6c ...node vs Bokeh colour:alpha ratio (G/A, B/A), same sweep",
+        mixColourDiff, "|c/a_node - c/a_bokeh|", "same pixels",
+        "bound is twice o6's per-pixel tolerance, as o5cr. The fog card's "
+        "colour is not premultiplied by its alpha, so fog-over-card "
+        "flattens to (2 - fog alpha) times the G/A and B/A of the near card "
+        "and the plane; at fog alpha 0 every layer shares one ratio and "
+        "this reads ~2e-5 whatever the mixing weights. Two weights differ "
+        "from Bokeh's. Where the near card and the stack share a bucket "
+        "(K=4; the near card's depth-split share at K=16/64) the bucket's "
+        "summed alpha is saturated as one, mixing the near card with the "
+        "stack it hides by alpha (0.89 : 1.0) instead of in depth order. "
+        "On the stack's own defocused silhouette the node weights it by its "
+        "disc coverage (0.52 half a pixel inside the edge) where Bokeh "
+        "reads 0.84. The deficit fill scales colour and alpha together, so "
+        "it cannot move the ratio"))
     return checks
 
 

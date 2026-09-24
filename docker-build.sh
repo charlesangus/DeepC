@@ -6,7 +6,7 @@ set -euo pipefail
 # Builds DeepC for all target Nuke versions on Linux and/or Windows using
 # pre-built NukeDockerBuild containers. No local Nuke SDK installation required.
 #
-# Prerequisites: docker, zip, git
+# Prerequisites: docker, python3, git
 # NukeDockerBuild images are built automatically on first use (requires ~1 GB
 # Nuke installer download and acceptance of Foundry's EULA).
 #
@@ -15,6 +15,10 @@ set -euo pipefail
 #   --linux                    Build Linux artifacts only
 #   --windows                  Build Windows artifacts only
 #   --all                      Build both platforms (default)
+#   --nuke-sdk DIR             Mount a local Nuke SDK into the Linux build
+#                              container instead of relying on NukeDockerBuild's
+#                              installer-based image (Linux only; requires
+#                              --versions to name exactly one version)
 #   -h, --help                 Show this help
 
 # ---------------------------------------------------------------------------
@@ -37,6 +41,12 @@ DEEPC_WINDOWS_IMAGE="deepc-build"
 # NOT used automatically — Nuke_ROOT must be passed explicitly to CMake.
 NUKE_SDK_PATH="/usr/local/nuke_install"
 
+# Optional host directory with a local Nuke SDK, mounted read-only over
+# NUKE_SDK_PATH in the Linux container. Lets a toolchain-only image (no SDK
+# baked in) be used without NukeDockerBuild's installer-based fallback build.
+# --nuke-sdk overrides; DEEPC_NUKE_SDK sets the default.
+NUKE_SDK_HOST_DIR="${DEEPC_NUKE_SDK:-}"
+
 # ---------------------------------------------------------------------------
 # Usage
 # ---------------------------------------------------------------------------
@@ -54,6 +64,12 @@ OPTIONS:
   --linux                    Build Linux artifacts only (.so)
   --windows                  Build Windows artifacts only (.dll)
   --all                      Build both platforms (default)
+  --nuke-sdk DIR             Mount DIR as the Linux container's Nuke SDK
+                              instead of using NukeDockerBuild's installer-
+                              based image (Linux only; also settable via the
+                              DEEPC_NUKE_SDK env var, --nuke-sdk wins).
+                              Requires --versions to name exactly one
+                              version, since DIR is mounted for all of them.
   -h, --help                 Show this help and exit
 
 OUTPUT:
@@ -87,6 +103,15 @@ while [[ $# -gt 0 ]]; do
             BUILD_WINDOWS=true
             shift
             ;;
+        --nuke-sdk)
+            if [[ $# -lt 2 ]]; then
+                echo "ERROR: --nuke-sdk requires a directory argument." >&2
+                echo "Run 'docker-build.sh --help' for usage." >&2
+                exit 1
+            fi
+            NUKE_SDK_HOST_DIR="$2"
+            shift 2
+            ;;
         -h|--help)
             usage
             exit 0
@@ -108,14 +133,33 @@ if ! command -v docker &>/dev/null; then
     exit 1
 fi
 
-if ! command -v zip &>/dev/null; then
-    echo "ERROR: zip is not installed or not in PATH" >&2
+if ! command -v python3 &>/dev/null; then
+    echo "ERROR: python3 is not installed or not in PATH" >&2
     exit 1
 fi
 
 if ! command -v git &>/dev/null; then
     echo "ERROR: git is not installed or not in PATH" >&2
     exit 1
+fi
+
+if [[ -n "${NUKE_SDK_HOST_DIR}" ]]; then
+    if [[ "${BUILD_WINDOWS}" == "true" ]]; then
+        echo "ERROR: --nuke-sdk / DEEPC_NUKE_SDK apply to Linux builds only." \
+             "Combine with --linux (not --windows or the default --all)." >&2
+        exit 1
+    fi
+    if [[ ! -d "${NUKE_SDK_HOST_DIR}" ]]; then
+        echo "ERROR: --nuke-sdk directory does not exist: ${NUKE_SDK_HOST_DIR}" >&2
+        exit 1
+    fi
+    if [[ "${#NUKE_VERSIONS[@]}" -ne 1 ]]; then
+        echo "ERROR: --nuke-sdk / DEEPC_NUKE_SDK mounts a single SDK, so it only" \
+             "makes sense for one Nuke version. Pass exactly one with" \
+             "--versions (e.g. --versions 16.0), not the default of ${#NUKE_VERSIONS[@]}." >&2
+        exit 1
+    fi
+    NUKE_SDK_HOST_DIR="$(cd "${NUKE_SDK_HOST_DIR}" && pwd)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -131,6 +175,12 @@ ensure_image() {
 
     if docker image inspect "${image_tag}" &>/dev/null; then
         return 0
+    fi
+
+    if [[ -n "${NUKE_SDK_HOST_DIR}" ]]; then
+        echo "  SKIP: image '${image_tag}' not found locally, and --nuke-sdk mode does not fall" \
+             "back to NukeDockerBuild's installer-based build. Build '${image_tag}' first." >&2
+        return 1
     fi
 
     echo "  Image '${image_tag}' not found locally — building via NukeDockerBuild..."
@@ -204,8 +254,13 @@ for nuke_version in "${NUKE_VERSIONS[@]}"; do
         ensure_image "${nuke_version}" "linux" || { echo "  Skipping Linux build for Nuke ${nuke_version}."; continue; }
         echo "  [Linux] Starting build..."
 
+        DOCKER_LINUX_MOUNTS=(-v "${BASEDIR}:/nuke_build_directory")
+        if [[ -n "${NUKE_SDK_HOST_DIR}" ]]; then
+            DOCKER_LINUX_MOUNTS+=(-v "${NUKE_SDK_HOST_DIR}:${NUKE_SDK_PATH}:ro")
+        fi
+
         docker run --rm \
-            -v "${BASEDIR}:/nuke_build_directory" \
+            "${DOCKER_LINUX_MOUNTS[@]}" \
             "${NUKEDOCKERBUILD_IMAGE}:${nuke_version}-linux" \
             bash -c "
                 cmake -S /nuke_build_directory \
@@ -216,7 +271,7 @@ for nuke_version in "${NUKE_VERSIONS[@]}"; do
                 cmake --install /nuke_build_directory/build/${nuke_version}-linux
             "
 
-        (cd "${BASEDIR}/install/${nuke_version}-linux" && zip -r "${BASEDIR}/release/DeepC-Linux-Nuke${nuke_version}.zip" "DeepC")
+        (cd "${BASEDIR}/install/${nuke_version}-linux" && rm -f "${BASEDIR}/release/DeepC-Linux-Nuke${nuke_version}.zip" && python3 -m zipfile -c "${BASEDIR}/release/DeepC-Linux-Nuke${nuke_version}.zip" "DeepC")
         echo "  Linux build complete: release/DeepC-Linux-Nuke${nuke_version}.zip"
     fi
 
@@ -252,7 +307,7 @@ for nuke_version in "${NUKE_VERSIONS[@]}"; do
                 cmake --install /nuke_build_directory/build/${nuke_version}-windows
             "
 
-        (cd "${BASEDIR}/install/${nuke_version}-windows" && zip -r "${BASEDIR}/release/DeepC-Windows-Nuke${nuke_version}.zip" "DeepC")
+        (cd "${BASEDIR}/install/${nuke_version}-windows" && rm -f "${BASEDIR}/release/DeepC-Windows-Nuke${nuke_version}.zip" && python3 -m zipfile -c "${BASEDIR}/release/DeepC-Windows-Nuke${nuke_version}.zip" "DeepC")
         echo "  Windows build complete: release/DeepC-Windows-Nuke${nuke_version}.zip"
     fi
 

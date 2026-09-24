@@ -34,14 +34,15 @@ from harness import (                                            # noqa: E402
 from scenes import (                                              # noqa: E402
     CHECKER_CELL_PX, FILL_CHECK_CELL_PX, FILL_CHECK_FAR_Z, GROUND_COLOR,
     GROUND_FOCUS, HALO_BG, HALO_FAR_Z, HALO_FG, HALO_FOCUS, HALO_HOLDOUT_ALPHA,
-    HALO_HOLDOUT_Z, HALO_NEAR_Z, HALO_RADIUS, HALO_SIZE, NEAR_CARD,
+    HALO_HOLDOUT_Z, HALO_NEAR_Z, HALO_RADIUS, HALO_SIZE, MIX_BOX, MIX_DELTA,
+    MIX_FOG_ALPHAS, MIX_NEAR_BOX, MIX_NEAR_Z, MIX_Z, NEAR_CARD,
     NEAR_COLOUR, NEAR_FG_EXTENT, NEAR_RADIUS, NEAR_Z, O_CARD_NAMES, O_CARDS,
-    O_K, O_PIN_PLANE_K, O_PIN_PROBE_AROUND, O_PIN_RIG, O_PIN_RIG_OVERLAP,
-    O_PIN_SPARSE, O_PIN_SPARSE_OVERLAP, O_PLACEMENTS, O_PROBE_Z, O_SIZE,
+    O_K, O_PLACEMENTS, O_PROBE_Z, O_SIZE,
     UNEQ_CARD_A, UNEQ_CARD_B, _uneqAnchor, _uneqCard, checkerSparse,
     checkerTwin, groundPlane, groundPlaneRow, haloBackground, haloForeground,
-    haloHoldout, haloSparse, nearSparse, nearTwin, oCard, oCards, oInterior,
-    oProbe, oRadius, oSparse, overChecker, stripSource, texturedLayer,
+    haloHoldout, haloSparse, mixRig, nearSparse, nearTwin, oCard, oCards,
+    oInterior, oProbe, oRadius, oSparse, overChecker, stripSource,
+    texturedLayer,
 )
 
 OUT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -151,28 +152,40 @@ CHECK_O = (
     "DeepCDefocus and Bokeh: extents within 1 px of r and of each other.\n"
     "  o1_plane (this script's K=%d; the harness's own o1 reads back at "
     "the run's --k), o1b_plane_k4 / _k64, o1c_plane_s86 / _s43: the plane "
-    "alone reads 1 to rounding except at K=4 (pinned %.3e).\n"
+    "alone reads 1 to rounding at every K and every kernel diameter.\n"
     "  o2_probe_r0/2/8/16: one r_obj=16 card at z=%.3f over plane rows whose "
-    "own radius is 0/2/8/16. Under the silhouette: 1 to rounding at every "
-    "r_plane. The ring around it dips only at r_plane 8 (near side, pinned "
-    "%.3e); o2b_probe_r8_k64 reads 1.\n"
-    "  o3_rig (K=%d): interior dip pinned %.3e under the isolated card's "
-    "lower edge, pair overlap %.3e. o3_rig_k64 reads 1 on both; "
-    "o3_rig_same (pair at one depth) leaves the overlap dip in place; "
-    "o3_rig_k4 dips elsewhere.\n"
-    "  o4_sparse: the same with NO plane behind the cards: interior %.3e, "
-    "overlap %.3e; o4_sparse_k64 reads 1.\n"
+    "own radius is 0/2/8/16. Under the silhouette and in the ring around "
+    "it: 1 to rounding at every r_plane; o2_probe_r8_k64 is the r_plane 8 "
+    "ring at K=64, gated separately (o2bm).\n"
+    "  o3_rig (K=%d): interior and the pair's disc overlap both read 1 to "
+    "rounding; o3_rig_k64 / _k4 / _same (pair at one depth) are the same "
+    "checks at other K / a merged bucket, gated separately (o3m/o3bm).\n"
+    "  o4_sparse: the same rig with NO plane behind the cards, interior "
+    "and overlap both read 1; o4_sparse_k64 the same at K=64, gated "
+    "separately (o4m).\n"
     "  o5_bokeh: Bokeh on o3's stack reads 1 over the interior to within the "
     "same term-count float-accumulation bound the node is gated on (see "
-    "makeBokeh()); o5_diff is DeepCDefocus - Bokeh (alpha), negative where "
-    "the node dips.\n\n"
-    "Pins are XFAILs with a hard outer bound at 2x; a pinned dip that "
-    "reads back inside its bound FAILs too, so it is re-examined."
+    "makeBokeh()); o5_diff is DeepCDefocus - Bokeh (alpha), which is what "
+    "the harness's o5c/o5cr gate per pixel -- against that bound plus "
+    "Bokeh's own measured +-1 ulp, since Bokeh itself does not read "
+    "literal 1.\n"
+    "  o6_node_a0.2 / a0.5, o6_bokeh_a0.2 / a0.5 (this script's K=%d; the "
+    "harness's own o6/o6b/o6c sweep K=4/16/64): an opaque card at z=%.2f "
+    "with a translucent fog card at z=%.2f (delta %.2f, same bucket) and a "
+    "small opaque card nearer the camera at z=%.2f whose own CoC disc "
+    "supplies new area over the stack. Alpha is exact (o6/o6b PASS). The "
+    "fog's colour is not premultiplied by its alpha, so the stack flattens "
+    "to a different G/A, B/A from the near card and the plane, and the "
+    "colour:alpha ratio exposes how each renderer weights one against the "
+    "other: where the near card and the stack share a bucket the node "
+    "mixes them by alpha instead of in depth order, and on the stack's own "
+    "silhouette it weights the stack by disc coverage where Bokeh weights "
+    "it higher -- gated and pinned as a two-sided XFAIL at o6c."
     % (O_SIZE, GROUND_FOCUS, O_CARDS[0][1], oRadius(O_CARDS[0][1]),
        O_CARDS[1][1], oRadius(O_CARDS[1][1]), O_CARDS[2][1], O_CARDS[3][1],
        GROUND_COLOR[1], GROUND_COLOR[2], _O_INTERIOR[0], _O_INTERIOR[2] - 1,
-       O_K, O_PIN_PLANE_K[4], O_PROBE_Z, O_PIN_PROBE_AROUND[8], O_K,
-       O_PIN_RIG, O_PIN_RIG_OVERLAP, O_PIN_SPARSE, O_PIN_SPARSE_OVERLAP)
+       O_K, O_PROBE_Z, O_K, O_K, MIX_Z, MIX_Z - MIX_DELTA, MIX_DELTA,
+       MIX_NEAR_Z)
 )
 
 
@@ -1024,9 +1037,9 @@ def buildSceneO(settings):
         probe["label"].setValue("r_obj 16 over r_plane %d (y=%d)"
                                 % (nominal, row))
         defocus(probe, "o2_probe_r%d" % nominal, -240 + 110 * index, 420)
-        if nominal in O_PIN_PROBE_AROUND:
-            defocus(probe, "o2b_probe_r%d_k64" % nominal,
-                    -240 + 110 * index, 520, settings.derive(k=64))
+        if nominal == 8:
+            defocus(probe, "o2_probe_r8_k64", -240 + 110 * index, 540,
+                    settings.derive(k=64))
 
     rig = deepMerge([oCard(*card) for card in O_CARDS] + [groundPlane()])
     rig.setXYpos(400, 0)
@@ -1050,7 +1063,18 @@ def buildSceneO(settings):
     difference.setName("o5_diff")
     difference.setXYpos(460, 360)
     difference["label"].setValue("DeepCDefocus - Bokeh")
-    stickyNote(CHECK_O, 1100, 0)
+
+    for index, fogAlpha in enumerate(MIX_FOG_ALPHAS):
+        mix = mixRig(fogAlpha)
+        mix.setXYpos(1060 + 220 * index, 0)
+        mix["label"].setValue(
+            "mixed stack: opaque z=%.2f + fog z=%.2f a=%g + near z=%.2f"
+            % (MIX_Z, MIX_Z - MIX_DELTA, fogAlpha, MIX_NEAR_Z))
+        tag = "%g" % fogAlpha
+        tag = tag.replace(".", "_")
+        defocus(mix, "o6_node_a%s" % tag, 1060 + 220 * index, 120)
+        bokeh(mix, "o6_bokeh_a%s" % tag, 1060 + 220 * index, 240)
+    stickyNote(CHECK_O, 1100, 400)
 
 
 SCENE_BUILDERS = [

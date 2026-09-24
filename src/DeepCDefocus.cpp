@@ -21,7 +21,7 @@
 //         bucket planes (a pooled BandJob):
 //         fetch band +/- padY source rows -> flattenPixelToSoA
 //      -> holdout fetch (skipped entirely when it cannot matter) -> HoldoutLut
-//      -> scatterBandCPU -> resolveBandCPU (saturate down, then composite)
+//      -> scatterBandCPU -> resolveBandCPU (composite with folded saturation)
 //      -> write the band's DISJOINT region of the shared flat frame
 //      -> BandLedger::completeBand() publishes it (release/acquire) to the
 //         lock-free row-copy path
@@ -1356,8 +1356,8 @@ private:
     //
     //  computeBand() — per CLAIMED band, on whichever render thread claimed
     //  it: fetch band +/- padY source rows -> SoA flatten -> holdout LUT ->
-    //  scatterBandCPU -> saturate + resolveBandCPU -> write the band's
-    //  disjoint region of the shared frame.
+    //  scatterBandCPU -> resolveBandCPU (composite with saturation) -> write
+    //  the band's disjoint region of the shared frame.
     //
     //  Both return false if the cook was aborted or an upstream deepEngine()
     //  failed; the caller then abandons (band -> Dirty, never Done).
@@ -2009,9 +2009,9 @@ private:
                 continue;
             const float z = (k < buckets.bucketCount()) ? buckets.centre(k) : 0.0f;
             emit(std::snprintf(line, sizeof(line),
-                 "  k=%d zCentre=%.9g C_k raw=%.9g clamped=%.9g A_k raw=%.9g sat=%.9g "
-                 "D_k=%.9g colour raw=%s sat=%s%s\n",
-                 k, z, p.cRaw, m.cov, p.aRaw, p.aSat, p.dRaw,
+                 "  k=%d zCentre=%.9g C_k raw=%.9g clamped=%.9g A_k raw=%.9g clamped=%.9g "
+                 "satScale=%.9g u=%.9g D_k=%.9g colour raw=%s scaled=%s%s\n",
+                 k, z, p.cRaw, m.cov, p.aRaw, p.aSat, m.satScale, m.u, p.dRaw,
                  colours(p.colorRaw).c_str(), colours(p.colorSat).c_str(),
                  m.visited ? "" : (t.stopBucket >= 0 && k > t.stopBucket
                                        ? " [after early-out]" : " [skipped]")));
@@ -2062,7 +2062,7 @@ private:
     //     -> flattenPixelToSoA
     //   (only if it can matter) fetch the band's own rows of holdout
     //     -> HoldoutSampleSoA -> HoldoutLut at the FRAME-GLOBAL boundary set
-    //   scatterBandCPU -> resolveBandCPU (saturate + composite)
+    //   scatterBandCPU -> resolveBandCPU (composite with saturation)
     //   write the band's disjoint region of the frame
     //
     // Returns false on abort / upstream failure; the caller then abandons the
