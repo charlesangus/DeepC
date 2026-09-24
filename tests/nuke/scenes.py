@@ -1766,36 +1766,10 @@ def sceneG(settings):
     #                                           K=16 2.883e-02 -> 2.980e-07
     #                                           K=64 3.576e-07 -> 1.192e-07
     #
-    # A SECOND FIX LANDED LATER, folding the in-place saturation pass into the
-    # composite so a saturated two-area bucket splits its RAW alpha over its
-    # CLAMPED areas instead of splitting an already-clamped alpha over an
-    # unclamped area sum.  Same scene, same rig, re-pinned to the analytic
-    # term-count bound below rather than to a reading:
-    #
-    #   g1  K=8  3.502e-07 -> 3.193e-09     g2  K=8  3.707e-05 -> 1.788e-07
-    #       K=16 3.033e-08 -> 1.384e-08         K=16 2.086e-06 -> 1.788e-07
-    #       K=64 2.714e-08 -> 2.714e-08     g3  K=8  3.713e-05 -> 5.960e-08
-    #                                           K=16 2.086e-06 -> 1.192e-07
-    #                                           K=64 1.788e-07 -> 1.788e-07
-    #
-    # (m3a, the same ramp in scene (m), K=16 fixed: alpha |a-1| 2.086e-06 ->
-    # 1.192e-07; its colour ratio arm reads the same worst pixel, 3.338e-06,
-    # under both builds -- that pixel sits off the rows the fix touches.)
-    #
-    # WHY AN OPAQUE PLANE SHOWED THE ALPHA<1 DEFECT AT ALL, since the fragment
-    # split is a no-op at alpha 1: the in-place saturation pass pulled a
-    # bucket's alpha to exactly 1 BEFORE the composite ran, so the composite
-    # split that already-clamped total over new area C_k and co-located area
-    # D_k as if the pair's UNCLAMPED sum were the claimed area -- `aCov/C_k`
-    # read below the new area's true per-unit opacity whenever the raw deposit
-    # had overshot 1, and the pooled residual under-occluded the rest exactly
-    # as it did at alpha < 1.  Folding saturation into the composite keeps the
-    # raw A_k in hand at the split: `u = clamp(A_raw/(C_k+D_k), 0, 1)` scales
-    # both areas by the SAME factor, so the new area's share of opacity is no
-    # longer stripped by a premature clamp -- what is left on this scene is the
-    # accumulation order's own float rounding, the readings above.  (The K=64
-    # columns barely move under either build because at K=64 few fragments
-    # share a bucket to begin with.)
+    # The bound below is re-pinned to an analytic term count -- float rounding
+    # per accumulation term in the bucket composite -- rather than to a fixed
+    # reading, so it holds independent of the composite's own accumulation
+    # order.
     #
     # They are plain checks again on purpose: an `expectedFailure` that no longer
     # describes a residual is an unbounded licence to fail, and would let a later
@@ -4011,10 +3985,10 @@ def sceneM(settings):
                       "m_ramp_alpha%g%s" % (alpha, "_held" if holdout
                                             else "")), node
 
-    # --- m3a: alpha 1.  Re-pinned to the same analytic bound scene (o) holds
-    # its plane rows to (this ramp is plane-only, same size as scene (g)'s):
-    # a row mean is held to the max per-pixel bound over its own row, a
-    # single pixel to its own.
+    # --- m3a: alpha 1.  Held to the same analytic bound scene (o) holds its
+    # plane rows to (this ramp is plane-only, same size as scene (g)'s): a
+    # row mean is held to the max per-pixel bound over its own row, a single
+    # pixel to its own.
     planeTol = oTolerance(size, ())
     redRatio = sourceRatio(1.0)
     opaque, opaqueNode = rampRender(1.0)
@@ -6012,20 +5986,18 @@ def sceneO(settings):
     checks.append(oCheck(
         "o2bm ring around the r_plane 8 silhouette (18 px) at K=64",
         [(ring8K64[0], ring8K64[1], None)], "1-a", probePopulation,
-        "pre-fix (~/deepc-baselines/M7-T0/plugins) reads clean here too "
+        "on the pre-fix build this reads clean here too "
         "(0 past bound; worst 2.980e-07 at (98,88)) -- K=64's finer "
         "bucketing sidesteps o2b's K=16 dip at this placement.  mutation: "
         "a scratch build halving both the fit/excess transmittance "
         "(`local`) and the residual alpha term (`aRes*tHeadIn`) reads "
-        "2.500e-01 at (99,126), 3312 of 3312 px past bound 2.2e-04 (M7-P3T2 "
-        "evidence)"))
+        "2.500e-01 at (99,126), 3312 of 3312 px past bound 2.2e-04"))
     checks.append(oCheck(
         "o2bmr ...colour:alpha ratio, same ring",
         [(ring8K64[0], ring8K64[2], None)], "|c/a - src|", "same pixels",
         "G/A, B/A vs the source flatten; mutation: dropping satScale on the "
         "fit term's colour (`src[o]` instead of `src[o]*satScale`) reads "
-        "8.647e-02 at (94,129), 720 px past bound 1.9e-06 (M7-P3T2 "
-        "evidence)"))
+        "8.647e-02 at (94,129), 720 px past bound 1.9e-06"))
 
     # ------------------------------------------------------------------
     # o3 / o4: the full rig, complete and sparse.
@@ -6066,20 +6038,19 @@ def sceneO(settings):
         "o3m full rig interior: K=64, K=4, the pair at one depth", [
             ("K=64", rigK64[1], None), ("K=4", rigK4[1], None),
             ("same depth", rigSame[1], None)], "1-a", rigPopulation,
-        "mutation: K=4 and the pair-at-one-depth entries FAIL on "
-        "~/deepc-baselines/M7-T0/plugins at 1.378e-02 / 3.067e-02 (the "
-        "pre-fix saturated-split defect this whole scene guards); K=64's "
-        "finer buckets read clean on that same build (0 past bound) -- a "
-        "scratch mutation halving `local` and `aRes*tHeadIn` together "
-        "moves all three, K=64 to 2.500e-01 (M7-P3T2 evidence)"))
+        "mutation: on the pre-fix build, K=4 and the pair-at-one-depth "
+        "entries FAIL at 1.378e-02 / 3.067e-02 (the pre-fix saturated-split "
+        "defect this whole scene guards); K=64's finer buckets read clean "
+        "on that same build (0 past bound) -- a scratch mutation halving "
+        "`local` and `aRes*tHeadIn` together moves all three, K=64 to "
+        "2.500e-01"))
     checks.append(oCheck(
         "o3mr ...colour:alpha ratio, same three", [
             ("K=64", rigK64[3], None), ("K=4", rigK4[3], None),
             ("same depth", rigSame[3], None)], "|c/a - src|", "same pixels",
         "G/A, B/A vs the source flatten; mutation: dropping satScale on "
         "the fit term's colour moves K=64/K=4/same depth to "
-        "8.647e-02/2.209e-01/2.638e-01 (M7-P3T2 evidence), all clean on "
-        "M7-T0/plugins"))
+        "8.647e-02/2.209e-01/2.638e-01, all clean on the pre-fix build"))
     checks.append(oCheck(
         "o3b full rig, complete deep: the pair's disc overlap", [
             ("K=%d" % O_K, rig[2], None)], "1-a",
@@ -6095,20 +6066,19 @@ def sceneO(settings):
         "o3bm full rig overlap: K=64, K=4, the pair at one depth", [
             ("K=64", rigK64[2], None), ("K=4", rigK4[2], None),
             ("same depth", rigSame[2], None)], "1-a", overlapPopulation,
-        "mutation: the pair-at-one-depth entry FAILs on "
-        "~/deepc-baselines/M7-T0/plugins at 2.385e-03 (the pair pools into "
-        "one bucket there, the same defect o3b guards); K=64 and K=4 both "
-        "read clean on that build over this smaller box -- the same "
-        "scratch mutation as o3m (halving `local` and `aRes*tHeadIn`) "
-        "moves all three, K=64 to 2.473e-01 (M7-P3T2 evidence)"))
+        "mutation: on the pre-fix build the pair-at-one-depth entry FAILs "
+        "at 2.385e-03 (the pair pools into one bucket there, the same "
+        "defect o3b guards); K=64 and K=4 both read clean on that build "
+        "over this smaller box -- the same scratch mutation as o3m "
+        "(halving `local` and `aRes*tHeadIn`) moves all three, K=64 to "
+        "2.473e-01"))
     checks.append(oCheck(
         "o3bmr ...colour:alpha ratio, same three", [
             ("K=64", rigK64[4], None), ("K=4", rigK4[4], None),
             ("same depth", rigSame[4], None)], "|c/a - src|", "same pixels",
         "G/A, B/A vs the source flatten; mutation: dropping satScale on "
         "the fit term's colour moves K=64/K=4/same depth to "
-        "4.608e-02/2.203e-01/1.900e-01 (M7-P3T2 evidence), all clean on "
-        "M7-T0/plugins"))
+        "4.608e-02/2.203e-01/1.900e-01, all clean on the pre-fix build"))
 
     resetScript()
     crop = O_Z_B + 0.01
@@ -6161,19 +6131,17 @@ def sceneO(settings):
         "o4m sparse twin at K=64: interior and overlap", [
             ("interior", sparseK64[1], None),
             ("overlap", sparseK64[2], None)], "1-a", rigPopulation,
-        "mutation: both entries read clean on "
-        "~/deepc-baselines/M7-T0/plugins (K=64's finer buckets sidestep "
-        "the co-located pooling that dips o4/o4b at K=16); the same "
-        "scratch mutation as o3m/o3bm (halving `local` and "
-        "`aRes*tHeadIn`) moves both to 2.500e-01 (M7-P3T2 evidence)"))
+        "mutation: both entries read clean on the pre-fix build (K=64's "
+        "finer buckets sidestep the co-located pooling that dips o4/o4b "
+        "at K=16); the same scratch mutation as o3m/o3bm (halving `local` "
+        "and `aRes*tHeadIn`) moves both to 2.500e-01"))
     checks.append(oCheck(
         "o4mr ...colour:alpha ratio, same two", [
             ("interior", sparseK64[3], None),
             ("overlap", sparseK64[4], None)], "|c/a - src|", "same pixels",
         "G/A, B/A vs the source flatten; mutation: dropping satScale on "
         "the fit term's colour moves interior/overlap to "
-        "8.647e-02/4.554e-02 (M7-P3T2 evidence), both clean on "
-        "M7-T0/plugins"))
+        "8.647e-02/4.554e-02, both clean on the pre-fix build"))
 
     # ------------------------------------------------------------------
     # o5: Bokeh on o3's stack.

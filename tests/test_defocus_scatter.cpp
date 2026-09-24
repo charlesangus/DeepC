@@ -7780,9 +7780,9 @@ TEST_CASE("a saturated two-area bucket keeps its own per-unit opacity: opaque po
 
     SUBCASE("one bucket, C = D = 1, A = 2, opaque colour 2*cbar: alpha 1, colour cbar")
     {
-        // Split from the clamped alpha this reads 0.75: per-unit opacity
-        // 1/(C+D) = 0.5 on the new area, the residual behind it attenuated by
-        // the 0.5 that lets through.
+        // Per-unit opacity is 1/(C+D) = 0.5 on the new area; the residual
+        // behind it is attenuated by the 0.5 that lets through, so the two
+        // areas end up at the same opacity and the pixel reads opaque.
         const float cbar[C] = {0.3f, 0.7f};
         const float cov[1] = {1.0f}, alpha[1] = {2.0f}, colo[1] = {1.0f};
         const float color[C] = {2.0f * cbar[0], 2.0f * cbar[1]};
@@ -7836,31 +7836,33 @@ TEST_CASE("a saturated two-area bucket keeps its own per-unit opacity: opaque po
 TEST_CASE("the saturated two-area split is continuous: no jump at C == 0 and none as "
           "A_raw crosses 1")
 {
-    // Locks in the fix for the split's rule: it reads A_raw off the CLAMPED
-    // areas (cov, colo), not the raw ones, and no longer guards on cov > 0.
     // Both fixtures are hand-built planes, called directly through
-    // compositePixelCoveragePartition(); tolerances are the MEASURED float
-    // diff at ~10x headroom, in units of kUlp = 2^-24 (float unit roundoff).
+    // compositePixelCoveragePartition(). Tolerances are stated term counts,
+    // in units of kUlp = 2^-24 (the float unit roundoff near 1.0), gated
+    // against an independent closed form or physical oracle rather than the
+    // implementation's own output.
     constexpr float kUlp = 0x1p-24f;
 
     SUBCASE("fog-stack: an opaque+fog rear bucket reads alpha 1 as its new area grows "
             "off zero")
     {
-        // Rear bucket: D = 1.99998784, A = 1.14224541 -- the "share-side
-        // arrival identity" fixture's fogOverOpaque planes (an opaque sample
-        // with fog co-located on it).  Front bucket: C = 1, A = 0.2, a thin
-        // layer covering the whole pixel ahead of it.  The old rule guarded
-        // the split on cov > 0 and divided by the RAW areas, so it read alpha
-        // 1 at C == 0 (guard not met, plain-clamp branch) and 0.65-0.66 the
-        // instant C left zero (guard met, raw-area split) -- measured below.
-        // Oracle: the pixel is opaque either way, so alpha is 1 at every C.
+        // Front bucket: C = 1, A = 0.2, a semi-transparent layer (alpha 0.2,
+        // colour cbarFront) covering the whole pixel. Rear bucket: D =
+        // 1.99998784, A = 1.14224541 -- the "share-side arrival identity"
+        // fixture's fogOverOpaque planes (an opaque sample with fog
+        // co-located on it), opaque enough that the pixel reads alpha 1 at
+        // every rear coverage C tried below. Oracle: standard alpha-over of
+        // the front atop an opaque rear gives colour:alpha ratio
+        // frontAlpha*cbarFront + (1 - frontAlpha)*cbarRear, independent of
+        // the rear's own C.
         const int K = 2, C = 1;
         const float cbarFront = 0.3f, cbarRear = 0.8f;
-        const float alpha[2] = {0.2f, 1.14224541f};
+        const float frontAlpha = 0.2f;
+        const float alpha[2] = {frontAlpha, 1.14224541f};
         const float colo[2]  = {0.0f, 1.99998784f};
-        const float color[2] = {0.2f * cbarFront, 1.14224541f * cbarRear};
+        const float color[2] = {frontAlpha * cbarFront, 1.14224541f * cbarRear};
+        const float oracleRatio = frontAlpha * cbarFront + (1.0f - frontAlpha) * cbarRear;
 
-        float baseRatio = 0.0f;
         for (float eps : {0.0f, 1e-7f, 1e-2f, 0.1f}) {
             CAPTURE(eps);
             const float cov[2] = {1.0f, eps};
@@ -7868,26 +7870,39 @@ TEST_CASE("the saturated two-area split is continuous: no jump at C == 0 and non
             compositePixelCoveragePartition(color, alpha, cov, colo, K, C, 1, &oc, &oa, 1.0f);
             CHECK(oa == 1.0f);
 
-            const float ratio = oc / oa;
-            if (eps == 0.0f)
-                baseRatio = ratio;
-            // Measured 1 ulp across all four epsilon; N = 10 is 10x headroom.
-            CHECK(std::fabs(ratio - baseRatio) <= 10.0f * kUlp);
+            // N = 24: kOpsPerBucket for the front bucket's split, plus 2x
+            // kOpsPerBucket for the rear bucket's saturated split, excess
+            // attenuation and residual allocation, that its colour passes
+            // through on the way into the ratio.
+            constexpr float N = 24.0f;
+            CHECK(std::fabs((oc / oa) - oracleRatio) <= N * kUlp);
         }
     }
 
     SUBCASE("A-crossing: a single two-area bucket's alpha does not jump as A_raw "
             "crosses 1")
     {
-        // C = 0.5, D = 2 (clamped to colo = 1).  At A_raw == 1.0 the two-area
-        // branch is not taken (aRaw > 1.0f is false) and the plain residual
-        // split applies; at A_raw == 1.00001 it is, and the new rule's u is
-        // the SAME formula (A_raw over the clamped areas) evaluated either
-        // side of the boundary, so the two sides agree to a handful of ulps.
-        // The old raw-area rule jumped 0.5556 -> 0.4400 here.
+        // C = 0.5, D = 2 (clamped to colo = 1), a single bucket with nothing
+        // ahead of it (freeArea == 1). For that shape the composite's own
+        // arithmetic reduces, term for term, to a closed form:
+        //   u        = clamp(A_raw / (cov + colo), 0, 1)
+        //   accAlpha = cov*u + colo*u*(1 - u)
+        // (fit == cov and local == u because freeArea == 1 >= cov; tHeadIn ==
+        // 1 - u because the residual's only tile is this bucket's own claim,
+        // whose transmittance is 1 - local regardless of how claimA and colo
+        // compare). That closed form is continuous in A_raw across A_raw ==
+        // 1, so gating each side's float result against it independently
+        // establishes continuity without comparing the two sides directly.
         const int K = 1, C = 1;
         const float cov[1]  = {0.5f};
         const float colo[1] = {2.0f};
+        const double covD = 0.5, coloD = 1.0;  // colo clamps to 1 inside the composite
+        const double cbar  = 0.6;
+
+        auto closedAlpha = [&](double aRaw) {
+            const double u = std::min(std::max(aRaw / (covD + coloD), 0.0), 1.0);
+            return covD * u + coloD * u * (1.0 - u);
+        };
 
         float ocLo = -1.0f, oaLo = -1.0f, ocHi = -1.0f, oaHi = -1.0f;
         {
@@ -7902,21 +7917,26 @@ TEST_CASE("the saturated two-area split is continuous: no jump at C == 0 and non
         }
         CAPTURE(oaLo);
         CAPTURE(oaHi);
-        // Measured 18 ulps on alpha, 1 ulp on the ratio; N = 180 / N = 10 are
-        // 10x headroom on each, three orders of magnitude below the old
-        // rule's 0.5556 -> 0.4400 gap.
-        CHECK(std::fabs(oaHi - oaLo) <= 180.0f * kUlp);
-        CHECK(std::fabs((ocHi / oaHi) - (ocLo / oaLo)) <= 10.0f * kUlp);
+
+        // N = 16: the sequential roundings of a single saturated bucket's
+        // split (u, aCov, aRes), fit/local and the head-tile residual
+        // allocation (claimT, tHeadIn) that feed accAlpha and the colour --
+        // twice kOpsPerBucket's per-bucket count above, for the residual
+        // stage a two-area bucket goes through on top of the plain split.
+        constexpr float N = 16.0f;
+        CHECK(std::fabs(oaLo - static_cast<float>(closedAlpha(1.0))) <= N * kUlp);
+        CHECK(std::fabs(oaHi - static_cast<float>(closedAlpha(1.00001))) <= N * kUlp);
+        CHECK(std::fabs((ocLo / oaLo) - static_cast<float>(cbar)) <= N * kUlp);
+        CHECK(std::fabs((ocHi / oaHi) - static_cast<float>(cbar)) <= N * kUlp);
     }
 }
 
 TEST_CASE("the recorded opaque-plane dip pixel reads alpha 1 from its raw planes")
 {
     // The raw planes of one output pixel of the opaque-plane scene, printed
-    // %.9g (which round-trips a float exactly) by the composite probe.  Buckets
-    // 5 and 6 are saturated pools with co-located area; split from their
-    // clamped alpha the pixel read 0.969332159.  Every deposit here is opaque
-    // and the new area alone sums past 1, so the truth is alpha 1.
+    // %.9g (which round-trips a float exactly) by the composite probe. Buckets
+    // 5 and 6 are saturated pools with co-located area. Every deposit here is
+    // opaque and the new area alone sums past 1, so the truth is alpha 1.
     const int K = 16, C = 3;
     std::vector<float> cov(K, 0.0f), alpha(K, 0.0f), colo(K, 0.0f);
     std::vector<float> color(static_cast<std::size_t>(K * C), 0.0f);
@@ -12141,10 +12161,8 @@ TEST_CASE("resolveBandCPU probe: the trace holds the planes and every composite 
             CHECK(m.accAlphaIn == acc);
 
             float aCov, aRes;
-            if (cov > 0.0f && colo > 0.0f && p.aRaw > 1.0f) {
-                const float u = std::min(std::max(p.aRaw / (std::max(p.cRaw, 0.0f)
-                                                             + std::max(p.dRaw, 0.0f)),
-                                                  0.0f), 1.0f);
+            if (colo > 0.0f && p.aRaw > 1.0f) {
+                const float u = std::min(std::max(p.aRaw / (cov + colo), 0.0f), 1.0f);
                 CHECK(m.u == u);
                 aCov = u * cov;
                 aRes = u * colo;

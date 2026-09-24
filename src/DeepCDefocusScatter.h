@@ -2328,18 +2328,16 @@ DEEPC_HD inline std::size_t scatterFragmentSharp(const BucketPlaneView& planes,
 //     shares the bucket with a new-area one, or occupies it alone).  A_raw is
 //     split over the CLAMPED areas — sum then clamp, exactly as saturation
 //     already does per pixel — u = clampf(A_raw / (C_k + D_k), 0, 1),
-//     aCov = u*C_k, aRes = u*D_k, covShare = aCov/1, resShare = aRes/1.
-//     Splitting over the RAW areas instead under-scales: D_raw exceeds 1
-//     whenever co-located layers stack on the same area, so raw C + D is
-//     always >= the clamped sum, and a rule keyed off it reads low — with a
-//     jump at C_k == 0, where it fell back to a plain clamp, and another as
-//     A_raw crosses 1.  Opaque deposits give u == 1, so the new area lands
-//     fully opaque and the residual behind it is occluded by it; colour is
-//     the per-unit colour at the same shares, so the ratio holds.  Per
-//     bucket the alpha added is at most u*(C_k + D_k) <= A_raw.  One residual
-//     ambiguity: the planes cannot tell a mixed-opacity stack from uniform
-//     layers of the same total, so such a stack under a large new area can
-//     read slightly low.
+//     aCov = u*C_k, aRes = u*D_k, covShare = aCov/1, resShare = aRes/1.  D_k
+//     > 0 means co-located layers are stacked on the same area, so D_raw can
+//     exceed 1; splitting over the raw areas instead of the clamped ones
+//     would under-scale u.  Opaque deposits give u == 1, so the new area
+//     lands fully opaque and the residual behind it is occluded by it;
+//     colour is the per-unit colour at the same shares, so the ratio holds.
+//     Per bucket the alpha added is at most u*(C_k + D_k) <= A_raw.  One
+//     residual ambiguity: the planes cannot tell a mixed-opacity stack from
+//     uniform layers of the same total, so such a stack under a large new
+//     area can read slightly low.
 //   * A DEPTH RAMP — many fragments at DIFFERENT depths reaching one
 //     destination pixel, each split across its own bucket pair, kernel weights
 //     summing to 1.  The answer is the surface's own alpha, exactly, at every
@@ -3034,8 +3032,8 @@ DEEPC_HD inline void compositePixelCoveragePartitionImpl(
             continue;
 
         // Every colour read below is `(src[o] * satScale)`, parenthesised so
-        // it rounds exactly as scaling the plane in place would, before any
-        // other factor touches it.
+        // colour is rounded once by satScale before any other factor
+        // touches it.
         const float satScale = saturationScale(aRaw);
 
         [[maybe_unused]] CompositeTraceTerms* tb = nullptr;
@@ -3085,14 +3083,11 @@ DEEPC_HD inline void compositePixelCoveragePartitionImpl(
         float aRes;
         bool  twoAreaSaturated = false;
         if (colo > 0.0f && aRaw > 1.0f) {
-            // SATURATED TWO-AREA BUCKET: split A_raw over the CLAMPED new and
-            // co-located areas (sum then clamp, as saturation already does
-            // per pixel) rather than the raw ones — D_raw exceeds 1 whenever
-            // co-located layers stack on the same area, so dividing by raw
-            // C + D under-scales u.  One residual ambiguity: the planes
-            // cannot tell a mixed-opacity stack from uniform layers at the
-            // same total, so such a stack under a large new area can read
-            // slightly low.
+            // SATURATED TWO-AREA BUCKET: split A_raw over the CLAMPED areas,
+            // not the raw ones — D_k > 0 means co-located layers are stacked
+            // on one area, so D_raw can exceed 1 and under-scale u if used
+            // directly.  See "WHY IT REDUCES CORRECTLY" above for the full
+            // derivation.
             const float u = clampf(aRaw / (cov + colo), 0.0f, 1.0f);
             aCov = u * cov;
             aRes = u * colo;
@@ -3680,7 +3675,6 @@ void scatterBackgroundCPU(const ScatterParams&  params,
 //
 // outColor is `channelCount` planes of `pixelCount` floats
 // (outColor[c*pixelCount + i]); outAlpha is one.  Both are OVERWRITTEN.
-// `planes` is read, not modified.
 //
 // `probe`, when non-null, records a CompositeTrace for each listed pixel that
 // lies inside this band (params.bandX/bandY/bandWidth/bandHeight, absolute

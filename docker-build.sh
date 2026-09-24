@@ -17,7 +17,8 @@ set -euo pipefail
 #   --all                      Build both platforms (default)
 #   --nuke-sdk DIR             Mount a local Nuke SDK into the Linux build
 #                              container instead of relying on NukeDockerBuild's
-#                              installer-based image (Linux only)
+#                              installer-based image (Linux only; requires
+#                              --versions to name exactly one version)
 #   -h, --help                 Show this help
 
 # ---------------------------------------------------------------------------
@@ -66,7 +67,9 @@ OPTIONS:
   --nuke-sdk DIR             Mount DIR as the Linux container's Nuke SDK
                               instead of using NukeDockerBuild's installer-
                               based image (Linux only; also settable via the
-                              DEEPC_NUKE_SDK env var, --nuke-sdk wins)
+                              DEEPC_NUKE_SDK env var, --nuke-sdk wins).
+                              Requires --versions to name exactly one
+                              version, since DIR is mounted for all of them.
   -h, --help                 Show this help and exit
 
 OUTPUT:
@@ -101,6 +104,11 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --nuke-sdk)
+            if [[ $# -lt 2 ]]; then
+                echo "ERROR: --nuke-sdk requires a directory argument." >&2
+                echo "Run 'docker-build.sh --help' for usage." >&2
+                exit 1
+            fi
             NUKE_SDK_HOST_DIR="$2"
             shift 2
             ;;
@@ -145,6 +153,13 @@ if [[ -n "${NUKE_SDK_HOST_DIR}" ]]; then
         echo "ERROR: --nuke-sdk directory does not exist: ${NUKE_SDK_HOST_DIR}" >&2
         exit 1
     fi
+    if [[ "${#NUKE_VERSIONS[@]}" -ne 1 ]]; then
+        echo "ERROR: --nuke-sdk / DEEPC_NUKE_SDK mounts a single SDK, so it only" \
+             "makes sense for one Nuke version. Pass exactly one with" \
+             "--versions (e.g. --versions 16.0), not the default of ${#NUKE_VERSIONS[@]}." >&2
+        exit 1
+    fi
+    NUKE_SDK_HOST_DIR="$(cd "${NUKE_SDK_HOST_DIR}" && pwd)"
 fi
 
 # ---------------------------------------------------------------------------

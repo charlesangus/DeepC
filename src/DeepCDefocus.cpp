@@ -1356,8 +1356,8 @@ private:
     //
     //  computeBand() — per CLAIMED band, on whichever render thread claimed
     //  it: fetch band +/- padY source rows -> SoA flatten -> holdout LUT ->
-    //  scatterBandCPU -> resolveBandCPU (composite with saturation) -> write the band's
-    //  disjoint region of the shared frame.
+    //  scatterBandCPU -> resolveBandCPU (composite with saturation) -> write
+    //  the band's disjoint region of the shared frame.
     //
     //  Both return false if the cook was aborted or an upstream deepEngine()
     //  failed; the caller then abandons (band -> Dirty, never Done).
