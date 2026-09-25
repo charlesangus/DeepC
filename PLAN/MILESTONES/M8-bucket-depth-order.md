@@ -303,7 +303,7 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   - size: S
   - depends: M8.P2.T2
 
-- [ ] M8.P2.T3 — Flatten, sort, scatter, resolve: the streaming pipeline replaces the bucket composite, with doctests
+- [x] M8.P2.T3 — Flatten, sort, scatter, resolve: the streaming pipeline replaces the bucket composite, with doctests
   - files: `src/DeepCDefocusScatter.cpp`, `src/DeepCDefocusScatter.h`, `tests/test_defocus_scatter.cpp`
   - approach: read DESIGN §1, §3, §5, §6 (pre-merge and `checkCompositionContract`), §7 and §8 first. The SoA drops
     the six bucket fields (41 B/fragment at C = 3). Flatten: tidy + sort unchanged; points are one fragment; spans
@@ -600,3 +600,24 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   20 implementer attempts and Claude Code stopped the PM's own attempt for critical memory. The change is data plumbing
   of a per-frame value, so f1/f2 bit-identity is expected but **unmeasured**; P2.T4's determinism runs and P2.T6's
   full a–o cover it. The shim include in Scatter.h remains only for `assignBucket` (P2.T3 deletes it).
+- 2026-09-25 — **M8.P2.T3 done (code `6d83f25`).** `sortFragmentsByDepth` (stable LSD radix), `checkStreamOrder`,
+  `scatterStreamCPU` (bracket rows blended into one scratch row before the rule), `resolveStreamCPU`, `sameLensPatch`
+  collision key; flatten takes no `DepthBuckets`, cuts spans with `volumetricPieceBounds`, pre-merge keyed on radius
+  tolerance + holdout bracket, every merged run composited once back to front. Deleted: `scatterBandCPU`,
+  `resolveBandCPU`, `compositePixelCoveragePartition*`, `BucketPlanes`, the head-tile/frontier/claim machinery and
+  `DeepCDefocusBucketShim.h` with every call site. `DepthBuckets` survives only as the holdout source
+  (`Math.h`, `computeDepthRange`'s `sanitizeDepth`). SoA 37 B/fragment (the brief's 41 included the dropped
+  previous-radius field). Doctests math 21/21; scatter 129 → 101 + 1 skipped bench (≈50 bucket-composite cases deleted,
+  the rest adapted); all seven verify items mutation-tested and caught (`~/deepc-validation/M8-P2T3/mutations.log`).
+  Bench (4096×64 band, 20 spp, 1.33 M fragments, 22.5 M deposits): flatten 1825 ms, sort 71 ms, deposit 2736 ms.
+  Harness a/c/d all PASS: a1/a3 → 0 (bit-exact), a4 0 → 1.192e-7 (gate 2e-7, the bracket-split case DESIGN §4
+  predicts), c1 → 0, c2b/c3/c4 improved, d unchanged. Decisions: all-sharp spans are one piece (else size-0 parity
+  breaks); chromatic channel groups deposit at group 0's radius through one alpha state (documented in code).
+  **Flagged for a consultant:** verify item 3 (full-coverage volumetric parent) cannot hold at pure term count — when
+  pieces are < 1 px CoC apart the jump rotation never fires and a layer can exhaust the older chunk one deposit early
+  in float, leaving ≤ one kernel peak weight read pooled by the next layer: 1.96e-4 at K=8, 3.26e-4 at K=16/64 at
+  α 0.8; the test pins alpha at term count plus an analytic bound from the LUT (Σ a_{k+1}·w_max,k·T_{k−1}·a_k below
+  the jump threshold), colour:alpha at pure term count. Also flagged: pre-existing `1/255` figures in
+  `test_defocus_scatter.cpp` (~4736–4748, ~7614–7635) contradict the 2026-09-18 no-8-bit rule. Left for P2.T4:
+  tooltips, the probe stream printout, the budget doc/`kSoAResidentBytesPerFragment`/sort scratch, holdout set from
+  `FrameDepthRange`, determinism, profile, vectorisation check.

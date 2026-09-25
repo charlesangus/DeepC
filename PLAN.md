@@ -1,8 +1,8 @@
 ---
 title: DeepCDefocus — deep-input, flat-output defocus node
 status: running
-current: M8.P2.T3
-pm_heartbeat: 2026-09-25T03:50:05-04:00
+current: M8.P2.T4
+pm_heartbeat: 2026-09-25T04:14:31-04:00
 ship: pr-per-milestone
 ---
 
