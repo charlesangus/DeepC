@@ -1,8 +1,8 @@
 ---
 title: DeepCDefocus — deep-input, flat-output defocus node
 status: running
-current: M8.P1.T3
-pm_heartbeat: 2026-09-24T21:10:03-04:00
+current: M8.P2.T7
+pm_heartbeat: 2026-09-24T23:17:57-04:00
 ship: pr-per-milestone
 ---
 
@@ -131,6 +131,15 @@ Bokeh/pgBokeh don't exhibit; it runs before M2 because it rewrites the kernel st
 > must all be freshness-checked against a node with no `DepthBuckets` before they start.
 
 # Open questions
+
+- **2026-09-24 (M8.P1.T3, Q2 — tolerance class against the thin-lens reference; still open):** Q1 and Q3
+  are ruled (reference is the oracle; nested footprints → M9). Q2 asks which tolerance class o6c/o6d use
+  against the Monte Carlo reference: (i) a derived bound (calibration rim residual + Monte Carlo error at
+  k σ, an explicit exception to the term-count rule); (ii) an analytic double-precision axis-aligned-card
+  reference, rim excluded, at `N·2⁻²⁴`; or (iii) report-only, o6c stays XFAIL with the reference's verdict
+  in its note. The user asked for more information before ruling; P2.T7's prototype readings against the
+  reference (whole-map |ΔG/A| per cell) are the information the PM will bring back. P2.T5 and Phase 8.3
+  wait on this.
 
 - **2026-09-11 (found by M5.P3.T1, pre-existing, not the fill's):** a 0.5-alpha holdout placed *in
   front of* a two-layer deep stack renders alpha 1.0 / R/A 0.50 inside the silhouette, where stock
