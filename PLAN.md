@@ -126,7 +126,9 @@ Bokeh/pgBokeh don't exhibit; it runs before M2 because it rewrites the kernel st
 > on a slanted plane with objects in front, where Bokeh reads exactly 1; M6 diagnoses, M7 fixes — M7 is a stub
 > ruled local by M6.P2.T2). Then M2, whose kernel-field node builds on the blended kernel step M4 left in
 > place — freshness-check its briefs against `scatterKernelBin`'s blended key first, and against whatever M7
-> changes in the composite.
+> changes in the composite. **M8 was redirected on 2026-09-24** (per-tile buckets rejected for seams): it
+> now replaces the K bucket planes with a depth-ordered streaming composite (M8.P2.T7), so M2, M3 and M9
+> must all be freshness-checked against a node with no `DepthBuckets` before they start.
 
 # Open questions
 

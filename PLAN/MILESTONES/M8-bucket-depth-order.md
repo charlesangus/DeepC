@@ -8,10 +8,12 @@ subdirectory):
 - **(1) A near surface and the surface it hides share one depth bucket.** At K=4 they share it
   outright. At K=16/64 they share it through the near card's fractional depth-split share. The
   bucket's alpha is summed and saturated as one, so the two surfaces mix by alpha (0.89 : 1.0) instead
-  of in depth order. This is a node defect. The fix is recommended and was accepted by the user:
-  per-tile adaptive bucket boundaries. It keeps the additive planes and the atomic splat. (Rejected:
-  per-fragment order within a bucket. Fallback: per-bucket depth-moment planes, at roughly 2× plane
-  memory.)
+  of in depth order. This is a node defect. **The fix is the depth-ordered streaming composite
+  designed in P2.T7** (2026-09-24): the band's fragments are sorted by depth and composited per pixel
+  as they arrive, so buckets, and everything that quantises depth, go away. Two earlier candidates are
+  rejected and closed: per-tile adaptive bucket boundaries (P2.T1's design; rejected by the user for its
+  tile-aligned seams) and per-bucket depth-moment planes (rejected for their two-depths-per-bucket
+  limit). See `## Decisions`.
 - **(2) Weighting on a defocused silhouette.** The node weights the stack by thin-lens disc coverage
   (0.52 half a pixel inside the edge), where Bokeh reads 0.84. Nobody has decided which is right. The
   user asked for an independent reference render before choosing.
@@ -227,11 +229,17 @@ at the pixel centre. CoC is `64·|1 − 10/z|`: near card 17.01 px, stack 14.05 
   - size: S
   - depends: M8.P1.T2
 
-## Phase 8.2: Mechanism (1) — per-tile adaptive depth buckets
+## Phase 8.2: Mechanism (1) — the depth-ordered streaming composite
 
-Design and implementation (T1–T4) run in parallel with P1.T2/T3. **Acceptance (T5) uses the oracle
-P1.T3 picks** (user ruling 2026-09-24). The **layer-ordered partition** (single-layer node renders
-composed in true depth order) stays as a prototype sanity bar and a candidate secondary row.
+> **Redirected 2026-09-24.** P2.T1 designed per-tile depth tables; the user rejected that design (tile
+> seams) and the moment-plane fallback (two depths per bucket). **P2.T7 is the replacement design task
+> and runs first.** P2.T2–T6 below were written for the per-tile design and are **void as written**:
+> the PM rewrites each in place from P2.T7's note (IDs kept, new tasks appended) before starting any of
+> them. Their `files`/`approach` lines are the per-tile ones and must not be executed.
+
+Design and implementation run in parallel with P1.T3. **Acceptance (T5) uses the oracle P1.T3 picks**
+(user ruling 2026-09-24: the thin-lens reference). The **layer-ordered partition** (single-layer node
+renders composed in true depth order) stays as a prototype sanity bar and a candidate secondary row.
 
 - [x] M8.P2.T1 — Design and derivation: per-tile depth tables, the gap-aware split, and a go/no-go
   - files: design note `~/deepc-validation/M8-P2T1/DESIGN.md` plus scratch prototype patches (never
@@ -312,7 +320,7 @@ composed in true depth order) stays as a prototype sanity bar and a candidate se
     `nvcc`-cleanliness grep (no `std::` / heap / host calls in the `DEEPC_HD` lookups); the scatter
     doctests are still 121/121 (no caller changed yet).
   - size: M
-  - depends: M8.P2.T1
+  - depends: M8.P2.T7 (brief void until rewritten from its note)
 
 - [ ] M8.P2.T3 — Feed per-tile tables through flatten and scatter, with scatter doctests against the layer-ordered oracle
   - files: `src/DeepCDefocusScatter.h`, `src/DeepCDefocusScatter.cpp` (`flattenPixelToSoA` /
@@ -442,6 +450,101 @@ composed in true depth order) stays as a prototype sanity bar and a candidate se
   - size: M
   - depends: M8.P2.T5
 
+- [ ] M8.P2.T7 — Design and derivation v2: the depth-ordered streaming composite (no buckets), with a go/no-go prototype
+  - files: design note `~/deepc-validation/M8-P2T7/DESIGN.md` plus scratch prototype patches (never
+    committed). The PM copies the decision into `## Decisions` and rewrites P2.T2–T6 in place from
+    the note (IDs kept, new tasks appended) before any of them starts.
+  - approach: a consultant reads the M1 design reference's compositing sections, the scatter header's
+    "THE BUCKET COMPOSITE", "THE HEAD TRANSMITTANCE" and `compositePixelCoveragePartition`,
+    `flattenPixelToSoA`, `scatterBandCPU` / `scatterFragmentSpans`, `resolveBandCPU`, the holdout LUT
+    (`HoldoutSoA`, `makeUniformHoldoutBoundaries`), the fill's `stagedRadiusPx` / `deepestSurface`,
+    and P2.T1's note (`~/deepc-validation/M8-P2T1/DESIGN.md`, §1 and §4 only: what the flatten depends
+    on, and the other users of the bucket table). Then they derive and prototype **this design**:
+    1. **The stream.** Per band, after the flatten, sort the fragment SoA by a total order
+       (composite depth, then source pixel index, then sample index) with an O(N) radix sort on the
+       float's ordered bit pattern. Scatter in that order. Concurrency is already one band per thread
+       and never inside a band, so nothing about the threading model changes.
+    2. **Per-pixel running state instead of K bucket planes.** The composite's own rule, applied per
+       fragment as it arrives rather than per bucket at resolve: state per destination pixel is free
+       area `F` (starts 1), the area-weighted mean transmittance of the claimed share `T`, accumulated
+       alpha `A`, accumulated colour `C[c]`, and the unchanged K-independent `arrival`. Per deposit of
+       kernel weight `w` (holdout `vis` already folded in, as today), alpha `α`, colour `c`:
+       `fit = min(w, F)`, `ex = w − fit`, `A += α·(fit + ex·T)`, `C += (fit + ex·T)·c`, `F −= fit`,
+       and `T` is the area-weighted merge of the old claimed share (attenuated by `ex·α` spread over
+       it) with the newly claimed `fit` at transmittance `1 − α`. Derive the exact update, and whether
+       storing `T·(1−F)` removes the division. Memory drops from `K·(C+3)` planes to `(C+3)`.
+    3. **What this deletes**, each with a proof or measurement that nothing it did is lost:
+       `DepthBuckets` and the frame depth-range histogram, `bucketOf`'s fractional two-bucket split
+       and the transmittance-form alpha split, saturation at read, the new-area/co-located planes and
+       the head-tile stack, `splitSpanAtBoundaries` (a span is instead cut into pieces of bounded
+       ΔCoC, see item 5), the resolve walk, and the `depth_layers` knob's role in colour (item 6).
+    4. **Identities that must hold, proved on the rule and then measured end to end:** size-0 parity
+       with `DeepToImage` (at size 0 only the pixel's own fragments reach it, in depth order: the first
+       fits, then `F = 0` and every later one is pure `over`, so parity is exact by construction);
+       a flat opaque field or receding opaque plane sums to exactly 1 (`Σ fit = min(Σ w, 1)`); two
+       full-coverage 50% fog layers read 0.75; the holdout law (`vis` multiplied in per deposit, an
+       opaque fragment is one deposit, so no `2·vis − vis²`); an isolated defocused opaque edge reads
+       its coverage exactly (no split, so no split inflation); a fragment's colour:alpha ratio is
+       preserved on every path. State plainly which of today's composite failure modes (harness
+       f3c/f3d's pooled per-unit opacity, scene (g)'s g4/g5 banding) the exact ordering closes.
+    5. **Volumetric parents.** Cut each span into pieces of bounded ΔCoC (derive the step; start from
+       `merge_tolerance`), each an independent fragment at its own depth carrying its transmittance
+       share. Decide the co-location rule for a parent's own pieces from lens geometry: at destination
+       distance `d`, two pieces at radii `c1`, `c2` from one source pixel hit lens patches offset by
+       `d·|1/c1 − 1/c2|` against a patch width of about `1/c`, so they are nested only near `d = 0`
+       and disjoint at the rim. Choose between (i) independent pieces under the fit/excess rule, and
+       (ii) an exact per-deposit overlap fraction `κ(d)` for the same parent. Justify with a
+       volumetric rig in the thin-lens reference (which today treats a sample at one depth and must
+       be extended for spans) and with scene (f).
+    6. **Other users of the bucket table.** Holdout: keep `HoldoutBoundaries` frame-global and
+       uniform in z; give it its own count (the `depth_layers` knob may become exactly that, or a
+       fixed count; state the choice and its memory). Pre-merge: drop `containingBucket` from the
+       merge key, keep the kernel-bin and holdout-bracket gates, and show the merge is still lossless.
+       Fill: re-derive `stagedRadiusPx` without buckets (the deepest surface's radius from its own
+       depth range). Probe: print the pixel's deposit stream in order (depth, w, α, fit/excess) — this
+       is richer than today's bucket trace. `checkCompositionContract`: rewrite for the new SoA
+       (sorted, one deposit per fragment).
+    7. **Determinism.** The order is total, so each pixel's accumulation sequence is the same
+       sub-sequence under any band plan or thread count; state why, and measure 0 ulps across
+       `memory_limit` and `--threads 1` vs `2`. `planBands` is free to pick any band height again.
+    8. **Cost.** The deposit loop stays a plain elementwise row span with no cross-iteration
+       dependency (auto-vectorisable, no hand-written SIMD): about 15 flops and one division per
+       pixel against today's two deposits × (C+3) FMAs, reading and writing about half as many plane
+       rows, with no K-plane zero per band and no resolve walk. Added: the radix sort. Measure on the
+       profile rig against M8-T0, interleaved as M7.P4.T1 did. The bar is M7's: within noise, or the
+       cost stated for the user.
+    9. **CUDA seam (M3).** Per-pixel updates are order-dependent, so a device build parallelises over
+       destination tiles with per-tile depth-sorted fragment lists, not over fragments with atomics.
+       The `DEEPC_HD` per-deposit body stays a pure function of (state, deposit). State the impact on
+       M3's brief in one paragraph; M3 is not redesigned here.
+    10. **What it does not fix, said plainly.** Correlated occlusion across source pixels (M9's nested
+       footprints) is a lens-space, not depth-order, effect; the scalar area model keeps it. Note
+       whether per-pixel streaming state is a better host for a later lens-space refinement than
+       bucket planes were.
+    11. **Prototype.** A scratch patch on the M8-T0 tree. Readings: o6 at all six K × fog cells (K
+       must now be irrelevant to colour: the cells must agree with each other to rounding) at the five
+       `vals.log` pixels against the thin-lens reference (`~/deepc-validation/M8-P1T2/REPORT.md`) and
+       the layer-ordered values; scene (a) size-0 parity; scene (g) g1–g5; scene (f) f1–f3; the
+       determinism pair; the profile.
+
+    **Alternatives already rejected, not to be re-proposed:** per-tile tables (seams), depth-moment
+    planes (two depths per bucket), per-destination-pixel fragment lists (M1's memory bound stands),
+    gather (pays for every source pixel inside `max_radius` whether or not its disc reaches the
+    destination; an order of magnitude over the scatter's deposit count).
+
+    **Go/no-go:** go if items 4 and 7 hold and item 8 is within noise or a stated cost. If the
+    identities in item 4 cannot all be met, the note says which one fails and why, and the PM takes
+    that to the user before any implementation task is rewritten.
+  - verify: `DESIGN.md` gives a derivation for each of items 1–10 and the readings of item 11. The
+    prototype's o6 readings at the four mechanism-(1) pixels are within 1e-3 of the layer-ordered
+    values and its whole-map |ΔG/A| against the reference over `MIX_BOX` is stated per cell beside
+    M8-T0's (`REPORT.md` "Whole-map summary": node16 max 0.0934 / mean 0.0396 at fog 0.2). Scene (a) is
+    bit-exact to `DeepToImage` at size 0. g1–g3 and f1–f3 sit inside their bounds; g4/g5's readings are
+    stated. Bit-identity across `memory_limit` and threads is shown. The profile Δ is stated. The
+    recommendation is explicit (go, or the failing identity).
+  - size: L
+  - depends: M8.P1.T1
+
 ## Phase 8.3: Mechanism (2) — re-oracle o6c as ruled (stub, finalised after M8.P1.T3)
 
 > The PM rewrites this phase in place from the P1.T3 ruling (IDs kept, new ones appended) before
@@ -530,8 +633,9 @@ composed in true depth order) stays as a prototype sanity bar and a candidate se
 `claude/deep-defocus-node-plan-o0ld83`.
 - **Reference and ruling:** P1.T2's independent thin-lens reference exists with its calibration,
   analytic cross-check and report. The user's P1.T3 ruling is recorded.
-- **Doctests:** both suites green, including the per-tile table and gap-aware split cases and the
-  scatter cases against the layer-ordered partition oracle. Each is mutation-tested.
+- **Doctests:** both suites green, including the depth-ordered stream's cases (the identities of
+  P2.T7 item 4) and the scatter cases against the layer-ordered partition oracle. Each is
+  mutation-tested.
 - **Determinism:** output is bit-identical across `memory_limit` and thread count (o7).
 - **Scene (o):**
   - o6d (node vs the layer-ordered partition of single-layer renders) PASS at term-count bounds on
@@ -550,3 +654,23 @@ composed in true depth order) stays as a prototype sanity bar and a candidate se
 - 2026-09-24 — **M8.P1.T2 done (evidence only)**, `~/deepc-validation/M8-P1T2/REPORT.md`. Standalone thin-lens reference (no `src/` include). Calibration passes: node alpha vs the exact analytic value is ≤7e-4 off the rim; rim residual max 8.6e-4 (z=7.90) / 7.3e-4 (z=8.20). Bokeh is off by up to 0.029 (its fStop mapping blurs too wide). Fog-0.2 G/A, reference / node K=16 / Bokeh: (128,128) 0.567/0.559/0.550; (155,128) 0.734/0.741/0.918; (125,130) 0.598/0.575/0.552; (104,104) 0.743/0.722/0.767; (150,150) 0.760/0.764/0.806. c1 silhouette: the reference (0.5226) matches the node (0.523); Bokeh reads 1.0, with no see-around. Verdicts: mech (1) — neither (the fix moves the node toward the reference); mech (2) — the node's silhouette weighting is right; new mech (3), nested footprints — the disjoint partition over-weights the stack by the near card's lens area (+0.105 at (155,128)), so fixing (1) alone moves that pixel away from the reference. Caveats: the reference adds riser walls between plane rows (moves G/A ≤0.012 at two pixels); blur sign is untested (both cards sit in front of focus).
 - 2026-09-24 — **User ruling (M8.P1.T3, partial).** Q1: the **thin-lens reference** is the oracle for o6c-class colour weighting and for the mechanism-(1) gate (P2.T5). Q3: nested footprints (mechanism 3) become a **new milestone, M9** — M8 records them as a known limit and keeps them out of its gate. Q2 (tolerance class against the reference) is **still open**: the user asked for more information before ruling. P1.T3 stays open until Q2 is answered; P2.T5 and Phase 8.3 wait on it.
 - 2026-09-24 — **M8.P2.T1 done (design; evidence `~/deepc-validation/M8-P2T1/DESIGN.md`, `proto-X.patch`).** Recommendation: **X, sparse**. Only the 32 px tiles whose reachable-fragment depth histogram shows a gap get their own table and rerun the table-dependent half of the flatten; every other tile takes today's path, bit-identical to T0. Go on items 3 and 5. Prototype: worst |ΔG/A| vs layer-ordered ≤7.8e-4 at (128,128), (155,128), (125,130) and (150,150), down from 2e-1 at T0. (104,104) fails in every variant: a ground-plane surface between the depths makes layer-ordered invalid there. g1–g5 read identical to T0. Profile +5.6% sparse (all of it in the unoptimised serial histogram pass), +10.6% dense. Brief corrections still to apply to P2.T2–T5: drop Y; split the flatten at the tidy/sort line; pass the frame's holdout boundary set explicitly (`holdoutBracketOf` derives it from `buckets`); ramp-tile bit-identity holds only for sparse; job size must never depend on `memory_limit`, and determinism means 0 ulps across `memory_limit` and 1 vs 2 threads; P2.T2 adds a test that a 0.2 px cluster keeps its own bucket beside a wide one at K=64; o6d excludes pixels like (104,104). **Open for the user:** tile-aligned seams as large as the correction (0.17 G/A at K=4, 0.08 at K=16/64 on o6) wherever a floor-like surface reaches only part of a tile row. Accept them, or go to moment planes?
+- 2026-09-24 — **User ruling: the per-tile design is rejected, and so is the moment-plane fallback.**
+  Given P2.T1's seam table (steps of 0.18 G/A at K=4 and 0.08 at K=16/64 along tile edges, wherever a
+  floor bridges two surfaces across part of a tile row), the user ruled the design "not moving in the
+  right direction" and asked for a replacement with **no seams and no limit on depths per bucket**.
+  Moment planes fail the second test. P2.T1 is closed as a rejected design; its §1 and §4 (what the
+  flatten depends on; the bucket table's other users) remain the reference for the coupling. P2.T2–T6
+  are void as written and are rewritten from P2.T7. Sparse-vs-dense is moot.
+- 2026-09-24 — **Replacement direction: the depth-ordered streaming composite (P2.T7).** Sort each band's
+  fragments by depth and apply the coverage partition's fit/excess rule per fragment on per-pixel
+  running state, deleting buckets outright. Rationale: the per-pixel state is continuous across the
+  frame (no seams by construction), the ordering is exact for any number of surfaces (no depth limit),
+  size-0 `DeepToImage` parity is exact by construction, and it removes the fractional split, the
+  saturation and the head-tile stack that exist only to compensate for bucket pooling. M1 rejected
+  full sorting because holdout visibility made it unnecessary, not because it was infeasible: sorting a
+  band's SoA is a permutation of a list that already exists, not the per-destination fragment lists M1
+  ruled out on memory. Risks carried into P2.T7: the per-deposit arithmetic is roughly three times
+  today's flop count on a memory-bound loop (measured, not assumed, against M8-T0); volumetric parents
+  need a co-location rule derived from lens geometry; M3's CUDA seam becomes tile-parallel with
+  per-tile sorted lists rather than fragment-parallel with atomics. Nested footprints (M9) are not
+  addressed by depth order and stay in M9.
