@@ -1,8 +1,8 @@
 ---
 title: DeepCDefocus — deep-input, flat-output defocus node
-status: running
+status: paused
 current: M8.P2.T4
-pm_heartbeat: 2026-09-25T06:11:05-04:00
+pm_heartbeat: 2026-09-25T06:37:05-04:00
 ship: pr-per-milestone
 ---
 
@@ -133,6 +133,17 @@ Bokeh/pgBokeh don't exhibit; it runs before M2 because it rewrites the kernel st
 > atomics to per-tile depth-sorted lists (see the M8 file's 2026-09-25 decision).
 
 # Open questions
+
+- **2026-09-25 06:40 — RUN PAUSED: host memory starved from outside the container.** Since ~01:30 the host has sat at
+  ~20–21/23 GiB used with swap full while nothing inside the container ran; hostguard's watchdog killed 20 harness
+  attempts, Claude Code stopped the PM's own scene-f run, and four 25-min checks found < 2.5 GiB available. Nothing is
+  wrong with the code. **Resume point:** (1) run the recency-rule fix (brief:
+  `/tmp/claude-1000/-home-bosley-git-DeepC/010d33fa-018c-4f5f-a5eb-7e763ed16196/scratchpad/brief-fix-recency.md`; if the
+  scratchpad is gone, rebuild it from the M8 file's 2026-09-25 consultant-ruling decision — body diff, volumetric test at
+  pure term count, the two `1/255` sites replaced), verify doctests, commit code then plan; (2) then P2.T4, adding to its
+  brief the consultant's vectorisation finding (the deposit loop needs `-fno-trapping-math` on the scatter TU or
+  `#pragma omp simd`, per the board's escalation ladder); (3) then P2.T8 and the rulings above. Code HEAD is `6d83f25`
+  (P2.T2, P2.T9, P2.T3 landed); P2.T9's scene-f byte-identity is still unmeasured.
 
 - **2026-09-25 (M8.P2.T7, two rulings for the user; neither blocks P2.T2–T4):**
   1. **Silhouette band.** With buckets gone, the o6 silhouette carries mechanism (3) — the near card's lens set nested
