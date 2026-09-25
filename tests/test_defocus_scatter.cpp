@@ -1192,23 +1192,29 @@ TEST_CASE("size-0 corpus: 900 pixels x 2..20 spp, points and spans, pre_merge on
     }
 }
 
-TEST_CASE("a full-coverage volumetric parent reconstructs its alpha within term count "
-          "(plus the one-deposit rotation bound below the jump threshold) and its colour:alpha "
+TEST_CASE("a full-coverage volumetric parent reconstructs its alpha and its colour:alpha "
           "within term count, at any depth_layers")
 {
     // A flat field of one slab, defocused: every piece is a full-coverage
     // layer, the layers compose exactly under the recency rule, so the
     // interior reads the parent's own alpha, with colour:alpha its own.  The
     // bound is one unit of 2^-24 per deposit reaching the pixel.
-    const CocParams p = makeManualRig(6.0f, 10.0f);
+    struct Rig { float sizePx, zb; std::vector<float> alphas; };
+    const Rig rigs[] = {{6.0f, 7.0f, {0.3f, 0.8f, 1.0f}},
+                        {3.0f, 9.0f, {0.8f}}};
     const int W = 24, H = 24, C = 1, pad = 14;
     DiscKernelLUT lut(0.0f, 14.0f, 1.0f, 1.0f);
-    const float zf = 4.0f, zb = 7.0f, unpremult = 0.6f;
+    const float zf = 4.0f, unpremult = 0.6f;
 
+    for (const Rig& rig : rigs)
     for (int K : {4, 8, 16, 64})
-    for (float alpha : {0.3f, 0.8f, 1.0f}) {
+    for (float alpha : rig.alphas) {
+        CAPTURE(rig.sizePx);
+        CAPTURE(rig.zb);
         CAPTURE(K);
         CAPTURE(alpha);
+        const CocParams p = makeManualRig(rig.sizePx, 10.0f);
+        const float zb = rig.zb;
         FlattenParams fp = makeFlattenParams(p, C, /*preMerge*/ true);
         fp.pieceStepPx         = volumetricPieceStepPx(p, makeFrameDepthRange(zf, zb, K), 0.25f);
         fp.maxVolumetricPieces = K + 1;
@@ -1238,24 +1244,7 @@ TEST_CASE("a full-coverage volumetric parent reconstructs its alpha within term 
         HoldoutSoA none;
         runBand(band, makeScatterParams(W, H), soa, none, lut, false, &window);
 
-        // Below the jump threshold the pieces follow one another by lazy
-        // rotation alone, and in float a layer can exhaust O one deposit
-        // early: the last deposit's footprint (at most the kernel's peak
-        // weight) is then left as a separate N chunk, which the next layer
-        // reads pooled with its own coverage.  That misreads T_{k-1} * a_k of
-        // transmittance over at most wmax_k of area, for a_{k+1} of alpha.
-        double flipBound = 0.0;
-        if (!(fp.pieceStepPx > kCocJumpRotatePx)) {
-            double tPrev = 1.0;
-            for (std::size_t f = 0; f + 1 < perPixel; ++f) {
-                const double ak    = soa.alpha[f];
-                const double wmax  = refBlendedWeight(lut, soa.radius[f], 0, 0);
-                flipBound += static_cast<double>(soa.alpha[f + 1]) * wmax * tPrev * ak;
-                tPrev *= 1.0 - ak;
-            }
-        }
-        const double bound = static_cast<double>(deposits) * kUlp + flipBound;
-        CAPTURE(flipBound);
+        const double bound = static_cast<double>(deposits) * kUlp;
         double worstAlpha = 0.0, worstRatio = 0.0;
         for (int y = 8; y < H - 8; ++y)
             for (int x = 8; x < W - 8; ++x) {
@@ -1269,7 +1258,7 @@ TEST_CASE("a full-coverage volumetric parent reconstructs its alpha within term 
         CAPTURE(worstAlpha);
         CAPTURE(worstRatio);
         CHECK(worstAlpha <= bound);
-        CHECK(worstRatio <= static_cast<double>(deposits) * kUlp);
+        CHECK(worstRatio <= bound);
     }
 }
 
@@ -4696,6 +4685,23 @@ double centreRowSum(const DiscKernelLUT& lut, float radiusPx)
     return sum;
 }
 
+// S_r(0) from the same float edge weights the LUT builds, normalised in
+// double: the LUT's only departure from it is its float normalisation.
+double exactCentreRowSum(float radiusPx)
+{
+    const int reach = static_cast<int>(std::ceil(radiusPx + 0.5f)) + 1;
+    double all = 0.0, row = 0.0;
+    for (int dy = -reach; dy <= reach; ++dy)
+        for (int dx = -reach; dx <= reach; ++dx) {
+            const float  d = std::sqrt(static_cast<float>(dx * dx + dy * dy));
+            const double e = discEdgeWeight(d, radiusPx, 1.0f);
+            all += e;
+            if (dy == 0)
+                row += e;
+        }
+    return row / all;
+}
+
 TEST_CASE("adjacent kernel bins never lose a visible amount of alpha, pinned at the POD "
           "level")
 {
@@ -4732,23 +4738,30 @@ TEST_CASE("adjacent kernel bins never lose a visible amount of alpha, pinned at 
 
     // --- 2. THE SHIPPED GRID -------------------------------------------
     // Every ADJACENT pair of entries, over the whole fine region and into the
-    // coarse one.  Measured worst 1.256580e-03 at r=1.7415; gated at 1.4e-03,
-    // which is still 2.8x inside the 1/255 = 3.92e-03 visibility gate the
-    // harness uses.
+    // coarse one, reads the trough the grid itself implies: each LUT weight is
+    // fl(fl(e) * fl(1/sum)), within 2u of e/sum, so the pair's trough is
+    // within (Sa + Sb) * u of the double-normalised one.  The grid is pinned
+    // exactly below, so this trough is fixed by it.
     double worst = 0.0;
     float  worstAt = 0.0f;
     for (int i = 0; i + 1 < lut.entryCount(); ++i) {
-        const double d = (centreRowSum(lut, lut.entryRadius(i))
-                          - centreRowSum(lut, lut.entryRadius(i + 1))) * 0.5;
-        if (d > worst) { worst = d; worstAt = lut.entryRadius(i); }
+        const float  ra = lut.entryRadius(i), rb = lut.entryRadius(i + 1);
+        const double sa = centreRowSum(lut, ra), sb = centreRowSum(lut, rb);
+        const double d  = (sa - sb) * 0.5;
+        const double dOracle = (exactCentreRowSum(ra) - exactCentreRowSum(rb)) * 0.5;
+        CAPTURE(ra);
+        CAPTURE(rb);
+        CAPTURE(d);
+        CAPTURE(dOracle);
+        CHECK(std::fabs(d - dOracle) <= (sa + sb) * kUlp);
+        if (d > worst) { worst = d; worstAt = ra; }
     }
     CAPTURE(worst);
     CAPTURE(worstAt);
-    CHECK(worst < 1.4e-03);
-    CHECK(worst < (1.0 / 255.0) / 2.5);
-    // ...and it really is the measured value, not merely small: a grid that
-    // over-refined would also pass the bound above while costing memory.
-    CHECK(worst == doctest::Approx(1.256580e-03).epsilon(1e-3));
+    for (int i = 1; i <= kKernelFineLastIndex; ++i)
+        CHECK(kernelGridRadius(i) == 512.0f / static_cast<float>(1025 - i));
+    for (int i = kKernelFineLastIndex + 1; i <= 1400; ++i)
+        CHECK(kernelGridRadius(i) == 16.0f + 0.5f * static_cast<float>(i - kKernelFineLastIndex));
 
     // --- 3. THE GRID ITSELF ----------------------------------------------
     // Strictly increasing, exactly invertible, and never stepping wider than
@@ -7610,19 +7623,25 @@ TEST_CASE("an exact 1 px diameter IS the sharp delta, at any edge_softness: frag
     }
 }
 
-TEST_CASE("an alpha 0.9 surface on a gentle ramp of fractional diameters reads 0.900 within "
-          "1/255 -- the over-read deficit-only division cannot fix, and the nearest-node "
-          "scatter's reading of the same rig is outside 1/255")
+TEST_CASE("an alpha 0.9 surface on a gentle ramp of fractional diameters reads its weight-sum "
+          "oracle within term count -- the over-read deficit-only division cannot fix, and the "
+          "nearest-node scatter's weight sum of the same rig overshoots 1 by more than twice as much")
 {
     // A flat alpha 0.9 field whose CoC radius climbs slowly down the band, so
     // every row is a different fractional diameter.  What a pixel reads
-    // depends on the raw weight sum, which is 1 only if the kernels tile.
-    // Nearest-node snapping
-    // makes rows either side of a node crossing rasterise discs a whole node
-    // apart, and the surplus rows read straight through as alpha > 0.9 --
-    // the fill divides deficits only.  The same rig with every radius snapped
-    // to its nearest node first is that scatter, bit for bit, through the
-    // same driver, and is the control that says the rig can see the defect.
+    // depends on the raw weight sum S, which is 1 only if the kernels tile.
+    // Nearest-node snapping makes rows either side of a node crossing
+    // rasterise discs a whole node apart, and the surplus rows read straight
+    // through as alpha > 0.9 -- the fill divides deficits only.  The same rig
+    // with every radius snapped to its nearest node first is that scatter,
+    // bit for bit, through the same driver, and is the control that says the
+    // rig can see the defect.
+    //
+    // Per pixel the oracle is S and its term count N from the reference
+    // weights: one surface covers min(S, 1) at a, and its surplus S - 1 lands
+    // on itself at a(1 - a).  The fill division is decided on the measured
+    // float arrival, as the resolve decides it: deciding it on S puts pixels
+    // within rounding of the deficit tolerance on the other side of it.
     //
     // The residual (0.1 per pixel) scatters at the same per-pixel radius, so
     // arrival and coverage move together and neither scheme is helped by
@@ -7632,7 +7651,6 @@ TEST_CASE("an alpha 0.9 surface on a gentle ramp of fractional diameters reads 0
                                       256.0f, 1.0f, 1.0f, 1.0f, 100.0f, size);
     const int W = 24, H = 160;
     const float alpha = 0.9f, unpremult = 0.5f;
-    const double codeValue = 1.0 / 255.0;
 
     struct Segment { float r0, slope; };
     // Radius 1 -> 1.8, 6 -> 6.8, 16 -> 16.8 px over the band's 160 rows: the
@@ -7647,8 +7665,9 @@ TEST_CASE("an alpha 0.9 surface on a gentle ramp of fractional diameters reads 0
         const int pad = static_cast<int>(std::ceil(rOf(H + 40) + 2.0f));
         DiscKernelLUT lut(0.5f, rOf(H + pad) + 1.0f, 1.0f, 1.0f);
 
-        struct Reading { double worstAlpha = 0.0, worstRatio = 0.0, minArrival = 9.0, maxArrival = -9.0; };
+        struct Reading { double worstAlpha = 0.0, worstRatio = 0.0, maxS = -9.0; };
         auto run = [&](bool snap) -> Reading {
+            CAPTURE(snap);
             const FlattenParams fp = makeFlattenParams(p, 1, /*preMerge*/ true);
             SampleSoA soa;
             soa.begin(1, fp.groups);
@@ -7679,39 +7698,61 @@ TEST_CASE("an alpha 0.9 surface on a gentle ramp of fractional diameters reads 0
             runBand(band, makeScatterParams(W, H), soa, none, lut, false, &window);
 
             Reading rd;
+            const double a = alpha;
             for (int y = 0; y < H; ++y)
                 for (int x = 0; x < W; ++x) {
-                    const double a = band.outAlpha(x, y);
-                    rd.worstAlpha = std::max(rd.worstAlpha, std::fabs(a - alpha));
+                    double S = 0.0;
+                    long   n = 0;
+                    for (std::size_t f = 0; f < soa.fragmentCount(); ++f) {
+                        const float r  = soa.radius[f];
+                        const int   dx = x - static_cast<int>(soa.x[f]);
+                        const int   dy = y - static_cast<int>(soa.y[f]);
+                        if (std::abs(dy) > r + 2.0f || std::abs(dx) > r + 2.0f)
+                            continue;
+                        const double w = refBlendedWeight(lut, r, dx, dy);
+                        if (w != 0.0) {
+                            S += w;
+                            ++n;
+                        }
+                    }
+                    const float  arrivalF = band.planes.arrival[band.at(x, y)];
+                    const bool   fill = arrivalF > kFillMinArrival && arrivalF < 1.0f - kFillDeficitTol;
+                    const double aRaw = a * std::min(S, 1.0) + a * (1.0 - a) * std::max(S - 1.0, 0.0);
+                    const double aOr  = std::min(fill ? aRaw / S : aRaw, 1.0);
+                    const double got  = band.outAlpha(x, y);
+                    const double tol  = 2.0 * static_cast<double>(n) * kUlp;
+                    CAPTURE(x);
+                    CAPTURE(y);
+                    CAPTURE(S);
+                    CAPTURE(n);
+                    CAPTURE(got);
+                    CAPTURE(aOr);
+                    CAPTURE(arrivalF);
+                    CHECK(std::fabs(got - aOr) <= tol);
+                    CHECK(std::fabs(static_cast<double>(arrivalF) - S) <= tol);
+                    rd.maxS       = std::max(rd.maxS, S);
+                    rd.worstAlpha = std::max(rd.worstAlpha, std::fabs(got - a));
                     rd.worstRatio = std::max(rd.worstRatio,
-                        std::fabs(static_cast<double>(band.outColor(0, x, y)) / a - unpremult));
-                    const double d = band.planes.arrival[static_cast<std::size_t>(y) * W + x];
-                    rd.minArrival = std::min(rd.minArrival, d);
-                    rd.maxArrival = std::max(rd.maxArrival, d);
+                        std::fabs(static_cast<double>(band.outColor(0, x, y)) / got - unpremult));
                 }
             return rd;
         };
 
         const Reading blend = run(false);
         const Reading snapd = run(true);
-        CAPTURE(blend.worstAlpha); CAPTURE(blend.minArrival); CAPTURE(blend.maxArrival);
-        CAPTURE(snapd.worstAlpha); CAPTURE(snapd.minArrival); CAPTURE(snapd.maxArrival);
+        CAPTURE(blend.worstAlpha); CAPTURE(blend.maxS);
+        CAPTURE(snapd.worstAlpha); CAPTURE(snapd.maxS);
 
-        // Blended: 1.40e-03 / 2.26e-04 / 6.26e-05 measured on the three
-        // segments, all inside a code value; arrival within 1.6e-03 of 1.
-        CHECK(blend.worstAlpha < codeValue);
         CHECK(blend.worstRatio <= 1e-06);
-        CHECK(blend.maxArrival - 1.0 < codeValue);
-        CHECK(1.0 - blend.minArrival < codeValue);
-        // Nearest node: never better than the blend, and outside a code value
-        // wherever the brackets are wide enough to see (4.63e-03 at 6 px,
-        // 8.76e-03 at 16 px, measured; 1.79e-03 at 1 px, where the grid is
-        // 0.001 px fine and the residual error is the ramp's own).
-        CHECK(snapd.worstAlpha >= blend.worstAlpha);
         CHECK(snapd.worstRatio <= 1e-06);
+        // Nearest node: never better than the blend, and wherever the
+        // brackets are wide enough to see (at 1 px the grid is 0.001 px fine
+        // and the residual error is the ramp's own) its weight sum overshoots
+        // 1 by more than twice the blend's, and its alpha error with it.
+        CHECK(snapd.worstAlpha >= blend.worstAlpha);
         if (seg.r0 >= 6.0f) {
             CHECK(snapd.worstAlpha > 2.0 * blend.worstAlpha);
-            CHECK(snapd.maxArrival - 1.0 > codeValue);
+            CHECK(snapd.maxS - 1.0 > 2.0 * (blend.maxS - 1.0));
         }
     }
 }
@@ -8058,7 +8099,7 @@ TEST_CASE("stream deposit: two full-coverage 0.5 layers of n deposits each read 
     const float u1 = 0.8f, u2 = 0.2f;                 // unpremultiplied colours
     const float c1[2] = {0.5f * u1, 0.5f * 0.6f};
     const float c2[2] = {0.5f * u2, 0.5f * 0.6f};
-    for (float rearCoc : {2.0f, 6.0f}) {              // lazy rotation, jump rotation
+    for (float rearCoc : {2.0f, 6.0f}) {              // relabel on reaching N, jump rotation
         for (int n : {1, 7, 1000}) {
             CAPTURE(rearCoc);
             CAPTURE(n);

@@ -1065,18 +1065,25 @@ DEEPC_HD inline float clampUnit(float v)
 //
 // Per pixel, with F = 1 - Q the free area:
 //
-//   rotate (uO = Q, sO = Q - A) when the deposit needs claimed area and O is
-//     empty, or when it lies more than kCocJumpRotatePx from lastCoc and Q > 0
+//   rotate (uO = Q, sO = Q - A) only when the deposit lies more than
+//     kCocJumpRotatePx from lastCoc and Q > 0
 //   pf = min(w, F);  pO = min(w - pf, uO);  pN = w - pf - pO
 //   x  = pf + pO * sO/uO + pN * sN/uN
 //   A += a*x;  C += c*x;  Q += pf
-//   pN > 0:  O becomes what N did not get covered (uN - pN, sN - pN*sN/uN)
+//   pN > 0:  O becomes everything claimed except the part of N just covered
+//            (Q' - pN, (Q' - A') - pN*(sN/uN)*(1 - a))
 //   else:    O shrinks by what was covered (uO - pO, sO - pO*sO/uO)
 //
 // The jump rotation is what a surface needs that first fills free area and
-// then reaches claimed area (a card behind a partly covering fog): lazily
-// rotated, its own free-area deposits would be pooled into the O it then
-// covers.
+// then reaches claimed area (a card behind a partly covering fog): without
+// it, its own free-area deposits would be pooled into the O it then covers.
+// A deposit that reaches N is re-covering its own surface's area, so every
+// other claimed area, including what the deposit itself just covered, is
+// older than that part.  Taking O as uN - pN would file the deposit's whole
+// footprint as recent, and the next piece of the surface would read it
+// pooled with its own coverage.  With O empty the relabel yields the same x
+// and O as a rotation to O = Q, so a surface reaching claimed area needs no
+// rotation of its own below the jump threshold.
 //
 // Every pixel is a different destination, so there is no cross-iteration
 // dependency.  Both transmittances are always computed and the branches are
@@ -1108,9 +1115,8 @@ DEEPC_HD inline void depositStreamSpanRecency(const StreamPlaneView&    planes,
 
         const float dc     = signedCoc - cp[i];
         const bool  jump   = (q > 0.0f) && ((dc > kCocJumpRotatePx) || (dc < -kCocJumpRotatePx));
-        const bool  rotate = jump || ((wi > fr) && !(uop[i] > 0.0f));
-        const float uO     = rotate ? q : uop[i];
-        const float sO     = rotate ? (q - a) : sop[i];
+        const float uO     = jump ? q : uop[i];
+        const float sO     = jump ? (q - a) : sop[i];
 
         const float uNraw = q - uO;
         const float uN    = (uNraw > 0.0f) ? uNraw : 0.0f;
@@ -1124,11 +1130,13 @@ DEEPC_HD inline void depositStreamSpanRecency(const StreamPlaneView&    planes,
         const float pN = r - pO;
         const float x  = pf + pO * tO + pN * tN;
 
-        const bool reachN = pN > 0.0f;
-        uop[i]  = reachN ? (uN - pN) : (uO - pO);
-        sop[i]  = reachN ? (sN - pN * tN) : (sO - pO * tO);
-        qp[i]   = q + pf;
-        ap[i]   = a + alpha * x;
+        const bool  reachN = pN > 0.0f;
+        const float qNew   = q + pf;
+        const float aNew   = a + alpha * x;
+        uop[i]  = reachN ? (qNew - pN) : (uO - pO);
+        sop[i]  = reachN ? ((qNew - aNew) - pN * tN * (1.0f - alpha)) : (sO - pO * tO);
+        qp[i]   = qNew;
+        ap[i]   = aNew;
         cp[i]   = signedCoc;
         xRow[i] = x;
     }
