@@ -1,8 +1,8 @@
 ---
 title: DeepCDefocus — deep-input, flat-output defocus node
 status: running
-current: M8.P2.T7
-pm_heartbeat: 2026-09-25T00:37:06-04:00
+current: M8.P2.T2
+pm_heartbeat: 2026-09-25T01:03:02-04:00
 ship: pr-per-milestone
 ---
 
@@ -128,9 +128,22 @@ Bokeh/pgBokeh don't exhibit; it runs before M2 because it rewrites the kernel st
 > place — freshness-check its briefs against `scatterKernelBin`'s blended key first, and against whatever M7
 > changes in the composite. **M8 was redirected on 2026-09-24** (per-tile buckets rejected for seams): it
 > now replaces the K bucket planes with a depth-ordered streaming composite (M8.P2.T7), so M2, M3 and M9
-> must all be freshness-checked against a node with no `DepthBuckets` before they start.
+> must all be freshness-checked against a node with no `DepthBuckets` before they start. **P2.T7 ruled go on 2026-09-25** (amended
+> two-recency-chunk rule, `~/deepc-validation/M8-P2T7/DESIGN.md`); M3's brief must move from fragment-parallel
+> atomics to per-tile depth-sorted lists (see the M8 file's 2026-09-25 decision).
 
 # Open questions
+
+- **2026-09-25 (M8.P2.T7, two rulings for the user; neither blocks P2.T2–T4):**
+  1. **Silhouette band.** With buckets gone, the o6 silhouette carries mechanism (3) — the near card's lens set nested
+     inside the stack's — undiluted: whole-map max |ΔG/A| vs the reference 0.1148 (T0 K=16 0.0934), mean 0.0368
+     (T0 0.0396). Proposal: an M9 XFAIL with a hard bound derived from the reference's nested-lens-area term. Confirm,
+     or pull M9 forward?
+  2. **Isolated fog volumes over-read at their defocused rim** (+0.148 alpha / +10.9 % on a lone 0.8 fog card, where
+     T0 under-reads −0.125 / −4.3 %): neighbouring pieces of one body nest in lens space, the M9 term inside one
+     object. It moves harness f3h/f3h2 to −23.4 % (T0 f3h2 PASS) and f3i to 1.2e-5 vs its 1e-5 gate. Options: (a)
+     accept as a bounded XFAIL for M9 (P2.T8's volumetric oracle supplies the bound); (b) add a per-parent chain now
+     (P2.T10, +12 B/pixel/slot, size L, DESIGN §5.4). P2.T6 and P2.T8's V1 arm wait on this.
 
 - **2026-09-24 (M8.P1.T3, Q2 — tolerance class against the thin-lens reference; still open):** Q1 and Q3
   are ruled (reference is the oracle; nested footprints → M9). Q2 asks which tolerance class o6c/o6d use
