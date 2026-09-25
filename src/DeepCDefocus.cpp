@@ -500,7 +500,6 @@ class DeepCDefocus : public DD::Image::Iop
     struct FrameShared {
         deepc::FlattenParams                  fp;
         deepc::DepthBuckets                   buckets;
-        deepc::HoldoutBoundaries              holdoutBoundaries;
         std::unique_ptr<deepc::DiscKernelLUT> kernel;
 
         DD::Image::Box       srcBox;
@@ -1301,7 +1300,7 @@ private:
         job->holdout           = _shared.holdoutConnected ? input1() : nullptr;
         job->fp                = &_shared.fp;
         job->buckets           = &_shared.buckets;
-        job->holdoutBoundaries = &_shared.holdoutBoundaries;
+        job->holdoutBoundaries = &_shared.fp.holdoutBoundaries;
         job->kernel            = _shared.kernel.get();
         job->srcBox.set(_shared.srcBox.x(), _shared.srcBox.y(),
                         _shared.srcBox.r(), _shared.srcBox.t());
@@ -1530,7 +1529,10 @@ private:
 
         // FRAME-GLOBAL, never per band: a fragment near a band edge scatters
         // into two bands, and per-band sets put a seam along every boundary.
-        _shared.holdoutBoundaries = deepc::makeUniformHoldoutBoundaries(buckets);
+        // Carried on `fp` itself so the flatten (holdoutBracketOf()) and the
+        // holdout LUT build (below, via job->holdoutBoundaries) read the
+        // identical set — neither re-derives it from `buckets`.
+        fp.holdoutBoundaries = deepc::makeUniformHoldoutBoundaries(buckets);
 
         // The frame's MEASURED radius range. radiusPixels() is monotone away
         // from the focal plane on each side, so the frame's largest radius is

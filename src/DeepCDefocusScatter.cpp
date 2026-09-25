@@ -290,39 +290,27 @@ struct PendingGroup {
 };
 
 // The holdout LUT's bracket index for a depth, or 0 when no holdout is
-// connected (in which case nothing reads it).  The boundary set is
-// makeUniformHoldoutBoundaries()'s — the same one HoldoutLut::build() is
-// handed — cached in the scratch on the three numbers it is derived from, so
-// this cannot end up indexing a different array than the LUT was built at.
-inline int holdoutBracketOf(const FlattenParams& params,
-                            const DepthBuckets&  buckets,
-                            FlattenScratch&      scratch,
-                            float                depth)
+// connected (in which case nothing reads it).  `params.holdoutBoundaries` is
+// the frame's own set, built once in frameSetup() and handed down unchanged —
+// the same one HoldoutLut::build() is handed — so this cannot end up indexing
+// a different array than the LUT was built at.
+inline int holdoutBracketOf(const FlattenParams& params, float depth)
 {
     if (!params.holdoutConnected)
         return 0;
 
-    if (scratch.holdoutRangeCount != buckets.boundaryCount()
-        || scratch.holdoutRangeMin != buckets.depthMin()
-        || scratch.holdoutRangeMax != buckets.depthMax()) {
-        scratch.holdoutBoundaries = makeUniformHoldoutBoundaries(buckets);
-        scratch.holdoutRangeMin   = buckets.depthMin();
-        scratch.holdoutRangeMax   = buckets.depthMax();
-        scratch.holdoutRangeCount = buckets.boundaryCount();
-    }
-    return scratch.holdoutBoundaries.locate(depth).index;
+    return params.holdoutBoundaries.locate(depth).index;
 }
 
 inline void setDepthDerived(const FlattenParams& params,
                             const DepthBuckets&  buckets,
-                            FlattenScratch&      scratch,
                             PendingGroup&        g,
                             float                depth)
 {
     g.depth          = depth;
     g.radius         = radiusPixels(params.coc, depth);
     g.bw             = assignBucket(buckets, g.kind, depth);
-    g.holdoutBracket = holdoutBracketOf(params, buckets, scratch, depth);
+    g.holdoutBracket = holdoutBracketOf(params, depth);
 }
 
 // Do two assignments share a bucket?  Both are closed index ranges of one or
@@ -1053,18 +1041,16 @@ void flattenPixelToSoA(const FlattenParams& params,
             // 0.25px), opaque card at z=50, samples at z=40 and z=62: the merged
             // fragment lands behind the card and the pixel reads alpha
             // 0.000000 against an exact 0.500000 — the unoccluded foreground
-            // erased outright.  Same reasoning, same cache and same cost as the
+            // erased outright.  Same reasoning and same O(1) cost as the
             // collision pass's gate below; free when no holdout is connected.
-            const int headBracket = holdoutBracketOf(params, buckets, scratch,
-                                                     head.depth);
+            const int headBracket = holdoutBracketOf(params, head.depth);
             while (j < staged) {
                 const FlattenScratch::Staged& cand = scratch.staged[j];
                 if (cand.kind != head.kind || cand.bucket != head.bucket)
                     break;
                 if (!(std::fabs(cand.radius - head.radius) <= tol))
                     break;
-                if (holdoutBracketOf(params, buckets, scratch, cand.depth)
-                    != headBracket)
+                if (holdoutBracketOf(params, cand.depth) != headBracket)
                     break;
                 groupHead = groupHead || cand.coverageHead;
                 ++j;
@@ -1109,7 +1095,7 @@ void flattenPixelToSoA(const FlattenParams& params,
         }
         // The pre-merge group's own depth is the union midpoint; the
         // collision pass below never moves it.
-        setDepthDerived(params, buckets, scratch, cand, sampleMidDepth(zf, zb));
+        setDepthDerived(params, buckets, cand, sampleMidDepth(zf, zb));
         i = j;
 
         // --- offer it to the held-back group -------------------------------

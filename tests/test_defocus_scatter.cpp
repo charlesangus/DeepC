@@ -1215,7 +1215,8 @@ TEST_CASE("flattenPixelToSoA reproduces an independent tidy + split + merge refe
 
     // holdoutConnected is swept too: it gates how far BOTH merges may reach in
     // depth, and the reference re-derives the bracket from
-    // makeUniformHoldoutBoundaries() independently of the flatten's cache.
+    // makeUniformHoldoutBoundaries() independently of the params' own set.
+    const HoldoutBoundaries hb = makeUniformHoldoutBoundaries(bk);
     for (bool holdoutConnected : {false, true})
     for (bool preMerge : {false, true}) {
         for (const Fixture& fx : fixtures) {
@@ -1224,7 +1225,8 @@ TEST_CASE("flattenPixelToSoA reproduces an independent tidy + split + merge refe
             CAPTURE(holdoutConnected);
 
             FlattenParams fp = makeFlattenParams(p, C, preMerge);
-            fp.holdoutConnected = holdoutConnected;
+            fp.holdoutConnected  = holdoutConnected;
+            fp.holdoutBoundaries = hb;
             const SampleSoA soa = flattenOnePixel(fp, bk, 11, 23, fx.samples);
             const std::vector<RefFragment> want =
                 refFlatten(p, bk, 11, 23, fx.samples, preMerge, fp.mergeTolerancePx, C,
@@ -5044,53 +5046,56 @@ TEST_CASE("the area claim is per PIXEL and survives a degenerate bucket set")
         }
     }
 
-    SUBCASE("the cached holdout boundary set follows the bucket set it was derived from")
+    SUBCASE("the flatten follows FlattenParams::holdoutBoundaries, not the DepthBuckets it is also handed")
     {
-        // FlattenScratch caches makeUniformHoldoutBoundaries()'s output on the
-        // three numbers it is derived from (range min, range max, boundary
-        // count).  A scratch is reused across cooks and across bucket sets, so a
-        // cache that only ever builds once would keep indexing the FIRST set --
-        // exactly the "a build and a lookup drift onto different arrays"
-        // failure HoldoutSoA's structure exists to make impossible.  Driven by
-        // reusing one scratch across two genuinely different bucket sets and
-        // comparing against a fresh one.
-        const CocParams    p  = makeManualRig(0.0f, 4.0f);
+        // holdoutBracketOf() reads ONLY params.holdoutBoundaries (the frame's
+        // set, built once in frameSetup()) -- it never derives a boundary set
+        // from the DepthBuckets object flattenPixelToSoA() is also given,
+        // which after this decoupling is used for nothing but the ΔCoC bucket
+        // key.  Driven by holding that DepthBuckets argument FIXED across two
+        // calls through one reused scratch and swapping only
+        // FlattenParams::holdoutBoundaries: a holdout path that still read
+        // (or cached off) the buckets argument would answer identically both
+        // times.
+        const CocParams    p   = makeManualRig(0.0f, 4.0f);
         const DepthBuckets bkA = makeBoundedDeltaCocBuckets(p, 1.0f, 100.0f, 16);
         const DepthBuckets bkB = makeBoundedDeltaCocBuckets(p, 1.0f, 8.0f, 4);
+        const HoldoutBoundaries hbA = makeUniformHoldoutBoundaries(bkA);
+        const HoldoutBoundaries hbB = makeUniformHoldoutBoundaries(bkB);
+
         FlattenParams fp = makeFlattenParams(p, 1, /*preMerge*/ false);
         fp.holdoutConnected = true;
 
-        // Under set B these two share bucketOf() index 2 and one (sharp) kernel
-        // but sit in DIFFERENT holdout brackets (1 and 2 of [1,8]/4), so the
-        // merge must not take them.  Under set A's much coarser brackets
-        // ([1,100]/16) they share bracket 0 and WOULD merge — which is exactly
-        // what a cache that never rebuilds would do.
+        // Both share bucketOf() index 2 of bkB and the rig's one (sharp)
+        // kernel, so only the holdout bracket gate can block the merge.
         const std::vector<SampleRecord> pixel{
             makeSample(3.0f, 3.0f, 0.5f, {0.5f}),
             makeSample(5.0f, 5.0f, 0.5f, {0.5f})};
 
-        // Warm the cache on set A, then flatten set B through the same scratch.
-        SampleSoA reused;
-        reused.begin(1, fp.groups);
         FlattenScratch shared;
-        {
-            std::vector<SampleRecord> v = pixel;
-            SampleSoA throwaway;
-            throwaway.begin(1, fp.groups);
-            flattenPixelToSoA(fp, bkA, 0, 0, v, shared, throwaway, nullptr, nullptr, nullptr);
-        }
-        {
-            std::vector<SampleRecord> v = pixel;
-            flattenPixelToSoA(fp, bkB, 0, 0, v, shared, reused, nullptr, nullptr, nullptr);
-        }
 
-        const SampleSoA fresh = flattenOnePixel(fp, bkB, 0, 0, pixel);
-        REQUIRE(reused.fragmentCount() == fresh.fragmentCount());
-        for (std::size_t i = 0; i < fresh.fragmentCount(); ++i) {
-            CHECK(reused.depth[i] == fresh.depth[i]);
-            CHECK(reused.alpha[i] == fresh.alpha[i]);
-            CHECK(reused.bucketIndex0[i] == fresh.bucketIndex0[i]);
+        // hbA's brackets are coarse enough ([1,100]/16) that z=3 and z=5
+        // share bracket 0: the merge takes them, one fragment.
+        fp.holdoutBoundaries = hbA;
+        SampleSoA coarse;
+        coarse.begin(1, fp.groups);
+        {
+            std::vector<SampleRecord> v = pixel;
+            flattenPixelToSoA(fp, bkB, 0, 0, v, shared, coarse, nullptr, nullptr, nullptr);
         }
+        CHECK(coarse.fragmentCount() == 1u);
+
+        // Same bkB, same reused scratch -- only holdoutBoundaries changes.
+        // hbB's brackets are fine enough ([1,8]/4) that z=3 and z=5 fall in
+        // DIFFERENT brackets (1 and 2): the merge must not take them.
+        fp.holdoutBoundaries = hbB;
+        SampleSoA fine;
+        fine.begin(1, fp.groups);
+        {
+            std::vector<SampleRecord> v = pixel;
+            flattenPixelToSoA(fp, bkB, 0, 0, v, shared, fine, nullptr, nullptr, nullptr);
+        }
+        CHECK(fine.fragmentCount() == 2u);
     }
 
     SUBCASE("the stamp epoch wrapping does not turn every bucket into a stale claim")
@@ -5229,7 +5234,8 @@ TEST_CASE("size-0 flatten is a DeepToImage `over` for MIXED point+volumetric con
         const CocParams    p  = makeManualRig(0.0f, 10.0f);
         const DepthBuckets bk = makeBoundedDeltaCocBuckets(p, 1.0f, 100.0f, K);
         FlattenParams fp = makeFlattenParams(p, C, preMerge);
-        fp.holdoutConnected = holdout;
+        fp.holdoutConnected  = holdout;
+        fp.holdoutBoundaries = makeUniformHoldoutBoundaries(bk);
 
         Lcg rng(0x7131u + static_cast<std::uint32_t>(K * 131 + spp * 7
                                                      + (preMerge ? 1 : 0)
@@ -5322,7 +5328,8 @@ TEST_CASE("with a holdout connected, two sharp samples IN FRONT of a card read t
     for (bool holdout : {false, true}) {
         CAPTURE(holdout);
         FlattenParams fp = makeFlattenParams(p, 1, /*preMerge*/ true);
-        fp.holdoutConnected = holdout;
+        fp.holdoutConnected  = holdout;
+        fp.holdoutBoundaries = makeUniformHoldoutBoundaries(bk);
 
         float residualT = 1.0f, residualR = 0.0f;
         const SampleSoA soa = flattenOnePixel(fp, bk, 4, 4,
@@ -5370,7 +5377,8 @@ TEST_CASE("the per-bucket attenuation needs no holdout gate: each fragment keeps
     const DepthBuckets bk = makeBoundedDeltaCocBuckets(p, 1.0f, 100.0f, K);
 
     FlattenParams fp = makeFlattenParams(p, 1, /*preMerge*/ true);
-    fp.holdoutConnected = true;
+    fp.holdoutConnected  = true;
+    fp.holdoutBoundaries = makeUniformHoldoutBoundaries(bk);
 
     float residualT = 1.0f, residualR = 0.0f;
     const SampleSoA soa = flattenOnePixel(fp, bk, 4, 4,
@@ -6338,7 +6346,8 @@ TEST_CASE("the collision merge does not carry a fragment across a holdout bracke
     for (bool connected : {false, true}) {
         CAPTURE(connected);
         FlattenParams fp = makeFlattenParams(p, C, /*preMerge*/ false);
-        fp.holdoutConnected = connected;
+        fp.holdoutConnected  = connected;
+        fp.holdoutBoundaries = hb;
 
         SampleSoA soa;
         soa.begin(C, fp.groups);
@@ -6407,7 +6416,8 @@ TEST_CASE("pre_merge does not carry a fragment across a holdout bracket either")
     for (bool preMerge : {false, true}) {
         CAPTURE(preMerge);
         FlattenParams fp = makeFlattenParams(p, C, preMerge);    // 0.25px default
-        fp.holdoutConnected = true;
+        fp.holdoutConnected  = true;
+        fp.holdoutBoundaries = hb;
 
         SampleSoA soa;
         soa.begin(C, fp.groups);

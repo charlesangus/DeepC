@@ -761,6 +761,15 @@ struct FlattenParams {
     // whole group — not a crash or an out-of-range read.
     bool  holdoutConnected   = false;
 
+    // THE FRAME'S HoldoutBoundaries — built once in frameSetup() (uniform in
+    // Z over the measured depth range, count from depth_layers) and handed
+    // down unchanged.  holdoutBracketOf() only reads this; it never derives a
+    // boundary set from a DepthBuckets object, so a caller that flattens two
+    // different bucket sets through the same params still locates against the
+    // one boundary set the frame's holdout LUT was built at.  Default is
+    // inert (count() == 0), matching a frame with no holdout connected.
+    HoldoutBoundaries holdoutBoundaries = {};
+
     int           channelCount = 0;
     ChannelGroups groups       = {};
 };
@@ -892,18 +901,6 @@ struct FlattenScratch {
     // needs a second accumulator; it is never live at the same time as
     // mergeAccum's group is being built.
     std::vector<float>  pendingAccum;
-
-    // The holdout LUT's boundary set, cached across pixels.  Only built (and
-    // only read) when FlattenParams::holdoutConnected is set: the collision
-    // merge may not cross a bracket there.  Cached on the bucket set's own
-    // range + count so it is rebuilt exactly when makeUniformHoldoutBoundaries()
-    // would return something different — the boundary set the LUT is built at
-    // is derived from those three numbers and nothing else, which is what keeps
-    // this copy from drifting onto a different array than HoldoutLut's.
-    HoldoutBoundaries   holdoutBoundaries;
-    float               holdoutRangeMin   = 0.0f;
-    float               holdoutRangeMax   = 0.0f;
-    int                 holdoutRangeCount = 0;
 
     // "Has a new-area claim already been made in this bucket, at this pixel,
     // and by WHICH KERNEL?" — for the collisions the merge above cannot take
