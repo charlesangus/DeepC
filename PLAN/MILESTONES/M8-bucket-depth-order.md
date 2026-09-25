@@ -621,3 +621,26 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   `test_defocus_scatter.cpp` (~4736–4748, ~7614–7635) contradict the 2026-09-18 no-8-bit rule. Left for P2.T4:
   tooltips, the probe stream printout, the budget doc/`kSoAResidentBytesPerFragment`/sort scratch, holdout set from
   `FrameDepthRange`, determinism, profile, vectorisation check.
+- 2026-09-25 — **Consultant ruling on P2.T3's volumetric residual: a flaw in the rule, not rounding; fix the body.**
+  (Scratch evidence `~/deepc-validation/M8-P2T3-consult/`.) At a layer boundary the §2.4 rule is discontinuous in the
+  layer's weight sum S: exactly O's area → 0 error; slightly below → O(ε); slightly above by any amount → a fixed
+  −3.28e-4 (K=16) / −4.29e-4 (K=8, α 0.8), because a deposit that spills into N files its whole footprint as "recent"
+  (`O = uN − pN`) and the next piece, with no CoC jump, re-reads that area pooled instead of tiling it; it cascades to
+  2.9× the peak weight and reaches 177× term count (2.7e-3) on a size-3 / zb-9 / α-0.8 rig. Not f3b's term (a 0.5/0.5
+  flat field reads ≤1.5e-6 either way). Seven candidates measured; **adopted: relabel on reach-N and drop the lazy
+  rotation term** — `uO/sO` rotate on the jump only, and on a deposit that reaches N the state becomes
+  `uO = qNew − pN`, `sO = (qNew − aNew) − pN·tN·(1−α)`. Residual 6.6e-7 / 1.43e-6, continuous (0.27·ε), ≤0.05 of
+  term count over an 85-rig sweep; every P2.T2 identity, band-plan invariance, threading and size-0 parity still hold;
+  receding ramps bit-identical to the current body; selects only, no new state, vectorises as before. Dropping the
+  lazy term is safe because with uO == 0 it produced the same x and O′ as the reach-N path. **Test rulings:** the
+  LUT-derived `flipBound` is not legitimate (assumes one peak weight per boundary where the trace shows 2.9×; passes
+  only because it is loose, 1.1e-3 vs 3.3e-4) — the volumetric test asserts pure `deposits·2⁻²⁴` on alpha and
+  colour:alpha (the unfixed body fails it at α 0.8; add a size-3/zb-9 rig). The two pre-existing `1/255` sites are
+  replaced: adjacent-kernel-bin trough vs a double-normalised oracle from the same float taps at `(Sa+Sb)·2⁻²⁴` plus an
+  exact pin of `kernelGridRadius` (Δ(1/r) = 1/512 by construction); the α-0.9 ramp vs a per-pixel oracle
+  `A = min(fill ? Araw/S : Araw, 1)`, `Araw = a·min(S,1) + a(1−a)·max(S−1,0)`, fill decided on the measured float
+  arrival, at `2·N_p·2⁻²⁴`, arrival vs S likewise, and the snap-vs-blend control as `maxS_snap−1 > 2·(maxS_blend−1)`.
+  **Also found:** the deposit loop does **not** auto-vectorise under the shipped flags (GCC 12.2: "control flow in
+  loop" with `-ffp-contract=off`); it does with `-fno-trapping-math` — P2.T4's vectorisation check must settle this
+  (per the board's escalation ladder, a flag on the scatter TU or `#pragma omp simd` before any library). V1–V3 and
+  f3e–f3i readings may shift slightly; P2.T6 re-reads them. DESIGN §2.4 and the header comment are updated with the fix.
