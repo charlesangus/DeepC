@@ -264,7 +264,7 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   - size: L
   - depends: M8.P1.T1
 
-- [ ] M8.P2.T2 — The per-deposit body and the stream primitives (math/kernel side), with doctests against analytic oracles
+- [x] M8.P2.T2 — The per-deposit body and the stream primitives (math/kernel side), with doctests against analytic oracles
   - files: `src/DeepCDefocusScatter.h` (new: `StreamPlanes`/`StreamPlaneView`, `orderedDepthKey`,
     `depositStreamSpanRecency` — the amended rule of DESIGN §2.4 — `volumetricPieceStepPx`,
     `volumetricPieceBounds`), `src/DeepCDefocusMath.h` (a `FrameDepthRange {depthMin, depthMax, K}` replaces
@@ -579,3 +579,14 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   fragments duplicated across the tiles their disc reaches. **PM decision:** the amended rule is an engineering
   correction inside the user's direction (no seams, no depth limit, buckets gone), so implementation proceeds on it
   without a further ruling; P2.T2–T6 rewritten in place from the note, P2.T8–T10 appended.
+- 2026-09-25 — **M8.P2.T2 done (code `1d6924f`).** `depositStreamSpanRecency` (§2.4 rule, branch-free selects, lazy +
+  1 px CoC-jump rotation), `orderedDepthKey`, `StreamPlanes` (W·B·(C+6)·4, arrival included), `FrameDepthRange`,
+  `volumetricPieceStepPx`/`volumetricPieceBounds` (cuts uniform in clamped CoC; a max-radius plateau is one piece;
+  step floor 2·max(tol, 0.125) px; writes `VolumetricPiece` records so P2.T3 swaps it for `splitSpanAtBoundaries`).
+  Bucket math removed from Math.h; the old lookups moved verbatim into `src/DeepCDefocusBucketShim.h` (bit-identical)
+  with call sites in Scatter.cpp/Fill.h/DeepCDefocus.cpp/test_defocus_scatter.cpp switched to free-function form —
+  **P2.T3 deletes the shim and those call sites.** Doctests math 26→21 (7 bucket tests gone, 2 added), scatter 121→129.
+  Mutations: drop the jump → test 3 fails by 0.048; wrong key → test 6 fails; no focal cut → test 7 fails; drop the
+  lazy rotation → **equivalent mutant** (with uO = 0 the pN branch reproduces rotate-then-cover; kept because §2.4
+  specifies it). The body takes a whole-fragment channel count; chromatic channel groups are P2.T3's. First hostguard
+  build was killed at 137 by outside memory pressure; `--floor-gb 1.0` rerun passed.
