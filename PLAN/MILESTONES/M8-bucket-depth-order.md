@@ -644,3 +644,12 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   loop" with `-ffp-contract=off`); it does with `-fno-trapping-math` — P2.T4's vectorisation check must settle this
   (per the board's escalation ladder, a flag on the scatter TU or `#pragma omp simd` before any library). V1–V3 and
   f3e–f3i readings may shift slightly; P2.T6 re-reads them. DESIGN §2.4 and the header comment are updated with the fix.
+- 2026-09-25 — **Recency-rule fix landed (code `5f63919`, follow-up to P2.T3 per the consultant ruling above).** `uO/sO` rotate on
+  the CoC jump only; a deposit that reaches N relabels `uO = qNew − pN`, `sO = (qNew − aNew) − pN·tN·(1−α)`; selects only, no new
+  state. Volumetric test asserts pure `deposits·2⁻²⁴` on alpha and colour:alpha with a size-3/zb-9/α-0.8 rig added (fixed body
+  reaches 0.013 / 0.045 of the bound; the unfixed body fails by 3.0–3.07× on size 6 and 116–177× on size 3, mutation logged in
+  the task report). Adjacent-kernel-bin site: trough vs a double-normalised oracle (`exactCentreRowSum`) at `(Sa+Sb)·2⁻²⁴`
+  (worst 0.572 of bound) plus exact `kernelGridRadius` pins over i ∈ [1, 1400]. α-0.9 ramp site: per-pixel weight-sum oracle at
+  `2·N_p·2⁻²⁴` (alpha ≤ 0.23, arrival ≤ 0.27 of bound); snap-vs-blend control `maxS_snap−1 > 2·(maxS_blend−1)` for r0 ≥ 6.
+  `grep 255` in the scatter tests now hits only an unrelated design-doc comment (line ~6613). Doctests 21/21, 101 + 1 skipped.
+  DESIGN §2.4 carries the amended rule as implemented.
