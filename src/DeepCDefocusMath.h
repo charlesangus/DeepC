@@ -590,12 +590,9 @@ struct HoldoutVisibility {
     // The production path: the scatter core already knows a fragment's bracket
     // index and its fraction between boundary[index] and boundary[index+1] —
     // that pair is HoldoutBoundaries::locate(), which is O(1) and closed form.
-    // It is NOT DepthBuckets::bucketOf() (whose fraction is measured between
-    // bucket *centres*, for the scatter's partition-of-unity split) and it is
-    // not DepthBuckets::locateBoundary() either: that one locates between the
-    // ΔCoC BUCKET boundaries, which is a different boundary set from the one
-    // this LUT is sampled at.  All three are different numbers for the same
-    // depth.
+    // A fraction measured over any other boundary set (DepthBuckets' ΔCoC
+    // boundaries, say) is a different number for the same depth and must not
+    // be fed here.
     //
     // Interpolating log T is exact for the exponential in-span model.  A zero
     // boundary transmittance would give log(0) = -inf, so values are floored
@@ -674,12 +671,8 @@ struct HoldoutVisibility {
 };
 
 // ---------------------------------------------------------------------------
-// sampleMidDepth — the depth a deep sample is bucketed and CoC'd at
-//
-// The design fixes this as the span midpoint.  A sample whose span crosses
-// bucket boundaries is expected to have been through splitSpanAtBoundaries()
-// first, so by the time this is called the span lies inside a single bucket
-// and its midpoint is a faithful representative of it.
+// sampleMidDepth — the depth a deep sample (or a volumetric piece of one) is
+// ordered and CoC'd at: the span midpoint.
 //
 // Degenerate spans (zBack <= zFront, i.e. a point sample) collapse to zFront;
 // a non-finite endpoint falls back to the other one so a poisoned channel
@@ -698,16 +691,8 @@ DEEPC_HD inline float sampleMidDepth(float zFront, float zBack)
 // ---------------------------------------------------------------------------
 // partitionAlpha / partitionColorScale — transmittance-preserving alpha split
 //
-// The one primitive behind BOTH places this node cuts a surface in two:
-//
-//   1. the volumetric bucket-boundary split (a deep sample spanning several
-//      buckets is cut at the boundaries so a fog slab does not collapse into
-//      one hard layer), and
-//   2. the fractional two-bucket assignment (one fragment deposited into its
-//      two adjacent buckets, the mandatory fix for layer-transition banding).
-//
-// Both are "the same surface, seen as several layers that will later be
-// over-composited", so the split must be multiplicative in TRANSMITTANCE, not
+// A volumetric sample is cut into pieces that are later over-composited as
+// separate layers, so the split must be multiplicative in TRANSMITTANCE, not
 // linear in alpha:
 //
 //     alpha(t) = 1 - (1 - alpha)^t          sum of t == 1  =>  product of
@@ -720,51 +705,21 @@ DEEPC_HD inline float sampleMidDepth(float zFront, float zBack)
 //     C_out = sum_i C*colorScale_i*prod_{j<i}(1-alpha_j)
 //           = (C/alpha) * (1 - prod(1-alpha_i))          = C
 //
-// Splitting alpha LINEARLY (alpha_i = w_i*alpha) does not: an opaque fragment
-// split 50/50 composites to 1 - 0.5*0.5 = 0.75, i.e. a 25% alpha hole on a
-// flat opaque field, which would break validation scene (c) ("alpha == 1
-// exactly at any CoC").  The plane accumulation `Sigma alpha*w*vis` is linear,
-// and reconciling it with the front-to-back composite and the flat-field
-// identity is what forces this form.  The two readings agree to first order
-// anyway: for small
-// alpha, 1 - (1-alpha)^t -> t*alpha, so dense low-alpha fog is unaffected;
-// the forms only diverge as alpha approaches 1, which is exactly where the
-// linear reading is wrong.
+// Splitting alpha LINEARLY (alpha_i = w_i*alpha) does not: an opaque sample
+// split 50/50 composites to 1 - 0.5*0.5 = 0.75, a 25% alpha hole.  For small
+// alpha the two readings agree to first order (1 - (1-alpha)^t -> t*alpha).
 //
 // The kernel (disc) weight is NOT split this way — it is genuine partial
 // coverage of distinct destination pixels and stays linear.  Only the depth
 // split, which duplicates one surface across layers, is exponential.
-//
-// KNOWN COST OF THIS FORM — read before relying on the fractional assignment
-// as a banding fix.  Exact reconstruction under `over` and a smooth
-// bucket-to-bucket fade are mathematically incompatible at alpha == 1: the
-// reconstruction identity 1 - (1-alpha_0)(1-alpha_1) == 1 forces at least one
-// of the two deposits to be fully opaque for every split, so an opaque
-// fragment lands at FULL alpha and FULL colour in BOTH of its buckets and the
-// nearer one wins the composite outright.  For alpha == 1 the fractional
-// assignment therefore degenerates to a hard quantisation at the bucket
-// CENTRES (measured: the composited result is constant as the fragment
-// travels from centre[m] to centre[m+1], then steps discontinuously), and an
-// opaque fragment slightly past a centre occludes content up to one bucket in
-// front of it.  Below roughly alpha 0.9 the fade is smooth and the effect
-// falls off with alpha; at fog alphas it vanishes entirely (see the
-// first-order note above).  The linear reading has the opposite trade: it
-// fades smoothly at every alpha but loses up to 25% of a flat opaque field's
-// coverage.  The exact flat-field identity (validation scene (c), "alpha == 1
-// exactly") is the binding requirement, which is why this form is the one
-// implemented; validation scene (g) (banding on a plane receding through
-// focus) is the test that can still find the residual, and resolving it needs
-// a decision about the per-bucket coverage/weight plane, not a change to this
-// primitive.
 //
 // Written with expm1/log1p rather than pow so that the small-alpha limit
 // keeps full relative precision (1 - (1-a)^t suffers catastrophic
 // cancellation when computed directly and a is tiny — exactly the fog case).
 //
 // Edge behaviour: alpha <= 0 or t <= 0 -> 0; t >= 1 -> alpha; alpha >= 1 and
-// t > 0 -> 1 (an opaque surface is opaque in every part it is split into,
-// which is what makes the flat-field identity exact).  NaN alpha/t clamp to
-// 0 via clampf.
+// t > 0 -> 1 (an opaque surface is opaque in every part it is split into).
+// NaN alpha/t clamp to 0 via clampf.
 // ---------------------------------------------------------------------------
 DEEPC_HD inline float partitionAlpha(float alpha, float t)
 {
@@ -801,40 +756,9 @@ DEEPC_HD inline float partitionColorScale(float alpha, float t)
 }
 
 // ---------------------------------------------------------------------------
-// BucketWeight — one fragment's fractional two-bucket assignment
-//
-// `index` is the nearer of the two buckets and `frac` the share going to
-// index+1, so the two weights are (1 - frac) and frac.  Those sum to exactly
-// 1.0f for every frac in [0,1] under round-to-nearest (for frac >= 0.5,
-// 1 - frac is exact by Sterbenz; for frac < 0.5 the rounding error of
-// 1 - frac is at most 2^-25, which is below half an ulp of 1.0, so the sum
-// rounds back to exactly 1) — the partition-of-unity identity the unit tests
-// assert is therefore a hard guarantee, not a tolerance.
-//
-// INVARIANT from DepthBuckets::bucketOf: index is in [0, bucketCount-1], and
-// whenever frac > 0 the second bucket index+1 is also in range.  When frac
-// is 0 the "second" bucket carries zero weight and indexHigh() folds it back
-// onto `index` so a caller that deposits unconditionally can never write past
-// the last plane.
-// ---------------------------------------------------------------------------
-struct BucketWeight {
-    int   index = 0;
-    float frac  = 0.0f;
-
-    DEEPC_HD inline float weightLow()  const { return 1.0f - frac; }
-    DEEPC_HD inline float weightHigh() const { return frac; }
-    DEEPC_HD inline int   indexHigh()  const { return (frac > 0.0f) ? (index + 1) : index; }
-};
-
-// ---------------------------------------------------------------------------
-// BoundarySpan — a depth's position between two adjacent bucket BOUNDARIES
-//
-// Distinct from BucketWeight, which is a position between bucket CENTRES.
-// This is the pair HoldoutVisibility::interpAtBucket() consumes — but note
-// that TWO different locators produce it over TWO different boundary arrays:
-// HoldoutBoundaries::locate() (the holdout LUT's own set, the only one that
-// may feed interpAtBucket) and DepthBuckets::locateBoundary() (the ΔCoC bucket
-// set, for span splitting and pre-merge grouping).  See HoldoutBoundaries.
+// BoundarySpan — a depth's position between two adjacent boundaries: the
+// pair HoldoutBoundaries::locate() produces and
+// HoldoutVisibility::interpAtBucket() consumes.
 // ---------------------------------------------------------------------------
 struct BoundarySpan {
     int   index = 0;
@@ -842,26 +766,61 @@ struct BoundarySpan {
 };
 
 // ---------------------------------------------------------------------------
-// BucketDeposit — what one fragment actually adds to the two bucket planes
+// FrameDepthRange — the frame's measured depth range and the depth_layers
+// count, which bounds the pieces a volumetric span is cut into
+// (volumetricPieceStepPx).  Colour does not depend on it.
 //
-// Produced by fragmentDeposit(); see partitionAlpha() for why the alphas are
-// not simply weightLow()*alpha and weightHigh()*alpha.  The scatter core
-// deposits, for each of the two buckets:
-//
-//     colorPlane += kernelWeight * vis * fragColor * colorScale
-//     alphaPlane += kernelWeight * vis * bucketAlpha
-//
-// i.e. the disc kernel weight and the holdout visibility stay linear and
-// multiply on top; only the depth split is exponential.
+// makeFrameDepthRange() sanitises exactly as DepthBuckets does (depths into
+// [kMinDepth, kMaxDepth], order irrelevant, K clamped to the knob range), so
+// the two agree on the range for any input.
 // ---------------------------------------------------------------------------
-struct BucketDeposit {
-    int   index0      = 0;
-    int   index1      = 0;
-    float alpha0      = 0.0f;
-    float alpha1      = 0.0f;
-    float colorScale0 = 0.0f;
-    float colorScale1 = 0.0f;
+struct FrameDepthRange {
+    static constexpr int   kMinLayers = 4;
+    static constexpr int   kMaxLayers = 128;
+    static constexpr float kMinDepth  = 1e-6f;
+    static constexpr float kMaxDepth  = 1e12f;
+
+    float depthMin = kMinDepth;
+    float depthMax = kMinDepth;
+    int   K        = 0;
 };
+
+inline FrameDepthRange makeFrameDepthRange(float depthMin, float depthMax, int requestedLayers)
+{
+    const auto sanitize = [](float d) {
+        if (!(d > FrameDepthRange::kMinDepth))
+            return FrameDepthRange::kMinDepth;
+        if (!(d < FrameDepthRange::kMaxDepth))
+            return FrameDepthRange::kMaxDepth;
+        return d;
+    };
+    FrameDepthRange r;
+    const float lo = sanitize(depthMin);
+    const float hi = sanitize(depthMax);
+    r.depthMin = (lo < hi) ? lo : hi;
+    r.depthMax = (lo < hi) ? hi : lo;
+    r.K        = clampi(requestedLayers, FrameDepthRange::kMinLayers, FrameDepthRange::kMaxLayers);
+    return r;
+}
+
+// ---------------------------------------------------------------------------
+// cocCoefficient — unclamped CoC radius in pixels per unit of |1 - S/d| on
+// one side of focus
+//
+// signedCocPixels() computes, in both modes,
+//     |radius| = clamp(A_side * |1 - S/d|, 0, max_radius)
+// with A = size*mult (Manual) or 0.5*cocScale*pxPerMm*mult (Physical); this
+// is the same factorisation, so the two cannot drift apart.  Non-finite or
+// negative combinations degrade to 0 ("all in focus" on that side).
+// ---------------------------------------------------------------------------
+inline float cocCoefficient(const CocParams& p, bool front)
+{
+    const float base = (p._mode == CocMode::Manual)
+                     ? p._size
+                     : 0.5f * p._cocScale * p._pxPerMm;
+    const float a = base * (front ? p._frontMult : p._backMult);
+    return (a > 0.0f && std::isfinite(a)) ? a : 0.0f;
+}
 
 // ---------------------------------------------------------------------------
 // DepthBuckets — the frame's K depth buckets and their K+1 boundaries
@@ -913,10 +872,11 @@ struct BucketDeposit {
 // built once per frame (bucket boundaries are global — see the design
 // reference), never per band and never per fragment.
 //
-// A default-constructed DepthBuckets is inert: bucketCount() == 0, bucketOf()
-// answers {0, 0} and locateBoundary() answers {0, 0}, so a scatter driven by
-// an unbuilt instance degrades to "everything in bucket 0" rather than
-// reading uninitialised depths.
+// A default-constructed DepthBuckets is inert: bucketCount() == 0.
+//
+// It no longer takes part in compositing (FrameDepthRange carries the range
+// and K for that); it survives as the source of the holdout set's range and
+// count, see makeUniformHoldoutBoundaries().
 // ---------------------------------------------------------------------------
 struct DepthBuckets {
 
@@ -935,7 +895,6 @@ struct DepthBuckets {
 
     // --- state (built by buildBoundedDeltaCoc) ---
     float _boundaries[kMaxBoundaries] = {};
-    float _centres[kMaxBuckets]       = {};
     int   _bucketCount                = 0;
     int   _focusBoundary              = 0;
 
@@ -949,7 +908,6 @@ struct DepthBuckets {
     DEEPC_HD inline const float* boundaries() const { return _boundaries; }
 
     DEEPC_HD inline float boundary(int i) const { return _boundaries[i]; }
-    DEEPC_HD inline float centre(int i) const   { return _centres[i]; }
 
     DEEPC_HD inline float depthMin() const { return _boundaries[0]; }
     DEEPC_HD inline float depthMax() const { return _boundaries[_bucketCount]; }
@@ -960,26 +918,9 @@ struct DepthBuckets {
     // in front — i.e. the "other" side simply has no buckets.
     DEEPC_HD inline int focusBoundary() const { return _focusBoundary; }
 
-    // -----------------------------------------------------------------------
-    // cocCoefficient — unclamped CoC radius per unit of |1 - S/d|
-    //
-    // signedCocPixels() computes, in both modes,
-    //     |radius| = clamp(A_side * |1 - S/d|, 0, max_radius)
-    // with A = size*mult (Manual) or 0.5*cocScale*pxPerMm*mult (Physical).
-    // This is the only place the bucket builder needs to know about the lens
-    // model, and it is deliberately expressed as the same factorisation
-    // signedCocPixels() uses so the two cannot drift apart.  Non-finite or
-    // negative combinations degrade to 0, which makes the whole side
-    // "all in focus" and sends the builder down its uniform-inverse-depth
-    // fallback rather than producing garbage boundaries.
-    // -----------------------------------------------------------------------
     static inline float cocCoefficient(const CocParams& p, bool front)
     {
-        const float base = (p._mode == CocMode::Manual)
-                         ? p._size
-                         : 0.5f * p._cocScale * p._pxPerMm;
-        const float a = base * (front ? p._frontMult : p._backMult);
-        return (a > 0.0f && std::isfinite(a)) ? a : 0.0f;
+        return deepc::cocCoefficient(p, front);
     }
 
     // Depth sanitiser: NaN and non-positive depths collapse to kMinDepth,
@@ -1020,8 +961,7 @@ struct DepthBuckets {
     //     [1e-6, 1e12] range at K=128, but the guarantee is strict
     //     monotonicity, not an exact top endpoint)
     //   * boundaries are strictly increasing (a fix-up pass nudges any pair
-    //     that float rounding collapsed, so bucketOf() can never divide by a
-    //     zero span)
+    //     that float rounding collapsed, so no bracket has a zero span)
     //   * within one side of focus, |radiusPixels(b[i+1]) - radiusPixels(b[i])|
     //     is that side's uniform step (to float rounding), and never exceeds
     //     it — the bounded-ΔCoC property
@@ -1188,7 +1128,7 @@ struct DepthBuckets {
         // Strict monotonicity fix-up.  Rounding a double boundary to float, or
         // a saturated plateau collapsing several targets onto `lo`, can leave
         // two boundaries equal; nudging by one ulp keeps every bucket's depth
-        // span non-zero so bucketOf()/locateBoundary() never divide by zero.
+        // span non-zero.
         for (int i = 1; i <= k; ++i) {
             if (!(_boundaries[i] > _boundaries[i - 1])) {
                 _boundaries[i] = std::nextafter(_boundaries[i - 1],
@@ -1196,166 +1136,6 @@ struct DepthBuckets {
             }
         }
 
-        for (int i = 0; i < k; ++i)
-            _centres[i] = 0.5f * (_boundaries[i] + _boundaries[i + 1]);
-    }
-
-    // -----------------------------------------------------------------------
-    // bucketOf — fractional two-bucket assignment, a partition of unity
-    //
-    // A fragment at `depth` lands between the centres of two adjacent buckets
-    // and is deposited into both, weighted by where it sits between them.
-    // Assigning a POINT fragment wholly to its containing bucket instead is
-    // what produces visible layer-transition banding on a surface receding
-    // through the focal plane (validation scene (g)), so this split is
-    // mandatory for point fragments, not an optimisation.  (How much it
-    // actually smooths depends on alpha — see partitionAlpha()'s "known cost"
-    // note; it fades smoothly for translucent fragments and degenerates to a
-    // hard centre quantisation as alpha -> 1.)
-    //
-    // ONLY FOR SAMPLES THAT WERE NOT SPAN-SPLIT.  A piece produced by
-    // splitSpanAtBoundaries() must go through bucketOfContaining() instead —
-    // re-splitting an already-split piece double-counts it.  See that
-    // function's contract note.
-    //
-    // Returns index in [0, K-1] and frac in [0, 1]; the weights are
-    // (1 - frac) for `index` and frac for `index + 1`, summing to exactly 1.
-    // Outside the outermost centres the assignment saturates onto the first or
-    // last bucket with frac 0 (no bucket -1 / K to spill into); a NaN depth
-    // takes the same first-bucket path rather than propagating.
-    //
-    // O(log K) — the ΔCoC spacing is non-uniform, so there is no closed-form
-    // index.  The search mirrors HoldoutVisibility::interp()'s.
-    // -----------------------------------------------------------------------
-    DEEPC_HD inline BucketWeight bucketOf(float depth) const
-    {
-        BucketWeight w;
-        if (_bucketCount <= 1)
-            return w;                       // {0, 0}: inert / single bucket
-
-        const int last = _bucketCount - 1;
-        if (!(depth > _centres[0]))         // also catches NaN
-            return w;
-        if (depth >= _centres[last]) {
-            w.index = last;
-            return w;
-        }
-
-        int lo = 0;
-        int hi = last;
-        while (hi - lo > 1) {
-            const int mid = lo + (hi - lo) / 2;
-            if (_centres[mid] <= depth)
-                lo = mid;
-            else
-                hi = mid;
-        }
-
-        const float span = _centres[lo + 1] - _centres[lo];
-        w.index = lo;
-        w.frac  = (span > 0.0f) ? clampf((depth - _centres[lo]) / span, 0.0f, 1.0f) : 0.0f;
-        return w;
-    }
-
-    // -----------------------------------------------------------------------
-    // locateBoundary — position between the two BUCKET BOUNDARIES bracketing a
-    // depth
-    //
-    // Deliberately separate from bucketOf(): that one measures between bucket
-    // *centres* for the scatter's partition of unity, this one between bucket
-    // *boundaries*, and the two fractions are different numbers for the same
-    // depth.  bucketOfContaining(), splitSpanAtBoundaries() and the flatten's
-    // pre-merge grouping key are its callers.
-    //
-    // IT DOES NOT FEED THE HOLDOUT LUT.  That is
-    // HoldoutBoundaries::locate(), over a decoupled uniform-in-z boundary set.
-    // Passing this pair to HoldoutVisibility::interpAtBucket() would index a
-    // different array than the one the LUT was built at.
-    //
-    // Depths outside the range clamp onto the first/last boundary, matching
-    // interp()'s own out-of-range behaviour.
-    // -----------------------------------------------------------------------
-    DEEPC_HD inline BoundarySpan locateBoundary(float depth) const
-    {
-        BoundarySpan s;
-        if (_bucketCount <= 0)
-            return s;                       // {0, 0}
-
-        const int lastB = _bucketCount;     // index of the last boundary
-        if (!(depth > _boundaries[0]))      // also catches NaN
-            return s;
-        if (depth >= _boundaries[lastB]) {
-            s.index = lastB - 1;
-            s.frac  = 1.0f;
-            return s;
-        }
-
-        int lo = 0;
-        int hi = lastB;
-        while (hi - lo > 1) {
-            const int mid = lo + (hi - lo) / 2;
-            if (_boundaries[mid] <= depth)
-                lo = mid;
-            else
-                hi = mid;
-        }
-
-        const float span = _boundaries[lo + 1] - _boundaries[lo];
-        s.index = lo;
-        s.frac  = (span > 0.0f) ? clampf((depth - _boundaries[lo]) / span, 0.0f, 1.0f) : 0.0f;
-        return s;
-    }
-
-    // -----------------------------------------------------------------------
-    // bucketOfContaining — whole-weight assignment to the CONTAINING bucket
-    //
-    // Returns {index, 0}, i.e. all the weight in the one bucket whose
-    // [boundary(i), boundary(i+1)] interval contains `depth`, with no
-    // fractional spill into a neighbour.  It is the assignment a piece coming
-    // out of splitSpanAtBoundaries() must use, and the ONLY one that keeps
-    // the split composable — see that function's "composition contract".
-    //
-    // This is not a downgrade of bucketOf(): a span-split piece is already
-    // graded across buckets by its own thickness fraction `t`, which varies
-    // continuously as the parent span slides over a boundary (a piece just
-    // past a boundary has t -> 0, hence alpha -> 0 and colourScale -> 0), so
-    // the pieces need no second, redundant smoothing — and applying one is
-    // what double-counts them.  Point samples, which are never span-split and
-    // have no such grading of their own, are exactly the case bucketOf()
-    // exists for.
-    // -----------------------------------------------------------------------
-    DEEPC_HD inline BucketWeight bucketOfContaining(float depth) const
-    {
-        BucketWeight w;
-        if (_bucketCount <= 0)
-            return w;                       // {0, 0}: inert
-        const BoundarySpan s = locateBoundary(depth);
-        w.index = clampi(s.index, 0, _bucketCount - 1);
-        w.frac  = 0.0f;
-        return w;
-    }
-
-    // -----------------------------------------------------------------------
-    // firstBoundaryAbove — smallest index with boundary(index) > z
-    //
-    // boundaryCount() when there is none.  O(log K); the volumetric splitter
-    // uses it to jump straight to the boundaries a span actually crosses,
-    // which is what keeps the common "sample inside one bucket" case at a
-    // binary search plus one compare rather than a walk over all K+1.
-    // -----------------------------------------------------------------------
-    DEEPC_HD inline int firstBoundaryAbove(float z) const
-    {
-        const int n = boundaryCount();
-        int lo = 0;
-        int hi = n;                         // answer is in [lo, hi]
-        while (lo < hi) {
-            const int mid = lo + (hi - lo) / 2;
-            if (_boundaries[mid] > z)
-                hi = mid;
-            else
-                lo = mid + 1;
-        }
-        return lo;
     }
 };
 
@@ -1434,8 +1214,7 @@ inline DepthBuckets makeBoundedDeltaCocBuckets(const CocParams& p,
 //   entries/pixel — 16x the memory and build time.  Rejected.
 //
 // THE INDEX IS CLOSED FORM, so the per-fragment cost is O(1) with no search:
-// the plan's budget of "two binary searches per fragment (assignment + holdout
-// vis)" is now ONE (bucketOf's O(log K)) plus this O(1) locate.
+// the holdout lookup adds no binary search per fragment.
 //
 // STORAGE mirrors DepthBuckets': a fixed array sized by the K knob's maximum,
 // so the object allocates nothing, is trivially copyable and can be handed to
@@ -1545,10 +1324,7 @@ struct HoldoutBoundaries {
     // -----------------------------------------------------------------------
     // locate — the bracket containing `z`, and the position inside it.  O(1).
     //
-    // The pair HoldoutVisibility::interpAtBucket() consumes.  It replaces
-    // DepthBuckets::locateBoundary() on the holdout path ONLY: locateBoundary()
-    // still answers for the ΔCoC boundaries (pre-merge grouping, span splits,
-    // bucketOfContaining) and its fraction is a different number.
+    // The pair HoldoutVisibility::interpAtBucket() consumes.
     //
     // The index comes from the uniform step in closed form; the two guarded
     // correction steps that follow reconcile it with the STORED array, whose
@@ -1560,7 +1336,7 @@ struct HoldoutBoundaries {
     // rather than a tolerance.
     //
     // Depths outside the range clamp onto the first/last boundary, matching
-    // DepthBuckets::locateBoundary() and HoldoutVisibility::interp(); NaN takes
+    // HoldoutVisibility::interp(); NaN takes
     // the first-boundary path rather than propagating.
     // -----------------------------------------------------------------------
     DEEPC_HD inline BoundarySpan locate(float z) const
@@ -1608,240 +1384,6 @@ inline HoldoutBoundaries makeUniformHoldoutBoundaries(const DepthBuckets& bucket
     HoldoutBoundaries h;
     h.buildUniformZ(buckets.depthMin(), buckets.depthMax(), buckets.boundaryCount());
     return h;
-}
-
-// ---------------------------------------------------------------------------
-// fragmentDeposit — turn a bucket assignment + alpha into the two deposits
-//
-// The alphas are transmittance-split (partitionAlpha), not linearly scaled,
-// so the front-to-back composite of the two buckets reproduces the fragment
-// exactly; see partitionAlpha() for the derivation and for why the linear
-// reading breaks the flat-opaque-field identity.
-//
-// When frac == 0 the second deposit is (index0, 0, 0) — same index, zero
-// alpha, zero colour scale — so an unconditional two-deposit scatter loop
-// stays in bounds and adds nothing.  That is also exactly what a
-// bucketOfContaining() assignment produces, so the same call site serves both
-// the point-sample path (bucketOf) and the span-split path
-// (bucketOfContaining) with no branch; see splitSpanAtBoundaries()'s
-// composition contract for which to pass.
-// ---------------------------------------------------------------------------
-DEEPC_HD inline BucketDeposit fragmentDeposit(const BucketWeight& w, float alpha)
-{
-    const float w0 = w.weightLow();
-    const float w1 = w.weightHigh();
-
-    BucketDeposit d;
-    d.index0      = w.index;
-    d.index1      = w.indexHigh();
-    d.alpha0      = partitionAlpha(alpha, w0);
-    d.alpha1      = partitionAlpha(alpha, w1);
-    d.colorScale0 = partitionColorScale(alpha, w0);
-    d.colorScale1 = partitionColorScale(alpha, w1);
-    return d;
-}
-
-// ---------------------------------------------------------------------------
-// SpanSplitPart — one piece of a volumetric sample cut at a bucket boundary
-//
-//   t          : this piece's share of the parent span's thickness; the parts
-//                of one split sum to 1
-//   alpha      : 1 - (1 - parentAlpha)^t, so the parts' transmittances
-//                multiply back to (1 - parentAlpha)
-//   colorScale : factor for the parent's PREMULTIPLIED colour (alpha/parent
-//                alpha, tending to t as the parent alpha tends to 0)
-// ---------------------------------------------------------------------------
-struct SpanSplitPart {
-    float zFront     = 0.0f;
-    float zBack      = 0.0f;
-    float t          = 1.0f;
-    float alpha      = 0.0f;
-    float colorScale = 1.0f;
-};
-
-// ---------------------------------------------------------------------------
-// splitPartCount — upper bound on splitSpanAtBoundaries()'s part count
-//
-// Counts the boundaries strictly inside the span, plus one.  It is an upper
-// bound rather than the exact count because the splitter additionally drops
-// boundaries that round onto the previous cut, so the actual result can be
-// smaller; it is never larger, which is what makes it safe for sizing.
-//
-// Lets a caller size its output buffer without a trial split.  Never exceeds
-// boundaryCount() + 1 = K + 2, which is therefore a safe fixed bound for a
-// stack array in the scatter core (K <= 128, so 130 SpanSplitPart is ~2.6KB —
-// still no heap, per the no-per-fragment-allocation rule).
-// ---------------------------------------------------------------------------
-DEEPC_HD inline int splitPartCount(const DepthBuckets& buckets, float zFront, float zBack)
-{
-    if (!(zBack > zFront) || !std::isfinite(zFront) || !std::isfinite(zBack))
-        return 1;
-
-    const int n = buckets.boundaryCount();
-    int parts = 1;
-    for (int i = buckets.firstBoundaryAbove(zFront); i < n; ++i) {
-        if (!(buckets.boundary(i) < zBack))
-            break;
-        ++parts;
-    }
-    return parts;
-}
-
-// ---------------------------------------------------------------------------
-// splitSpanAtBoundaries — the volumetric bucket-boundary transmittance split
-//
-// A deep sample spanning several buckets is cut at every boundary strictly
-// inside it, so a fog slab grades across the depth layers instead of
-// collapsing into one hard layer at its midpoint.  Opacity is assumed uniform
-// along the span (the same assumption HoldoutVisibility::inSpan() makes),
-// which makes transmittance exponential in depth and the split analytic:
-// a piece covering fraction t of the span carries alpha 1 - (1-alpha)^t, and
-// because the pieces' t sum to 1 their transmittances multiply back to
-// exactly (1 - alpha).  Premultiplied colour scales by alpha_piece/alpha, so
-// the front-to-back over of the pieces reproduces the original sample.
-//
-//   out       : caller-owned, at least maxParts entries (no allocation here)
-//   maxParts  : capacity; if the span crosses more boundaries than fit, the
-//               remainder is merged into one final part rather than
-//               overflowing, so the transmittance identity still holds and
-//               only depth resolution is lost.  Size it with splitPartCount()
-//               (or the fixed K+2 bound) to avoid that entirely.
-//
-// Returns the number of parts written (>= 1, always <= maxParts).  A sample
-// that crosses no boundary — the common case — returns 1 part identical to
-// its input, after one binary search and one compare.  Zero-length spans
-// (zBack <= zFront, i.e. point samples) and non-finite endpoints likewise
-// pass through untouched as a single part.
-//
-// COMPOSITION CONTRACT — the scatter core MUST deposit a part produced here
-// via DepthBuckets::bucketOfContaining(), never via bucketOf().
-//
-// The identities above hold because the parts land in DISTINCT buckets (they
-// are cut at the boundaries precisely so that they do) and are therefore
-// combined by the front-to-back `over` that partitionAlpha() is built for.
-// bucketOf() splits by bucket CENTRES, not boundaries, so two consecutive
-// parts can be pushed into the same pair of planes — where the scatter's
-// within-bucket accumulation is ADDITIVE, not `over`, and the transmittance
-// split's alphas (which are deliberately super-linear: alpha_a + alpha_b >
-// alpha whenever the parts are meant to be composited rather than added)
-// over-count.  Measured on a 16-bucket frame with a span straddling one
-// boundary: alpha and premultiplied colour come out up to +8.2% high at
-// parent alpha 0.9 (+5.6% at 0.5, +1.0% at 0.1), i.e. fog slabs render
-// denser and brighter than the sample they came from.  With
-// bucketOfContaining() the same case reproduces the parent to float
-// precision.
-//
-// The two splits are therefore alternatives, not a pipeline: a volumetric
-// sample is graded across depth by THIS function, a point sample by
-// bucketOf().  Neither needs the other, and applying both is the bug above.
-// ---------------------------------------------------------------------------
-DEEPC_HD inline int splitSpanAtBoundaries(const DepthBuckets& buckets,
-                                          float zFront,
-                                          float zBack,
-                                          float alpha,
-                                          SpanSplitPart* __restrict__ out,
-                                          int maxParts)
-{
-    if (out == nullptr || maxParts <= 0)
-        return 0;
-
-    const float a = clampf(alpha, 0.0f, 1.0f);
-
-    if (!(zBack > zFront) || !std::isfinite(zFront) || !std::isfinite(zBack)) {
-        out[0].zFront     = zFront;
-        out[0].zBack      = zBack;
-        out[0].t          = 1.0f;
-        out[0].alpha      = a;
-        out[0].colorScale = 1.0f;
-        return 1;
-    }
-
-    const float invThickness = 1.0f / (zBack - zFront);
-    const int   n            = buckets.boundaryCount();
-
-    int   count     = 0;
-    float partFront = zFront;
-    float uPrev     = 0.0f;     // normalised position of partFront in the span
-
-    // The last slot is reserved for the tail part, so `count` can never reach
-    // maxParts inside the loop and the write after it is always in bounds.
-    for (int i = buckets.firstBoundaryAbove(zFront); i < n && count < maxParts - 1; ++i) {
-        const float b = buckets.boundary(i);
-        if (!(b < zBack))
-            break;
-
-        // Positions are accumulated as differences of normalised offsets from
-        // the span front (rather than per-part thicknesses divided by the
-        // total) so the parts' t values telescope and sum to 1 to within a
-        // rounding of the final subtraction.
-        const float u = clampf((b - zFront) * invThickness, 0.0f, 1.0f);
-        if (!(u > uPrev))       // boundary coincides with the previous cut
-            continue;
-
-        const float t = u - uPrev;
-        out[count].zFront     = partFront;
-        out[count].zBack      = b;
-        out[count].t          = t;
-        out[count].alpha      = partitionAlpha(a, t);
-        out[count].colorScale = partitionColorScale(a, t);
-        ++count;
-
-        partFront = b;
-        uPrev     = u;
-    }
-
-    const float tailT = 1.0f - uPrev;
-    out[count].zFront     = partFront;
-    out[count].zBack      = zBack;
-    out[count].t          = tailT;
-    out[count].alpha      = partitionAlpha(a, tailT);
-    out[count].colorScale = partitionColorScale(a, tailT);
-    return count + 1;
-}
-
-// ---------------------------------------------------------------------------
-// Bucket plane layout
-//
-// The band's bucket planes are plain SoA float buffers, laid out so that both
-// the scatter and the composite walk them contiguously:
-//
-//   colour: color[(k * channelCount + c) * pixelCount + i]
-//   alpha : alpha[k * pixelCount + i]
-//
-// with k the bucket (front to back, 0 = nearest), c the channel and i the
-// destination pixel within the band (pixelCount == bandWidth * bandHeight).
-// This is the colour+alpha half of the (C+3)-plane-per-bucket layout the
-// per-band memory formula assumes (K*W*B*(C+3)*4); the two `sum of w*vis`
-// AREA planes the scatter also keeps — new area and
-// co-located area — live alongside and are not touched by anything here.
-//
-// The per-pixel entry points below take pointers ALREADY OFFSET to their
-// pixel (`plane + i`) and derive everything else from `pixelCount`, which
-// keeps their signatures short enough to stay readable and makes them
-// directly usable as the body of a one-thread-per-pixel CUDA kernel.
-// Pass pixelCount = 1 (and pointers to a single pixel's K*C values) to use
-// them standalone, e.g. from a unit test.
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// saturationScale — the alpha-saturation renormalize factor for one bucket
-//
-// Additive premultiplied accumulation is energy-conserving in flat regions,
-// but where two surfaces overlap in screen space *within the same bucket*
-// their alphas add and can exceed 1.  Scaling the bucket's colour by
-// 1/alpha, with its alpha read as exactly 1, pulls that back with the
-// colour:alpha ratio — i.e. the unpremultiplied colour — preserved.  The
-// composite applies the factor at read, so the raw alpha is still in hand for
-// its area split.
-//
-// DOWN ONLY, NEVER UP.  alpha <= 1 returns 1: a shortfall of coverage (a
-// defocused foreground scattering outward with nothing behind it) is the
-// coverage fill's to restore, from the per-pixel arrival plane and with colour
-// and alpha scaled together.  NaN alpha fails the `> 1` test and returns 1.
-// ---------------------------------------------------------------------------
-DEEPC_HD inline float saturationScale(float aRaw)
-{
-    return (aRaw > 1.0f) ? (1.0f / aRaw) : 1.0f;
 }
 
 } // namespace deepc

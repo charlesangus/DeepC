@@ -68,10 +68,9 @@
 #include <utility>
 #include <vector>
 
-// Owns DEEPC_HD, CocParams, DepthBuckets, the composition-contract primitives
-// (splitSpanAtBoundaries / bucketOf / bucketOfContaining / fragmentDeposit)
-// and the bucket-plane layout this file's output feeds.
+// Owns DEEPC_HD, CocParams, DepthBuckets, FrameDepthRange.
 #include "DeepCDefocusMath.h"
+#include "DeepCDefocusBucketShim.h"
 
 // deepc::SampleRecord, deepc::tidyOverlapping(), deepc::optimizeSamples().
 // Reused rather than reimplemented.
@@ -1269,6 +1268,313 @@ struct BucketPlanes {
         return k * w * h * (c + 3) * sizeof(float) + w * h * sizeof(float);
     }
 };
+
+// ---------------------------------------------------------------------------
+// THE DEPTH-ORDERED STREAMING COMPOSITE — per-pixel state and the deposit body
+//
+// Fragments reach the body in depth order (orderedDepthKey, ties in emission
+// order), so each destination pixel folds its deposits front to back with no
+// depth buckets.  Per pixel:
+//
+//   claimed   Q   area some deposit has covered
+//   alpha     A   accumulated alpha; A == Q * (1 - T) with T the claimed
+//                 share's mean transmittance, so T needs no plane
+//   oldArea   uO  the claimed area least recently covered (chunk O) ...
+//   oldMass   sO  ... and the transmitted mass on it.  Chunk N (the area the
+//                 latest deposits covered) is implied: uN = Q - uO,
+//                 sN = Q - A - sO
+//   lastCoc       signed CoC of the previous deposit here
+//   color[c]      accumulated premultiplied colour
+//   arrival       the coverage fill's denominator
+//
+// Why two recency chunks and not one pooled claimed share: the deposits of
+// one continuous surface tile the lens.  Pooled, the n deposits of a layer
+// of alpha a over full coverage transmit prod(1 - a*w_i) -> e^-a instead of
+// 1 - a (two full-coverage 0.5 layers read 0.697, not 0.75).  Covering free
+// area first, then O, then N, a surface only re-covers its own area once O is
+// exhausted, and a full-coverage layer exhausts O exactly when it is
+// complete, so a stack of layers composes exactly.
+// ---------------------------------------------------------------------------
+struct StreamPlaneView {
+    float*         claimed      = nullptr;
+    float*         alpha        = nullptr;
+    float*         oldArea      = nullptr;
+    float*         oldMass      = nullptr;
+    float*         lastCoc      = nullptr;
+    float*         color        = nullptr;   // color[c * pixelCount + i]
+    float*         arrival      = nullptr;
+    int            channelCount = 0;
+    int            width        = 0;
+    int            height       = 0;
+    std::ptrdiff_t pixelCount   = 0;
+
+    DEEPC_HD inline bool valid() const
+    {
+        return claimed != nullptr && alpha != nullptr && oldArea != nullptr
+            && oldMass != nullptr && lastCoc != nullptr && arrival != nullptr
+            && (channelCount == 0 || color != nullptr)
+            && channelCount >= 0 && width > 0 && height > 0
+            && pixelCount == static_cast<std::ptrdiff_t>(width) * height;
+    }
+};
+
+struct StreamPlanes {
+    PodBuffer<float> claimed;
+    PodBuffer<float> alpha;
+    PodBuffer<float> oldArea;
+    PodBuffer<float> oldMass;
+    PodBuffer<float> lastCoc;
+    PodBuffer<float> color;     // channelCount * pixelCount
+    PodBuffer<float> arrival;
+
+    int            channelCount = 0;
+    int            width        = 0;
+    int            height       = 0;
+    std::ptrdiff_t pixelCount   = 0;
+
+    // Sizes every plane and zeroes it; repeat calls with the same geometry
+    // keep the allocation.
+    void allocate(int channelCountIn, int widthIn, int heightIn);
+    void zero();
+    void release();
+    std::size_t sizeBytes() const;
+    StreamPlaneView view();
+
+    // W*B*(C+6)*4: no factor of K anywhere.
+    static std::size_t bytesForBand(int channelCount, int width, int height)
+    {
+        const std::size_t c = (channelCount > 0) ? static_cast<std::size_t>(channelCount) : 0;
+        const std::size_t w = (width > 0) ? static_cast<std::size_t>(width) : 0;
+        const std::size_t h = (height > 0) ? static_cast<std::size_t>(height) : 0;
+        return w * h * (c + 6) * sizeof(float);
+    }
+};
+
+// Unsigned order of the keys is the order of the depths for every non-NaN
+// float, -0 sorting just before +0: positives get the sign bit set, negatives
+// have every bit flipped.
+DEEPC_HD inline std::uint32_t orderedDepthKey(float depth)
+{
+    std::uint32_t u = 0;
+    memcpy(&u, &depth, sizeof(u));
+    return (u & 0x80000000u) ? ~u : (u | 0x80000000u);
+}
+
+// A deposit arriving more than this far in signed CoC from the previous
+// deposit at a pixel is taken to be a different surface.  It sits above a
+// receding plane's row-to-row CoC step (0.5 px on scene (g)) and below any
+// separation between distinct surfaces that matters: a missed rotation costs
+// only the straddle case, a spurious one only the kernel's adjoint surplus.
+constexpr float kCocJumpRotatePx = 1.0f;
+
+DEEPC_HD inline float clampUnit(float v)
+{
+    return (v > 0.0f) ? ((v < 1.0f) ? v : 1.0f) : 0.0f;
+}
+
+// ---------------------------------------------------------------------------
+// depositStreamSpanRecency — one fragment's weights over one clipped row span
+//
+//   w         effective weights (kernel weight times holdout visibility)
+//   xRow      scratch, >= count floats: receives each pixel's composited
+//             weight x, which the colour pass then scales
+//   alpha     the fragment's alpha;  color: its premultiplied channels
+//   signedCoc the fragment's signed CoC radius, for the jump rotation
+//
+// Per pixel, with F = 1 - Q the free area:
+//
+//   rotate (uO = Q, sO = Q - A) when the deposit needs claimed area and O is
+//     empty, or when it lies more than kCocJumpRotatePx from lastCoc and Q > 0
+//   pf = min(w, F);  pO = min(w - pf, uO);  pN = w - pf - pO
+//   x  = pf + pO * sO/uO + pN * sN/uN
+//   A += a*x;  C += c*x;  Q += pf
+//   pN > 0:  O becomes what N did not get covered (uN - pN, sN - pN*sN/uN)
+//   else:    O shrinks by what was covered (uO - pO, sO - pO*sO/uO)
+//
+// The jump rotation is what a surface needs that first fills free area and
+// then reaches claimed area (a card behind a partly covering fog): lazily
+// rotated, its own free-area deposits would be pooled into the O it then
+// covers.
+//
+// Every pixel is a different destination, so there is no cross-iteration
+// dependency.  Both transmittances are always computed and the branches are
+// selects, so the loop has no per-pixel control flow.  A zero area divides
+// by 1 instead (its mass is zero too), and the clamp absorbs rounding drift
+// of sO/sN outside [0, u].
+// ---------------------------------------------------------------------------
+DEEPC_HD inline void depositStreamSpanRecency(const StreamPlaneView&    planes,
+                                              std::ptrdiff_t            dstOffset,
+                                              const float* __restrict__ w,
+                                              float* __restrict__       xRow,
+                                              int                       count,
+                                              float                     alpha,
+                                              float                     signedCoc,
+                                              const float* __restrict__ color,
+                                              int                       channelCount)
+{
+    float* __restrict__ qp  = planes.claimed + dstOffset;
+    float* __restrict__ ap  = planes.alpha + dstOffset;
+    float* __restrict__ uop = planes.oldArea + dstOffset;
+    float* __restrict__ sop = planes.oldMass + dstOffset;
+    float* __restrict__ cp  = planes.lastCoc + dstOffset;
+
+    for (int i = 0; i < count; ++i) {
+        const float wi = w[i];
+        const float q  = qp[i];
+        const float a  = ap[i];
+        const float fr = 1.0f - q;
+
+        const float dc     = signedCoc - cp[i];
+        const bool  jump   = (q > 0.0f) && ((dc > kCocJumpRotatePx) || (dc < -kCocJumpRotatePx));
+        const bool  rotate = jump || ((wi > fr) && !(uop[i] > 0.0f));
+        const float uO     = rotate ? q : uop[i];
+        const float sO     = rotate ? (q - a) : sop[i];
+
+        const float uNraw = q - uO;
+        const float uN    = (uNraw > 0.0f) ? uNraw : 0.0f;
+        const float sN    = q - a - sO;
+        const float tO    = clampUnit(sO / ((uO > 0.0f) ? uO : 1.0f));
+        const float tN    = clampUnit(sN / ((uN > 0.0f) ? uN : 1.0f));
+
+        const float pf = (wi < fr) ? wi : fr;
+        const float r  = wi - pf;
+        const float pO = (r < uO) ? r : uO;
+        const float pN = r - pO;
+        const float x  = pf + pO * tO + pN * tN;
+
+        const bool reachN = pN > 0.0f;
+        uop[i]  = reachN ? (uN - pN) : (uO - pO);
+        sop[i]  = reachN ? (sN - pN * tN) : (sO - pO * tO);
+        qp[i]   = q + pf;
+        ap[i]   = a + alpha * x;
+        cp[i]   = signedCoc;
+        xRow[i] = x;
+    }
+
+    for (int c = 0; c < channelCount; ++c) {
+        const float v = color[c];
+        if (v == 0.0f)
+            continue;
+        float* __restrict__ dst = planes.color
+            + static_cast<std::ptrdiff_t>(c) * planes.pixelCount + dstOffset;
+        for (int i = 0; i < count; ++i)
+            dst[i] += xRow[i] * v;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Volumetric pieces
+//
+// A volumetric sample is cut into pieces, each drawn at its midpoint radius,
+// so a piece is off by at most half its CoC extent.  The pre-merge already
+// accepts drawing a member merge_tolerance from its group's radius, so a
+// step of 2 * merge_tolerance stays in that error class; it is widened to
+// the frame's CoC variation / K so no span inside the frame's range is cut
+// into more than K + 1 pieces.
+// ---------------------------------------------------------------------------
+constexpr int kMaxVolumetricPieces = FrameDepthRange::kMaxLayers + 1;
+
+inline float volumetricPieceStepPx(const CocParams& coc, const FrameDepthRange& range,
+                                   float mergeTolerancePx)
+{
+    const float rNear = signedCocPixels(coc, range.depthMin);
+    const float rFar  = signedCocPixels(coc, range.depthMax);
+    const float variation = ((rNear < 0.0f) == (rFar < 0.0f))
+                          ? std::fabs(rFar - rNear)
+                          : (std::fabs(rNear) + std::fabs(rFar));
+    const float tol     = (mergeTolerancePx > 0.125f) ? mergeTolerancePx : 0.125f;
+    const float tolStep = 2.0f * tol;
+    const float capStep = (range.K > 0) ? variation / static_cast<float>(range.K) : 0.0f;
+    return (capStep > tolStep) ? capStep : tolStep;
+}
+
+struct VolumetricPiece {
+    float zFront     = 0.0f;
+    float zBack      = 0.0f;
+    float t          = 1.0f;    // share of the parent's thickness
+    float alpha      = 0.0f;    // partitionAlpha(parent alpha, t)
+    float colorScale = 1.0f;    // partitionColorScale(parent alpha, t)
+};
+
+// ---------------------------------------------------------------------------
+// volumetricPieceBounds — cut [zFront, zBack] into pieces of at most stepPx
+// of CLAMPED CoC each, with the focal plane as a cut of its own
+//
+// CoC is affine in 1/z on each side of focus, so the cuts are uniform in 1/z
+// there; targets are placed in clamped CoC and inverted through the
+// unclamped law, which puts any max_radius plateau inside a single piece
+// instead of spending the budget where the radius cannot vary.  At most
+// maxPieces pieces are written: a side that would need more gets what is
+// left of the budget (its pieces then exceed the step).  Point samples and
+// non-finite spans come back as one piece with t = 1.  The pieces' t
+// telescope, so they sum to 1 to within one rounding per piece.
+// ---------------------------------------------------------------------------
+inline int volumetricPieceBounds(const CocParams& coc, float zFront, float zBack, float alpha,
+                                 float stepPx, VolumetricPiece* out, int maxPieces)
+{
+    if (out == nullptr || maxPieces < 1)
+        return 0;
+
+    const float a = clampf(alpha, 0.0f, 1.0f);
+    if (!(zBack > zFront) || !std::isfinite(zFront) || !std::isfinite(zBack) || !(zFront > 0.0f)) {
+        out[0] = VolumetricPiece{zFront, zBack, 1.0f, a, 1.0f};
+        return 1;
+    }
+
+    const float focus = coc._focusDistance;
+    float cuts[3] = {zFront, zBack, zBack};
+    int   sides   = 1;
+    if (focus > zFront && focus < zBack && maxPieces >= 2) {
+        cuts[1] = focus;
+        sides   = 2;
+    }
+
+    const double s       = static_cast<double>(focus);
+    const float  step    = (stepPx > 0.0f) ? stepPx : 0.25f;
+    const float  invSpan = 1.0f / (zBack - zFront);
+
+    int   count     = 0;
+    float partFront = zFront;
+    float uPrev     = 0.0f;
+
+    const auto emit = [&](float zb, bool last) {
+        const float u = last ? 1.0f : clampf((zb - zFront) * invSpan, 0.0f, 1.0f);
+        if (!last && !(u > uPrev))
+            return;
+        const float t = u - uPrev;
+        out[count] = VolumetricPiece{partFront, zb, t, partitionAlpha(a, t), partitionColorScale(a, t)};
+        ++count;
+        partFront = zb;
+        uPrev     = u;
+    };
+
+    for (int side = 0; side < sides; ++side) {
+        const float  z0    = cuts[side];
+        const float  z1    = cuts[side + 1];
+        const bool   front = z1 <= focus;
+        const double r0    = std::fabs(signedCocPixels(coc, z0));
+        const double r1    = std::fabs(signedCocPixels(coc, z1));
+        const double k     = static_cast<double>(cocCoefficient(coc, front));
+
+        const int room = maxPieces - count - (sides - 1 - side);
+        int n = static_cast<int>(std::ceil(std::fabs(r1 - r0) / static_cast<double>(step)));
+        if (n > room) n = room;
+        if (n < 1)    n = 1;
+        if (!(k > 0.0) || !(s > 0.0)) n = 1;
+
+        for (int j = 1; j < n; ++j) {
+            const double r = r0 + (r1 - r0) * (static_cast<double>(j) / n);
+            const double denom = front ? (r / k + 1.0) : (1.0 - r / k);
+            if (!(denom > 0.0))
+                continue;
+            const float z = static_cast<float>(s / denom);
+            if (z > partFront && z < z1)
+                emit(z, false);
+        }
+        emit(z1, side == sides - 1);
+    }
+    return count;
+}
 
 // ---------------------------------------------------------------------------
 // residualWindowYRange — the Y extent of the virtual-background window:

@@ -216,17 +216,17 @@ RefWeight refBucketOf(const DepthBuckets& b, double depth)
     const int k = b.bucketCount();
     if (k <= 1)
         return w;
-    if (!(depth > b.centre(0)))
+    if (!(depth > bucketCentre(b, 0)))
         return w;
-    if (depth >= b.centre(k - 1)) {
+    if (depth >= bucketCentre(b, k - 1)) {
         w.index = k - 1;
         return w;
     }
     for (int i = 0; i + 1 < k; ++i) {
-        if (depth >= b.centre(i) && depth < b.centre(i + 1)) {
-            const double span = static_cast<double>(b.centre(i + 1)) - b.centre(i);
+        if (depth >= bucketCentre(b, i) && depth < bucketCentre(b, i + 1)) {
+            const double span = static_cast<double>(bucketCentre(b, i + 1)) - bucketCentre(b, i);
             w.index = i;
-            w.frac  = (span > 0.0) ? (depth - b.centre(i)) / span : 0.0;
+            w.frac  = (span > 0.0) ? (depth - bucketCentre(b, i)) / span : 0.0;
             return w;
         }
     }
@@ -1164,7 +1164,7 @@ TEST_CASE("flattenPixelToSoA reproduces an independent tidy + split + merge refe
     fixtures.push_back({"one point sample, mid-range",
         {makeSample(3.0f, 3.0f, 0.7f, {0.7f * 0.2f, 0.7f * 0.5f, 0.7f * 0.9f})}});
     fixtures.push_back({"one point sample exactly on a bucket centre",
-        {makeSample(bk.centre(6), bk.centre(6), 0.4f, {0.1f, 0.2f, 0.3f})}});
+        {makeSample(bucketCentre(bk, 6), bucketCentre(bk, 6), 0.4f, {0.1f, 0.2f, 0.3f})}});
     fixtures.push_back({"two DISJOINT point samples, different buckets",
         {makeSample(2.0f, 2.0f, 0.5f, {0.1f, 0.2f, 0.3f}),
          makeSample(6.0f, 6.0f, 0.25f, {0.05f, 0.1f, 0.15f})}});
@@ -1472,8 +1472,8 @@ TEST_CASE("the pre-merge grouping predicate keeps a POINT and a SPAN apart even 
     // The predicate's OTHER two clauses both hold here, so only `kind` can be
     // keeping these two fragments apart.
     REQUIRE(soa.fragmentCount() == 2u);
-    const int b0 = bk.bucketOfContaining(soa.depth[0]).index;
-    const int b1 = bk.bucketOfContaining(soa.depth[1]).index;
+    const int b0 = bucketOfContaining(bk, soa.depth[0]).index;
+    const int b1 = bucketOfContaining(bk, soa.depth[1]).index;
     REQUIRE(b0 == b1);
     REQUIRE(std::fabs(soa.radius[0] - soa.radius[1]) <= 1.0f);
 
@@ -1596,13 +1596,13 @@ TEST_CASE("the COMPOSITION CONTRACT is data: volumetric fragments carry no fract
     {
         SampleSoA bad;
         bad.begin(1, makeSingleChannelGroup(1));
-        const float depth = 0.5f * (bk.centre(5) + bk.centre(6));
+        const float depth = 0.5f * (bucketCentre(bk, 5) + bucketCentre(bk, 6));
         FragmentRecord f;
         f.depth  = depth;
         f.radius = radiusPixels(p, depth);
         f.alpha  = 0.9f;
         f.kind   = FragmentKind::Volumetric;             // labelled span-split...
-        f.deposit = fragmentDeposit(bk.bucketOf(depth), f.alpha);  // ...but assigned by centres
+        f.deposit = fragmentDeposit(bucketOf(bk, depth), f.alpha);  // ...but assigned by centres
         const float ch[1] = {0.45f};
         bad.appendFragment(f, ch);
 
@@ -1620,7 +1620,7 @@ TEST_CASE("the COMPOSITION CONTRACT is data: volumetric fragments carry no fract
         f.radius = 1.0f;
         f.alpha = 0.5f;
         f.kind = FragmentKind::Point;
-        f.deposit = fragmentDeposit(bk.bucketOf(3.0f), 0.5f);
+        f.deposit = fragmentDeposit(bucketOf(bk, 3.0f), 0.5f);
         f.deposit.index0 = bk.bucketCount();            // one past the last plane
         f.deposit.index1 = bk.bucketCount();
         const float ch[1] = {0.25f};
@@ -4176,7 +4176,7 @@ TEST_CASE("end to end on the halo rig: synthesis reads the twin's FG:BG mix in t
 
         // The plane's bucket at a card pixel holds only synthesised deposits
         // (the plane's own r = 0 disc never leaves its pixel): halved exactly.
-        const int kQ = rig.buckets.bucketOfContaining(kSynthPlaneZ).index;
+        const int kQ = bucketOfContaining(rig.buckets, kSynthPlaneZ).index;
         const std::ptrdiff_t px = synth.band.pixels();
         double full = 0.0, halved = 0.0;
         for (int y = kSynthCard0; y < kSynthCard1; ++y) {
@@ -5611,9 +5611,9 @@ TEST_CASE("the monotone bucket frontier: a trailing deposit never lands in FRONT
         // a point sample just behind bucket k's centre has bucketOf() index k
         // with a fraction, i.e. it sits EXACTLY at the frontier.
         const int   k  = 5;
-        const float zSpanA = bk.boundary(k) + 0.02f * (bk.centre(k) - bk.boundary(k));
-        const float zSpanB = bk.boundary(k) + 0.30f * (bk.centre(k) - bk.boundary(k));
-        const float zPoint = bk.centre(k) + 0.25f * (bk.centre(k + 1) - bk.centre(k));
+        const float zSpanA = bk.boundary(k) + 0.02f * (bucketCentre(bk, k) - bk.boundary(k));
+        const float zSpanB = bk.boundary(k) + 0.30f * (bucketCentre(bk, k) - bk.boundary(k));
+        const float zPoint = bucketCentre(bk, k) + 0.25f * (bucketCentre(bk, k + 1) - bucketCentre(bk, k));
 
         const SampleSoA alone = flattenOnePixel(fp, bk, 3, 3,
             {makeSample(zPoint, zPoint, 0.5f, {0.25f})});
@@ -6190,7 +6190,7 @@ TEST_CASE("the collision merge is bounded: different kernels are not collapsed, 
         const DepthBuckets qb = makeBoundedDeltaCocBuckets(q, 1.0f, 100.0f, K2);
         // Bucket 8's centre, so the point's fractional assignment sits wholly in
         // it and the collision is a whole-bucket one.
-        const float zc = qb.centre(8);
+        const float zc = bucketCentre(qb, 8);
         const FlattenParams fq = makeFlattenParams(q, 1, /*preMerge*/ false);
         const SampleSoA soa2 = flattenOnePixel(fq, qb, 4, 4,
             {makeSample(zc - 0.01f, zc - 0.005f, 1.0f, {0.5f}),   // span piece, opaque
@@ -6775,10 +6775,10 @@ TEST_CASE("flat opaque field ACROSS buckets: the bucket composite holds alpha 1"
     const int W = 48, H = 48;
     DiscKernelLUT lut(0.0f, 40.0f, 1.0f, 1.0f);
 
-    const float dA = bk.centre(9), dB = bk.centre(10);
-    REQUIRE(bk.bucketOf(dA).frac == 0.0f);
-    REQUIRE(bk.bucketOf(dB).frac == 0.0f);
-    REQUIRE(bk.bucketOf(dA).index != bk.bucketOf(dB).index);
+    const float dA = bucketCentre(bk, 9), dB = bucketCentre(bk, 10);
+    REQUIRE(bucketOf(bk, dA).frac == 0.0f);
+    REQUIRE(bucketOf(bk, dB).frac == 0.0f);
+    REQUIRE(bucketOf(bk, dA).index != bucketOf(bk, dB).index);
 
     const FlattenParams fp = makeFlattenParams(p, 1, /*preMerge*/ true);
     SampleSoA soa;
@@ -7420,11 +7420,11 @@ TEST_CASE("parent reconstruction catches a MISLABEL that checkCompositionContrac
                     // its own point sample, so it re-splits by CENTRES and
                     // claims its own coverage.
                     f.kind = FragmentKind::Point;
-                    f.deposit = fragmentDeposit(bk.bucketOf(d), f.alpha);
+                    f.deposit = fragmentDeposit(bucketOf(bk, d), f.alpha);
                     f.coverageHead = true;
                 } else {
                     f.kind = FragmentKind::Volumetric;
-                    f.deposit = fragmentDeposit(bk.bucketOfContaining(d), f.alpha);
+                    f.deposit = fragmentDeposit(bucketOfContaining(bk, d), f.alpha);
                     f.coverageHead = (i == 0);
                 }
                 const float ch[1] = {unpremult * alpha * parts[i].colorScale};
@@ -8961,7 +8961,7 @@ TEST_CASE("the g4 rig's low-alpha over-read is the SCATTER's weight over-deliver
             if (renormalise)
                 w = static_cast<float>(w / sumW);
             const float z = 1720.0f / (300.0f - static_cast<float>(y));
-            const deepc::BucketWeight  bw = buckets.bucketOf(z);
+            const deepc::BucketWeight  bw = bucketOf(buckets, z);
             const deepc::BucketDeposit d  = deepc::fragmentDeposit(bw, alpha);
             cov[d.index0] += w;
             al[d.index0]  += w * d.alpha0;
@@ -10000,7 +10000,7 @@ TEST_CASE("the dense alpha<1 holdout underflow reaches DEPOSITED PIXELS on both 
         f.radius = path.radius;
         f.depth  = 48.0f;
         f.alpha  = 1.0f;
-        f.deposit = fragmentDeposit(bk.bucketOfContaining(48.0f), 1.0f);
+        f.deposit = fragmentDeposit(bucketOfContaining(bk, 48.0f), 1.0f);
         f.kind = FragmentKind::Volumetric;
         f.coverageHead = true;
         const float ch[1] = {0.5f};
@@ -12237,5 +12237,381 @@ TEST_CASE("resolveBandCPU probe: the trace holds the planes and every composite 
         const float returned = alphaPlain[static_cast<std::size_t>(i)];
         CHECK(std::memcmp(&outA, &returned, sizeof(float)) == 0);
         CHECK(t.clampScale == outA / acc);
+    }
+}
+
+// ===========================================================================
+// The streaming composite's per-deposit body and stream primitives, driven on
+// hand-built deposit sequences at one destination pixel.
+// ===========================================================================
+
+namespace {
+
+constexpr double kUlp24 = 1.0 / 16777216.0;
+
+struct StreamPixel {
+    StreamPlanes planes;
+    int          channels = 0;
+
+    explicit StreamPixel(int channelCount) : channels(channelCount)
+    {
+        planes.allocate(channelCount, 1, 1);
+    }
+
+    void deposit(float w, float alpha, float signedCoc, const float* color)
+    {
+        float x = 0.0f;
+        depositStreamSpanRecency(planes.view(), 0, &w, &x, 1, alpha, signedCoc, color, channels);
+    }
+
+    float Q() const { return planes.claimed.data()[0]; }
+    float A() const { return planes.alpha.data()[0]; }
+    float C(int c) const { return planes.color.data()[c]; }
+};
+
+// n positive weights whose running float sum is exactly 1 after the last:
+// the last weight is 1 minus the running sum the deposit body itself forms,
+// so the last deposit's fit fills the pixel.  Unequal on purpose.
+std::vector<float> tilingWeights(int n, float total = 1.0f)
+{
+    std::vector<float> w;
+    if (n == 1) {
+        w.push_back(total);
+        return w;
+    }
+    std::vector<double> r(static_cast<std::size_t>(n));
+    std::uint32_t s = 0x9e3779b9u ^ static_cast<std::uint32_t>(n);
+    double sum = 0.0;
+    for (double& v : r) {
+        s = s * 1664525u + 1013904223u;
+        v = 0.5 + static_cast<double>(s >> 8) / 16777216.0;
+        sum += v;
+    }
+    float q = 0.0f;
+    for (int i = 0; i < n - 1; ++i) {
+        const float wi = static_cast<float>(total * r[static_cast<std::size_t>(i)] / sum);
+        w.push_back(wi);
+        q += wi;
+    }
+    w.push_back(total - q);
+    return w;
+}
+
+// The per-deposit rule with one pooled claimed share, x = fit + (w - fit)*T,
+// T = (Q - A)/Q.  Kept only to show the identity tests can see why it was
+// rejected.
+struct NaivePixel {
+    float Q = 0.0f, A = 0.0f, C = 0.0f;
+
+    void deposit(float w, float alpha, float color)
+    {
+        const float fit = (w < 1.0f - Q) ? w : (1.0f - Q);
+        const float T   = (Q > 0.0f) ? (Q - A) / Q : 1.0f;
+        const float x   = fit + (w - fit) * T;
+        A += alpha * x;
+        C += color * x;
+        Q += fit;
+    }
+};
+
+} // namespace
+
+TEST_CASE("stream deposit: a tiling of n opaque deposits reads A == 1 exactly, colour == its own "
+          "colour within n roundings")
+{
+    for (int n : {1, 7, 1000}) {
+        CAPTURE(n);
+        const float color[3] = {0.5f, 0.3f, 1.7f};
+        StreamPixel px(3);
+        for (float w : tilingWeights(n))
+            px.deposit(w, 1.0f, 4.0f, color);
+
+        CHECK(px.A() == 1.0f);
+        CHECK(px.Q() == 1.0f);
+        // A power-of-two colour scales every rounding the alpha made, so its
+        // colour:alpha ratio is exact; the others carry one rounding per
+        // product and per sum.
+        CHECK(px.C(0) == 0.5f * px.A());
+        for (int c = 1; c < 3; ++c)
+            CHECK(std::fabs(px.C(c) / px.A() - color[c]) <= 2.0 * n * color[c] * kUlp24);
+    }
+}
+
+TEST_CASE("stream deposit: two full-coverage 0.5 layers of n deposits each read 0.75 within 4n ulps; "
+          "the pooled (naive) rule reads 1 - 0.5*prod(1 - 0.5 w_i) -> 1 - 0.5*exp(-0.5)")
+{
+    const float u1 = 0.8f, u2 = 0.2f;                 // unpremultiplied colours
+    const float c1[2] = {0.5f * u1, 0.5f * 0.6f};
+    const float c2[2] = {0.5f * u2, 0.5f * 0.6f};
+    for (float rearCoc : {2.0f, 6.0f}) {              // lazy rotation, jump rotation
+        for (int n : {1, 7, 1000}) {
+            CAPTURE(rearCoc);
+            CAPTURE(n);
+            const std::vector<float> w = tilingWeights(n);
+            const double bound = 4.0 * n * kUlp24;
+
+            StreamPixel px(2);
+            for (float wi : w) px.deposit(wi, 0.5f, 2.0f, c1);
+            for (float wi : w) px.deposit(wi, 0.5f, rearCoc, c2);
+
+            // Front layer transmits 0.5 of the full pixel; the rear layer
+            // adds 0.5 of that.  Colour follows with the same weights.
+            CHECK(std::fabs(px.A() - 0.75) <= bound);
+            CHECK(std::fabs(px.C(0) - (0.5 * u1 + 0.25 * u2)) <= bound);
+            // Same unpremultiplied colour in both layers: C/A is that colour.
+            CHECK(std::fabs(px.C(1) / px.A() - 0.6) <= 2.0 * bound);
+
+            NaivePixel naive;
+            for (float wi : w) naive.deposit(wi, 0.5f, c1[0]);
+            for (float wi : w) naive.deposit(wi, 0.5f, c2[0]);
+            double prod = 1.0;
+            for (float wi : w) prod *= 1.0 - 0.5 * wi;
+            CHECK(std::fabs(naive.A - (1.0 - 0.5 * prod)) <= bound);
+            // The naive rule's colour follows its own (wrong) alpha.
+            CHECK(std::fabs((naive.C - 0.5 * u1) - u2 * (naive.A - 0.5)) <= bound);
+            if (n == 1) {
+                CHECK(naive.A == 0.75f);
+            } else {
+                CHECK(std::fabs(naive.A - 0.75) > bound);
+                if (n == 1000)
+                    CHECK(std::fabs(prod - std::exp(-0.5)) < 1e-3);
+            }
+        }
+    }
+}
+
+TEST_CASE("stream deposit: an opaque tiled layer behind a partly covering 0.8 layer reads A == 1 "
+          "(the CoC-jump rotation's case)")
+{
+    const float uf = 0.9f, uo = 0.3f;
+    const float cf[1] = {0.8f * uf};
+    const float co[1] = {uo};
+    for (int m : {1, 5}) {
+        for (int n : {7, 1000}) {
+            CAPTURE(m);
+            CAPTURE(n);
+            StreamPixel px(1);
+            double fogArea = 0.0;
+            for (float wi : tilingWeights(m, 0.4f)) {
+                px.deposit(wi, 0.8f, -5.0f, cf);
+                fogArea += wi;
+            }
+            for (float wi : tilingWeights(n))
+                px.deposit(wi, 1.0f, 3.0f, co);
+
+            const double bound = 4.0 * (m + n) * kUlp24;
+            // The opaque layer fills the free area and then, through the
+            // fog's transmittance 0.2, the fog's area.
+            CHECK(std::fabs(px.A() - 1.0) <= bound);
+            const double cOracle = 0.8 * uf * fogArea + uo * ((1.0 - fogArea) + 0.2 * fogArea);
+            CHECK(std::fabs(px.C(0) - cOracle) <= bound);
+        }
+    }
+}
+
+TEST_CASE("stream deposit: straddle -- w 0.5 alpha 1 then w 1.0 alpha 0.5 reads 0.75 exactly")
+{
+    for (float rearCoc : {1.0f, 9.0f}) {
+        CAPTURE(rearCoc);
+        const float cA[1] = {0.5f};
+        const float cB[1] = {0.3f};
+        StreamPixel px(1);
+        px.deposit(0.5f, 1.0f, 1.0f, cA);
+        px.deposit(1.0f, 0.5f, rearCoc, cB);
+        // The rear deposit's free half is exposed, its other half lies
+        // behind an opaque front: x_B = 0.5 exactly.
+        CHECK(px.A() == 0.75f);
+        CHECK(px.C(0) == 0.5f * 0.5f + 0.3f * 0.5f);
+    }
+}
+
+TEST_CASE("stream deposit: a single sharp deposit reads A == alpha and C == colour bit-exact")
+{
+    const float alphas[] = {0.0f, 1e-7f, 0.3f, 0.999f, 1.0f};
+    for (float a : alphas) {
+        CAPTURE(a);
+        const float color[3] = {0.1f * a, 0.7f, 3.25f};
+        StreamPixel px(3);
+        px.deposit(1.0f, a, 0.0f, color);
+        const float A = px.A();
+        CHECK(std::memcmp(&A, &a, sizeof(float)) == 0);
+        for (int c = 0; c < 3; ++c) {
+            const float got = px.C(c);
+            CHECK(std::memcmp(&got, &color[c], sizeof(float)) == 0);
+        }
+        CHECK(px.Q() == 1.0f);
+    }
+}
+
+TEST_CASE("stream deposit: pixels of one span are independent -- a span equals per-pixel calls")
+{
+    const float color[2] = {0.25f, 0.6f};
+    StreamPlanes row;
+    row.allocate(2, 3, 1);
+    StreamPixel p0(2), p1(2), p2(2);
+    StreamPixel* single[3] = {&p0, &p1, &p2};
+    const float seq[][3] = {{0.3f, 0.6f, 1.0f}, {0.9f, 0.2f, 0.5f}, {0.4f, 0.4f, 0.4f}};
+    const float coc[3] = {-2.0f, -1.5f, 4.0f};
+    const float alpha[3] = {0.5f, 1.0f, 0.25f};
+    for (int d = 0; d < 3; ++d) {
+        float x[3];
+        depositStreamSpanRecency(row.view(), 0, seq[d], x, 3, alpha[d], coc[d], color, 2);
+        for (int i = 0; i < 3; ++i)
+            single[i]->deposit(seq[d][i], alpha[d], coc[d], color);
+    }
+    for (int i = 0; i < 3; ++i) {
+        CHECK(row.alpha.data()[i] == single[i]->A());
+        CHECK(row.claimed.data()[i] == single[i]->Q());
+        for (int c = 0; c < 2; ++c)
+            CHECK(row.color.data()[c * 3 + i] == single[i]->C(c));
+    }
+}
+
+TEST_CASE("orderedDepthKey is monotone over negatives, -0/+0, subnormals, 1e12 and infinity")
+{
+    const float inf = std::numeric_limits<float>::infinity();
+    const float denorm = std::numeric_limits<float>::denorm_min();
+    const float values[] = {-inf, -1e12f, -3.5f, -1.0f, -1e-38f, -1e-40f, -denorm, -0.0f,
+                            0.0f, denorm, 1e-40f, 1e-38f, 1e-6f, 1.0f, 1.0000001f, 10.0f,
+                            1e12f, 3e38f, inf};
+    const int n = static_cast<int>(sizeof(values) / sizeof(values[0]));
+    for (int i = 0; i < n; ++i) {
+        for (int j = 0; j < n; ++j) {
+            CAPTURE(values[i]);
+            CAPTURE(values[j]);
+            // -0 and +0 compare equal as floats but take adjacent keys: the
+            // key order refines the float order, it never contradicts it.
+            if (values[i] < values[j])
+                CHECK(orderedDepthKey(values[i]) < orderedDepthKey(values[j]));
+            if (i < j)
+                CHECK(orderedDepthKey(values[i]) < orderedDepthKey(values[j]));
+        }
+    }
+
+    std::uint32_t s = 12345u;
+    for (int k = 0; k < 200000; ++k) {
+        s = s * 1664525u + 1013904223u;
+        std::uint32_t ba = s;
+        s = s * 1664525u + 1013904223u;
+        std::uint32_t bb = s;
+        float a, b;
+        std::memcpy(&a, &ba, sizeof a);
+        std::memcpy(&b, &bb, sizeof b);
+        if (std::isnan(a) || std::isnan(b))
+            continue;
+        if (a < b)
+            CHECK(orderedDepthKey(a) < orderedDepthKey(b));
+        else if (b < a)
+            CHECK(orderedDepthKey(b) < orderedDepthKey(a));
+    }
+}
+
+TEST_CASE("volumetricPieceBounds: shares sum to 1, the focal plane is a cut, at most K+1 pieces, "
+          "at most one step of CoC per piece")
+{
+    const CocParams manual = makeCocParams(CocMode::Manual, 50.0f, 2.8f, 36.0f,
+                                           10.0f, 1000.0f, 1920.0f, 1.0f,
+                                           1.0f, 1.0f, 40.0f, 64.0f);
+    const CocParams physical = makeCocParams(CocMode::Physical, 50.0f, 2.8f, 36.0f,
+                                             10.0f, 1000.0f, 1920.0f, 1.0f,
+                                             1.0f, 1.0f, 100.0f, 10.0f);
+
+    const auto checkPieces = [](const CocParams& p, float zf, float zb, float a, float step,
+                                const VolumetricPiece* pc, int count, int maxPieces, bool stepBound) {
+        CAPTURE(zf);
+        CAPTURE(zb);
+        CAPTURE(count);
+        REQUIRE(count >= 1);
+        CHECK(count <= maxPieces);
+        CHECK(pc[0].zFront == zf);
+        CHECK(pc[count - 1].zBack == zb);
+
+        const double n = count;
+        double tSum = 0.0, trans = 1.0, colour = 0.0;
+        bool focusIsCut = false;
+        for (int i = 0; i < count; ++i) {
+            if (i > 0)
+                CHECK(pc[i].zFront == pc[i - 1].zBack);
+            CHECK(pc[i].zBack > pc[i].zFront);
+            tSum   += pc[i].t;
+            colour += pc[i].colorScale * trans;
+            trans  *= 1.0 - pc[i].alpha;
+            if (pc[i].zBack == p._focusDistance && i + 1 < count)
+                focusIsCut = true;
+            if (stepBound) {
+                const bool   front = pc[i].zBack <= p._focusDistance;
+                const double k     = cocCoefficient(p, front);
+                const double dCoc  = std::fabs(signedCocPixels(p, pc[i].zBack)
+                                             - signedCocPixels(p, pc[i].zFront));
+                // Each endpoint is a double inversion rounded to float and
+                // re-evaluated in float: a few roundings of k*S/z each.
+                const double slack = 12.0 * k * p._focusDistance / pc[i].zFront * kUlp24;
+                CHECK(dCoc <= step + slack);
+            }
+        }
+        CHECK(std::fabs(tSum - 1.0) <= n * kUlp24);
+        // Transmittance of the pieces multiplies back to the parent's; the
+        // premultiplied colour of their `over` reconstructs the parent's.
+        CHECK(std::fabs(trans - (1.0 - a)) <= 8.0 * n * kUlp24);
+        if (a > 0.0f)
+            CHECK(std::fabs(colour - 1.0) <= 8.0 * n * kUlp24 / a);
+        if (zf < p._focusDistance && zb > p._focusDistance)
+            CHECK(focusIsCut);
+    };
+
+    for (const CocParams& p : {manual, physical}) {
+        for (int K : {4, 16, 64, 128}) {
+            CAPTURE(K);
+            const FrameDepthRange range = makeFrameDepthRange(2.0f, 200.0f, K);
+            const float step = volumetricPieceStepPx(p, range, 0.25f);
+            CHECK(step >= 0.5f);
+            VolumetricPiece pieces[kMaxVolumetricPieces];
+
+            const int whole = volumetricPieceBounds(p, 2.0f, 200.0f, 0.7f, step, pieces, kMaxVolumetricPieces);
+            checkPieces(p, 2.0f, 200.0f, 0.7f, step, pieces, whole, K + 1, true);
+
+            std::uint32_t s = 777u + static_cast<std::uint32_t>(K);
+            const auto next = [&s]() {
+                s = s * 1664525u + 1013904223u;
+                return static_cast<float>(s >> 8) / 16777216.0f;
+            };
+            for (int r = 0; r < 400; ++r) {
+                float zf = 2.0f + 198.0f * next();
+                float zb = 2.0f + 198.0f * next();
+                if (zb < zf) std::swap(zf, zb);
+                if (!(zb > zf)) continue;
+                if (r % 5 == 0) { zf = 9.0f + next(); zb = 10.0f + 5.0f * next(); }
+                const float a = (r % 7 == 0) ? 1.0f : next();
+                const int count = volumetricPieceBounds(p, zf, zb, a, step, pieces, kMaxVolumetricPieces);
+                checkPieces(p, zf, zb, a, step, pieces, count, K + 1, true);
+            }
+        }
+    }
+
+    SUBCASE("a binding cap keeps the count, the shares and the focal cut")
+    {
+        VolumetricPiece pieces[kMaxVolumetricPieces];
+        for (int cap : {2, 3, 5}) {
+            CAPTURE(cap);
+            const int count = volumetricPieceBounds(manual, 2.0f, 200.0f, 0.5f, 0.5f, pieces, cap);
+            checkPieces(manual, 2.0f, 200.0f, 0.5f, 0.5f, pieces, count, cap, false);
+        }
+        const int one = volumetricPieceBounds(manual, 2.0f, 200.0f, 0.5f, 0.5f, pieces, 1);
+        CHECK(one == 1);
+        CHECK(pieces[0].t == 1.0f);
+    }
+
+    SUBCASE("a span on the max_radius plateau is one piece; a point sample passes through")
+    {
+        VolumetricPiece pieces[kMaxVolumetricPieces];
+        // Manual size 64, max 40: |CoC| >= 40 in front of z = 10 / (1 + 40/64).
+        CHECK(volumetricPieceBounds(manual, 2.0f, 5.0f, 0.4f, 0.5f, pieces, kMaxVolumetricPieces) == 1);
+        CHECK(pieces[0].t == 1.0f);
+        CHECK(pieces[0].alpha == 0.4f);
+
+        CHECK(volumetricPieceBounds(manual, 7.0f, 7.0f, 0.4f, 0.5f, pieces, kMaxVolumetricPieces) == 1);
+        CHECK(pieces[0].t == 1.0f);
+        CHECK(pieces[0].alpha == 0.4f);
+        CHECK(pieces[0].colorScale == 1.0f);
     }
 }

@@ -34,20 +34,6 @@ namespace {
 // Shared test fixtures
 // ---------------------------------------------------------------------------
 
-// Front-to-back `over` of a pixel's K bucket alphas, i.e. 1 - prod(1 - a_k).
-//
-// This is a TEST-LOCAL ORACLE, not a production path.  The identity it is
-// used for below belongs to the FRAGMENT SPLIT, not to the bucket composite:
-// partitionAlpha()'s whole contract is that its two deposits reconstruct the
-// parent under `over` (`1 - (1-a0)(1-a1) == alpha`).
-inline float overCompositeAlpha(const float* bucketAlpha, int bucketCount)
-{
-    float transmittance = 1.0f;
-    for (int k = 0; k < bucketCount; ++k)
-        transmittance *= (1.0f - clampf(bucketAlpha[k], 0.0f, 1.0f));
-    return clampf(1.0f - transmittance, 0.0f, 1.0f);
-}
-
 // A "no-saturation" physical rig: 50mm f/2.8 lens, 36mm filmback, 1920px
 // format, focused at 10m, over a depth range of [1m, 100m]. Chosen so the
 // resulting CoC never reaches max_radius=100px anywhere in that range (see
@@ -430,23 +416,13 @@ TEST_CASE("HoldoutVisibility::build matches evalBoundaries for sorted input and 
 }
 
 TEST_CASE("HoldoutVisibility boundary-LUT interpolation is exact for a single full-range sample, "
-          "and a BOUNDARY locator (not bucketOf) is the correct feed for interpAtBucket")
+          "and a BOUNDARY fraction (not a centre fraction) is the correct feed for interpAtBucket")
 {
-    // NOTE: in production the locator is HoldoutBoundaries::locate()
-    // over the holdout LUT's OWN boundary set, not DepthBuckets::locateBoundary()
-    // over the ΔCoC bucket set -- the two sets are decoupled and a pair from one
-    // must never index the other.  What this case pins is the property the two
-    // share and that bucketOf() does not: the fraction must be measured between
-    // BOUNDARIES, not between bucket CENTRES.  DepthBuckets is used here only
-    // because it is a convenient locator over the very array the LUT below is
-    // built at; see the HoldoutBoundaries case that follows for the production
-    // locator's own contract.
-
     // A single holdout sample spanning the whole boundary range makes log(T)
-    // exactly linear in z across every interval (no sample edge falls inside
-    // any bucket), so interpAtBucket() fed the correct boundary-fraction must
-    // reproduce evalExact() to float precision -- this is the "interpolation
-    // vs exact eval" identity.
+    // exactly linear in z across every interval, so interpAtBucket() fed the
+    // fraction between BOUNDARIES must reproduce evalExact() to float
+    // precision.  A fraction measured between interval centres is a different
+    // number for the same depth and must read back further from the truth.
     const float zFront[1] = {-100.0f};
     const float zBack[1]  = {100.0f};
     const float alpha[1]  = {0.6f};
@@ -455,35 +431,15 @@ TEST_CASE("HoldoutVisibility boundary-LUT interpolation is exact for a single fu
     float boundaryT[5];
     HoldoutVisibility::build(zFront, zBack, alpha, 1, boundaries, 5, boundaryT);
 
-    const float z = 4.5f; // strictly inside bucket [3, 6)
+    const float z = 4.5f; // strictly inside [3, 6)
     const float exact = HoldoutVisibility::evalExact(zFront, zBack, alpha, 1, z);
 
-    // Build a DepthBuckets whose _boundaries match the array above exactly and
-    // whose _centres are deliberately NOT the boundary midpoints -- exactly
-    // the case that goes wrong: bucketOf() measures position between bucket
-    // CENTRES, so its fraction is a different number from locateBoundary()'s,
-    // and feeding the wrong one into interpAtBucket() silently reads back the
-    // wrong value.
-    DepthBuckets buckets;
-    buckets._bucketCount = 4;
-    for (int i = 0; i < 5; ++i)
-        buckets._boundaries[i] = boundaries[i];
-    // Off-centre on purpose (real centres would be -6, 0.5, 4.5, 13).
-    buckets._centres[0] = -9.0f;
-    buckets._centres[1] = -1.5f;
-    buckets._centres[2] = 5.5f;
-    buckets._centres[3] = 19.0f;
-
-    const BoundarySpan bs = buckets.locateBoundary(z);
-    const float visCorrect = HoldoutVisibility::interpAtBucket(boundaryT, 5, bs.index, bs.frac);
+    // By hand: [3, 6) is bracket 2, (4.5 - 3) / 3 = 0.5.
+    const float visCorrect = HoldoutVisibility::interpAtBucket(boundaryT, 5, 2, 0.5f);
     CHECK(visCorrect == doctest::Approx(exact).epsilon(1e-5));
 
-    const BucketWeight wrongFeed = buckets.bucketOf(z);
-    const float visWrongFeed = HoldoutVisibility::interpAtBucket(boundaryT, 5, wrongFeed.index, wrongFeed.frac);
-    // The wrong feed is not asserted to differ by a specific magnitude (that
-    // depends on the exact bucket geometry) -- what matters as a regression
-    // guard is that the CORRECT feed is measurably closer to the exact
-    // reference than the wrong one is.
+    // Centres 0.5 and 4.5 bracket z = 4.5 as interval 1 at fraction 1.0.
+    const float visWrongFeed = HoldoutVisibility::interpAtBucket(boundaryT, 5, 1, 1.0f);
     const float errCorrect = std::fabs(visCorrect - exact);
     const float errWrongFeed = std::fabs(visWrongFeed - exact);
     CHECK(errCorrect < 1e-5f);
@@ -961,32 +917,6 @@ TEST_CASE("DepthBuckets: ΔCoC boundary spacing is uniform per side of focus and
     }
 }
 
-TEST_CASE("DepthBuckets::bucketOf: fractional two-bucket assignment is an exact partition of unity")
-{
-    // BucketWeight's doc claims this is a HARD guarantee under round-to-
-    // nearest (Sterbenz / sub-half-ulp argument), not a tolerance -- so this
-    // test asserts exact equality, not Approx.
-    CocParams p = makeNoSaturationPhysicalParams();
-    DepthBuckets buckets = makeBoundedDeltaCocBuckets(p, 1.0f, 100.0f, 16);
-
-    for (float depth = 1.0f; depth <= 100.0f; depth += 0.37f) {
-        const BucketWeight w = buckets.bucketOf(depth);
-        CHECK(w.weightLow() + w.weightHigh() == 1.0f);
-        CHECK(w.index >= 0);
-        CHECK(w.index < buckets.bucketCount());
-    }
-
-    // Outside the outermost centres saturates to frac 0.
-    const BucketWeight below = buckets.bucketOf(buckets.centre(0) - 1000.0f);
-    CHECK(below.frac == 0.0f);
-    CHECK(below.index == 0);
-
-    const int last = buckets.bucketCount() - 1;
-    const BucketWeight above = buckets.bucketOf(buckets.centre(last) + 1000.0f);
-    CHECK(above.frac == 0.0f);
-    CHECK(above.index == last);
-}
-
 // ===========================================================================
 // Transmittance-preserving alpha split (partitionAlpha / partitionColorScale)
 // ===========================================================================
@@ -1062,337 +992,59 @@ TEST_CASE("partitionAlpha/partitionColorScale reconstruct exactly at the alpha=0
     }
 }
 
-TEST_CASE("Flat opaque field: fractional two-bucket deposit + front-to-back composite gives alpha == 1 exactly")
-{
-    // Validation scene (c)'s identity, exercised at the primitive level: an
-    // opaque fragment (alpha=1) landing between two bucket centres deposits
-    // FULL alpha into BOTH buckets (partitionAlpha(1,t)=1 for any t>0), so
-    // the front-to-back composite of just those two buckets must read back
-    // alpha exactly 1, not the ~0.75 a linear split would give.
-    CocParams p = makeNoSaturationPhysicalParams();
-    DepthBuckets buckets = makeBoundedDeltaCocBuckets(p, 1.0f, 100.0f, 16);
-
-    // Pick a depth strictly between two centres (not saturated onto an end).
-    const float depth = 0.5f * (buckets.centre(4) + buckets.centre(5));
-    const BucketWeight w = buckets.bucketOf(depth);
-    REQUIRE(w.frac > 0.0f);
-    REQUIRE(w.frac < 1.0f);
-
-    const BucketDeposit dep = fragmentDeposit(w, 1.0f);
-    CHECK(dep.alpha0 == 1.0f);
-    CHECK(dep.alpha1 == 1.0f);
-
-    const int bucketCount = buckets.bucketCount();
-    std::vector<float> bucketAlpha(static_cast<std::size_t>(bucketCount), 0.0f);
-    bucketAlpha[static_cast<std::size_t>(dep.index0)] += dep.alpha0;
-    bucketAlpha[static_cast<std::size_t>(dep.index1)] += dep.alpha1;
-
-    // Alpha only: this identity is the split's, and colour follows it by
-    // construction (premultiplied colour is scaled by alpha_i/alpha).
-    const float outAlpha = overCompositeAlpha(bucketAlpha.data(), bucketCount);
-
-    CHECK(outAlpha == doctest::Approx(1.0f).epsilon(1e-6));
-}
-
-TEST_CASE("saturationScale: 1/alpha above 1, exactly 1 at or below it and for NaN -- down only")
-{
-    SUBCASE("alpha > 1 returns the reciprocal, so colour * scale is the colour:alpha ratio")
-    {
-        // Exact in binary: every operand a power of two.
-        CHECK(saturationScale(2.0f) == 0.5f);
-        CHECK(2.0f * saturationScale(2.0f) == 1.0f);
-
-        // Non-dyadic alphas: the scale is the float reciprocal to the bit, and
-        // colour * scale recovers the unpremultiplied value through three
-        // roundings (a*c, 1/a, their product), each <= 2^-24 relative; 4 terms
-        // leaves room for the second-order cross terms.
-        const float unpremult[3] = {0.3f, 0.77f, 0.999f};
-        for (float a : {1.0000001f, 1.3f, 1.7f, 2.9f, 5.5f}) {
-            CAPTURE(a);
-            const float scale = saturationScale(a);
-            CHECK(scale == 1.0f / a);
-            CHECK(scale < 1.0f);
-            for (int c = 0; c < 3; ++c) {
-                const float premult = a * unpremult[c];
-                CHECK(std::fabs(premult * scale - unpremult[c])
-                      <= 4.0f * std::ldexp(1.0f, -24) * unpremult[c]);
-            }
-        }
-    }
-
-    SUBCASE("alpha <= 1 is never scaled up: a coverage deficit is the fill's to restore")
-    {
-        for (float a : {1.0f, 0.9999999f, 0.5f, 0.0f, -0.25f})
-            CHECK(saturationScale(a) == 1.0f);
-    }
-
-    SUBCASE("NaN fails the > 1 test and scales nothing")
-    {
-        CHECK(saturationScale(std::numeric_limits<float>::quiet_NaN()) == 1.0f);
-        CHECK(saturationScale(std::numeric_limits<float>::infinity()) == 0.0f);
-    }
-}
-
 // ===========================================================================
-// Volumetric span split
+// FrameDepthRange and the CoC coefficient the volumetric cut inverts through
 // ===========================================================================
 
-TEST_CASE("splitSpanAtBoundaries: parts recombine via `over` to reproduce the parent sample exactly")
+TEST_CASE("makeFrameDepthRange sanitises like DepthBuckets and clamps K to the knob range")
 {
-    DepthBuckets buckets;
-    buckets._bucketCount = 4;
-    buckets._boundaries[0] = 0.0f;
-    buckets._boundaries[1] = 10.0f;
-    buckets._boundaries[2] = 20.0f;
-    buckets._boundaries[3] = 30.0f;
-    buckets._boundaries[4] = 40.0f;
-    buckets._centres[0] = 5.0f;
-    buckets._centres[1] = 15.0f;
-    buckets._centres[2] = 25.0f;
-    buckets._centres[3] = 35.0f;
+    const FrameDepthRange swapped = makeFrameDepthRange(100.0f, 1.0f, 200);
+    CHECK(swapped.depthMin == 1.0f);
+    CHECK(swapped.depthMax == 100.0f);
+    CHECK(swapped.K == 128);
 
-    SUBCASE("span crossing no boundary returns 1 part identical to the input")
-    {
-        SpanSplitPart parts[6];
-        const int n = splitSpanAtBoundaries(buckets, 12.0f, 18.0f, 0.7f, parts, 6);
-        REQUIRE(n == 1);
-        CHECK(parts[0].zFront == 12.0f);
-        CHECK(parts[0].zBack == 18.0f);
-        CHECK(parts[0].t == doctest::Approx(1.0f));
-        CHECK(parts[0].alpha == doctest::Approx(0.7f));
-    }
+    const FrameDepthRange poisoned = makeFrameDepthRange(std::numeric_limits<float>::quiet_NaN(),
+                                                         std::numeric_limits<float>::infinity(), 2);
+    CHECK(poisoned.depthMin == FrameDepthRange::kMinDepth);
+    CHECK(poisoned.depthMax == FrameDepthRange::kMaxDepth);
+    CHECK(poisoned.K == 4);
 
-    SUBCASE("span crossing multiple boundaries: parts' t sum to 1 and alphas recombine to the parent")
-    {
-        const float parentAlpha = 0.85f;
-        SpanSplitPart parts[6];
-        const int n = splitSpanAtBoundaries(buckets, 3.0f, 33.0f, parentAlpha, parts, 6);
-        REQUIRE(n >= 2);
-
-        float tSum = 0.0f;
-        float transmittance = 1.0f; // product over parts of (1 - alpha_i)
-        for (int i = 0; i < n; ++i) {
-            tSum += parts[i].t;
-            transmittance *= (1.0f - parts[i].alpha);
-        }
-        // Absolute tolerances tied to measurement, not to what the code emits:
-        // swept over alpha in (0,1) x 200 span placements the worst |sum t - 1|
-        // is 3.0e-08 and the worst |reconstructed - parent| is 1.2e-07
-        // (consistent with the ~8.3e-08 measured for this form), so 1e-6 is
-        // ~8x headroom.
-        CHECK(std::fabs(tSum - 1.0f) < 1e-6f);
-        const float reconstructedAlpha = 1.0f - transmittance;
-        CHECK(std::fabs(reconstructedAlpha - parentAlpha) < 1e-6f);
-    }
-}
-
-TEST_CASE("splitPartCount is a safe upper bound, and bucketOfContaining's contract "
-          "is {containing bucket, frac 0}")
-{
-    DepthBuckets buckets;
-    buckets._bucketCount = 4;
-    buckets._boundaries[0] = 0.0f;
-    buckets._boundaries[1] = 10.0f;
-    buckets._boundaries[2] = 20.0f;
-    buckets._boundaries[3] = 30.0f;
-    buckets._boundaries[4] = 40.0f;
-    buckets._centres[0] = 5.0f;
-    buckets._centres[1] = 15.0f;
-    buckets._centres[2] = 25.0f;
-    buckets._centres[3] = 35.0f;
-
-    SUBCASE("bucketOfContaining returns the whole weight in the containing bucket")
-    {
-        // The direct statement of the contract the composition tests below rely
-        // on indirectly: no fractional spill, and the index is the bucket whose
-        // [boundary(i), boundary(i+1)) interval contains the depth.
-        const struct { float depth; int index; } cases[] = {
-            {  1.0f, 0 }, {  9.99f, 0 }, { 10.0f, 1 }, { 15.0f, 1 },
-            { 25.0f, 2 }, { 39.9f, 3 },
-        };
-        for (const auto& c : cases) {
-            const BucketWeight w = buckets.bucketOfContaining(c.depth);
-            CHECK(w.index == c.index);
-            CHECK(w.frac == 0.0f);
-            CHECK(w.weightLow() == 1.0f);
-            CHECK(w.weightHigh() == 0.0f);
-            // frac == 0 folds the "second" bucket back onto the first, so an
-            // unconditional two-deposit scatter loop can never write past K-1.
-            CHECK(w.indexHigh() == c.index);
-        }
-
-        // Out of range clamps onto the end buckets, never out of bounds.
-        CHECK(buckets.bucketOfContaining(-1000.0f).index == 0);
-        CHECK(buckets.bucketOfContaining(1000.0f).index == buckets.bucketCount() - 1);
-    }
-
-    SUBCASE("splitPartCount never under-counts the parts splitSpanAtBoundaries writes")
-    {
-        // The buffer-sizing contract: an under-count would be a stack overrun
-        // in the scatter core's per-sample path.
-        for (float zFront = -5.0f; zFront <= 45.0f; zFront += 1.0f) {
-            for (float thickness : {0.0f, 0.5f, 7.0f, 15.0f, 33.0f, 60.0f}) {
-                const int bound = splitPartCount(buckets, zFront, zFront + thickness);
-                CHECK(bound >= 1);
-                CHECK(bound <= buckets.boundaryCount() + 1); // documented K+2 cap
-
-                SpanSplitPart parts[DepthBuckets::kMaxBoundaries + 1];
-                const int n = splitSpanAtBoundaries(buckets, zFront, zFront + thickness,
-                                                    0.6f, parts,
-                                                    DepthBuckets::kMaxBoundaries + 1);
-                CHECK(n <= bound);
-            }
+    const float ranges[][2] = {{1.0f, 100.0f}, {0.5f, 7.25f}, {-3.0f, 40.0f}, {12.0f, 1e20f}};
+    const int   ks[]        = {4, 16, 64, 128};
+    const CocParams p = makeNoSaturationPhysicalParams();
+    for (const auto& r : ranges) {
+        for (int k : ks) {
+            const FrameDepthRange f = makeFrameDepthRange(r[0], r[1], k);
+            const DepthBuckets    b = makeBoundedDeltaCocBuckets(p, r[0], r[1], k);
+            CHECK(f.depthMin == b.depthMin());
+            CHECK(f.depthMax == b.depthMax());
+            CHECK(f.K == b.bucketCount());
         }
     }
 }
 
-TEST_CASE("Composition contract: bucketOfContaining (correct) exactly reconstructs a split span; "
-          "bucketOf (contract violation) double-counts")
+TEST_CASE("cocCoefficient is signedCocPixels' unclamped slope in |1 - S/d| on each side")
 {
-    // Volumetric span splitting and fractional bucket assignment are mutually
-    // exclusive: a piece from splitSpanAtBoundaries() MUST be deposited via
-    // bucketOfContaining(), not bucketOf() -- using bucketOf() re-splits an
-    // already-split piece and over-counts alpha/colour (measured +8.3% at
-    // parent alpha 0.9 on a 16-bucket frame).
-    //
-    // Hand-verifiable deterministic scenario (bucketCount=4, evenly spaced so
-    // the numbers can be checked by hand):
-    //   boundaries = {0, 10, 20, 30, 40}, centres = {5, 15, 25, 35}
-    //   span [8, 12] straddles exactly boundary[1]=10, parent alpha = 0.9
-    //   -> two parts, t0=t1=0.5, each alpha = 1 - sqrt(1-0.9) = 1 - sqrt(0.1)
-    //                                        = 0.683772...
-    //
-    // Correct (bucketOfContaining): part0 (mid=9, in bucket [0,10)) deposits
-    // WHOLLY into bucket 0; part1 (mid=11, in bucket [10,20)) deposits WHOLLY
-    // into bucket 1. Composite: 1 - (1-a)(1-a) = 1 - (sqrt(0.1))^2 = 1 - 0.1
-    // = 0.9 exactly == parent alpha.
-    //
-    // Violating (bucketOf): part0's mid=9 sits between CENTRES 5 and 15
-    // (frac=0.4), so bucketOf() splits IT again 60/40 across buckets 0/1;
-    // part1's mid=11 is also between centres 5 and 15 (frac=0.6), splitting
-    // 40/60 across the SAME two buckets. The two parts' contributions land in
-    // the same bucket pair and accumulate ADDITIVELY there (as the scatter's
-    // per-bucket accumulation does), then get `over`-composited on top of
-    // that -- double-counting. Hand computation gives ~0.9825, i.e. ~9.2%
-    // high, consistent with the measured ballpark for a similar (not
-    // identical) geometry.
-    DepthBuckets buckets;
-    buckets._bucketCount = 4;
-    buckets._boundaries[0] = 0.0f;
-    buckets._boundaries[1] = 10.0f;
-    buckets._boundaries[2] = 20.0f;
-    buckets._boundaries[3] = 30.0f;
-    buckets._boundaries[4] = 40.0f;
-    buckets._centres[0] = 5.0f;
-    buckets._centres[1] = 15.0f;
-    buckets._centres[2] = 25.0f;
-    buckets._centres[3] = 35.0f;
+    const CocParams manual = makeCocParams(CocMode::Manual, 50.0f, 2.8f, 36.0f,
+                                           10.0f, 1000.0f, 1920.0f, 1.0f,
+                                           0.75f, 1.25f, 1000.0f, 64.0f);
+    CHECK(cocCoefficient(manual, true) == 64.0f * 0.75f);
+    CHECK(cocCoefficient(manual, false) == 64.0f * 1.25f);
 
-    const float parentAlpha = 0.9f;
-    SpanSplitPart parts[6];
-    const int n = splitSpanAtBoundaries(buckets, 8.0f, 12.0f, parentAlpha, parts, 6);
-    REQUIRE(n == 2);
-
-    auto composite = [&](bool useContract) -> float {
-        std::vector<float> bucketAlpha(static_cast<std::size_t>(buckets.bucketCount()), 0.0f);
-        for (int i = 0; i < n; ++i) {
-            const float mid = 0.5f * (parts[i].zFront + parts[i].zBack);
-            const BucketWeight w = useContract ? buckets.bucketOfContaining(mid)
-                                                : buckets.bucketOf(mid);
-            const BucketDeposit dep = fragmentDeposit(w, parts[i].alpha);
-            bucketAlpha[static_cast<std::size_t>(dep.index0)] += dep.alpha0;
-            bucketAlpha[static_cast<std::size_t>(dep.index1)] += dep.alpha1;
+    const CocParams physical = makeNoSaturationPhysicalParams();
+    for (const CocParams& p : {manual, physical}) {
+        for (float d = 0.5f; d < 400.0f; d *= 1.37f) {
+            const bool   front  = d < p._focusDistance;
+            const double oracle = static_cast<double>(cocCoefficient(p, front))
+                                * std::fabs(1.0 - static_cast<double>(p._focusDistance) / d);
+            const double got    = std::fabs(signedCocPixels(p, d));
+            // signedCocPixels evaluates the same product in float: the ratio
+            // S/d picks up a few roundings (unit scaling, reciprocal,
+            // product) before the cancellation in 1 - S/d, the result a few
+            // more after it.
+            const double k = cocCoefficient(p, front);
+            const double bound = (8.0 * oracle + 8.0 * k * p._focusDistance / d) * std::ldexp(1.0, -24);
+            CHECK(std::fabs(got - oracle) <= bound);
         }
-        return overCompositeAlpha(bucketAlpha.data(), buckets.bucketCount());
-    };
-
-    const float compliant = composite(/*useContract*/ true);
-    const float violating  = composite(/*useContract*/ false);
-
-    // Measured reconstruction error on the compliant path is 1.2e-07, so the
-    // absolute 1e-6 bound below is ~8x headroom -- tight enough that the
-    // violating path's +9.2% could never slip through it.
-    CHECK(std::fabs(compliant - parentAlpha) < 1e-6f);
-    // Regression guard on the violating path. The 1.05 threshold sits well
-    // below the +9.17% this exact scenario produces, so the test is robust to
-    // minor float-path differences while still catching a reintroduced contract
-    // violation (it does: making bucketOfContaining() behave like bucketOf()
-    // fails both this and the `compliant` assertion above -- verified by
-    // mutation).
-    CHECK(violating > parentAlpha * 1.05f);
-
-    // ...and pin the actual value, so this stays a HAND-DERIVED scenario rather
-    // than a threshold the rig could drift under. Closed form, all by hand:
-    //   a_part      = 1 - sqrt(0.1)          = 0.6837722339831620
-    //   1 - a_part  = sqrt(0.1)              = 0.31622776601683794
-    //   deposits    = 1 - (1-a_part)^0.6     = 0.4988127663727278
-    //                 1 - (1-a_part)^0.4     = 0.3690426555198068
-    //   each bucket = 0.4988127663727278 + 0.3690426555198068
-    //               = 0.8678554218925346    (both parts land in the SAME pair)
-    //   composite   = 1 - (1 - 0.8678554218925346)^2 = 0.9825378043...
-    // i.e. +9.171% over the parent 0.9. The +8.29% measured elsewhere is a
-    // DIFFERENT scenario (a 16-bucket ΔCoC frame with non-uniform spacing, so
-    // the two parts' centre-fractions are not the symmetric 0.4/0.6 this
-    // hand-checkable 4-bucket uniform rig produces); the two numbers are
-    // consistent in sign and magnitude, and neither is a fitted constant.
-    CHECK(violating == doctest::Approx(0.9825378043).epsilon(1e-4));
-}
-
-TEST_CASE("Composition contract: bucketOfContaining reconstruction stays continuous as a "
-          "volumetric slab slides across a bucket boundary")
-{
-    // Under the correct contract the result stays continuous (max alpha step
-    // 6e-08) as a slab slides across a boundary.
-    // Sweep a fixed-thickness span's front edge across boundary[1]=10 and
-    // check the compliant reconstruction stays pinned to the parent alpha at
-    // every step (which is itself the continuity guarantee: if it always
-    // equals the same constant, consecutive steps trivially differ by ~0).
-    DepthBuckets buckets;
-    buckets._bucketCount = 4;
-    buckets._boundaries[0] = 0.0f;
-    buckets._boundaries[1] = 10.0f;
-    buckets._boundaries[2] = 20.0f;
-    buckets._boundaries[3] = 30.0f;
-    buckets._boundaries[4] = 40.0f;
-    buckets._centres[0] = 5.0f;
-    buckets._centres[1] = 15.0f;
-    buckets._centres[2] = 25.0f;
-    buckets._centres[3] = 35.0f;
-
-    const float parentAlpha = 0.9f;
-    const float thickness = 4.0f;
-
-    float prev = -1.0f;
-    bool havePrev = false;
-    for (float zFront = 8.0f; zFront <= 12.0f; zFront += 0.2f) {
-        const float zBack = zFront + thickness;
-        SpanSplitPart parts[6];
-        const int n = splitSpanAtBoundaries(buckets, zFront, zBack, parentAlpha, parts, 6);
-        REQUIRE(n >= 1);
-        REQUIRE(n <= 2); // this span crosses at most one boundary (10)
-
-        std::vector<float> bucketAlpha(static_cast<std::size_t>(buckets.bucketCount()), 0.0f);
-        for (int i = 0; i < n; ++i) {
-            const float mid = 0.5f * (parts[i].zFront + parts[i].zBack);
-            const BucketWeight w = buckets.bucketOfContaining(mid);
-            const BucketDeposit dep = fragmentDeposit(w, parts[i].alpha);
-            bucketAlpha[static_cast<std::size_t>(dep.index0)] += dep.alpha0;
-            bucketAlpha[static_cast<std::size_t>(dep.index1)] += dep.alpha1;
-        }
-        const float outAlpha = overCompositeAlpha(bucketAlpha.data(),
-                                                  buckets.bucketCount());
-
-        // Absolute bounds tied to the measured "max alpha step 6e-08": over a
-        // 5x finer sweep of this rig the worst deviation from the parent is
-        // 1.19e-07 and the worst consecutive step is 1.19e-07, so 1e-6 is ~8x
-        // headroom. A 1e-4 / 1e-3 bound would be three to four orders of
-        // magnitude looser than that measurement and would pass a visible
-        // discontinuity.
-        CHECK(std::fabs(outAlpha - parentAlpha) < 1e-6f);
-        if (havePrev)
-            CHECK(std::fabs(outAlpha - prev) < 1e-6f); // no discontinuity crossing the boundary
-        prev = outAlpha;
-        havePrev = true;
     }
 }
-

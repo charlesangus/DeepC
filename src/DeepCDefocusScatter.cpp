@@ -210,7 +210,7 @@ inline int containingBucket(const DepthBuckets& buckets, float depth)
 {
     if (buckets.bucketCount() <= 0)
         return 0;
-    return clampi(buckets.locateBoundary(depth).index, 0, buckets.bucketCount() - 1);
+    return clampi(locateBoundary(buckets, depth).index, 0, buckets.bucketCount() - 1);
 }
 
 // -----------------------------------------------------------------------
@@ -240,8 +240,8 @@ inline BucketWeight assignBucket(const DepthBuckets& buckets,
                                  FragmentKind        kind,
                                  float               depth)
 {
-    return (kind == FragmentKind::Volumetric) ? buckets.bucketOfContaining(depth)
-                                              : buckets.bucketOf(depth);
+    return (kind == FragmentKind::Volumetric) ? bucketOfContaining(buckets, depth)
+                                              : bucketOf(buckets, depth);
 }
 
 // -----------------------------------------------------------------------
@@ -1505,6 +1505,77 @@ BucketPlaneView BucketPlanes::view()
     v.colocated    = colocated.data();
     v.arrival      = arrival.data();
     v.bucketCount  = bucketCount;
+    v.channelCount = channelCount;
+    v.width        = width;
+    v.height       = height;
+    v.pixelCount   = pixelCount;
+    return v;
+}
+
+// ---------------------------------------------------------------------------
+// StreamPlanes
+// ---------------------------------------------------------------------------
+
+void StreamPlanes::allocate(int channelCountIn, int widthIn, int heightIn)
+{
+    channelCount = (channelCountIn > 0) ? channelCountIn : 0;
+    width        = (widthIn  > 0) ? widthIn  : 0;
+    height       = (heightIn > 0) ? heightIn : 0;
+    pixelCount   = static_cast<std::ptrdiff_t>(width) * height;
+
+    const std::size_t px = static_cast<std::size_t>(pixelCount);
+    claimed.assign(px, 0.0f);
+    alpha.assign(px, 0.0f);
+    oldArea.assign(px, 0.0f);
+    oldMass.assign(px, 0.0f);
+    lastCoc.assign(px, 0.0f);
+    color.assign(px * static_cast<std::size_t>(channelCount), 0.0f);
+    arrival.assign(px, 0.0f);
+}
+
+void StreamPlanes::zero()
+{
+    claimed.assign(claimed.size(), 0.0f);
+    alpha.assign(alpha.size(), 0.0f);
+    oldArea.assign(oldArea.size(), 0.0f);
+    oldMass.assign(oldMass.size(), 0.0f);
+    lastCoc.assign(lastCoc.size(), 0.0f);
+    color.assign(color.size(), 0.0f);
+    arrival.assign(arrival.size(), 0.0f);
+}
+
+void StreamPlanes::release()
+{
+    claimed.release();
+    alpha.release();
+    oldArea.release();
+    oldMass.release();
+    lastCoc.release();
+    color.release();
+    arrival.release();
+    channelCount = 0;
+    width        = 0;
+    height       = 0;
+    pixelCount   = 0;
+}
+
+std::size_t StreamPlanes::sizeBytes() const
+{
+    return claimed.sizeBytes() + alpha.sizeBytes() + oldArea.sizeBytes()
+         + oldMass.sizeBytes() + lastCoc.sizeBytes() + color.sizeBytes()
+         + arrival.sizeBytes();
+}
+
+StreamPlaneView StreamPlanes::view()
+{
+    StreamPlaneView v;
+    v.claimed      = claimed.data();
+    v.alpha        = alpha.data();
+    v.oldArea      = oldArea.data();
+    v.oldMass      = oldMass.data();
+    v.lastCoc      = lastCoc.data();
+    v.color        = color.data();
+    v.arrival      = arrival.data();
     v.channelCount = channelCount;
     v.width        = width;
     v.height       = height;

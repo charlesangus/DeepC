@@ -58,10 +58,10 @@ DEEPC_HD inline float stagedRadiusPx(const FlattenParams& params,
         if (!(part.t > 0.0f))
             continue;
         const float partDepth  = sampleMidDepth(part.zFront, part.zBack);
-        const int   partBucket = buckets.bucketOfContaining(partDepth).index;
+        const int   partBucket = bucketOfContaining(buckets, partDepth).index;
         if (have && partBucket == runBucket) {
             runBack   = part.zBack;
-            runBucket = buckets.bucketOfContaining(sampleMidDepth(runFront, runBack)).index;
+            runBucket = bucketOfContaining(buckets, sampleMidDepth(runFront, runBack)).index;
             continue;
         }
         runFront  = part.zFront;

@@ -2007,7 +2007,7 @@ private:
             const deepc::CompositeTraceTerms&  m = t.bucket[k].terms;
             if (!m.visited && p.cRaw == 0.0f && p.aRaw == 0.0f && p.dRaw == 0.0f)
                 continue;
-            const float z = (k < buckets.bucketCount()) ? buckets.centre(k) : 0.0f;
+            const float z = (k < buckets.bucketCount()) ? bucketCentre(buckets, k) : 0.0f;
             emit(std::snprintf(line, sizeof(line),
                  "  k=%d zCentre=%.9g C_k raw=%.9g clamped=%.9g A_k raw=%.9g clamped=%.9g "
                  "satScale=%.9g u=%.9g D_k=%.9g colour raw=%s scaled=%s%s\n",
