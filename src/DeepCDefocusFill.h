@@ -34,42 +34,24 @@ struct Surface {
     float radiusPx = 0.0f;
 };
 
-// The residual borrows the radius of the LAST part flattenPixelToSoA() stages
-// from a span, after consecutive same-bucket parts are folded together, so
-// the radius depends on the buckets rather than on the span's own midpoint.
-// Must stay step-for-step with the flatten's split loop.
-DEEPC_HD inline float stagedRadiusPx(const FlattenParams& params,
-                                     const DepthBuckets&  buckets,
-                                     float zFront, float zBack, float alpha)
+// The residual borrows the radius of the LAST piece flattenPixelToSoA()
+// stages from a span, so this must cut exactly as the flatten does.  Host
+// only: volumetricPieceBounds() is.
+inline float stagedRadiusPx(const FlattenParams& params,
+                            float zFront, float zBack, float alpha)
 {
     if (!(zBack > zFront))
         return radiusPixels(params.coc, sampleMidDepth(zFront, zBack));
 
-    SpanSplitPart parts[kMaxSpanSplitParts];
-    const int nParts = splitSpanAtBoundaries(buckets, zFront, zBack, alpha,
-                                             parts, kMaxSpanSplitParts);
-
-    bool  have      = false;
-    float runFront  = zFront;
-    float runBack   = zBack;
-    int   runBucket = 0;
-    for (int p = 0; p < nParts; ++p) {
-        const SpanSplitPart& part = parts[p];
-        if (!(part.t > 0.0f))
-            continue;
-        const float partDepth  = sampleMidDepth(part.zFront, part.zBack);
-        const int   partBucket = bucketOfContaining(buckets, partDepth).index;
-        if (have && partBucket == runBucket) {
-            runBack   = part.zBack;
-            runBucket = bucketOfContaining(buckets, sampleMidDepth(runFront, runBack)).index;
-            continue;
-        }
-        runFront  = part.zFront;
-        runBack   = part.zBack;
-        runBucket = partBucket;
-        have      = true;
+    VolumetricPiece pieces[kMaxVolumetricPieces];
+    const int maxPieces = clampi(params.maxVolumetricPieces, 1, kMaxVolumetricPieces);
+    const int n = volumetricPieceBounds(params.coc, zFront, zBack, alpha,
+                                        params.pieceStepPx, pieces, maxPieces);
+    for (int p = n; p-- > 0;) {
+        if (pieces[p].t > 0.0f)
+            return radiusPixels(params.coc, sampleMidDepth(pieces[p].zFront, pieces[p].zBack));
     }
-    return radiusPixels(params.coc, sampleMidDepth(runFront, runBack));
+    return radiusPixels(params.coc, sampleMidDepth(zFront, zBack));
 }
 
 // Applies the flatten's own sanitising and alpha > 0 early-out to the RAW
@@ -77,11 +59,10 @@ DEEPC_HD inline float stagedRadiusPx(const FlattenParams& params,
 // (tidyOverlapping()'s cut pieces are not reconstructed here).  Channels are
 // not read: a pixel of many samples pays one channel read, at the winner.
 template <typename SampleView>
-DEEPC_HD inline int deepestSurface(const FlattenParams& params,
-                                   const DepthBuckets&  buckets,
-                                   int x, int y,
-                                   const SampleView& samples,
-                                   Surface& out)
+inline int deepestSurface(const FlattenParams& params,
+                          int x, int y,
+                          const SampleView& samples,
+                          Surface& out)
 {
     const int   n        = samples.count();
     const float rayScale = rayDepthScaleAt(params, x, y);
@@ -111,7 +92,7 @@ DEEPC_HD inline int deepestSurface(const FlattenParams& params,
     out.zFront   = bestFront;
     out.zBack    = bestBack;
     out.alpha    = bestAlpha;
-    out.radiusPx = stagedRadiusPx(params, buckets, bestFront, bestBack, bestAlpha);
+    out.radiusPx = stagedRadiusPx(params, bestFront, bestBack, bestAlpha);
     return best;
 }
 
@@ -219,7 +200,6 @@ inline std::size_t surfaceMapBytesForWindow(int width, int height, int channelCo
 template <typename FetchRowFn, typename PixelSamplesFn>
 bool buildSurfaceMap(SurfaceMap& map,
                      const FlattenParams& params,
-                     const DepthBuckets&  buckets,
                      int outputBoxX0, int outputBoxX1,
                      int outputBoxY0, int outputBoxY1,
                      int srcBoxX0, int srcBoxX1,
@@ -248,7 +228,7 @@ bool buildSurfaceMap(SurfaceMap& map,
                 continue;
             const auto samples = pixelSamples(px, py);
             Surface s;
-            const int deepest = deepestSurface(params, buckets, px, py, samples, s);
+            const int deepest = deepestSurface(params, px, py, samples, s);
             if (deepest < 0)
                 continue;
             map.setPixel(px, py, s, samples, deepest);
