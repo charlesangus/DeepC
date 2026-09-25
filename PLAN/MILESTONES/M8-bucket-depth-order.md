@@ -293,7 +293,7 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   - size: M
   - depends: M8.P2.T7
 
-- [ ] M8.P2.T9 — Holdout boundary decoupling: pass the frame's `HoldoutBoundaries` explicitly
+- [x] M8.P2.T9 — Holdout boundary decoupling: pass the frame's `HoldoutBoundaries` explicitly
   - files: `src/DeepCDefocusScatter.h`, `src/DeepCDefocusScatter.cpp`, `src/DeepCDefocus.cpp`
   - approach: `FlattenParams` carries the frame's `HoldoutBoundaries`, built once in `frameSetup()` from
     `FrameDepthRange` (uniform in z, count from `depth_layers`; DESIGN §6); `holdoutBracketOf` stops deriving it
@@ -590,3 +590,13 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   lazy rotation → **equivalent mutant** (with uO = 0 the pN branch reproduces rotate-then-cover; kept because §2.4
   specifies it). The body takes a whole-fragment channel count; chromatic channel groups are P2.T3's. First hostguard
   build was killed at 137 by outside memory pressure; `--floor-gb 1.0` rerun passed.
+- 2026-09-25 — **M8.P2.T9 done (code `f7e127c`), scene f verification outstanding.** `FlattenParams::holdoutBoundaries`
+  is built once in `frameSetup()` (`makeUniformHoldoutBoundaries(buckets)`, contract unchanged) and is the single object
+  the flatten and the holdout LUT read; `holdoutBracketOf(params, depth)` no longer takes `DepthBuckets` or the scratch
+  cache (removed from `FlattenScratch`); `FrameShared::holdoutBoundaries` consolidated into it. One scatter SUBCASE
+  rewritten to assert the new invariant (bracket follows the explicit input, not the `DepthBuckets` also handed in).
+  Doctests 21/21, 129/129. Harness a: `PASS=5`, a1–a5 identical to M8-T0 (a4 0.000e+00 ≤ 2e-7). **Harness f could not
+  be run**: the host (outside this container) sits at ~21/23 GiB with swap full; hostguard's pressure watchdog killed
+  20 implementer attempts and Claude Code stopped the PM's own attempt for critical memory. The change is data plumbing
+  of a per-frame value, so f1/f2 bit-identity is expected but **unmeasured**; P2.T4's determinism runs and P2.T6's
+  full a–o cover it. The shim include in Scatter.h remains only for `assignBucket` (P2.T3 deletes it).
