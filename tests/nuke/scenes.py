@@ -19,8 +19,9 @@ from harness import (
     boolCheck, channelStats, compareImages, constant2d, cropDeep,
     currentFormat, deepHoldout, deepMerge, deepMergeHoldout, deepToImage,
     depthRampLayer, formatBox, insetBox, makeBokeh, makeDefocus, pointLayer,
-    rectangle2d, render, resetScript, rowMeans, runVref, runVrefKernel,
-    saveRender, slab, stepProfile, tolCheck, ulps, VrefUnavailable,
+    rectangle2d, render, renderProbed, resetScript, rowMeans, runVref,
+    runVrefKernel, saveRender, slab, stepProfile, tolCheck, ulps,
+    VrefUnavailable,
     ThinlensUnavailable, dumpDeep, runThinlensRef, KernelSumsUnavailable,
     kernelTaps, rampAdjointSums,
 )
@@ -685,6 +686,11 @@ def sceneF(settings):
     exact = 1.0 - 0.5 * 0.5
     grey = (0.5, 0.5, 0.5, 0.5)
     F3_SIZE, F3_FOCUS = 12.0, 30.0
+    # f3c's rig at a quarter of the taps: the pooling error of a composite
+    # that pools the two slabs' per-unit opacities grows as the pieces get
+    # fewer (-5.7e-03 here against -8.3e-04 at f3c) while the rounding bound
+    # shrinks with the taps, so this is the size at which the bound resolves it.
+    F3J_SIZE, F3J_K = 6.0, 4
 
     def separatedSlabs():
         return deepMerge([slab(6.0, 10.0, grey), slab(12.0, 16.0, grey)])
@@ -697,87 +703,129 @@ def sceneF(settings):
                           pointLayer(constant2d(grey), 10.0,
                                      keepZeroAlpha=False, premult=False)])
 
-    # THE DEFOCUSED GATES ARE TERM COUNTS, derived from the geometry and the
-    # kernel, never from a reading.  Each layer covers the whole frame, so
-    # the shares plus the residual sum to exactly 1 in exact arithmetic and
-    # the fill is meant to be inert; in float the arrival plane is a naive
-    # sum of one term per nonzero kernel tap that reaches the pixel, and when
-    # it lands more than the fill's 1e-05 tolerance under 1 the pair is
-    # divided by it and 0.75 comes out high by that much.  Recursive
-    # summation of n terms is exact to n * 2^-24, so that is the gate.  The
-    # arrival terms are few: a volumetric parent is cut into pieces uniform in
-    # CoC (step max(2 merge_tolerance, frame CoC variation / depth_layers)),
-    # but only its deepest piece carries the parent's share, and the residual
-    # is drawn at the pixel's deepest fragment's radius.  The composite's own
-    # sums take every piece's deposits (35 574 at f3c's centre pixel) and
-    # their rounding is not in this gate: its worst case (n * 2^-24 there is
-    # 1.6e-03) would admit twice the -8.3e-04 a composite that pools the two
-    # slabs' per-unit opacities makes here, so the arrival count is the
-    # tighter, empirical bound -- f3c
-    # reads +4.9e-05 against 3.3e-04, of which the fill's division by an
-    # arrival 2.2e-05 short of 1 is +1.7e-05 and the pre-fill alpha the
-    # rest.  The colour:alpha twins carry every piece's taps, since every
-    # deposit adds to both sums and their ratio has no fill to hide behind.
-    # (The kernel-independent version of the identity is f3 at size 0, 1e-5.)
-    def cocAt(z):
-        return F3_SIZE * (1.0 - F3_FOCUS / z)
+    # THE DEFOCUSED GATES ARE FORWARD-ERROR BOUNDS, derived from the documented
+    # cut and the kernel, never from a reading.  Every layer covers the whole
+    # frame, so in exact arithmetic each piece covers an interior pixel once
+    # and the composite is 0.75.  In float a deposit's alpha add rounds by at
+    # most 2^-24; a rounding of the claimed area, of the older chunk (uO, sO)
+    # or of the implied newer mass moves area or transmitted mass between
+    # chunks, and that moves a later covered fraction x by at most its own
+    # size, scaled by the alpha of the piece that reads it.  A CoC jump pools
+    # the chunks and ends the carry; across a boundary not certain to rotate
+    # it persists, so the weights grow with that run.  Summed over every
+    # piece's nonzero taps (kernel_sums) that is kappa * n_every; the fill
+    # then divides by an arrival within n_arrival * 2^-24 of 1.  Neither sum
+    # is small on the size-12 rigs, so they do not resolve a pooling error;
+    # f3j is the same rig with few enough taps that the bound does.
+    def cocAt(z, size):
+        return size * (1.0 - F3_FOCUS / z)
 
-    def frontPieces(zFront, zBack, step):
+    def frontPieces(zFront, zBack, step, size):
         """The documented cut of one front-of-focus parent: [(zFront, zBack)]
         of its pieces."""
-        r0, r1 = abs(cocAt(zFront)), abs(cocAt(zBack))
+        r0, r1 = abs(cocAt(zFront, size)), abs(cocAt(zBack, size))
         n = max(1, int(math.ceil(abs(r1 - r0) / step)))
         cuts = [zFront]
         for j in range(1, n):
             r = r0 + (r1 - r0) * j / float(n)
-            cuts.append(F3_FOCUS / (r / F3_SIZE + 1.0))
+            cuts.append(F3_FOCUS / (r / size + 1.0))
         cuts.append(zBack)
         return list(zip(cuts[:-1], cuts[1:]))
 
-    def pieceRadius(piece):
-        return abs(cocAt(0.5 * (piece[0] + piece[1])))
+    # Two consecutive pieces rotate for certain only when their radii differ
+    # by more than the jump threshold plus far more than the node's float
+    # radius can differ from this double one.
+    F3_ROTATE_PX = 1.0 + 1.0e-3
+    # Constant terms of the bound, in units of 2^-24: piece and parent alphas
+    # (<= 16 ulp relative each, over absorbed light <= 0.75), the thickness
+    # telescoping, the alpha products, the relative roundings of x, and the
+    # fill's reciprocal and product.
+    F3_CONSTANT_TERMS = 20
 
-    def densityTerms(depthRange, parents, points, softness):
-        """(arrival taps, every deposit's taps) at an interior pixel.
-        ``parents`` are the tidied volumetric samples, ``points`` the point
-        samples' depths; the deepest sample must be a parent."""
+    def densityBound(size, k, depthRange, parents, points, softness):
+        """(kappa, n_every, n_arrival) at an interior pixel: the composite's
+        bound is kappa * n_every * 2^-24 * 0.75.  ``parents`` are the tidied
+        volumetric samples (zFront, zBack, alpha), ``points`` the point
+        samples (z, alpha); the deepest sample must be a parent."""
         step = max(2.0 * max(settings.mergeTolerance, 0.125),
-                   abs(cocAt(depthRange[1]) - cocAt(depthRange[0]))
-                   / float(settings.k))
-        cut = [frontPieces(a, b, step) for a, b in parents]
-        shareRadii = ([pieceRadius(p[-1]) for p in cut]
-                      + [abs(cocAt(z)) for z in points]
-                      + [pieceRadius(cut[-1][-1])])
-        allRadii = ([pieceRadius(q) for p in cut for q in p]
-                    + [abs(cocAt(z)) for z in points]
-                    + [pieceRadius(cut[-1][-1])])
-        arrival = sum(n for n, _ in kernelTaps(softness, shareRadii))
-        every = sum(n for n, _ in kernelTaps(softness, allRadii))
-        return arrival, every
+                   abs(cocAt(depthRange[1], size) - cocAt(depthRange[0], size))
+                   / float(k))
+        pieces = []
+        for zFront, zBack, alpha in parents:
+            cut = frontPieces(zFront, zBack, step, size)
+            for j, (a, b) in enumerate(cut):
+                t = (b - a) / (zBack - zFront)
+                pieces.append((0.5 * (a + b), 1.0 - (1.0 - alpha) ** t,
+                               j == len(cut) - 1))
+        pieces.extend((z, alpha, True) for z, alpha in points)
+        pieces.sort()
+        radii = [abs(cocAt(z, size)) for z, _, _ in pieces]
+        taps = kernelTaps(softness, radii + [radii[-1]])
+        residualTaps, residualSum = taps.pop()
+        m = len(pieces)
+        certain = [abs(radii[j + 1] - radii[j]) > F3_ROTATE_PX
+                   for j in range(m - 1)]
+        terms = float(F3_CONSTANT_TERMS)
+        for j in range(m):
+            run = 0
+            while j + run < m - 1 and not certain[j + run]:
+                run += 1
+            reader = max(p[1] for p in pieces[j:j + run + 2])
+            areaWeight, massWeight = 1 + 2 * run, 2 * (1 + run)
+            count, weightSum = taps[j]
+            terms += count * (1.0 + reader * (4 + 2 * areaWeight
+                                              + 2 * massWeight))
+            terms += reader * (areaWeight * (abs(weightSum - 1.0) / O_ULP
+                                             + 2.0 * weightSum)
+                               + massWeight * (2.0 + 3.0 * weightSum))
+        every = sum(n for n, _ in taps)
+        shares = [j for j in range(m) if pieces[j][2]]
+        arrival = sum(taps[j][0] for j in shares) + residualTaps
+        arrival += int(math.ceil(arrival * arrival * O_ULP)) + 1
+        arrival += 2 * len(shares) + int(math.ceil(
+            (sum(abs(taps[j][1] - 1.0) for j in shares)
+             + abs(residualSum - 1.0)) / O_ULP))
+        return terms / (exact * every), every, arrival
 
     densityRows = [
         ("f3 ", "fog density, size=0, separated slabs", separatedSlabs, 0.0,
-         None, 8),
+         settings.k, None, 8),
         ("f3b", "fog density, defocused, separated slabs", separatedSlabs,
-         F3_SIZE, ((6.0, 16.0), [(6.0, 10.0), (12.0, 16.0)], []),
+         F3_SIZE, settings.k,
+         ((6.0, 16.0), [(6.0, 10.0, 0.5), (12.0, 16.0, 0.5)], []),
          settings.maxRadius + 4),
         ("f3c", "fog density, defocused, overlapping slabs", overlappingSlabs,
-         F3_SIZE, ((8.0, 13.0), [(8.0, 9.0), (9.0, 12.0), (12.0, 13.0)], []),
+         F3_SIZE, settings.k,
+         ((8.0, 13.0), [(8.0, 9.0, 1.0 - 0.5 ** 0.25),
+                        (9.0, 12.0, 1.0 - 0.5 ** 1.5),
+                        (12.0, 13.0, 1.0 - 0.5 ** 0.25)], []),
          settings.maxRadius + 4),
         ("f3d", "fog density, defocused, span + point", spanPlusPoint,
-         F3_SIZE, ((5.0, 25.0), [(5.0, 10.0), (10.0, 25.0)], [10.0]),
+         F3_SIZE, settings.k,
+         ((5.0, 25.0), [(5.0, 10.0, 1.0 - 0.5 ** 0.25),
+                        (10.0, 25.0, 1.0 - 0.5 ** 0.75)], [(10.0, 0.5)]),
+         settings.maxRadius + 4),
+        ("f3j", "fog density, defocused, overlapping slabs, size %g K=%d"
+         % (F3J_SIZE, F3J_K), overlappingSlabs, F3J_SIZE, F3J_K,
+         ((8.0, 13.0), [(8.0, 9.0, 1.0 - 0.5 ** 0.25),
+                        (9.0, 12.0, 1.0 - 0.5 ** 1.5),
+                        (12.0, 13.0, 1.0 - 0.5 ** 0.25)], []),
          settings.maxRadius + 4),
     ]
-    for tag, name, build, size, geometry, inset in densityRows:
+    arrivals = []
+    for tag, name, build, size, k, geometry, inset in densityRows:
+        cell = settings if k == settings.k else settings.derive(k=k)
         resetScript()
-        node = makeDefocus(settings, build(), size=size,
-                           focusDistance=F3_FOCUS, cocMode="manual")
+
+        def node():
+            return makeDefocus(cell, build(), size=size,
+                               focusDistance=F3_FOCUS, cocMode="manual")
         tol, ratioTol, termNote = 1.0e-05, None, ""
         if geometry is not None:
             try:
-                arrivalTaps, everyTap = densityTerms(
-                    geometry[0], geometry[1], geometry[2],
-                    node["edge_softness"].value())
+                kappa, everyTap, arrivalTerms = densityBound(
+                    size, k, geometry[0], geometry[1], geometry[2],
+                    node()["edge_softness"].value())
             except KernelSumsUnavailable as exc:
                 for suffix, what in (("", "alpha"), ("r", "colour:alpha")):
                     checks.append(Check("f", "%s%s %s: %s" % (tag.strip(),
@@ -785,12 +833,19 @@ def sceneF(settings):
                                                               what),
                                         "-", "-", SKIP, note=str(exc)))
                 continue
-            tol = arrivalTaps * O_ULP
+            resetScript()
+            tol = ((kappa * everyTap + arrivalTerms) * O_ULP * exact
+                   / (1.0 - arrivalTerms * O_ULP))
             ratioTol = 2.0 * (everyTap + 8) * O_ULP
-            termNote = ("gate is %d arrival taps x 2^-24 (share-carrying "
-                        "pieces and the residual, counted from "
-                        "DiscKernelLUT)" % arrivalTaps)
-        img = render(settings, node, "f_density", box=formatBox())
+            termNote = ("gate (kappa x %d deposit taps + %d arrival terms) x "
+                        "2^-24 x 0.75, kappa %.2f (the composite's forward "
+                        "error per deposit, from the documented cut and "
+                        "kernel_sums)" % (everyTap, arrivalTerms, kappa))
+            img, probe = renderProbed(cell, node, "f_density", (128, 128),
+                                      box=formatBox())
+            arrivals.append((tag, arrivalTerms, everyTap, probe))
+        else:
+            img = render(cell, node(), "f_density", box=formatBox())
         interior = insetBox(formatBox(), inset)
         stats = channelStats(img, "A", interior)
         loss = (exact - stats.mean) / exact * 100.0
@@ -803,7 +858,7 @@ def sceneF(settings):
         if ratioTol is None:
             continue
         resetScript()
-        flat = render(settings, deepToImage(build()), "f_density_flat",
+        flat = render(cell, deepToImage(build()), "f_density_flat",
                       box=formatBox())
         flatRatio = flat.at("R", 128, 128) / flat.at("A", 128, 128)
         worst, worstAt, count = _worstUnpremult(img, "R", flatRatio, interior)
@@ -816,6 +871,43 @@ def sceneF(settings):
             note="flatten R/A %.6f; gate 2 x (%d deposit taps + 8) x 2^-24, "
                  "every piece's taps, since both sums take every deposit"
                  % (flatRatio, everyTap)))
+
+    # The fill's own input, gated where the composite bounds above are too
+    # wide to see it: the arrival plane at an interior pixel is a sum of the
+    # share-carrying pieces' and the residual's taps, so recursive summation
+    # holds it within that many 2^-24 of 1, plus two roundings per share of
+    # the front-to-back share chain and the kernel sums' own defect.
+    missing = [tag for tag, _, _, probe in arrivals if probe is None]
+    if not arrivals:
+        missing = ["every rig"]
+    worstArrival = max([(abs(1.0 - probe.arrival) / (terms * O_ULP), tag,
+                         probe.arrival, terms)
+                        for tag, terms, _, probe in arrivals
+                        if probe is not None] or [(0.0, "-", 1.0, 0)])
+    if missing:
+        checks.append(Check(
+            "f", "f3a arrival at the centre pixel of every defocused density "
+                 "rig", "-", "-", SKIP,
+            note="no probe line from %s: this plugin has no "
+                 "DEEPC_DEFOCUS_DEBUG_PROBE" % ", ".join(missing)))
+    else:
+        checks.append(boolCheck(
+            "f", "f3a arrival at the centre pixel of every defocused density "
+                 "rig",
+            worstArrival[0] <= 1.0
+            and all(probe.replayMatches for _, _, _, probe in arrivals),
+            "; ".join("%s %.9f (%d deposits)"
+                      % (tag.strip(), probe.arrival, probe.deposits)
+                      for tag, _, _, probe in arrivals),
+            "|1 - arrival| <= n_arrival x 2^-24 per rig",
+            population="output pixel (128,128), arrival with the residual, "
+                       "as the node's composite probe reports it",
+            note="worst %s: |1 - %.9f| is %.3f of its %d terms x 2^-24; "
+                 "deposit counts are the probe's, including zero-weight "
+                 "taps, against %s nonzero taps counted from the cut"
+                 % (worstArrival[1].strip(), worstArrival[2], worstArrival[0],
+                    worstArrival[3],
+                    ", ".join("%d" % every for _, _, every, _ in arrivals))))
 
     checks.extend(unequalDensityChecks(settings))
     checks.extend(volumetricOracleChecks(settings))
@@ -4772,6 +4864,187 @@ def _meanAbsDiff(image, twin, channel, strips):
     return (total / count) if count else 0.0, count
 
 
+# --- n8c/n8d: the defocused-board rig without a pin ----------------------------
+#
+# The card, the board (cells from the origin) and the frame are all symmetric
+# under x <-> y, and so is the lens, so a composite that meets its model
+# renders X(x, y) == X(y, x) up to rounding.  Each side is within the
+# composite's forward-error bound of the common exact value: per deposit the
+# alpha add plus the chunk roundings, each read once at a reader alpha of at
+# most 1 (the card and the board are a CoC jump apart, so nothing carries
+# past it), over every tap that reaches the pixel, plus the arrival's terms.
+# The difference is within twice that.
+N8C_TERMS_PER_DEPOSIT = 11
+# Every other band pixel (x + y even) at 4 x 32 strata and 8 replicates: about
+# 2.5 minutes at two threads, where the whole band costs twice that and
+# resolves nothing the lattice misses (the defect spans whole rows).
+N8D_REF_NSUB = 4
+N8D_REF_NLENS = 32
+N8D_REF_REPS = 8
+N8D_REF_SEED = 1
+
+
+def n8bBoardRadius():
+    return HALO_SIZE * abs(1.0 - HALO_FOCUS / FILL_CHECK_FAR_Z)
+
+
+def _planes(image, channels):
+    return dict((c, [image.row(c, y) for y in range(FORMAT_H)])
+                for c in channels)
+
+
+def n8bSymmetryChecks(settings, twinBackground, defocus):
+    """n8c/n8cr: the twin's transpose symmetry under both fill modes."""
+    names = ("n8c n8b rig transpose symmetry: premultiplied R and alpha, the "
+             "twin in both fill modes",
+             "n8cr ...colour:alpha (R/A, G/A, B/A) transpose symmetry")
+    resetScript()
+    node = defocus(checkerTwin(FILL_CHECK_FAR_Z), fill="foreground")
+    softness = node["edge_softness"].value()
+    twinForeground = render(settings, node, "n8c_twin_foreground",
+                            box=formatBox())
+    try:
+        (cardTaps, cardSum), (boardTaps, boardSum) = kernelTaps(
+            softness, [HALO_RADIUS, n8bBoardRadius()])
+    except KernelSumsUnavailable as exc:
+        return [Check("n", name, "-", "-", SKIP, note=str(exc))
+                for name in names]
+    deposits = cardTaps + boardTaps
+    arrival = cardTaps + 2 * boardTaps
+    arrival += (int(math.ceil(arrival * arrival * O_ULP)) + 1 + 2 * 2
+                + int(math.ceil((abs(cardSum - 1.0) + 2.0 * abs(boardSum - 1.0))
+                                / O_ULP)))
+    tol = 2.0 * (N8C_TERMS_PER_DEPOSIT * deposits + arrival) * O_ULP
+
+    readings, ratioReadings = [], []
+    past = ratioPast = pairs = ratioPairs = 0
+    for mode, image in (("background", twinBackground),
+                        ("foreground", twinForeground)):
+        planes = _planes(image, ("R", "G", "B", "A"))
+        x0 = image.x0
+        worst = dict((c, (0.0, None)) for c in ("R", "A"))
+        ratioWorst = (0.0, None, 0.0)
+        for y in range(FORMAT_H):
+            for x in range(y + 1, FORMAT_W):
+                pairs += 1
+                values = {}
+                for c in ("R", "G", "B", "A"):
+                    values[c] = (planes[c][y][x - x0], planes[c][x][y - x0])
+                for c in ("R", "A"):
+                    d = abs(values[c][0] - values[c][1])
+                    if d > tol:
+                        past += 1
+                    if d > worst[c][0]:
+                        worst[c] = (d, (x, y))
+                a, b = values["A"]
+                if a < 1.0e-03 or b < 1.0e-03:
+                    continue
+                ratioPairs += 1
+                for c in ("R", "G", "B"):
+                    ra, rb = values[c][0] / a, values[c][1] / b
+                    bound = tol * (1.0 + max(ra, rb)) / min(a, b)
+                    d = abs(ra - rb)
+                    if d > bound:
+                        ratioPast += 1
+                    if d > ratioWorst[0]:
+                        ratioWorst = (d, (x, y), bound)
+        readings.append("%s: R %.3e at %s, A %.3e at %s"
+                        % (mode, worst["R"][0], worst["R"][1],
+                           worst["A"][0], worst["A"][1]))
+        ratioReadings.append("%s: %.3e at %s (bound %.1e)"
+                             % ((mode,) + ratioWorst))
+    defect = ("the board's samples behind the card's defocused edge all sit "
+              "at one depth, and the stream fills the free area they share "
+              "in emission (raster) order rather than by lens geometry, so "
+              "the first source rows of each board disc take it and the "
+              "rows after them read nothing; x and y are not interchangeable "
+              "in that order")
+    return [
+        boolCheck("n", names[0], past == 0, "; ".join(readings),
+                  "<= %.2e per pixel pair" % tol,
+                  population="%d pixel pairs (x < y) x 2 channels, whole "
+                             "frame, %d past" % (pairs, past),
+                  note="bound 2 x (%d terms x %d deposit taps + %d arrival "
+                       "terms) x 2^-24, taps from kernel_sums at the card's "
+                       "r %.1f and the board's r %.3f.  FAILS on a known "
+                       "defect of the composite: %s"
+                       % (N8C_TERMS_PER_DEPOSIT, deposits, arrival,
+                          HALO_RADIUS, n8bBoardRadius(), defect)),
+        boolCheck("n", names[1], ratioPast == 0 and ratioPairs > 0,
+                  "; ".join(ratioReadings),
+                  "<= bound x (1 + c/a) / a per pixel pair",
+                  population="%d pixel pairs where both alphas >= 1e-03, x 3 "
+                             "ratios, %d past" % (ratioPairs, ratioPast),
+                  note="the colour arm of n8c at the same per-pixel bound, "
+                       "carried through the ratio"),
+    ]
+
+
+def n8bThinlensChecks(settings, twin, band):
+    """n8d/n8dr: the n8b twin against thinlens_ref over the band."""
+    names = ("n8d n8b twin vs thinlens_ref over the band: alpha",
+             "n8dr ...colour:alpha (R/A, B/A) vs thinlens_ref")
+    pixels = [(x, y) for x0, y0, x1, y1 in band
+              for y in range(y0, y1) for x in range(x0, x1)
+              if (x + y) % 2 == 0]
+    resetScript()
+    dump = os.path.join(settings.tmpDir, "n8d_deep.txt")
+    count = dumpDeep(checkerTwin(FILL_CHECK_FAR_Z), dump)
+    try:
+        ref, header = runThinlensRef(dump, HALO_SIZE, HALO_FOCUS, pixels,
+                                     nSub=N8D_REF_NSUB, nLens=N8D_REF_NLENS,
+                                     reps=N8D_REF_REPS, seed=N8D_REF_SEED)
+    except ThinlensUnavailable as exc:
+        return [Check("n", name, "-", "-", SKIP, note=str(exc))
+                for name in names]
+    finally:
+        if not settings.keepRenders:
+            os.remove(dump)
+    taps = (int(math.ceil(math.pi * (HALO_RADIUS + 1.0) ** 2))
+            + int(math.ceil(math.pi * (n8bBoardRadius() + 1.0) ** 2)))
+    terms = O_TERMS_PER_TAP * taps * O_ULP
+    alpha, ratio = _Excess(), _Excess()
+    maxSe = maxRatioSe = 0.0
+    for (x, y), p in sorted(ref.items()):
+        na = twin.at("A", x, y)
+        maxSe = max(maxSe, p.se[3])
+        alpha.add(abs(na - p.rgba[3]), x, y,
+                  O_CAL_RIM_RESIDUAL + 3.0 * p.se[3] + terms)
+        if na < 1.0e-03 or p.rgba[3] < 1.0e-03:
+            continue
+        (_, ba, ra), se = oRefRatios(p)
+        maxRatioSe = max(maxRatioSe, se)
+        deviation = max(abs(twin.at("R", x, y) / na - ra),
+                        abs(twin.at("B", x, y) / na - ba))
+        ratio.add(deviation, x, y, O_CAL_RIM_RESIDUAL + 3.0 * se + terms)
+    population = ("%d px: the band (silhouette minus a 19 px inset), x + y "
+                  "even; thinlens_ref mc on a DeepWrite dump of the twin "
+                  "(%d samples), n_s=%s"
+                  % (len(ref), count,
+                     header[0].split("n_s=", 1)[-1] if header else "?"))
+    bound = "<= %.1e + 3 SE_ref + %d x %d x 2^-24 per px" % (
+        O_CAL_RIM_RESIDUAL, O_TERMS_PER_TAP, taps)
+    return [
+        boolCheck("n", names[0], alpha.at is None and alpha.count > 0,
+                  alpha.describe(), "|a_node - a_ref| " + bound,
+                  population=population,
+                  note="worst SE_ref %.1e; the card is opaque and the board "
+                       "fills every pixel, so both read alpha 1 across the "
+                       "band" % maxSe),
+        boolCheck("n", names[1], ratio.at is None and ratio.count > 0,
+                  "%s; mean %.4f" % (ratio.describe(),
+                                     ratio.sum / max(ratio.count, 1)),
+                  "|c/a_node - c/a_ref| " + bound,
+                  population="the same pixels where both alphas >= 1e-03 "
+                             "(%d px)" % ratio.count,
+                  note="worst ratio SE_ref %.1e.  FAILS on a known defect "
+                       "of the composite: behind the card's defocused edge "
+                       "the board's equal-depth samples take the free area "
+                       "in emission order, not by the lens geometry the "
+                       "reference traces" % maxRatioSe),
+    ]
+
+
 def sceneN(settings):
     """Background fill: ``fill: background`` against the DeepMerge twin.
 
@@ -4835,8 +5108,14 @@ def sceneN(settings):
       n8  textured background, BOTH estimators, where they differ: the halo
           card over the bake-off's checker, in focus (n8) and defocused
           (n8b).  Band mean |dR| against the twin, pinned two-sided at the
-          bake-off's own numbers with a hard outer range; average < nearest;
-          alpha bit-identical to the twin under both.
+          bake-off's own numbers with a hard outer range (in focus only);
+          average < nearest; alpha bit-identical to the twin under both.
+      n8c the defocused rig's x <-> y symmetry, the twin under both fill
+          modes, at twice the composite's rounding bound.
+      n8d the defocused twin against thinlens_ref over the band.  n8c,
+          n8cr and n8dr FAIL on a known defect: behind a defocused edge the
+          composite fills the free area equal-depth samples share in
+          emission order, not by lens geometry.
 
     Every alpha assertion has a colour-ratio assertion beside it, and every
     pin is two-sided with a hard bound.  The mutation each cell exists to
@@ -5453,12 +5732,13 @@ def sceneN(settings):
     # The foreground-mode reading is reported beside each rig because it is
     # the number the average is judged against: a flat smear of the board is
     # about as far from the real texture as the foreground colour is.
+    # n8b has no pin: a pin there could only be a node-vs-node reading, with
+    # no oracle behind it.  Its rig is symmetric under x <-> y and the
+    # thin-lens reference sees its hidden board, so n8c and n8d gate it.
     N8_BAND = 0.005
     N8_PINS = {
         ("n8", False): (0.1446, (0.10, 0.20)),
         ("n8", True): (0.0873, (0.05, 0.12)),
-        ("n8b", False): (0.0716, (0.04, 0.10)),
-        ("n8b", True): (0.0358, (0.02, 0.06)),
     }
     for tag, farZ, title in (("n8", HALO_FAR_Z, "in-focus checker (z=%g)"),
                              ("n8b", FILL_CHECK_FAR_Z,
@@ -5488,6 +5768,8 @@ def sceneN(settings):
                                             band)[0]
             alphaDiffs[smear] = compareImages(image, checkerTwinImage,
                                               channels=("A",), box=box)
+            if (tag, smear) not in N8_PINS:
+                continue
             pin, (hardLow, hardHigh) = N8_PINS[(tag, smear)]
             inRange = hardLow <= means[smear] <= hardHigh
             checks.append(boolCheck(
@@ -5539,6 +5821,10 @@ def sceneN(settings):
                  "premultiplied difference IS the colour-ratio difference.  "
                  "MUTATION synthesis off: average == nearest (0.0863 / "
                  "0.0648) and the alpha is 1 / 21 ULP off the twin"))
+        if tag == "n8b":
+            checks.extend(n8bSymmetryChecks(settings, checkerTwinImage,
+                                            defocus))
+            checks.extend(n8bThinlensChecks(settings, checkerTwinImage, band))
 
     # ------------------------------------------------------------------
     # n9: the fallback reach is max_radius in PROXY pixels.

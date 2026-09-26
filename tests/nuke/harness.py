@@ -25,6 +25,7 @@ Scene bodies live in ``scenes.py``.
 """
 
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -826,6 +827,68 @@ def kernelTaps(softness, radii):
         fields = line.split()
         out.append((int(fields[1]), float(fields[2])))
     return out
+
+
+# --- the node's composite probe ---------------------------------------------
+
+PROBE_ENV = "DEEPC_DEFOCUS_DEBUG_PROBE"
+_PROBE_SUMMARY = re.compile(
+    r"deposits (\d+), replay (matches|DOES NOT MATCH) the band state; "
+    r"fragment arrival (\S+), arrival with background (\S+), out A=(\S+)")
+
+
+class ProbeSummary(object):
+    __slots__ = ("deposits", "replayMatches", "fragmentArrival", "arrival",
+                 "alpha")
+
+    def __init__(self, match):
+        self.deposits = int(match.group(1))
+        self.replayMatches = match.group(2) == "matches"
+        self.fragmentArrival = float(match.group(3))
+        self.arrival = float(match.group(4))
+        self.alpha = float(match.group(5))
+
+
+def renderProbed(settings, build, tag, pixel, box=None):
+    """``render()`` of the node ``build()`` returns, with the node's composite
+    probe (DEEPC_DEFOCUS_DEBUG_PROBE) on output pixel ``pixel``; returns
+    (image, ProbeSummary or None).
+
+    The node reads the switch when it is constructed and Nuke may construct
+    it again for the render's context, so the switch stays set through the
+    render.  The probe is ``fputs(stderr)`` from C++, so only a redirect of
+    fd 2 sees it.  None means no probe line came back: a plugin without the
+    probe, or a pixel no band covered."""
+    logPath = os.path.join(settings.tmpDir, "probe_%s.log" % tag)
+    previous = os.environ.get(PROBE_ENV)
+    os.environ[PROBE_ENV] = "%d,%d" % pixel
+    saved = None
+    try:
+        node = build()
+        sys.stderr.flush()
+        saved = os.dup(2)
+        fd = os.open(logPath, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        os.dup2(fd, 2)
+        os.close(fd)
+        image = render(settings, node, tag, box=box)
+    finally:
+        if saved is not None:
+            sys.stderr.flush()
+            os.dup2(saved, 2)
+            os.close(saved)
+        if previous is None:
+            os.environ.pop(PROBE_ENV, None)
+        else:
+            os.environ[PROBE_ENV] = previous
+    summary = None
+    with open(logPath) as handle:
+        for line in handle:
+            match = _PROBE_SUMMARY.search(line)
+            if match:
+                summary = ProbeSummary(match)
+    if not settings.keepRenders:
+        os.remove(logPath)
+    return image, summary
 
 
 # --- measurement -------------------------------------------------------------

@@ -102,8 +102,10 @@ CHECK_N = (
     "(silhouette minus a 19 px inset, premultiplied R -- alpha is 1 there "
     "in both, bit-identical), pinned two-sided at the bake-off's own "
     "readings with a hard outer range: in focus nearest 0.1446 +/- 0.005 "
-    "[0.10, 0.20], average 0.0873 +/- 0.005 [0.05, 0.12]; defocused "
-    "nearest 0.0716 [0.04, 0.10], average 0.0358 [0.02, 0.06]; and average "
+    "[0.10, 0.20], average 0.0873 +/- 0.005 [0.05, 0.12]; the defocused "
+    "rig carries no pin (no oracle stands behind a node-vs-node reading) "
+    "and is gated instead on its x <-> y symmetry (n8c) and against the "
+    "thin-lens reference (n8d); and average "
     "< nearest -- the ordering is the point of the knob. Foreground mode "
     "reads 0.0863 / 0.0648 on the same bands.\n\n"
     "Not reproduced here: n4 (explicit fill=foreground == scene (m)'s "
@@ -1009,12 +1011,14 @@ def buildSceneN(settings):
         source.setXYpos(420, ypos)
         source["label"].setValue("%s (z=%g): sparse, no board behind the "
                                  "card" % (tag, farZ))
-        for smear, xpos, label in ((False, 420, "nearest: 0.1446 / 0.0716"),
-                                   (True, 560, "average: 0.0873 / 0.0358")):
+        pins = ({False: "0.1446", True: "0.0873"} if farZ == HALO_FAR_Z
+                else {False: "no pin", True: "no pin"})
+        for smear, xpos, label in ((False, 420, "nearest"),
+                                   (True, 560, "average")):
             node = background(source, fill_smear=smear)
             node.setXYpos(xpos, ypos + 120)
-            node["label"].setValue("%s -- band mean |dR| vs twin %s (in "
-                                   "focus / defocused)" % (tag, label))
+            node["label"].setValue("%s -- band mean |dR| vs twin %s: %s"
+                                   % (tag, label, pins[smear]))
         twinSource = checkerTwin(farZ)
         twinSource.setXYpos(700, ypos)
         twinSource["label"].setValue("%s twin: the board's real samples "
