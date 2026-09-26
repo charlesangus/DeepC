@@ -1,8 +1,8 @@
 ---
 title: DeepCDefocus — deep-input, flat-output defocus node
-status: running
-current: M8.P2.T12
-pm_heartbeat: 2026-09-25T22:35:05-04:00
+status: paused
+current: M8.P2.T5
+pm_heartbeat: 2026-09-25T22:36:37-04:00
 ship: pr-per-milestone
 ---
 
@@ -133,6 +133,13 @@ Bokeh/pgBokeh don't exhibit; it runs before M2 because it rewrites the kernel st
 > atomics to per-tile depth-sorted lists (see the M8 file's 2026-09-25 decision).
 
 # Open questions
+
+- **2026-09-25 23:05 — RUN PAUSED: waiting on the three rulings below; nothing ruling-independent remains in M8.** Code HEAD is
+  `c38c85f` (this session landed the recency-rule fix, P2.T4, P2.T8, P2.T11, P2.T5 part 1, P2.T12 — see the M8 file's
+  2026-09-25 decisions). Doctests 21/21 + 102/102 (+1 skipped); scene (a) bit-exact; scene (o) 41/0/3/1; scene (f) 11/4/6 with
+  the four FAILs (f3e/f3f/f3h/f3h2) awaiting the rim ruling. **Resume point:** answer via `/cat-discuss` (inbox) — (1) Q2
+  tolerance class → P2.T5 part 2 (o6e, o6f, o6c re-oracle) and Phase 8.3; (2) silhouette band → o6f; (3) volumetric rim →
+  P2.T6 (and P2.T10 if (b)). Then P4.T1 profile, P4.T2 gate + PR.
 
 - **2026-09-25 (M8.P2.T7, two rulings for the user; neither blocks P2.T2–T4):**
   1. **Silhouette band.** With buckets gone, the o6 silhouette carries mechanism (3) — the near card's lens set nested

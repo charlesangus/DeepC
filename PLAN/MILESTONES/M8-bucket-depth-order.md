@@ -440,7 +440,7 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   - size: M
   - depends: M8.P2.T8
 
-- [ ] M8.P2.T12 — f4 rows: a radius-dependent kernel term replaces ε·(1+τ); the provisional V3 figure goes
+- [x] M8.P2.T12 — f4 rows: a radius-dependent kernel term replaces ε·(1+τ); the provisional V3 figure goes
   - files: `tests/reference/vref.cpp` (a kernel-spec coverage mode), `tests/nuke/scenes.py` (f4a–f4cr bounds,
     `VOL_V3_NEAR_FOCUS_DEFICIT` removed), `tests/nuke/harness.py` if the loader needs a second output
   - approach: P1.T2's ε = 8.6e-4 is the kernel's error at r = 14–17 px; the consultant's table (`eps_table.txt` in its scratch,
@@ -796,3 +796,21 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   ceiling 0.75 → o6g/o6h FAIL (1.14×/1.82× bound); B×(1−2⁻⁸) → o6gr/o6hr FAIL; doubled transmitted mass shrinks the deficit
   (0.171 of bound, still XFAIL — the band is wide by construction). `.nk` not regenerated (its StickyNote covers only o6c's nodes).
   Part 2 (o6e, o6f, o6c re-oracle) waits on the rulings.
+- 2026-09-25 — **M8.P2.T12 done (code `c38c85f`; evidence `~/deepc-validation/M8-P2T12/`).** `vref kernel` mode: pieces cut as
+  the node documents (uniform in CoC per side, focus a cut, step `max(2·max(tol, 1/8), variation/layers)` over the frame range
+  incl. the card, ≤ layers+1 pieces at midpoint radius, α = 1−(1−a)^t, the card one more opaque layer); `c_spec` = the kernel
+  spec reimplemented without `src/` (point-sampled disc, 1 px ramp, normalised, delta at r ≤ 0.5, bracket blend); `c_true`
+  analytic slice coverage (Gauss–Legendre; 25× refinement moves K ≤ 1e-10); prints per-pixel K, plus a float32 term
+  Φ = 2⁻²⁴·(2Σαᵢnᵢ + 2L) for the leak rows; 7–33 s per rig, byte-identical with/without OpenMP. Cross-check V3: K(96,96)
+  3.2955e-2 (consultant 3.29e-2), K(95,128) 1.9008e-2 (1.89e-2). Gates `tol = 5·SE_max + K(p) + Φ(p)`, low `ref − tol`, high
+  `max(ref, min(1, E[τ])) + 5·SE_τ + tol`; V2/V3 colour gated per channel as the fog's share (SE ÷ contrast, K not); a
+  PREMISE-BROKEN guard FAILs the row if two same-side pieces ever fall within the merge tolerance (smallest gap today 0.94 px).
+  Readings: f4a XFAIL (low 0.05 / ceiling 0.71 of bound), f4ar PASS 3.97e-7; f4b PASS 0.02, f4br XFAIL (0.08 / 0.70); f4c PASS
+  0.01, f4cr XFAIL (low 0.20 at (160,139), ceiling 0.36, 153 of 22 188 channel-px past). No provisional figure remains.
+  Mutations: halved CoC → f4a/f4br/f4cr FAIL (0.179/0.166/0.119); M8-T0 → f4a/f4b/f4br/f4c/f4cr FAIL; spec without the ramp →
+  K max V3 3.30e-2 → 6.51e-2, V1 1.91e-3 → 6.23e-3. Scene (f) 11/4/6 before and after, f0–f3i identical. `scene_f` `.nk`
+  regenerated only. Doctests 21/21, 102 + 1 skipped.
+- 2026-09-25 — **Run paused: every remaining task depends on the user's rulings.** Landed this session: recency-rule fix
+  `5f63919`, P2.T4 `ae9b734`, P2.T8 `d927a07`, P2.T11 `376bc88`, P2.T5 part 1 `e2912e9`, P2.T12 `c38c85f`. Waiting: P2.T5 part 2
+  (o6e at Q2's tolerance class; o6f after the silhouette-band ruling; o6c re-oracle), P2.T6 (rim ruling: f3e/f3f/f3h/f3h2 stay
+  FAIL until ruled XFAIL-with-bound or fixed by P2.T10), P2.T10 (only if ruled in), Phase 8.3, Phase 8.4.
