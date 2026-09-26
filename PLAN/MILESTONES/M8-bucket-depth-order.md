@@ -483,19 +483,26 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
 > oracle" branch, with nested-footprint pixels gated after Phase 8.5 rather than XFAILed. The PM still finalises
 > these briefs in place (IDs kept) before starting.
 
-- [ ] M8.P3.T1 — (only if Q1 names the reference, in whole or in part) Land the reference as a harness oracle
-  - files: `tests/reference/` (new: the P1.T2 tool, cleaned up and built by CMake under
-    `DEEPC_BUILD_TESTS`, still including no `src/` header) or a pure-Python analytic model in
-    `tests/nuke/scenes.py`, per Q2; `CMakeLists.txt` / `tests/CMakeLists.txt`;
-    `tests/nuke/harness.py` (invocation)
-  - approach: Q2(i) is the Monte Carlo tool with a fixed seed and stratification, whose bound is
-    derived from its error and the calibration rim residual. Q2(ii) is the analytic
-    double-precision disc∩rectangle model for axis-aligned cards, rim excluded, bound `N·2⁻²⁴`.
-    Either way the oracle consumes the same deep dump as the node. It is checked on the calibration
-    card and c1 against the P1.T2 numbers. **Mutation:** perturb its CoC sign or scale by one ulp
-    of the CoC formula, and the calibration check must fail.
-  - verify: the tool builds in the local build and in docker; it reproduces P1.T2's tables to its
-    stated error; its runtime per scene (o) run is stated.
+- [ ] M8.P3.T1 — Land the P1.T2 thin-lens reference as a harness oracle (Q2(i): Monte Carlo, fixed seed)
+  - files: `tests/reference/thinlens_ref.cpp` (new: promoted from `~/deepc-validation/M8-P1T2/tool/thinlens_ref.cpp`,
+    cleaned to house style and the comment policy, still including no `src/` header), the top-level `CMakeLists.txt`
+    (a `thinlens_ref` target beside `vref` under `DEEPC_BUILD_TESTS`, same OpenMP handling), `tests/nuke/harness.py`
+    (a `findThinlensRef()` / loader mirroring `findVref()`/`_vrefLines`, SKIP with reason if absent, plus a deep-dump
+    writer from a Nuke deep node in the tool's input format — port `deepexr_dump.py`'s logic if needed)
+  - approach: keep the tool's `mc` mode (stratified sub-pixel × concentric-map lens strata, `reps` replicates, SE =
+    sd(replicate means)/√reps, per-pixel seeded so output is thread-count independent); keep `analytic` mode as the
+    cross-check. The harness writes the node's own deep input as a dump, runs the tool on a pixel set, and returns
+    per-pixel RGBA + SE. Settle the risers default (P1.T2 caveat: riser walls between plane rows moved G/A ≤ 0.012 at
+    two pixels) — state which the harness uses and why. No new scene rows here (P2.T5 part 2 adds o6e; P3.T2 re-oracles
+    o6c) — but add one calibration row in scene (o) (an isolated opaque card at z 7.90 over nothing, node alpha vs
+    reference off the rim, bound = rim residual 8.6e-4 + 3·SE + term count per the 2026-09-26 ruling) so the oracle is
+    exercised in CI of the harness. **Mutation:** scale the tool's CoC by (1 + 1e-3) or flip the pixel-centre
+    convention → the calibration row FAILs.
+  - verify: `thinlens_ref` builds via CMake locally (and compiles in isolation with plain `g++ -std=c++17`); on the
+    P1.T2 dumps it reproduces `~/deepc-validation/M8-P1T2/out/*_ref_five.txt` within stated SE at the five pixels and
+    the calibration map's rim residual; the harness loader runs it on a freshly dumped o6 fog-0.2 rig and matches
+    P1.T2's map within SE; the calibration row PASSes on HEAD and FAILs under the mutation; runtime per invocation
+    stated; `--scenes o` tally stated (prior rows identical).
   - size: L
   - depends: M8.P1.T3
 
@@ -879,3 +886,7 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   mutation run that uses it. Reports that cannot be rebuilt (P1.T2's REPORT, P2.T7's `DESIGN.md` and prototype patch) — if
   missing, say so to the user and work from the committed code, the tests and this file's decisions; the P1.T2 reference tool
   must be re-derived for P3.T1 in that case.
+- 2026-09-26 — **Execution order on resume (PM):** P3.T1 runs before P2.T5 part 2, because o6e gates against the reference
+  and the reference must be in the harness to be an oracle (not a pasted map). Then P2.T5 part 2 → P2.T6 → P5.T1 → the rest
+  of Phase 8.5 → P3.T2 → Phase 8.4. P3.T1 finalised in place (Monte Carlo tool promoted from P1.T2, `analytic` kept as the
+  cross-check). Evidence directories confirmed present on the PM's host (the 2026-09-26 loss note does not apply).
