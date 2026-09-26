@@ -749,3 +749,14 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   radius-dependent kernel term. Also: `sameLensPatch` treats every sharp radius as one lens patch, so the folded r 0.097 group
   joined its sharp neighbours. **PM decision:** P2.T11 (bug fix, no ruling needed) and P2.T12 (bound rework) appended; P2.T6 now
   also depends on P2.T12.
+- 2026-09-25 — **P2.T5 part 1 implemented but NOT committed (working tree, `tests/nuke/scenes.py`; evidence
+  `~/deepc-validation/M8-P2T5/`): o6d/o6da/o7/o8 added, o6d FAILs at fog 0.2.** o6d composes the node's single-layer renders by
+  the partition rule (LO(P); `over` reads up to 0.107 off because the node fills free area first) at twice o6's term-count
+  tolerance over all 3136 px; alpha exactly 1 everywhere; colour: 112 px around MIX_NEAR_BOX's corners read |ΔG/A| 1.473e-3
+  (bound 1.297e-3) / |ΔB/A| 1.873e-3 (1.308e-3) at fog 0.2, PASS at 0.5 — the same **stack-weight error −3.35e-3** at both fogs
+  and all K, so a coverage-weight difference between solo and full renders, not rounding. o7 0 ulps over the whole frame (K 16/64
+  vs 4, both fogs). o8 SKIP: thread count is only Nuke's `-m` flag (no knob, no `nuke.execute` argument). Mutations: M8-T0 →
+  o6d FAIL 0.261 / o7 FAIL (4.5 M ulp); K-term → o7 FAIL; free-area ceiling 1−2⁻⁸ → o6d/o6da FAIL (o6da cannot fail on M8-T0,
+  whose alpha is also exact here). On this rig the pre-merge folds fog + card into one opaque fragment (radii 0.19 px apart).
+  **New at HEAD: with `pre_merge` off, o6 alpha reads 0.9093 at (100,100), fog 0.2** — must be 1. Both sent to a consultant
+  (diagnose; patch for the alpha defect delivered as a file, applied after P2.T11 lands).
