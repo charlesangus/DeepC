@@ -20,7 +20,7 @@ from harness import (
     currentFormat, deepHoldout, deepMerge, deepMergeHoldout, deepToImage,
     depthRampLayer, formatBox, insetBox, makeBokeh, makeDefocus, pointLayer,
     rectangle2d, render, resetScript, rowMeans, runVref, saveRender, slab,
-    stepProfile, tolCheck, VrefUnavailable,
+    stepProfile, tolCheck, ulps, VrefUnavailable,
 )
 
 
@@ -5751,6 +5751,18 @@ MIX_CARDS = ((MIX_BOX, MIX_Z, MIX_RED_OPAQUE),
             (MIX_BOX, MIX_Z - MIX_DELTA, MIX_RED_FOG),
             (MIX_NEAR_BOX, MIX_NEAR_Z, MIX_RED_NEAR))
 
+# A fog-card gap the pre-merge does NOT fold: the two CoCs differ by 0.29 px
+# at 0.03, past the 0.25 px merge_tolerance, where 0.02 (0.19 px) folds them
+# into one opaque fragment per pixel.
+MIX_DELTA_UNFOLDED = 0.03
+
+
+def sampleMid(zFront, zBack):
+    """The depth the node CoCs a sample spanning [zFront, zBack] at (its
+    sampleMidDepth), so a merged fog-over-card fragment's radius."""
+    return zFront + 0.5 * (zBack - zFront) if zBack > zFront else zFront
+
+
 # The node vs Bokeh colour:alpha ratio deviation this build reads on o6c, at
 # each (K, fog alpha) cell -- the worst pixel over MIX_BOX: inside the near
 # card at K=4, where the near card and the stack share one bucket; on
@@ -5796,13 +5808,13 @@ def mixFogCard(box, z, red, alpha):
                       z, keepZeroAlpha=False, premult=True)
 
 
-def mixRig(fogAlpha):
+def mixRig(fogAlpha, delta=MIX_DELTA):
     """The co-located mixed-opacity stack: an opaque card at ``MIX_Z``, a
-    translucent fog card at ``MIX_Z - MIX_DELTA`` (same box, same bucket),
+    translucent fog card at ``MIX_Z - delta`` (same box, same bucket),
     and a small opaque card nearer the camera whose own CoC disc supplies
     new area over parts of the stack, all over the receding plane."""
     return deepMerge([oCard(MIX_BOX, MIX_Z, MIX_RED_OPAQUE),
-                      mixFogCard(MIX_BOX, MIX_Z - MIX_DELTA, MIX_RED_FOG,
+                      mixFogCard(MIX_BOX, MIX_Z - delta, MIX_RED_FOG,
                                 fogAlpha),
                       oCard(MIX_NEAR_BOX, MIX_NEAR_Z, MIX_RED_NEAR),
                       groundPlane()])
@@ -5989,6 +6001,66 @@ def oColourAgainst(node, oracle, box, tolerance, floor=1.0e-03):
     return out
 
 
+def oLayerOrdered(layers, x, y):
+    """The front-to-back area partition of single-layer renders at (x, y), in
+    double precision: each layer, nearest first, takes min(its alpha, the area
+    still free) at its own colour:alpha ratio.  Returns ((G, B), A)."""
+    free, colour = 1.0, [0.0, 0.0]
+    for image in layers:
+        a = image.at("A", x, y)
+        if not a > 0.0:
+            continue
+        fit = min(a, free)
+        for n, c in enumerate(("G", "B")):
+            colour[n] += image.at(c, x, y) / a * fit
+        free -= fit
+    return colour, 1.0 - free
+
+
+def oAgainstLayered(node, layers, box, tolerance):
+    """The node's full render against ``oLayerOrdered`` of its own
+    single-layer renders over EVERY pixel of ``box``: (|dA| _Excess,
+    |d(G/A, B/A)| _Excess, pixels where either alpha is 0).  A pixel with no
+    alpha on either side cannot carry a ratio, so it reads as an infinite
+    ratio deviation rather than being dropped."""
+    alpha, ratio, empty = _Excess(), _Excess(), 0
+    for y in range(box[1], box[3]):
+        for x in range(box[0], box[2]):
+            (lg, lb), la = oLayerOrdered(layers, x, y)
+            na = node.at("A", x, y)
+            tol = tolerance(x, y)
+            alpha.add(abs(na - la), x, y, tol)
+            alpha.minimum = min(alpha.minimum, na)
+            alpha.maximum = max(alpha.maximum, na)
+            if na != 1.0 or la != 1.0:
+                alpha.notOne += 1
+            if not (na > 0.0 and la > 0.0):
+                empty += 1
+                ratio.add(float("inf"), x, y, tol)
+                continue
+            deviation = max(abs(node.at("G", x, y) / na - lg / la),
+                            abs(node.at("B", x, y) / na - lb / la))
+            ratio.add(deviation, x, y, tol)
+    return alpha, ratio, empty
+
+
+def oBitDiff(image, reference, box):
+    """(channel-pixels that differ, worst ulps, first differing (c, x, y))
+    between two renders over ``box``, every channel."""
+    differ, worst, first = 0, 0, None
+    for y in range(box[1], box[3]):
+        for x in range(box[0], box[2]):
+            for c in RGBA:
+                a, b = image.at(c, x, y), reference.at(c, x, y)
+                if a == b:
+                    continue
+                differ += 1
+                if first is None:
+                    first = (c, x, y)
+                worst = max(worst, ulps(a, b))
+    return differ, worst, first
+
+
 def oRowMinimum(image, box):
     """(1 - the lowest row minimum, its row) over ``box``."""
     worst, worstY = 0.0, box[1]
@@ -6079,6 +6151,15 @@ def sceneO(settings):
       o6c  ...colour:alpha ratio vs Bokeh, same sweep -- pinned XFAIL where
            the node weights the stack against its neighbours differently
            from Bokeh.
+      o6d  ...node vs the layer-ordered partition of its own near-card,
+           stack and plane renders, colour:alpha ratio over all of MIX_BOX;
+           o6da the same for alpha.
+      o6g  the o6 cell with pre_merge off, and o6h with a fog-card gap the
+           pre-merge does not fold: XFAIL (M9) with a hard bound from the
+           solo fog render's weight; o6gr/o6hr the colour:alpha bracket.
+      o7   the o6 renders bit-identical across K = 4/16/64.
+      o8   render-thread determinism: SKIP, the thread count is a launch
+           flag.
 
     Pinned readings are K = 16 whatever --k says.
     """
@@ -6512,6 +6593,7 @@ def sceneO(settings):
                      % (MIX_BOX, MIX_Z, MIX_Z - MIX_DELTA, MIX_DELTA,
                         MIX_NEAR_Z, MIX_NEAR_BOX))
     mixAlpha, mixAlphaDiff, mixColourDiff = [], [], []
+    mixImages = {}
     for fogAlpha in MIX_FOG_ALPHAS:
         resetScript()
         mixSource = mixRig(fogAlpha)
@@ -6523,6 +6605,7 @@ def sceneO(settings):
             label = "K=%d fog=%g" % (k, fogAlpha)
             mixImg = renderOf(lambda fa=fogAlpha: mixRig(fa),
                               "o6_node_k%d_a%g" % (k, fogAlpha), s)
+            mixImages[(k, fogAlpha)] = mixImg
             mixAlpha.append((label, oDip(mixImg, MIX_BOX, mixTolerance),
                              None))
             mixDiffAlpha, _ = oAlphaAgainst(
@@ -6560,6 +6643,213 @@ def sceneO(settings):
         "disc coverage (0.52 half a pixel inside the edge) where Bokeh "
         "reads 0.84. The deficit fill scales colour and alpha together, so "
         "it cannot move the ratio"))
+
+    # ------------------------------------------------------------------
+    # o6d: the node vs the layer-ordered partition of its own single-layer
+    # renders; o7: K-invariance; o8: determinism.
+    # ------------------------------------------------------------------
+    def stackOnly(fogAlpha):
+        return deepMerge([oCard(MIX_BOX, MIX_Z, MIX_RED_OPAQUE),
+                          mixFogCard(MIX_BOX, MIX_Z - MIX_DELTA, MIX_RED_FOG,
+                                     fogAlpha)])
+
+    # A layer rendered alone has no plane behind it to complete arrival at its
+    # silhouette, so its virtual background must sit at the layer's own
+    # radius: then the one-radius adjoint identity (sum k = 1) completes
+    # arrival and the deficit fill is inert, as it is in the full render.
+    # The auto radius is the CoC at the frame's farthest depth, which is the
+    # layer's own only for a single point depth.
+    def renderAlone(builder, tag, s, radius):
+        resetScript()
+        node = makeDefocus(s, builder(), size=O_SIZE,
+                           focusDistance=GROUND_FOCUS, cocMode="manual",
+                           fill="foreground", background_depth=radius)
+        return render(s, node, tag, box=box)
+
+    stackRadius = oRadius(sampleMid(MIX_Z - MIX_DELTA, MIX_Z))
+
+    layeredTolerance = lambda x, y: 2.0 * mixTolerance(x, y)
+    layeredAlpha, layeredRatio, layeredNotes = [], [], []
+    for k in MIX_KS:
+        s = settings.derive(k=k)
+        near = renderOf(lambda: oCard(MIX_NEAR_BOX, MIX_NEAR_Z, MIX_RED_NEAR),
+                        "o6d_near_k%d" % k, s)
+        plane = renderOf(groundPlane, "o6d_plane_k%d" % k, s)
+        for fogAlpha in MIX_FOG_ALPHAS:
+            label = "K=%d fog=%g" % (k, fogAlpha)
+            stack = renderAlone(lambda fa=fogAlpha: stackOnly(fa),
+                                "o6d_stack_k%d_a%g" % (k, fogAlpha), s,
+                                stackRadius)
+            alphaDev, ratioDev, empty = oAgainstLayered(
+                mixImages[(k, fogAlpha)], (near, stack, plane), MIX_BOX,
+                layeredTolerance)
+            layeredAlpha.append((label, alphaDev, None))
+            layeredRatio.append((label, ratioDev, None))
+            layeredNotes.append(
+                "%s: node a in [%.9g, %.9g], %d px where node or partition "
+                "a != 1, %d px with a = 0" % (label, alphaDev.minimum,
+                                              alphaDev.maximum,
+                                              alphaDev.notOne, empty))
+    layeredPopulation = ("every pixel of MIX_BOX %s (%d px), no pixel "
+                         "excluded; each K x fog cell against its own near "
+                         "card, stack (fog + opaque card) and plane rendered "
+                         "alone at the same settings"
+                         % (MIX_BOX, (MIX_BOX[2] - MIX_BOX[0])
+                            * (MIX_BOX[3] - MIX_BOX[1])))
+    checks.append(oCheck(
+        "o6d ...node vs the layer-ordered partition of its own single-layer "
+        "renders, colour:alpha ratio (G/A, B/A)", layeredRatio,
+        "|c/a_node - c/a_partition|", layeredPopulation,
+        "partition: near card, then stack, then plane, each taking "
+        "min(its alpha, the area still free) at its own ratio, in double "
+        "precision. Bound: the four renders' term-count bounds summed; the "
+        "three single-layer renders' discs and plane taps together are "
+        "o6's, so the sum is twice o6's per-pixel tolerance. A single-layer "
+        "render takes background_depth = the layer's own merged radius "
+        "(the stack: %.6f px at its fog-over-card midpoint z=%.3f; the near "
+        "card's auto radius is already its own; the plane completes its "
+        "own arrival), so its virtual background completes arrival by the "
+        "one-radius adjoint identity sum k = 1 and the deficit fill is "
+        "inert, as it is in the full render where the plane completes "
+        "arrival" % (stackRadius, sampleMid(MIX_Z - MIX_DELTA, MIX_Z))))
+    checks.append(oCheck(
+        "o6da ...same partition, alpha", layeredAlpha,
+        "|a_node - a_partition|", "same pixels",
+        "same bound as o6d. " + "; ".join(layeredNotes)))
+
+    # o6g/o6h: the stack with its fog and card kept apart (pre_merge off, or
+    # a gap the pre-merge does not fold): an M9 alpha deficit, XFAIL.
+    fogColour = (GROUND_COLOR[1], GROUND_COLOR[2])
+    splitRows = []
+    for tagName, delta, s in (
+            ("pre_merge off", MIX_DELTA, settings.derive(k=O_K,
+                                                        preMerge=False)),
+            ("gap %g" % MIX_DELTA_UNFOLDED, MIX_DELTA_UNFOLDED,
+             settings.derive(k=O_K, preMerge=True))):
+        fogZ = MIX_Z - delta
+        alphaEntries, ratioEntries = [], []
+        for fogAlpha in MIX_FOG_ALPHAS:
+            tag = "%s_d%g_a%g" % ("pmoff" if not s.preMerge else "pmon",
+                                  delta, fogAlpha)
+            image = renderOf(lambda fa=fogAlpha, d=delta: mixRig(fa, d),
+                             "o6s_node_%s" % tag, s)
+            solo = renderAlone(
+                lambda fa=fogAlpha, z=fogZ: mixFogCard(MIX_BOX, z,
+                                                       MIX_RED_FOG, fa),
+                "o6s_fog_%s" % tag, s, oRadius(fogZ))
+            dip, ratio = _Excess(), _Excess()
+            worstShare, fogScale = 0.0, [float("inf"), 0.0]
+            for y in range(MIX_BOX[1], MIX_BOX[3]):
+                for x in range(MIX_BOX[0], MIX_BOX[2]):
+                    tol = mixTolerance(x, y)
+                    weight = solo.at("A", x, y) / fogAlpha
+                    ceiling = (1.0 - fogAlpha) * weight
+                    a = image.at("A", x, y)
+                    deficit = max(1.0 - a, 0.0)
+                    dip.add(deficit, x, y, tol)
+                    worstShare = max(worstShare, deficit / (ceiling + tol))
+                    if not a > 0.0:
+                        ratio.add(float("inf"), x, y, tol)
+                        continue
+                    shares = [image.at(c, x, y) / (a * base) - 1.0
+                              for c, base in zip(("G", "B"), fogColour)]
+                    ratio.add(max(-min(shares), abs(shares[0] - shares[1]),
+                                  0.0), x, y, tol)
+                    if weight > 0.25:
+                        scale = shares[0] * a / ((1.0 - fogAlpha) * weight)
+                        fogScale = [min(fogScale[0], scale),
+                                    max(fogScale[1], scale)]
+            label = "fog=%g" % fogAlpha
+            alphaEntries.append((label, dip, worstShare))
+            ratioEntries.append((label, ratio, fogScale))
+        splitRows.append((tagName, delta, s, alphaEntries, ratioEntries))
+
+    for index, (tagName, delta, s, alphaEntries, ratioEntries) in \
+            enumerate(splitRows):
+        name = "o6%s" % ("g", "h")[index]
+        parts, present, share = [], True, 0.0
+        for label, dip, worstShare in alphaEntries:
+            present = present and dip.at is not None
+            share = max(share, worstShare)
+            parts.append("%s: %s; worst (1-a) / ((1-fog a) w_fog + N*2^-24) "
+                         "%.3f" % (label, dip.describe(), worstShare))
+        checks.append(boolCheck(
+            "o", "%s the o6 cell (K=%d) with the fog and card kept apart "
+            "(%s): 1-a, M9" % (name, O_K, tagName),
+            False, "; ".join(parts),
+            "1-a <= N*2^-24 per px; xfail while 1-a <= (1 - fog a) * "
+            "w_fog + N*2^-24 at every px",
+            population="every pixel of MIX_BOX %s; fog card z=%.2f, opaque "
+                       "card z=%.2f, pre_merge %s"
+                       % (MIX_BOX, MIX_Z - delta, MIX_Z,
+                          "on" if s.preMerge else "off"),
+            note="where the fog and the card are separate fragments their "
+                 "lens sets coincide at the stack's silhouette; the "
+                 "disjoint-first area model files the card as disjoint and "
+                 "gives it free area, and the plane behind, whose CoC runs "
+                 "continuously through the stack's so no rotation fires, "
+                 "covers only the pooled mean transmittance. That is "
+                 "correlated occlusion across source pixels (M9), not the "
+                 "pre_merge knob: the pre-merge only hides it by folding the "
+                 "pair when their CoCs are within merge_tolerance. Hard "
+                 "bound: the fog is the only deposit that carries "
+                 "transmitted mass and the plane fills every free area, so "
+                 "no more than (1 - fog a) * w_fog can go uncovered; w_fog, "
+                 "the fog's own kernel weight at the pixel, is the solo fog "
+                 "render's alpha / fog a, that render's background_depth "
+                 "at the fog's own radius. A deficit that falls inside "
+                 "N*2^-24 everywhere is a FAIL too: re-examine",
+            expectedFailure=True, hardTol=1.0,
+            hardValue=share if present else float("inf")))
+        checks.append(oCheck(
+            "%sr ...colour:alpha ratio (G/A, B/A): the fog's share, from G "
+            "and from B" % name,
+            [(label, ratio, None) for label, ratio, _ in ratioEntries],
+            "max(-share, |share_G - share_B|)", "same pixels",
+            "every layer carries the plane's G and B at alpha 1 except the "
+            "fog, whose colour is not premultiplied, so (c/a) / c_plane - 1 "
+            "= (1 - fog a) x_fog / a_pre for the fog's composited weight "
+            "x_fog >= 0, the same share on G and on B; the deficit fill and "
+            "the clamp scale colour and alpha together, so neither moves it. "
+            "Its upper side, x_fog <= w_fog, is not gated: the fill's "
+            "1/arrival scale lifts a but not a_pre and arrival is not an "
+            "output. Read against the solo fog weight, share * a / ((1 - "
+            "fog a) w_fog) = x_fog * fill scale / w_fog reads "
+            + "; ".join("%s [%.4f, %.4f]" % (label, lo, hi)
+                        for label, _, (lo, hi) in ratioEntries)
+            + " where w_fog > 0.25"))
+
+    keyedDiffs, keyedOk = [], True
+    for fogAlpha in MIX_FOG_ALPHAS:
+        reference = mixImages[(MIX_KS[0], fogAlpha)]
+        for k in MIX_KS[1:]:
+            differ, worst, first = oBitDiff(mixImages[(k, fogAlpha)],
+                                            reference, box)
+            keyedOk = keyedOk and differ == 0
+            keyedDiffs.append("fog=%g K=%d vs K=%d: %d channel-px differ, "
+                              "worst %d ulp%s"
+                              % (fogAlpha, k, MIX_KS[0], differ, worst,
+                                 "" if first is None
+                                 else " (first %s at (%d,%d))" % first))
+    checks.append(boolCheck(
+        "o", "o7 K-invariance: the o6 renders at K=%s bit-identical"
+        % "/".join(str(k) for k in MIX_KS),
+        keyedOk, "; ".join(keyedDiffs), "0 differing channel-px, 0 ulp",
+        population="every channel (RGBA) of every pixel of the rendered "
+                   "format %s, both fog alphas" % (box,),
+        note="depth_layers sets only the holdout depth resolution and the "
+             "cap on pieces per volumetric span, so it must not move a point "
+             "sample's pixel; bit-identity of R, G, B and A implies the "
+             "colour:alpha twin"))
+
+    checks.append(Check(
+        "o", "o8 determinism: the o6 cell at 1 vs 2 render threads", "-", "-",
+        SKIP, population="o6, K=16, fog 0.2",
+        note="the render thread count is Nuke's launch flag (-m, reported "
+             "back as nuke.env['threads'] = %s here); the node has no thread "
+             "knob, neither the root nor the preferences carry one and "
+             "nuke.execute() takes no thread count, so one harness run cannot "
+             "render both arms" % nuke.env.get("threads")))
     return checks
 
 
