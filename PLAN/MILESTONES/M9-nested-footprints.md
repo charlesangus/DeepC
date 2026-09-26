@@ -17,3 +17,11 @@ within the tolerance class the user rules at M8.P1.T3 Q2; the full suite is gree
 explained; the profile is within noise or the cost is accepted; the docker gate is green.
 
 ## Decisions
+
+> **Added 2026-09-25 (from M8.P2.T5/P2.T8 consultants):** two more instances of the nesting term to cover. (1) A same-source-pixel
+> fog + opaque stack whose CoC gap exceeds the pre-merge tolerance (or `pre_merge` off): at the stack's silhouette both lens sets
+> coincide, the card is filed as disjoint, and the plane's overflow never rotates — o6 alpha 0.9093 at (100,100) (M8 rows: o6's
+> `pre_merge`-off and gap-0.03 XFAIL variants, hard bound `1 − A ≤ (1 − fog α)·w_fog`). (2) A lone volumetric card's defocused
+> rim (f4a: +0.150 alpha / +10.9 %) and its colour over an opaque card (f4b +4.0e-2 c:a): consecutive pieces of one body from
+> neighbouring source pixels nest in lens space (DESIGN §5.4's per-parent chain is the candidate fix; M8.P2.T10 if ruled in).
+> V3's residual after M8.P2.T11 is mostly sub-pixel kernel error, not nesting.

@@ -422,7 +422,7 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   - size: L
   - depends: M8.P2.T8, user ruling
 
-- [ ] M8.P2.T11 — Pre-merge must not group pieces from opposite sides of focus
+- [x] M8.P2.T11 — Pre-merge must not group pieces from opposite sides of focus
   - files: `src/DeepCDefocusScatter.cpp` (pre-merge grouping ~386–430, `setDepthDerived(sampleMidDepth(...))`),
     `src/DeepCDefocusScatter.h` (pre-merge contract comment ~442–445), `tests/test_defocus_scatter.cpp`
   - approach: the pre-merge keys on radius tolerance + holdout bracket; across focus |CoC| folds, so a piece at z 9.49–10
@@ -760,3 +760,28 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   whose alpha is also exact here). On this rig the pre-merge folds fog + card into one opaque fragment (radii 0.19 px apart).
   **New at HEAD: with `pre_merge` off, o6 alpha reads 0.9093 at (100,100), fog 0.2** — must be 1. Both sent to a consultant
   (diagnose; patch for the alpha defect delivered as a file, applied after P2.T11 lands).
+- 2026-09-25 — **M8.P2.T11 done (code `376bc88`; evidence `~/deepc-validation/M8-P2T11/`).** `focusSideOf(signedRadius)` (−1 / +1,
+  0 for any r ≤ `kSharpRadiusPx` incl. NaN, matching `sameLensPatch`: sharp fragments see the whole lens and stay one class)
+  joins the pre-merge key, compared against the group head like the tolerance and bracket checks; both stale comments rewritten;
+  the test's `refFlatten` reference carries the same key. New doctest on a manual rig (size 20, focus 10, slab 7–14, step 1.15)
+  reproducing V3's pieces 7/8 (r −0.522 / +0.588): no group spans the cut, derived radius within [min, max] of members, colour:alpha
+  twin. Mutation (key dropped): 2 failures (`0.0971 ≥ 0.5217`; reference test 51 vs 52 fragments). Doctests 21/21, 102 + 1 skipped.
+  Scene (a) unchanged (a4 1.788e-7). Scene (f): only f4c/f4cr moved — V3 fog share at (95,128) −1.028e-2 → −3.92e-3, worst low
+  (160,139) −1.075e-2 → −4.40e-3 (model −4.37e-3), worst corner (96,96) +4.756e-2 → +3.563e-2; f4cr channel-px past gate 568 → 179,
+  the unprovisional low excursion 2.185e-3 → 0 (the provisional 2.2e-2 is no longer needed; P2.T12 removes it).
+- 2026-09-25 — **Consultant ruling on P2.T5 part 1's two failures (scratch `…/consult-o6/`).** **(A) o6d's fog-0.2 FAIL is an
+  oracle artefact:** the stack-alone render's virtual background uses the auto radius (14.049 px, z 8.20) while the merged stack
+  fragment sits at 14.144 px (mid-depth 8.19); the kernels don't tile at the silhouette, arrival 0.99589, and the deficit fill
+  scales the stack 0.81096 → 0.81431 = the +3.35e-3. Fix in the row: single-layer renders take `background_depth` at the
+  layer's own merged radius so the fill is inert (arrival 1.0000023); o6d then reads |ΔG/A| 2.1e-6 / |ΔB/A| 5.0e-6 over all
+  3136 px (0.4 % of the bound). Bound, population and o6da kept. **(B) `pre_merge`-off alpha 0.9093 is a genuine node limit of
+  the M9 class, not a rule flaw and not the knob:** at the stack's silhouette the fog's and card's lens sets coincide, the rule
+  files the card as disjoint (free area), and the plane's overflow never rotates (its CoC runs continuously through the stack's)
+  so it covers only the pooled mean; deficit ÷ (1 − fog α) = 0.1134 at both fogs. Gap sweep with `pre_merge` on: 0.19 px
+  (folded) → 1; 0.29 / 0.48 / 0.95 / 1.9 px → 0.9093–0.9096; 4.8 px → 0.999995 (a 2 px-jump coincidence). So o6's alpha row
+  really tests the pre-merge, 0.06 px below its tolerance. A collision-merge mitigation (fold same-pixel point groups within
+  1 px on one side) was measured and rejected (moves the boundary, changes the knob's meaning). **Rulings applied:** B → M9
+  (with f4a's rim, the same mechanism: consecutive pieces 0.5 px apart at an edge-matching silhouette); two o6 variants
+  (`pre_merge` off; gap 0.03 with it on) added as XFAIL with hard bound `1 − A ≤ (1 − fog α)·w_fog` (0.218 vs 0.0907 at fog
+  0.2; 0.136 vs 0.0567 at 0.5); the `pre_merge` tooltip must say the pre-merge is the *more* accurate setting for same-pixel
+  stacks under the stream (→ P2.T6's node-text clean-up); o6c and scene (i) i6 would show B with the knob off or a wider gap.
