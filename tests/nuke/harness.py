@@ -26,6 +26,7 @@ Scene bodies live in ``scenes.py``.
 
 import os
 import struct
+import subprocess
 import sys
 
 import nuke
@@ -575,6 +576,78 @@ def deepMergeHoldout(source, holdout):
     node["operation"].setValue("holdout")
     node["drop_hidden"].setValue(False)
     return node
+
+
+# --- the thin-lens volumetric oracle -----------------------------------------
+
+class VrefUnavailable(Exception):
+    """Raised by ``runVref()`` when the oracle binary cannot be found or
+    fails; scene code reports SKIP with the message."""
+
+
+def findVref():
+    """(path or None, the places searched).
+
+    ``DEEPC_VREF`` wins outright, so a mutation run against another plugin
+    set can still name the oracle.  Otherwise the binary sits in the build
+    tree one level above the plugins (the top-level target), so every
+    ``NUKE_PATH`` entry is tried as both ``<dir>/vref`` and ``<dir>/../vref``,
+    then the repository's own ``build/local-16.0``.
+    """
+    explicit = os.environ.get("DEEPC_VREF")
+    if explicit:
+        ok = os.path.isfile(explicit) and os.access(explicit, os.X_OK)
+        return (explicit if ok else None), [explicit]
+    candidates = []
+    for entry in os.environ.get("NUKE_PATH", "").split(os.pathsep):
+        if entry:
+            candidates.append(os.path.join(entry, "vref"))
+            candidates.append(os.path.join(os.path.dirname(
+                os.path.abspath(entry)), "vref"))
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+    candidates.append(os.path.join(repo, "build", "local-16.0", "vref"))
+    for path in candidates:
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path, candidates
+    return None, candidates
+
+
+class VrefPixel(object):
+    __slots__ = ("rgba", "se", "tau", "seTau")
+
+    def __init__(self, values):
+        self.rgba = tuple(values[0:4])
+        self.se = tuple(values[4:8])
+        self.tau = values[8]
+        self.seTau = values[9]
+
+
+def runVref(args):
+    """Run the oracle with the positional ``args`` its header documents and
+    return {(x, y): VrefPixel}."""
+    path, searched = findVref()
+    if path is None:
+        raise VrefUnavailable("vref not found (set DEEPC_VREF, or build the "
+                              "vref target with DEEPC_BUILD_TESTS=ON); "
+                              "searched %s" % ", ".join(searched))
+    env = dict(os.environ)
+    env.setdefault("OMP_NUM_THREADS", "2")
+    proc = subprocess.run([path] + ["%.17g" % a if isinstance(a, float)
+                                    else str(a) for a in args],
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          env=env, universal_newlines=True)
+    if proc.returncode != 0:
+        raise VrefUnavailable("%s exited %d: %s" % (path, proc.returncode,
+                                                    proc.stderr.strip()))
+    out = {}
+    for line in proc.stdout.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        fields = line.split()
+        out[(int(fields[0]), int(fields[1]))] = VrefPixel(
+            [float(v) for v in fields[2:12]])
+    return out
 
 
 # --- measurement -------------------------------------------------------------

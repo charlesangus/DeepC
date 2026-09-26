@@ -63,6 +63,17 @@ if (DEEPC_BUILD_TESTS)
     find_package(Threads REQUIRED)
     target_link_libraries(test_defocus_scatter PRIVATE Threads::Threads)
     add_test(NAME test_defocus_scatter COMMAND test_defocus_scatter)
+
+    # The harness's thin-lens volumetric oracle: standalone, so it must never
+    # pick up a src/ header, and -O2 comes after the config flags on purpose so
+    # its output does not move with the plugin build type.
+    add_executable(vref tests/reference/vref.cpp)
+    target_compile_features(vref PRIVATE cxx_std_17)
+    target_compile_options(vref PRIVATE -O2)
+    find_package(OpenMP)
+    if (OpenMP_CXX_FOUND)
+        target_link_libraries(vref PRIVATE OpenMP::OpenMP_CXX)
+    endif()
 endif()
 
 # install directory

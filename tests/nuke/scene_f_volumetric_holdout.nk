@@ -1,4 +1,4 @@
-version 17.0 v3
+version 16.0 v9
 Root {
  inputs 0
  name scene_f_volumetric_holdout.nk
@@ -156,7 +156,7 @@ DeepMerge2 {
  name DeepMerge1
  xpos 0
 }
-set N298f6eb0 [stack 0]
+set N3eb6c690 [stack 0]
 DeepCDefocus {
  coc_mode Manual
  size 0
@@ -177,7 +177,7 @@ DeepCConstant {
  label "fog holdout, alpha 0.90, z=\[5, 25]"
  xpos 200
 }
-push $N298f6eb0
+push $N3eb6c690
 DeepCDefocus {
  inputs 2
  coc_mode Manual
@@ -190,7 +190,7 @@ DeepCDefocus {
 StickyNote {
  inputs 0
  name StickyNote1
- label "Scene (f) -- volumetric holdout\n\nCheck: a partial-alpha fog-slab holdout must attenuate a depth-graded series of probe strips by the analytic (1-alpha)^t, t the fractional depth across the fog span.\n\nPinned here (top row): fog slab alpha 0.90 spanning z=\[5, 25] at size=0, against the same probe strips rendered with no holdout for comparison. That is the harness's f1, and it PASSES (4.4e-08 against a 1e-06 gate).\n\nThe bottom row pins the harness's f3e, which FAILS -- see its own note. The harness's other scene-(f) rows are not reproduced here: f2 (opaque-holdout erasure onset, XFAIL), f3/f3b (equal-density fog density, PASS), f3c/f3d (equal-density overlapping slabs, XFAIL), f3f (the unequal-density sweep; FAILS), f3g/f3h (pinned XFAILs: the coverage fill's background-radius mismatch, with f3g2/f3h2 as the background_depth controls that return them to exact) and f3i."
+ label "Scene (f) -- volumetric holdout\n\nCheck: a partial-alpha fog-slab holdout must attenuate a depth-graded series of probe strips by the analytic (1-alpha)^t, t the fractional depth across the fog span.\n\nPinned here (top row): fog slab alpha 0.90 spanning z=\[5, 25] at size=0, against the same probe strips rendered with no holdout for comparison. That is the harness's f1, and it PASSES (4.4e-08 against a 1e-06 gate).\n\nThe bottom row pins the harness's f3e, which FAILS -- see its own note. The harness's other scene-(f) rows are not reproduced here: f2 (opaque-holdout erasure onset, XFAIL), f3/f3b (equal-density fog density, PASS), f3c/f3d (equal-density overlapping slabs, XFAIL), f3f (the unequal-density sweep; FAILS), f3g/f3h (pinned XFAILs: the coverage fill's background-radius mismatch, with f3g2/f3h2 as the background_depth controls that return them to exact), f3i, and f4a-f4c (the volumetric cards against the thin-lens oracle; the right-hand column)."
  note_font_size 14
  xpos 340
 }
@@ -213,7 +213,7 @@ DeepCrop {
  xpos 20
  ypos 320
 }
-set N2997f560 [stack 0]
+set N3ecbd120 [stack 0]
 DeepCDefocus {
  coc_mode Manual
  focus_distance 30
@@ -223,7 +223,7 @@ DeepCDefocus {
  xpos -300
  ypos 460
 }
-push $N2997f560
+push $N3ecbd120
 DeepCConstant {
  inputs 0
  color_front {0.03 0.05 0.07 0.1}
@@ -243,7 +243,7 @@ DeepCrop {
  xpos -140
  ypos 320
 }
-set N29964bd0 [stack 0]
+set N3edf4410 [stack 0]
 DeepCConstant {
  inputs 0
  color_front {0.693 0.495 0.297 0.99}
@@ -263,7 +263,7 @@ DeepCrop {
  xpos -300
  ypos 320
 }
-set N2994ab30 [stack 0]
+set N3ecfc0f0 [stack 0]
 DeepMerge2 {
  inputs 3
  name DeepMerge4
@@ -277,8 +277,8 @@ DeepCDefocus {
  xpos 180
  ypos 460
 }
-push $N2997f560
-push $N29964bd0
+push $N3ecbd120
+push $N3edf4410
 DeepMerge2 {
  inputs 2
  name DeepMerge3
@@ -292,8 +292,8 @@ DeepCDefocus {
  xpos 20
  ypos 460
 }
-push $N2997f560
-push $N2994ab30
+push $N3ecbd120
+push $N3ecfc0f0
 DeepMerge2 {
  inputs 2
  name DeepMerge2
@@ -329,5 +329,61 @@ StickyNote {
  label "f3e -- unequal-density over-read (a PLAIN FAIL, not an xfail)\n\nTwo 40x40 cards 8 px apart, depth spans \[8,12] at alpha 0.99 and \[9,13] at alpha 0.10, defocused at size=14. Below saturation the node's area model is additive, so the merged render must equal the sum of the two cards rendered SEPARATELY. It does not: the harness reads +87.2% high on the worst probed pixel against a 0.5% gate (+77.4% before the coverage fill; the extra is the fill's background-radius mismatch, which f3g/f3h isolate), i.e. the node INVENTS alpha -- more than the two cards deposited.\n\n'soloA + soloB' is that oracle and 'oracle vs merged' is the error. The faint corner card is the RANGE ANCHOR: every branch here must measure the same depth range, or solo and merged would be bucketed differently and the identity would not be exact. Pixels its own blur reaches are excluded from the harness's reading, which is what the 'anchor alone' branch is for.\n\nThe harness's percentage is over a filtered pixel set (anchor-free, both cards present, estimated coverage <= 0.90) and is not what the difference node displays; the difference node shows WHERE the over-read is."
  note_font_size 14
  xpos 340
+ ypos 320
+}
+Constant {
+ inputs 0
+ color {0 0 0 0}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ name Constant9
+}
+Rectangle {
+ area {40 40 216 216}
+ color {0.2 0.55 0.7 1}
+ name Rectangle9
+}
+DeepFromImage {
+ premult true
+ set_z true
+ z 20
+ name DeepFromImage9
+}
+DeepCConstant {
+ inputs 0
+ color_front {0.4 0.4 0.4 0.8}
+ color_back {0.4 0.4 0.4 0.8}
+ format "256 256 0 0 256 256 1 deepc_val_256"
+ alpha_mode uniform
+ front 5
+ back 8
+ name DeepCConstant5
+}
+DeepCrop {
+ use_znear false
+ use_zfar false
+ bbox {96 96 160 160}
+ name DeepCrop4
+}
+DeepMerge2 {
+ inputs 2
+ name DeepMerge5
+ label "V2: fog card z=\[5, 8] over an opaque card at z=20"
+ xpos 900
+ ypos 320
+}
+DeepCDefocus {
+ coc_mode Manual
+ size 20
+ name DeepCDefocus7
+ label "compare against vref"
+ xpos 900
+ ypos 460
+}
+StickyNote {
+ inputs 0
+ name StickyNote3
+ label "f4a-f4c -- volumetric cards against the thin-lens oracle\n\nA 0.8-alpha fog card (96,96)-(160,160), tint 0.5, defocused at size=20, focus 10, depth_layers=16. The oracle is tests/reference/vref, an external program (not reproducible in a script): exact per-ray path length through the box, with the pixel and lens integrals sampled and their standard error reported. Pinned here: V2, the card at z=\[5,8] over an opaque card at z=20 (colour 0.20,0.55,0.70). V1 is the fog card alone and V3 the card straddling focus at z=\[7,14], both built the same way.\n\nAlpha is gated at k=5 oracle standard errors plus the kernel's residual class once per layer. V2/V3 alpha PASS (the opaque card covers the window, so any leak shows). V1 alpha and V2/V3 colour:alpha are XFAIL: at the card's rim the node over-reads, because pieces of one body from neighbouring source pixels nest in lens space and the node draws them on free area. Their hard bound is the no-nesting ceiling min(1, E\[tau]) the oracle also reports. A user ruling decides PASS/XFAIL."
+ note_font_size 14
+ xpos 1100
  ypos 320
 }

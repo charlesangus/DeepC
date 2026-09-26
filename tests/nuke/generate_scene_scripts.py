@@ -38,11 +38,12 @@ from scenes import (                                              # noqa: E402
     MIX_FOG_ALPHAS, MIX_NEAR_BOX, MIX_NEAR_Z, MIX_Z, NEAR_CARD,
     NEAR_COLOUR, NEAR_FG_EXTENT, NEAR_RADIUS, NEAR_Z, O_CARD_NAMES, O_CARDS,
     O_K, O_PLACEMENTS, O_PROBE_Z, O_SIZE,
-    UNEQ_CARD_A, UNEQ_CARD_B, _uneqAnchor, _uneqCard, checkerSparse,
+    UNEQ_CARD_A, UNEQ_CARD_B, VOL_BG_Z, VOL_BOX, VOL_FOCUS, VOL_K,
+    VOL_K_SIGMA, VOL_SIZE, _uneqAnchor, _uneqCard, checkerSparse,
     checkerTwin, groundPlane, groundPlaneRow, haloBackground, haloForeground,
     haloHoldout, haloSparse, mixRig, nearSparse, nearTwin, oCard, oCards,
     oInterior, oProbe, oRadius, oSparse, overChecker, stripSource,
-    texturedLayer,
+    texturedLayer, volBackground, volSource,
 )
 
 OUT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -266,7 +267,29 @@ CHECK_F = (
     "f3c/f3d (equal-density overlapping slabs, XFAIL), f3f (the unequal-"
     "density sweep; FAILS), f3g/f3h (pinned XFAILs: the coverage fill's "
     "background-radius mismatch, with f3g2/f3h2 as the background_depth "
-    "controls that return them to exact) and f3i."
+    "controls that return them to exact), f3i, and f4a-f4c (the volumetric "
+    "cards against the thin-lens oracle; the right-hand column)."
+)
+
+CHECK_F4 = (
+    "f4a-f4c -- volumetric cards against the thin-lens oracle\n\n"
+    "A 0.8-alpha fog card (%d,%d)-(%d,%d), tint 0.5, defocused at size=%g, "
+    "focus %g, depth_layers=%d. The oracle is tests/reference/vref, an "
+    "external program (not reproducible in a script): exact per-ray path "
+    "length through the box, with the pixel and lens integrals sampled and "
+    "their standard error reported. Pinned here: V2, the card at z=[5,8] "
+    "over an opaque card at z=%g (colour %.2f,%.2f,%.2f). V1 is the fog card "
+    "alone and V3 the card straddling focus at z=[7,14], both built the same "
+    "way.\n\n"
+    "Alpha is gated at k=%g oracle standard errors plus the kernel's residual "
+    "class once per layer. V2/V3 alpha PASS (the opaque card covers the "
+    "window, so any leak shows). V1 alpha and V2/V3 colour:alpha are XFAIL: "
+    "at the card's rim the node over-reads, because pieces of one body from "
+    "neighbouring source pixels nest in lens space and the node draws them "
+    "on free area. Their hard bound is the no-nesting ceiling min(1, E[tau]) "
+    "the oracle also reports. A user ruling decides PASS/XFAIL."
+    % (VOL_BOX + (VOL_SIZE, VOL_FOCUS, VOL_K, VOL_BG_Z) + volBackground()
+       + (VOL_K_SIGMA,))
 )
 
 CHECK_F3E = (
@@ -638,6 +661,18 @@ def buildSceneF(settings):
     error["label"].setValue("oracle vs merged: every nonzero pixel here is "
                             "alpha the composite invented or lost")
     stickyNote(CHECK_F3E, 340, 320)
+
+    volSettings = settings.derive(k=VOL_K)
+    volCard = volSource((5.0, 8.0), True)
+    volCard.setXYpos(900, 320)
+    volCard["label"].setValue("V2: fog card z=[5, 8] over an opaque card "
+                              "at z=%g" % VOL_BG_Z)
+    volNode = makeDefocus(volSettings, volCard, size=VOL_SIZE,
+                          focusDistance=VOL_FOCUS, cocMode="manual",
+                          fill="foreground")
+    volNode.setXYpos(900, 460)
+    volNode["label"].setValue("compare against vref")
+    stickyNote(CHECK_F4, 1100, 320)
 
 
 def buildSceneG(settings):
