@@ -541,6 +541,14 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
 >   at its defocused rim; colour over an opaque card +4.0e-2 / +1.43e-2 c:a (the latter mostly sub-pixel kernel
 >   error per the P2.T8 consultant — not expected to move).
 >
+> - **Order-dependent fill at a defocused edge (n8b symmetry / thin-lens rows, added by P2.T6's follow-up):** equal-depth
+>   background samples take the free area in raster/sort order rather than by lens position — the same root cause as the
+>   nesting term (the scalar coverage state does not know *which* part of the lens is covered), but it gets the *identity* of
+>   what shows through wrong rather than the amount. x↔y transpose asymmetry 0.163 (T0 5.4e-7); band mean |dR| vs thin-lens
+>   0.042 (T0 0.0305). **Design requirement:** the fix must be independent of emission/sort order among samples that do not
+>   occlude one another (a depth tie-break alone is insufficient — a 0.01·y tilt restores the error in full). Evidence
+>   `~/deepc-validation/M8-P2T6-consult/n8b/`.
+>
 > **User constraint (2026-09-26):** a deep image does not record that two samples belong to "one fog body", so
 > no fix may assume that identity (this is why P2.T10's per-parent chain was cancelled). The fix works from what a
 > deep sample actually carries — depth range, alpha, position — and the rim is expected, not promised, to
@@ -929,3 +937,14 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   show, 128–132 nothing; T0 averaged the disc; foreground reading 0.0648 → 0.0689) and its pins were bake-off readings, so there
   is no oracle; (2) f3c's arrival-count gate does not bound the composite's own rounding (comment says "empirical") — check it is
   derived, not fitted. P2.T6 stays open until both are settled.
+- 2026-09-26 — **Consultant ruling on P2.T6's two leftovers (`~/deepc-validation/M8-P2T6-consult/`); PM applies it.** (1) **n8b:**
+  a real stream-rule defect of the correlated-occlusion class (card and checker on opposite sides of focus: the open lens sees
+  background from x ∈ (85,88] under the card, the stream takes rows 124–127; coverage amounts match the reference to 1e-4, the
+  identity is wrong); raster-order dependent (bottom strip 0.0637 vs top 0.0185; transpose asymmetry 0.163 vs T0 5.4e-7); a
+  tie-break does not fix it. The "foreground reading moved" claim was wrong — the foreground render is unchanged, its twin moved.
+  Old n8b pins retired (bake-off readings, no oracle); a transpose-symmetry row (derived `N·2⁻²⁴`) and a thin-lens row added, both
+  **left FAIL** pending Phase 8.5 (no XFAIL without a ruling), and added to Phase 8.5's target list with order independence as a
+  design requirement. (2) **f3c's arrival-count gate was fitted in disguise** (it bounds only the fill's +1.7e-5; the composite's
+  rounding over 35 574 deposits is unbounded; f3b/f3d same pattern). No derived bound on the current rig catches T0; fix the rig
+  instead: a size-6/K-4 (or 12/4) row gated at `(κ·n_every + n_arrival)·2⁻²⁴·0.75` with κ derived, f3b/f3c/f3d re-gated at their
+  derived worst case, arrival gated directly. Both sent to one follow-up implementer; P2.T6 closes when it lands.
