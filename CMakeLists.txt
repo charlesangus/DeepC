@@ -74,6 +74,15 @@ if (DEEPC_BUILD_TESTS)
     if (OpenMP_CXX_FOUND)
         target_link_libraries(vref PRIVATE OpenMP::OpenMP_CXX)
     endif()
+
+    # The harness's thin-lens oracle for opaque and translucent deep input,
+    # held to vref's rules: no src/ header, and -O2 after the config flags.
+    add_executable(thinlens_ref tests/reference/thinlens_ref.cpp)
+    target_compile_features(thinlens_ref PRIVATE cxx_std_17)
+    target_compile_options(thinlens_ref PRIVATE -O2)
+    if (OpenMP_CXX_FOUND)
+        target_link_libraries(thinlens_ref PRIVATE OpenMP::OpenMP_CXX)
+    endif()
 endif()
 
 # install directory

@@ -172,3 +172,91 @@ def readExr(path):
             pos += rowBytes
 
     return Image(x0, nukeY0, x1, nukeY1, planes)
+
+
+def readDeepExr(path):
+    """Read an uncompressed 32-bit float deep scanline EXR (DeepWrite with
+    datatype "32 bit float", compression "none") into a list of samples
+    (x, y, zFront, zBack, R, G, B, A) in Nuke coordinates, in file order.
+
+    DeepWrite stores Z but no ZBack, so a missing ZBack reads as Z; a missing
+    colour channel reads as 0.0.
+    """
+    with open(path, "rb") as fh:
+        buf = fh.read()
+
+    magic, = struct.unpack_from("<I", buf, 0)
+    if magic != EXR_MAGIC:
+        raise ValueError("%s is not an OpenEXR file" % path)
+    flags = struct.unpack_from("<I", buf, 4)[0] >> 8
+    if flags & 0x10:
+        raise ValueError("%s is multi-part; unsupported" % path)
+
+    off = 8
+    attrs = {}
+    while True:
+        name, off = _readString0(buf, off)
+        if name == "":
+            break
+        attrType, off = _readString0(buf, off)
+        size, = struct.unpack_from("<i", buf, off)
+        off += 4
+        attrs[name] = (attrType, buf[off:off + size])
+        off += size
+
+    if attrs.get("type", (None, b""))[1].rstrip(b"\x00") != b"deepscanline":
+        raise ValueError("%s is not a deep scanline EXR" % path)
+    compression = attrs.get("compression", ("compression", b"\x00"))[1][0]
+    if compression != 0:
+        raise ValueError("%s uses compression %d; the harness writes "
+                         "uncompressed deep EXRs only" % (path, compression))
+    x0, y0, x1, y1 = struct.unpack_from("<iiii", attrs["dataWindow"][1], 0)
+    dispY1 = struct.unpack_from("<iiii", attrs["displayWindow"][1], 0)[3] \
+        if "displayWindow" in attrs else y1
+    chans = _readChannelList(attrs["channels"][1])
+    for name, pixelType, xSamp, ySamp in chans:
+        if pixelType != PIXELTYPE_FLOAT:
+            raise ValueError("%s channel %s is not 32-bit float" % (path, name))
+        if xSamp != 1 or ySamp != 1:
+            raise ValueError("%s channel %s is subsampled" % (path, name))
+
+    width = x1 - x0 + 1
+    height = y1 - y0 + 1
+    offsets = struct.unpack_from("<%dQ" % height, buf, off)
+    swap = sys.byteorder != "little"
+    samples = []
+    for blockOffset in offsets:
+        y, tableSize, packedSize, unpackedSize = struct.unpack_from(
+            "<iQQQ", buf, blockOffset)
+        pos = blockOffset + 28
+        if tableSize != width * 4 or packedSize != unpackedSize:
+            raise ValueError("%s: compressed deep block at y=%d" % (path, y))
+        counts = array.array("I")
+        counts.frombytes(buf[pos:pos + tableSize])
+        pos += tableSize
+        if swap:
+            counts.byteswap()
+        total = counts[-1] if width else 0
+        if unpackedSize != total * 4 * len(chans):
+            raise ValueError("%s: unexpected deep block size %d at y=%d"
+                             % (path, unpackedSize, y))
+        values = {}
+        for name, _pt, _xs, _ys in chans:          # chlist order == data order
+            plane = array.array("f")
+            plane.frombytes(buf[pos:pos + total * 4])
+            if swap:
+                plane.byteswap()
+            values[name] = plane
+            pos += total * 4
+        zero = array.array("f", [0.0]) * total
+        front = values.get("Z", zero)
+        back = values.get("ZBack", front)
+        r, g, b, a = (values.get(c, zero) for c in ("R", "G", "B", "A"))
+        nukeY = dispY1 - y
+        start = 0
+        for i in range(width):
+            for s in range(start, counts[i]):
+                samples.append((x0 + i, nukeY, front[s], back[s], r[s], g[s],
+                                b[s], a[s]))
+            start = counts[i]
+    return samples

@@ -32,7 +32,7 @@ import sys
 import nuke
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from exrio import readExr                                       # noqa: E402
+from exrio import readDeepExr, readExr                          # noqa: E402
 
 
 # --- knob vocabularies -------------------------------------------------------
@@ -585,32 +585,51 @@ class VrefUnavailable(Exception):
     fails; scene code reports SKIP with the message."""
 
 
-def findVref():
-    """(path or None, the places searched).
+def _findOracle(binary, envName):
+    """(path or None, the places searched) for one of the oracle binaries.
 
-    ``DEEPC_VREF`` wins outright, so a mutation run against another plugin
-    set can still name the oracle.  Otherwise the binary sits in the build
-    tree one level above the plugins (the top-level target), so every
-    ``NUKE_PATH`` entry is tried as both ``<dir>/vref`` and ``<dir>/../vref``,
-    then the repository's own ``build/local-16.0``.
+    ``envName`` wins outright, so a mutation run against another plugin set
+    can still name the oracle.  Otherwise the binary sits in the build tree
+    one level above the plugins (the top-level target), so every
+    ``NUKE_PATH`` entry is tried as both ``<dir>/<binary>`` and
+    ``<dir>/../<binary>``, then the repository's own ``build/local-16.0``.
     """
-    explicit = os.environ.get("DEEPC_VREF")
+    explicit = os.environ.get(envName)
     if explicit:
         ok = os.path.isfile(explicit) and os.access(explicit, os.X_OK)
         return (explicit if ok else None), [explicit]
     candidates = []
     for entry in os.environ.get("NUKE_PATH", "").split(os.pathsep):
         if entry:
-            candidates.append(os.path.join(entry, "vref"))
+            candidates.append(os.path.join(entry, binary))
             candidates.append(os.path.join(os.path.dirname(
-                os.path.abspath(entry)), "vref"))
+                os.path.abspath(entry)), binary))
     repo = os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__))))
-    candidates.append(os.path.join(repo, "build", "local-16.0", "vref"))
+    candidates.append(os.path.join(repo, "build", "local-16.0", binary))
     for path in candidates:
         if os.path.isfile(path) and os.access(path, os.X_OK):
             return path, candidates
     return None, candidates
+
+
+def findVref():
+    """(path or None, the places searched); ``DEEPC_VREF`` names it
+    explicitly."""
+    return _findOracle("vref", "DEEPC_VREF")
+
+
+def _runOracle(path, args, unavailable):
+    env = dict(os.environ)
+    env.setdefault("OMP_NUM_THREADS", "2")
+    proc = subprocess.run([path] + ["%.17g" % a if isinstance(a, float)
+                                    else str(a) for a in args],
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          env=env, universal_newlines=True)
+    if proc.returncode != 0:
+        raise unavailable("%s exited %d: %s" % (path, proc.returncode,
+                                                proc.stderr.strip()))
+    return [line for line in proc.stdout.splitlines() if line]
 
 
 class VrefPixel(object):
@@ -629,16 +648,7 @@ def _vrefLines(args):
         raise VrefUnavailable("vref not found (set DEEPC_VREF, or build the "
                               "vref target with DEEPC_BUILD_TESTS=ON); "
                               "searched %s" % ", ".join(searched))
-    env = dict(os.environ)
-    env.setdefault("OMP_NUM_THREADS", "2")
-    proc = subprocess.run([path] + ["%.17g" % a if isinstance(a, float)
-                                    else str(a) for a in args],
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                          env=env, universal_newlines=True)
-    if proc.returncode != 0:
-        raise VrefUnavailable("%s exited %d: %s" % (path, proc.returncode,
-                                                    proc.stderr.strip()))
-    return [line for line in proc.stdout.splitlines() if line]
+    return _runOracle(path, args, VrefUnavailable)
 
 
 def runVref(args):
@@ -674,6 +684,102 @@ def runVrefKernel(extra, args):
             continue
         out[(int(fields[0]), int(fields[1]))] = tuple(
             float(v) for v in fields[2:5])
+    return out, header
+
+
+# --- the thin-lens deep oracle -----------------------------------------------
+
+class ThinlensUnavailable(Exception):
+    """Raised by ``runThinlensRef()`` when the oracle binary cannot be found
+    or fails; scene code reports SKIP with the message."""
+
+
+def findThinlensRef():
+    """(path or None, the places searched); ``DEEPC_THINLENS_REF`` names it
+    explicitly, otherwise the same places as ``findVref()``."""
+    return _findOracle("thinlens_ref", "DEEPC_THINLENS_REF")
+
+
+# Risers make a receding plane a continuous surface in the oracle: without
+# them rays slip between the fronto-parallel footprints of two plane rows,
+# so the opaque o6 rig reads alpha 0.945 at (150,150) where its own flatten
+# is 1 everywhere, and the colour there is weighted against a hole.
+THINLENS_RISERS = True
+
+
+class ThinlensPixel(object):
+    __slots__ = ("rgba", "se", "ratioGA", "seRatioGA", "ratioRA",
+                 "seRatioRA", "weights", "seWeights")
+
+    def __init__(self, values):
+        self.rgba = tuple(values[0:4])
+        self.se = tuple(values[4:8])
+        self.ratioGA, self.seRatioGA = values[8], values[9]
+        self.ratioRA, self.seRatioRA = values[10], values[11]
+        self.weights = tuple(values[12::2])
+        self.seWeights = tuple(values[13::2])
+
+
+def dumpDeep(source, path, box=None):
+    """Write every deep sample of ``source`` inside ``box`` (default: the
+    whole format) to ``path`` as the oracle's "x y zFront zBack r g b a"
+    lines, and return the sample count.
+
+    The samples go through DeepWrite rather than ``deepSample()``, which in
+    terminal mode reads stale data until the tree has been executed and
+    reads nothing at all for a lone card.  32-bit float keeps the input the
+    node sees; DeepWrite's default half would move a fog card's colour.
+    """
+    if box is None:
+        box = formatBox()
+    exrPath = path + ".exr"
+    write = nuke.nodes.DeepWrite(inputs=[source])
+    write["file"].setValue(exrPath)
+    write["file_type"].setValue("exr")
+    write["datatype"].setValue("32 bit float")
+    write["compression"].setValue("none")
+    write["channels"].setValue("rgba")
+    nuke.execute(write, 1, 1)
+    samples = readDeepExr(exrPath)
+    os.remove(exrPath)
+    count = 0
+    with open(path, "w") as out:
+        out.write("# x y zFront zBack r g b a\n")
+        for sample in sorted(samples, key=lambda s: (s[1], s[0], s[2])):
+            x, y = sample[0], sample[1]
+            if not (box[0] <= x < box[2] and box[1] <= y < box[3]):
+                continue
+            out.write("%d %d %.9g %.9g %.9g %.9g %.9g %.9g\n" % sample)
+            count += 1
+    return count
+
+
+def thinlensPixelSpec(pixels):
+    return ";".join("%d,%d" % p for p in pixels)
+
+
+def runThinlensRef(dump, size, focus, pixels, nSub=4, nLens=32, reps=16,
+                   seed=1, risers=THINLENS_RISERS):
+    """Run the oracle's Monte Carlo mode on the ``dumpDeep()`` file ``dump``
+    over ``pixels`` ([(x, y)] or a spec string) and return
+    ({(x, y): ThinlensPixel}, the '#' header lines)."""
+    path, searched = findThinlensRef()
+    if path is None:
+        raise ThinlensUnavailable(
+            "thinlens_ref not found (set DEEPC_THINLENS_REF, or build the "
+            "thinlens_ref target with DEEPC_BUILD_TESTS=ON); searched %s"
+            % ", ".join(searched))
+    spec = pixels if isinstance(pixels, str) else thinlensPixelSpec(pixels)
+    out, header = {}, []
+    for line in _runOracle(path, ["mc", dump, float(size), float(focus), spec,
+                                  nSub, nLens, reps, seed, int(bool(risers))],
+                           ThinlensUnavailable):
+        if line.startswith("#"):
+            header.append(line)
+            continue
+        fields = line.split()
+        out[(int(fields[0]), int(fields[1]))] = ThinlensPixel(
+            [float(v) for v in fields[2:]])
     return out, header
 
 

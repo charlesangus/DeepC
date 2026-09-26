@@ -21,6 +21,7 @@ from harness import (
     depthRampLayer, formatBox, insetBox, makeBokeh, makeDefocus, pointLayer,
     rectangle2d, render, resetScript, rowMeans, runVref, runVrefKernel,
     saveRender, slab, stepProfile, tolCheck, ulps, VrefUnavailable,
+    ThinlensUnavailable, dumpDeep, runThinlensRef,
 )
 
 
@@ -5946,11 +5947,12 @@ def _planeTaps(size, y):
     return total
 
 
-def oTolerance(size, cards):
+def oTolerance(size, cards, plane=True):
     """(x, y) -> the float accumulation bound at that output pixel:
     O_TERMS_PER_TAP * (plane taps + every card disc that reaches it) * 2^-24,
-    the term count of the sums the fill divides.  Derived from the geometry,
-    never from a reading."""
+    the term count of the sums the fill divides; ``plane`` False drops the
+    plane taps for a rig without the plane.  Derived from the geometry, never
+    from a reading."""
     rows = {}
     discs = []
     for box, z, _ in cards:
@@ -5961,7 +5963,7 @@ def oTolerance(size, cards):
 
     def tolerance(x, y):
         if y not in rows:
-            rows[y] = _planeTaps(size, y)
+            rows[y] = _planeTaps(size, y) if plane else 0
         taps = rows[y]
         for (x0, y0, x1, y1), count in discs:
             if x0 <= x < x1 and y0 <= y < y1:
@@ -5997,6 +5999,122 @@ class _Excess(object):
                 self.value, self.at[0], self.at[1], self.tolAt, self.past)
         return "0 past bound; worst %.3e at %s (bound %.1e)" % (
             self.worst, self.worstAt, self.worstTol)
+
+
+# --- o0c: the thin-lens oracle's calibration ---------------------------------
+#
+# An isolated opaque card at the o6 near card's depth over nothing: the one
+# rig where the oracle's lens and pixel-footprint model is the only thing the
+# node and the oracle can disagree on.  O_CAL_RIM_RESIDUAL is the node's
+# disc-kernel residual against the exact thin-lens coverage of this card
+# (worst pixel, anti-aliased rim included), the ruled allowance for the
+# kernel; everything above it must be the oracle's Monte Carlo error or the
+# node's float accumulation.
+O_CAL_Z = MIX_NEAR_Z
+O_CAL_RED = MIX_RED_OPAQUE
+O_CAL_RIM_RESIDUAL = 8.6e-4
+O_CAL_SPAN = (80, 177)
+O_CAL_REPS = 16
+O_CAL_SEED = 790
+
+
+def oCalPixels():
+    """The card's centre row, centre column and main diagonal across the
+    whole bloom: two straight edges and the corners, where the disc overlaps
+    two card edges at once."""
+    centre = (MIX_BOX[0] + MIX_BOX[2]) // 2
+    pixels = []
+    for t in range(*O_CAL_SPAN):
+        for p in ((t, centre), (centre, t), (t, t)):
+            if p not in pixels:
+                pixels.append(p)
+    return pixels
+
+
+def oThinlensCalibration(cell):
+    """o0c/o0cr: the node on the calibration card against ``thinlens_ref``
+    run on a dump of the node's own deep input."""
+    names = ("o0c thin-lens calibration: isolated opaque card at z %.2f, "
+             "alpha vs thinlens_ref" % O_CAL_Z,
+             "o0cr ...colour:alpha ratio (G/A, R/A) vs thinlens_ref")
+    resetScript()
+    source = deepMerge([oCard(MIX_BOX, O_CAL_Z, O_CAL_RED)])
+    dump = os.path.join(cell.tmpDir, "o0c_deep.txt")
+    count = dumpDeep(source, dump)
+    pixels = oCalPixels()
+    try:
+        ref, header = runThinlensRef(dump, O_SIZE, GROUND_FOCUS, pixels,
+                                     reps=O_CAL_REPS, seed=O_CAL_SEED)
+    except ThinlensUnavailable as exc:
+        return [Check("o", name, "-", "-", SKIP, note=str(exc))
+                for name in names]
+    finally:
+        if not cell.keepRenders:
+            os.remove(dump)
+    node = render(cell, makeDefocus(cell, source, size=O_SIZE,
+                                    focusDistance=GROUND_FOCUS,
+                                    cocMode="manual", fill="foreground"),
+                  "o0c_node", box=formatBox())
+    terms = oTolerance(O_SIZE, ((MIX_BOX, O_CAL_Z, O_CAL_RED),), plane=False)
+
+    alpha, ratio = _Excess(), _Excess()
+    ramp, maxSe, maxRatioSe = 0, 0.0, 0.0
+    margin = [(0.0, None), (0.0, None)]
+    for (x, y), p in sorted(ref.items()):
+        na = node.at("A", x, y)
+        ra, seA = p.rgba[3], p.se[3]
+        maxSe = max(maxSe, seA)
+        if 0.0 < ra < 1.0:
+            ramp += 1
+        tol = O_CAL_RIM_RESIDUAL + 3.0 * seA + terms(x, y)
+        alpha.add(abs(na - ra), x, y, tol)
+        margin[0] = max(margin[0], (abs(na - ra) / tol, (x, y)),
+                        key=lambda m: m[0])
+        if na < 1.0e-03 or ra < 1.0e-03:
+            continue
+        seRatio = max(p.seRatioGA, p.seRatioRA)
+        maxRatioSe = max(maxRatioSe, seRatio)
+        deviation = max(abs(node.at("G", x, y) / na - p.ratioGA),
+                        abs(node.at("R", x, y) / na - p.ratioRA))
+        tol = 3.0 * seRatio + terms(x, y)
+        ratio.add(deviation, x, y, tol)
+        margin[1] = max(margin[1], (deviation / tol, (x, y)),
+                        key=lambda m: m[0])
+
+    population = ("%d px: the card's centre row, centre column and diagonal, "
+                  "x/y %d..%d, anti-aliased rim included; %d on the ramp "
+                  "(0 < a_ref < 1); MIX_BOX %s card, red %.2f, over nothing; "
+                  "K=%d, manual CoC size %g, focus %g, r = %.4f px"
+                  % (len(ref), O_CAL_SPAN[0], O_CAL_SPAN[1] - 1, ramp,
+                     MIX_BOX, O_CAL_RED, cell.k, O_SIZE, GROUND_FOCUS,
+                     oRadius(O_CAL_Z)))
+    oracle = ("thinlens_ref mc on a DeepWrite dump of the node's own input "
+              "(%d samples), n_s=%s"
+              % (count, header[0].split("n_s=", 1)[-1] if header else "?"))
+    return [
+        boolCheck("o", names[0], alpha.at is None and ramp > 0,
+                  "%s; worst deviation / bound %.3f at %s"
+                  % ((alpha.describe(),) + margin[0]),
+                  "|a_node - a_ref| <= %.1e + 3 SE_ref + N*2^-24 per px"
+                  % O_CAL_RIM_RESIDUAL,
+                  population=population,
+                  note="%s; worst SE_ref %.1e. The kernel's calibrated rim "
+                       "residual is the only allowance past the oracle's "
+                       "error and the term count. It resolves a half-pixel "
+                       "centre offset (~1.8e-02 mid-ramp) or a 1e-02 CoC "
+                       "scale error, not a 1e-03 one: that moves alpha by "
+                       "at most 1/(pi r) * 1e-03 r = 3.2e-04, inside the "
+                       "rim allowance" % (oracle, maxSe)),
+        boolCheck("o", names[1], ratio.at is None and ratio.count > 0,
+                  "%s; worst deviation / bound %.3f at %s"
+                  % ((ratio.describe(),) + margin[1]),
+                  "|c/a_node - c/a_ref| <= 3 SE_ref + N*2^-24 per px",
+                  population="the same pixels where both alphas >= 1e-03 "
+                             "(%d px)" % ratio.count,
+                  note="one card is one colour, so no coverage error can "
+                       "move the ratio and the kernel residual is not "
+                       "allowed; worst ratio SE_ref %.1e" % maxRatioSe),
+    ]
 
 
 def _inBox(box, x, y):
@@ -6204,6 +6322,9 @@ def sceneO(settings):
            CoC the scene is claimed at.
       o0b  Bokeh (the deep-defocus oracle) blooms to the same extents at
            this scene's size, within 1 px.
+      o0c  the thin-lens oracle's calibration: an isolated opaque card at
+           z 7.90, node alpha vs thinlens_ref within the kernel's rim
+           residual + 3 SE + N*2^-24; o0cr the colour:alpha twin.
       o1   the plane alone: the run's K and size, a K sweep, and integer vs
            half-integer kernel diameters.
       o2   one card over the plane at r_plane 0/2/8/16 px under it: the band
@@ -6325,6 +6446,8 @@ def sceneO(settings):
         checks.append(Check("o", "o0b Bokeh calibration", "-", "-", SKIP,
                             note=str(exc)))
         bokehOk = False
+
+    checks.extend(oThinlensCalibration(cell))
 
     # ------------------------------------------------------------------
     # o1: the plane alone.
