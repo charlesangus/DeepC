@@ -964,3 +964,8 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   prototype patch, every task's evidence logs, and the M8-T0 plugin set are gone. Committed code, tests, the harness oracles
   (`thinlens_ref`, `vref`, `kernel_sums`) and this file's decisions survive. Actions: M8-T0 is rebuilt per M8.P1.T1 from
   `2ac3550` in a separate worktree; P5.T1 works from the committed code and this file's recorded figures. The user is told.
+- 2026-09-26 — **M8-T0 partially rebuilt; Nuke license server down (PM).** Worktree at `~/DeepC-T0` (`2ac3550`; `~/git/` is not
+  writable for new siblings). `~/deepc-baselines/M8-T0/plugins/` holds all 28 `.so` + `PROVENANCE.txt`/`plugins.sha256`; doctests
+  26/26 + 121/121. The headless-load check and the a–o harness are **not run**: the RLM server `5053@172.20.0.1` refuses connections
+  (Nuke exits 100, `ENT_STATUS_RLM_LICENSE_COMM_ERROR`). Every Nuke-dependent step (T0 a–o, P5.T1's harness readings, P3.T2, P4.T*)
+  waits for it. P5.T1 proceeds on doctests / standalone drivers vs `thinlens_ref`, harness rows flagged as predicted.
