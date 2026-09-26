@@ -331,7 +331,7 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   - size: L
   - depends: M8.P2.T9
 
-- [ ] M8.P2.T4 — Node wiring, probe, memory budget, determinism, and the profile
+- [x] M8.P2.T4 — Node wiring, probe, memory budget, determinism, and the profile
   - files: `src/DeepCDefocus.cpp`, `src/DeepCDefocusFill.h`, `src/DeepCDefocusScatter.h` (`bandBudgetBytes`)
   - approach: read DESIGN §6, §7, §8 first. `frameSetup()` builds `FrameDepthRange`, the frame's
     `HoldoutBoundaries` (P2.T9) and `pieceStepPx`; the `depth_layers` tooltip is rewritten (holdout depth resolution
@@ -356,7 +356,8 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
 
 - [ ] M8.P2.T8 — Thin-lens volumetric oracle: the reference extended to spans, with harness rigs V1–V3
   - files: `tests/reference/vref.cpp` (promoted from `~/deepc-validation/M8-P2T7/vol/vref.cpp`; standalone C++17,
-    built by CMake under `DEEPC_BUILD_TESTS`, **no `src/` header included**), `tests/CMakeLists.txt`,
+    built by CMake under `DEEPC_BUILD_TESTS`, **no `src/` header included**), the top-level `CMakeLists.txt` (the doctest
+    targets live there, ~51–65; there is no `tests/CMakeLists.txt`),
     `tests/nuke/scenes.py` (rigs V1–V3 as scene (f) or (o) rows — state which), `tests/nuke/harness.py` (loader)
   - approach: exact per-ray path length through a uniform box (image position affine in 1/z), 16 × 1024 rays per
     pixel, standard error stated; V1 a lone 0.8 fog card (CoC 5–20 px), V2 the same over an opaque card, V3
@@ -653,3 +654,17 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   `2·N_p·2⁻²⁴` (alpha ≤ 0.23, arrival ≤ 0.27 of bound); snap-vs-blend control `maxS_snap−1 > 2·(maxS_blend−1)` for r0 ≥ 6.
   `grep 255` in the scatter tests now hits only an unrelated design-doc comment (line ~6613). Doctests 21/21, 101 + 1 skipped.
   DESIGN §2.4 carries the amended rule as implemented.
+- 2026-09-25 — **M8.P2.T4 done (code `ae9b734`; evidence `~/deepc-validation/M8-P2T4/`).** `frameSetup()` builds the holdout set
+  from `FrameDepthRange` (K+1 uniform in z); `DepthBuckets` survives only in `Math.h` constants/sanitiser and tests. `pieceStepPx`
+  and `stagedRadiusPx` already cut like the flatten (no change). Tooltip, node help and pipeline comments rewritten for the stream.
+  Probe rewritten as an in-node replay with a bit-for-bit self-check (no κ/T columns). `kSoAResidentBytesPerFragment` 100 → 70
+  (measured median 65.98 B: SoA 49.98 + sort 16; the design note's 20 B sort estimate was high). **Vectorisation: ladder step (b)** —
+  `#pragma omp simd` still missed ("control flow in loop"); `-fno-trapping-math` on `DeepCDefocusScatter.cpp` only vectorises the
+  deposit loop (32-byte vectors), output bit-identical (o6 0/262 144, V2/V3 dumps identical, doctests same assertion count).
+  Scene (a): a1–a3 0 at gate 0, a4 1.788e-7 (≤ 2e-7), a5 PASS. Determinism 0 differing channel-pixels at forced band heights
+  1/7/32/96 (scratch-only switch, diff kept in evidence) and `-m 1` vs `-m 2`, on o6 and V2/V3. Probe (125,130) K=4: near card
+  867 free-area deposits (Q 0.8909), stack rotates on the jump and exhausts F at its deposit #948, plane lands on the older chunk;
+  G/A 0.59801 = reference. Scene (o) 36/0/1 both builds; o6c worst 0.176 (fog 0.2) / 0.111 (0.5), K-flat, vs T0 0.283/0.177.
+  Scene (f) side check: f1/f2 unchanged, f3i now PASS 2.3e-6, f3e/f3f/f3h/f3h2 FAIL as predicted (await the rim ruling, P2.T6).
+  Profile (interleaved, 5 reps): wall 27.3/27.6 s vs T0 40.4/40.4 (**−32.1 %**), CPU −36.2 %, RSS 1.219 vs 1.787 GB (−0.57 GB);
+  spreads T0 0.02 s, M8 0.32 s. Left for P2.T6: node help "KNOWN LIMITATIONS" 1–2 still quote T0-era numbers.
