@@ -2,7 +2,7 @@
 title: DeepCDefocus — deep-input, flat-output defocus node
 status: running
 current: M8.P5.T1
-pm_heartbeat: 2026-09-26T09:23:04-04:00
+pm_heartbeat: 2026-09-26T18:25:19-04:00
 ship: pr-per-milestone
 ---
 
@@ -90,6 +90,10 @@ Bokeh/pgBokeh don't exhibit; it runs before M2 because it rewrites the kernel st
   only NukeDockerBuild can do) — the user runs it before a milestone's PR merges; don't block
   milestone progress on it. The local SDKs cover all three minor versions, which is more version
   coverage than the docker path currently offers.
+- **Only the project directory persists on this host.** Evidence, baselines and extra worktrees live under
+  `.evidence/` (git-excluded); every session first runs
+  `for d in validation baselines scratch; do ln -sfn /home/bosley/git/DeepC/.evidence/$d ~/deepc-$d; done` so the
+  `~/deepc-*` paths in briefs resolve (`PLAN/DECISIONS/2026-09-26-evidence-lives-in-project.md`). Never write to `~/` otherwise.
 - **House style**: 4-space indentation, `_` member prefix, lowerCamelCase (per README
   conventions).
 - **Pins are float-exact or ulp-derived — never 8-bit.** No tolerance anywhere in this project is
