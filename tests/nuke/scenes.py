@@ -5839,12 +5839,10 @@ def sampleMid(zFront, zBack):
     return zFront + 0.5 * (zBack - zFront) if zBack > zFront else zFront
 
 
-# The node vs Bokeh colour:alpha ratio deviation this build reads on o6c, at
-# each (K, fog alpha) cell -- the worst pixel over MIX_BOX: inside the near
-# card at K=4, where the near card and the stack share one bucket; on
-# MIX_BOX's edge at K=16/64, where the stack's own silhouette weight differs
-# from Bokeh's.  A pin is a measurement of a known defect, never a target:
-# whoever moves one re-pins it in the same change.
+# Outer bounds for the node vs Bokeh colour:alpha ratio deviation read on
+# o6cb at each (K, fog alpha) cell, the worst pixel over MIX_BOX.  Bokeh is
+# not the colour oracle (o6c gates against thinlens_ref), so a pin holds the
+# reading inside (0, 2 pin] rather than describe a defect of the node.
 O6_PIN_COLOUR = {
     (4, 0.2): 2.832e-01,
     (16, 0.2): 2.251e-01,
@@ -5982,9 +5980,13 @@ class _Excess(object):
         self.worst, self.worstAt, self.worstTol = 0.0, None, 0.0
         self.past, self.count, self.maxTol = 0, 0, 0.0
         self.minimum, self.maximum, self.notOne = 1.0, 1.0, 0
+        self.sum, self.worstRatio = 0.0, 0.0
 
     def add(self, deviation, x, y, tol):
         self.count += 1
+        self.sum += deviation
+        self.worstRatio = max(self.worstRatio,
+                              deviation / tol if tol > 0.0 else float("inf"))
         self.maxTol = max(self.maxTol, tol)
         if self.worstAt is None or deviation > self.worst:
             self.worst, self.worstAt, self.worstTol = deviation, (x, y), tol
@@ -6119,6 +6121,83 @@ def oThinlensCalibration(cell):
 
 def _inBox(box, x, y):
     return box[0] <= x < box[2] and box[1] <= y < box[3]
+
+
+# --- o6c/o6e: the mixed-opacity rig against thinlens_ref ----------------------
+#
+# The thin-lens reference is the oracle for how the node weights the near
+# card, the stack and the plane against each other.  One model limit is left
+# ungated: where the near card's lens set nests inside the stack's, the
+# node's disjoint area partition gives the stack the near card's lens area as
+# well.  That moves a weight only where the stack's own lens set leaves part
+# of the lens to the plane, so the excluded band is geometric: every pixel of
+# MIX_BOX from some point of whose footprint the larger of the stack's two
+# discs (the fog card's, nearer the camera) crosses MIX_BOX's edge, and which
+# the near card's disc reaches.  Everywhere else the stack covers the whole
+# lens and the partition's order cannot change a weight.
+# Pixel and lens strata both limit the reference's error across the cards'
+# edges; 3 x 64 strata hold the worst ratio SE to ~1.4e-04 (3 SE half the
+# rim residual) where 4 x 32 leaves ~2.4e-04 at half the cost.
+O6_REF_NSUB = 3
+O6_REF_NLENS = 64
+O6_REF_REPS = 8
+O6_REF_SEED = 818
+O6_REF_INSET = 2
+O6_REF_BAND_PROBES = ((155, 128), (104, 104), (150, 150))
+O6_REF_CHANNELS = ("G", "B", "R")
+
+
+def oStackCore():
+    """The pixels of MIX_BOX whose whole footprint sees the stack cover the
+    entire lens: the box inset by the stack's larger radius."""
+    r = max(oRadius(z) for box, z, _ in MIX_CARDS if box == MIX_BOX)
+    return (int(math.ceil(MIX_BOX[0] + r)), int(math.ceil(MIX_BOX[1] + r)),
+            int(math.floor(MIX_BOX[2] - r)), int(math.floor(MIX_BOX[3] - r)))
+
+
+def oInSilhouetteBand(x, y):
+    r = oRadius(MIX_NEAR_Z)
+    nearReach = (MIX_NEAR_BOX[0] - r < x + 1 and x < MIX_NEAR_BOX[2] + r
+                 and MIX_NEAR_BOX[1] - r < y + 1 and y < MIX_NEAR_BOX[3] + r)
+    return (_inBox(MIX_BOX, x, y) and nearReach
+            and not _inBox(oStackCore(), x, y))
+
+
+def oBoxPixels(box):
+    return [(x, y) for y in range(box[1], box[3])
+            for x in range(box[0], box[2]) if not oInSilhouetteBand(x, y)]
+
+
+def oMixReference(cell, pixels):
+    """{fog alpha: ({(x, y): ThinlensPixel}, header, dumped samples)}:
+    ``thinlens_ref`` on a dump of each o6 cell's own deep input."""
+    out = {}
+    for fogAlpha in MIX_FOG_ALPHAS:
+        resetScript()
+        dump = os.path.join(cell.tmpDir, "o6_ref_a%g_deep.txt" % fogAlpha)
+        count = dumpDeep(mixRig(fogAlpha), dump)
+        try:
+            ref, header = runThinlensRef(dump, O_SIZE, GROUND_FOCUS, pixels,
+                                         nSub=O6_REF_NSUB, nLens=O6_REF_NLENS,
+                                         reps=O6_REF_REPS, seed=O6_REF_SEED)
+        finally:
+            if not cell.keepRenders:
+                os.remove(dump)
+        out[fogAlpha] = (ref, header, count)
+    return out
+
+
+def oRefRatios(p):
+    """(G/A, B/A, R/A) of a ThinlensPixel and one SE covering all three.  G/A,
+    R/A and their SEs are the oracle's own (the mean and spread of
+    per-replicate ratios); the oracle does not report B/A, so it is the ratio
+    of the channel means with its SE carried by linearising B/A under the
+    worst-case correlation of B and A, (SE_B + B/A SE_A) / A, which bounds
+    the true SE whatever that correlation is."""
+    a = p.rgba[3]
+    ba = p.rgba[2] / a
+    seBa = (p.se[2] + ba * p.se[3]) / a
+    return (p.ratioGA, ba, p.ratioRA), max(p.seRatioGA, seBa, p.seRatioRA)
 
 
 def oDip(image, box, tolerance, exclude=None):
@@ -6344,9 +6423,13 @@ def sceneO(settings):
            area) vs Bokeh, K=4/16/64 x fog alpha 0.2/0.5: worst 1-a over the
            covered box.
       o6b  ...DeepCDefocus - Bokeh alpha difference, same sweep.
-      o6c  ...colour:alpha ratio vs Bokeh, same sweep -- pinned XFAIL where
-           the node weights the stack against its neighbours differently
-           from Bokeh.
+      o6c  ...colour:alpha ratio vs thinlens_ref, same sweep, over MIX_BOX
+           less the silhouette band (where the stack's lens set is partial
+           and the near card's nests inside it), within the kernel's rim
+           residual + 3 SE + N*2^-24; o6cb the old Bokeh comparison, a
+           reading held as a two-sided pinned XFAIL.
+      o6e  ...the interior (MIX_NEAR_BOX inset 2, band out) vs thinlens_ref,
+           alpha, same bound; o6er the colour:alpha twin.
       o6d  ...node vs the layer-ordered partition of its own near-card,
            stack and plane renders, colour:alpha ratio over all of MIX_BOX;
            o6da the same for alpha.
@@ -6791,13 +6874,14 @@ def sceneO(settings):
                      % (MIX_BOX, MIX_Z, MIX_Z - MIX_DELTA, MIX_DELTA,
                         MIX_NEAR_Z, MIX_NEAR_BOX))
     mixAlpha, mixAlphaDiff, mixColourDiff = [], [], []
-    mixImages = {}
+    mixImages, mixBokehs = {}, {}
     for fogAlpha in MIX_FOG_ALPHAS:
         resetScript()
         mixSource = mixRig(fogAlpha)
         mixOracle = makeBokeh(cell, mixSource, GROUND_FOCUS, O_SIZE)
         mixBokeh = render(cell, mixOracle, "o6_bokeh_a%g" % fogAlpha,
                           box=box)
+        mixBokehs[fogAlpha] = mixBokeh
         for k in MIX_KS:
             s = settings.derive(k=k)
             label = "K=%d fog=%g" % (k, fogAlpha)
@@ -6825,22 +6909,157 @@ def sceneO(settings):
         mixAlphaDiff, "|a_node - a_bokeh|", "same pixels",
         "bound is o6's term-count tolerance plus Bokeh's own measured +-1 "
         "ulp, as o5c"))
-    checks.append(oCheck(
-        "o6c ...node vs Bokeh colour:alpha ratio (G/A, B/A), same sweep",
-        mixColourDiff, "|c/a_node - c/a_bokeh|", "same pixels",
-        "bound is twice o6's per-pixel tolerance, as o5cr. The fog card's "
-        "colour is not premultiplied by its alpha, so fog-over-card "
-        "flattens to (2 - fog alpha) times the G/A and B/A of the near card "
-        "and the plane; at fog alpha 0 every layer shares one ratio and "
-        "this reads ~2e-5 whatever the mixing weights. Two weights differ "
-        "from Bokeh's. Where the near card and the stack share a bucket "
-        "(K=4; the near card's depth-split share at K=16/64) the bucket's "
-        "summed alpha is saturated as one, mixing the near card with the "
-        "stack it hides by alpha (0.89 : 1.0) instead of in depth order. "
-        "On the stack's own defocused silhouette the node weights it by its "
-        "disc coverage (0.52 half a pixel inside the edge) where Bokeh "
-        "reads 0.84. The deficit fill scales colour and alpha together, so "
-        "it cannot move the ratio"))
+
+    def bokehRow(extra):
+        return oCheck(
+            "o6cb ...node vs Bokeh colour:alpha ratio (G/A, B/A), same "
+            "sweep, a reading: Bokeh is not the colour oracle",
+            mixColourDiff, "|c/a_node - c/a_bokeh|", "same pixels",
+            "bound is twice o6's per-pixel tolerance, as o5cr, and each "
+            "pin is two-sided, so the reading is held inside (0, 2 pin]. "
+            "The fog card's colour is not premultiplied by its alpha, so "
+            "fog-over-card flattens to (2 - fog alpha) times the G/A and "
+            "B/A of the near card and the plane, and the ratio exposes how "
+            "each renderer weights one against the other. Bokeh shows no "
+            "see-around past the defocused near card and over-weights the "
+            "stack's own defocused silhouette, where thin-lens disc "
+            "coverage is what the node and the reference both apply; o6c "
+            "is the gate. %s" % extra)
+
+    # ------------------------------------------------------------------
+    # o6c/o6e: the o6 cells against thinlens_ref, the silhouette band out.
+    # ------------------------------------------------------------------
+    core = oStackCore()
+    interiorBox = insetBox(MIX_NEAR_BOX, O6_REF_INSET)
+    corePixels = oBoxPixels(MIX_BOX)
+    interiorPixels = oBoxPixels(interiorBox)
+    refPixels = sorted(set(corePixels) | set(interiorPixels)
+                       | set(O6_REF_BAND_PROBES), key=lambda p: (p[1], p[0]))
+    bandCount = sum(1 for y in range(MIX_BOX[1], MIX_BOX[3])
+                    for x in range(MIX_BOX[0], MIX_BOX[2])
+                    if oInSilhouetteBand(x, y))
+    refNames = (
+        "o6c ...node vs thinlens_ref colour:alpha ratio (G/A, B/A, R/A), "
+        "same sweep, silhouette band out",
+        "o6e ...interior (MIX_NEAR_BOX inset %d) vs thinlens_ref, alpha, "
+        "K=%d" % (O6_REF_INSET, O_K),
+        "o6er ...colour:alpha ratio (G/A, B/A, R/A) vs thinlens_ref")
+    try:
+        mixRef = oMixReference(cell, refPixels)
+    except ThinlensUnavailable as exc:
+        mixRef = None
+        skips = [Check("o", name, "-", "-", SKIP, note=str(exc))
+                 for name in refNames]
+        checks.extend([skips[0], bokehRow("")] + skips[1:])
+    if mixRef is not None:
+        def refBound(x, y, se):
+            return O_CAL_RIM_RESIDUAL + 3.0 * se + mixTolerance(x, y)
+
+        def ratioAgainst(image, ref, pixels):
+            out = _Excess()
+            for x, y in pixels:
+                p = ref[(x, y)]
+                na = image.at("A", x, y)
+                if na < 1.0e-03 or p.rgba[3] < 1.0e-03:
+                    out.add(float("inf"), x, y, 0.0)
+                    continue
+                target, se = oRefRatios(p)
+                deviation = max(abs(image.at(c, x, y) / na - t)
+                                for c, t in zip(O6_REF_CHANNELS, target))
+                out.add(deviation, x, y, refBound(x, y, se))
+            return out
+
+        def describe(r):
+            return "%s; mean %.1e; worst deviation / bound %.3f" % (
+                r.describe(), r.sum / r.count if r.count else 0.0,
+                r.worstRatio)
+
+        coreRows, coreOk, maxSe = [], True, 0.0
+        for fogAlpha in MIX_FOG_ALPHAS:
+            ref = mixRef[fogAlpha][0]
+            maxSe = max([maxSe] + [oRefRatios(ref[p])[1] for p in corePixels])
+            for k in MIX_KS:
+                r = ratioAgainst(mixImages[(k, fogAlpha)], ref, corePixels)
+                coreOk = coreOk and r.at is None and r.count > 0
+                coreRows.append("K=%d fog=%g: %s" % (k, fogAlpha, describe(r)))
+        bandProbe = []
+        for fogAlpha in MIX_FOG_ALPHAS:
+            ref = mixRef[fogAlpha][0]
+            image = mixImages[(O_K, fogAlpha)]
+            bandProbe.append("fog=%g %s" % (fogAlpha, ", ".join(
+                "(%d,%d) %+.3f" % (x, y, image.at("G", x, y)
+                                   / image.at("A", x, y) - ref[(x, y)].ratioGA)
+                for x, y in O6_REF_BAND_PROBES)))
+        header = mixRef[MIX_FOG_ALPHAS[0]][1]
+        oracle = ("thinlens_ref mc on a DeepWrite dump of each cell's own "
+                  "input (%s samples), n_s=%s"
+                  % ("/".join(str(mixRef[f][2]) for f in MIX_FOG_ALPHAS),
+                     header[0].split("n_s=", 1)[-1] if header else "?"))
+        bandText = ("silhouette band out: the %d px of MIX_BOX from some "
+                    "point of whose footprint the stack's larger disc (fog "
+                    "card z=%.2f, r=%.4f) crosses MIX_BOX's edge and which "
+                    "the near card's disc (r=%.4f) reaches; the stack covers "
+                    "the whole lens over the remaining %s"
+                    % (bandCount, MIX_Z - MIX_DELTA,
+                       oRadius(MIX_Z - MIX_DELTA), oRadius(MIX_NEAR_Z),
+                       core))
+        checks.append(boolCheck(
+            "o", refNames[0], coreOk, "; ".join(coreRows),
+            "|c/a_node - c/a_ref| <= %.1e + 3 SE_ref + N*2^-24 per px"
+            % O_CAL_RIM_RESIDUAL,
+            population="%d px of MIX_BOX %s, %s"
+                       % (len(corePixels), MIX_BOX, bandText),
+            note="%s; worst ratio SE_ref %.1e. The bound is o0c's: the "
+                 "kernel's calibrated rim residual, the oracle's error and "
+                 "o6's term count. Not gated, the band carries the nested "
+                 "lens-set over-weight of the stack (node - ref G/A, K=%d): "
+                 "%s" % (oracle, maxSe, O_K, "; ".join(bandProbe))))
+        bokehVsRef = []
+        for fogAlpha in MIX_FOG_ALPHAS:
+            r = ratioAgainst(mixBokehs[fogAlpha], mixRef[fogAlpha][0],
+                             corePixels)
+            bokehVsRef.append("fog=%g worst %.3e at %s, mean %.1e" % (
+                fogAlpha, r.worst, r.worstAt, r.sum / r.count))
+        checks.append(bokehRow(
+            "Bokeh against thinlens_ref over o6c's pixels, |c/a_bokeh - "
+            "c/a_ref| on G/A, B/A, R/A: %s" % "; ".join(bokehVsRef)))
+
+        alphaRows, ratioRows, alphaOk, ratioOk = [], [], True, True
+        maxSeA, maxSeRatio = 0.0, 0.0
+        for fogAlpha in MIX_FOG_ALPHAS:
+            ref = mixRef[fogAlpha][0]
+            image = mixImages[(O_K, fogAlpha)]
+            alpha = _Excess()
+            for x, y in interiorPixels:
+                p = ref[(x, y)]
+                maxSeA = max(maxSeA, p.se[3])
+                maxSeRatio = max(maxSeRatio, oRefRatios(p)[1])
+                alpha.add(abs(image.at("A", x, y) - p.rgba[3]), x, y,
+                          refBound(x, y, p.se[3]))
+            ratio = ratioAgainst(image, ref, interiorPixels)
+            alphaOk = alphaOk and alpha.at is None and alpha.count > 0
+            ratioOk = ratioOk and ratio.at is None and ratio.count > 0
+            alphaRows.append("fog=%g: %s" % (fogAlpha, describe(alpha)))
+            ratioRows.append("fog=%g: %s" % (fogAlpha, describe(ratio)))
+        interiorPopulation = ("%d px: MIX_NEAR_BOX %s inset %d, %s; K=%d "
+                              "(o7: the node is bit-identical across K)"
+                              % (len(interiorPixels), MIX_NEAR_BOX,
+                                 O6_REF_INSET, bandText, O_K))
+        checks.append(boolCheck(
+            "o", refNames[1], alphaOk, "; ".join(alphaRows),
+            "|a_node - a_ref| <= %.1e + 3 SE_ref + N*2^-24 per px"
+            % O_CAL_RIM_RESIDUAL,
+            population=interiorPopulation,
+            note="%s; worst SE_ref %.1e" % (oracle, maxSeA)))
+        checks.append(boolCheck(
+            "o", refNames[2], ratioOk, "; ".join(ratioRows),
+            "|c/a_node - c/a_ref| <= %.1e + 3 SE_ref + N*2^-24 per px"
+            % O_CAL_RIM_RESIDUAL,
+            population="same pixels",
+            note="where the near card hides most of the lens the stack is "
+                 "seen past its defocused edge, and the reference weights "
+                 "it by that see-around; worst ratio SE_ref %.1e"
+                 % maxSeRatio))
 
     # ------------------------------------------------------------------
     # o6d: the node vs the layer-ordered partition of its own single-layer
