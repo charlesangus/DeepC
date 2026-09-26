@@ -119,7 +119,7 @@ Merge2 {
 StickyNote {
  inputs 0
  name StickyNote1
- label "Scene (a) -- size=0 / all-in-focus parity\n\nCheck: at size=0 the node must match stock DeepToImage (volumetric_composition ON) to within a couple of ULP -- NOT bit-exact, because the mandatory fractional two-bucket split cannot land a sample exactly on a bucket centre.\n\nPinned here: the point-sample row (4 depth-separated textured layers), tolerance 2e-07 absolute. The harness also runs a coincident-depth row and an overlapping-volumetric-spans row (tolerance 2.4e-07) and a pair of non-occluding-holdout rows, none reproduced here."
+ label "Scene (a) -- size=0 / all-in-focus parity\n\nCheck: at size=0 the node must match stock DeepToImage (volumetric_composition ON) bit for bit.\n\nPinned here: the point-sample row (4 depth-separated textured layers), tolerance 0. The harness also runs a coincident-depth row and an overlapping-volumetric-spans row (both tolerance 0) and a pair of non-occluding-holdout rows (tolerance 2e-07), none reproduced here."
  note_font_size 14
  xpos 280
 }

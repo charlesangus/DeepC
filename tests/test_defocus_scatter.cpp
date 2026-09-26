@@ -6240,9 +6240,9 @@ TEST_CASE("bandBudgetBytes: stream state + virtual-background window + holdout L
     CHECK(bandBudgetBytes(0, 4, 4096, 64, true, 0.0) == doctest::Approx(12582912.0));
 
     // The SoA term, at the resident figure per fragment.
-    CHECK(kSoAResidentBytesPerFragment == doctest::Approx(100.0));
+    CHECK(kSoAResidentBytesPerFragment == doctest::Approx(70.0));
     CHECK(bandBudgetBytes(16, 4, 4096, 64, false, 1.0e6)
-          == doctest::Approx(12582912.0 + 1.0e8));
+          == doctest::Approx(12582912.0 + 7.0e7));
 
     // Negative width sanitises every plane term to 0; only the SoA survives.
     CHECK(bandBudgetBytes(16, 4, -1, 64, true, 100.0)
@@ -6349,14 +6349,14 @@ TEST_CASE("planBands: shrink-to-fit floors at 1 row and the concurrent cap "
     }
 
     // The fragment estimator participates in the shrink: 20 spp over a 4096
-    // window at 100 B resident makes a row cost 196,608 + 8,192,000 =
-    // 8,388,608 B, so under 768MB (805,306,368) 128 rows (1,073,741,824) do
-    // not fit and 64 (536,870,912) do.
+    // window at 70 B resident makes a row cost 196,608 + 5,734,400 =
+    // 5,931,008 B, so under 512MB (536,870,912) 128 rows (759,169,024) do
+    // not fit and 64 (379,584,512) do.
     {
         const auto sppFragments = [](int b) {
             return 4096.0 * static_cast<double>(b) * 20.0;
         };
-        const double limit = 768.0 * 1024.0 * 1024.0;
+        const double limit = 512.0 * 1024.0 * 1024.0;
         const BandPlan withFrag = planBands(limit, 2160, 16, 4, 4096, false, 256, sppFragments);
         const BandPlan without  = planBands(limit, 2160, 16, 4, 4096, false, 256, noFragments);
         CHECK(withFrag.bandHeight < without.bandHeight);

@@ -152,6 +152,17 @@ if (UNIX)
         "Target ISA flags for DeepCDefocus's scatter kernel")
     target_compile_options(DeepCDefocus PRIVATE ${DEEPC_DEFOCUS_ISA_FLAGS} -ffp-contract=off)
 
+    # The deposit loop's per-pixel selects are only if-converted, and so the
+    # loop only vectorised, once the compiler may evaluate both sides of a
+    # float comparison: with trapping math on GCC 12 keeps them as branches
+    # ("control flow in loop"), and `#pragma omp simd` does not change that.
+    # The flag licenses speculating float operations and dropping the FP
+    # exception flags, not reassociating or contracting them, so the results
+    # do not move (rendered pixels compared bit for bit with and without it);
+    # the scatter TU alone gets it.
+    set_property(SOURCE DeepCDefocusScatter.cpp APPEND PROPERTY
+                 COMPILE_OPTIONS -fno-trapping-math)
+
     option(DEEPC_DEFOCUS_VEC_REPORT
            "Emit GCC vectorizer notes while compiling DeepCDefocus" OFF)
     if (DEEPC_DEFOCUS_VEC_REPORT)
@@ -166,8 +177,8 @@ if (UNIX)
            "Allow FMA contraction in DeepCDefocusScatter.cpp (measurement only)"
            OFF)
     if (DEEPC_DEFOCUS_SCATTER_FP_CONTRACT)
-        set_source_files_properties(DeepCDefocusScatter.cpp PROPERTIES
-                                    COMPILE_OPTIONS "-ffp-contract=fast")
+        set_property(SOURCE DeepCDefocusScatter.cpp APPEND PROPERTY
+                     COMPILE_OPTIONS -ffp-contract=fast)
     endif()
 endif()
 

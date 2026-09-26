@@ -1885,10 +1885,13 @@ void resolveStreamCPU(StreamPlanes&       planes,
 // ---------------------------------------------------------------------------
 // bandBudgetBytes — the memory-limit knob's COMBINED per-band figure
 //
-// The state planes ALONE under-budget by orders of magnitude: the SoA
-// fragment buffers are the larger term at 4K.  The combined figure is
+// The state planes ALONE under-budget by orders of magnitude: the fragment
+// stream is the larger term at any real sample count.  The combined figure is
 //
-//   W*B*(C+6)*4                  the stream state (StreamPlanes)
+//   W*B*(C+6)*4                  the stream state (StreamPlanes): claimed
+//                                area, alpha, the two recency-chunk floats,
+//                                the last CoC, arrival and C colour planes.
+//                                No factor of depth_layers anywhere.
 // + 2*W*(B+2*padY)*4             the virtual-background window (T +
 //                                residual radius planes), sized to the WINDOW height
 //                                (B+2*padY, clipped to the output box; see
@@ -1899,24 +1902,37 @@ void resolveStreamCPU(StreamPlanes&       planes,
 //                                omission. Measured 8.72 MB per 4096x64 band
 //                                at the max_radius=100 / edge_softness=1
 //                                defaults (padY=101): windowHeight=64+2*101
-//                                =266, 2*4096*266*4 = 8,716,288 B — nearly
-//                                4x the arrival plane at the same defaults.
+//                                =266, 2*4096*266*4 = 8,716,288 B.
 // + (K+1)*W*B*4                  the holdout transmittance LUT, when a holdout
-//                                is connected — NOT counted by
-//                                bytesForBand(), measured 17.0 MB per 4096x64
+//                                is connected (`holdoutLayers` is K, the
+//                                depth_layers count): 17.0 MB per 4096x64
 //                                band at K=16 (17*4096*64*4 = 17,825,792 B;
-//                                the LUT dominates the holdout side's cost and
-//                                its size is spp-independent)
-// + fragments * 100 B            the SoA fragment stream at its RESIDENT cost:
-//                                61 B/fragment logical, ~100 B resident with
-//                                PodBuffer's geometric capacity slack
+//                                spp-independent)
+// + fragments * kSoAResidentBytesPerFragment
+//                                the fragment stream at its RESIDENT cost:
+//                                the SoA (4*6 + 1 + 4*C B logical, 37 B at
+//                                C = 3) with PodBuffer's geometric capacity
+//                                slack, plus the sort's order array and its
+//                                scratch (keys, alternate keys, alternate
+//                                order: 16 B, sized exactly)
+//
+// kSoAResidentBytesPerFragment is measured, not derived: on the profile rig
+// (2048x1080, 20 spp, C = 3, K = 16, 2 threads, 34 bands of 32 rows) the
+// per-band capacity of SoA + order + sort scratch over that band's fragment
+// count, read from DEEPC_DEFOCUS_DEBUG_STATS (soaBytes, orderSortBytes), is
+// median 65.98 B (SoA 49.98 + sort 16.00), range 65.69-68.80 B.  The top of
+// the range is a pooled job reusing the capacity of a larger earlier band.
 //
 // `fragmentEstimate` is the caller's own forecast of the band's fragment
 // count.  The node derives it from the depth-range pass's per-row sample
 // counts over the band's FETCH window (band +/- padY — the fetch rows are
 // what get flattened, not just the band's own rows), which over-counts
-// alpha<=0 samples the flatten drops and under-counts volumetric splits; both
-// errors are small against the 100-vs-61 resident margin already folded in.
+// alpha<=0 samples the flatten drops and every sample the merges collapse,
+// and under-counts volumetric pieces.  On the profile rig the over-count
+// dominates: worst band estimate 1,720,320 against at most 430,080 emitted
+// fragments, so the figure promises about 4x the stream's real resident size
+// there; a volumetric-heavy frame (up to depth_layers + 1 pieces per span)
+// is where it can under-promise.
 //
 // `padY` defaults to 0 (no virtual-background window reach) so a caller that
 // does not pass it still gets a term — 2*W*B*4 at padY=0, the window's
@@ -1928,30 +1944,17 @@ void resolveStreamCPU(StreamPlanes&       planes,
 // the whole output box, so frameSetup() counts it once against the limit
 // before the bands are planned from what is left.
 //
-// WHAT THE KNOB ACTUALLY DELIVERS.  The figure omits the band's own output
-// planes (W*B*(C+2)*4 — 2.95 MB against a 485 MB band at 4K/K=64) and the
-// flatten/scatter scratch, which is sized per PIXEL (one pixel's sample
-// count), not per band.  Measured against peak RSS, on the two configurations
-// where maxInFlight actually binds (it binds only once several bands are in
-// flight at once) — BEFORE the virtual-background window term above existed,
-// so both promised figures are now undercounts by that term's size at their
-// band geometry:
+// Also omitted: the band's own output planes (W*B*(C+1)*4, plus the matte
+// when it is on) and the flatten/scatter scratch, which is sized per PIXEL
+// (one pixel's sample count) or per kernel row, not per band.
 //
-//   3840x2160, 20 spp, K=64, limit 1.5 GB: cap 3, promised 1.456 GiB,
-//     process peak +1.489 GiB, of which +0.270 GiB is the same scene with
-//     this node out of the graph -> the node's own peak is 0.84x promised.
-//   2048x1080, 20 spp, K=16, limit 0.5 GB: cap 2, promised 0.372 GiB,
-//     process peak +0.260 GiB, source-only +0.079 GiB -> 0.49x promised.
-//
-// So the limit is a real ceiling with 1.2x-2.0x headroom, not an estimate to
-// be padded.  The headroom is the 100-vs-61 B/fragment resident margin: it is
-// the whole band at K=16 (0.172 GB of 0.186) and under half of it at K=64,
-// where the exactly-allocated bucket planes dominate — which is why the
-// 4K/K=64 reading sits so much closer to the promise.
+// The plan may pick any band height and any concurrency: no pixel depends on
+// either (see the streaming composite's pipeline note above), so the limit
+// trades memory against parallelism and never against the image.
 // ---------------------------------------------------------------------------
-constexpr double kSoAResidentBytesPerFragment = 100.0;
+constexpr double kSoAResidentBytesPerFragment = 70.0;
 
-inline double bandBudgetBytes(int bucketCount, int channelCount, int width,
+inline double bandBudgetBytes(int holdoutLayers, int channelCount, int width,
                               int height, bool holdoutConnected,
                               double fragmentEstimate, int padY = 0)
 {
@@ -1959,8 +1962,8 @@ inline double bandBudgetBytes(int bucketCount, int channelCount, int width,
         StreamPlanes::bytesForBand(channelCount, width, height));
     bytes += static_cast<double>(
         ResidualWindow::bytesForWindow(width, height + 2 * padY));
-    if (holdoutConnected && bucketCount > 0 && width > 0 && height > 0) {
-        bytes += static_cast<double>(bucketCount + 1)
+    if (holdoutConnected && holdoutLayers > 0 && width > 0 && height > 0) {
+        bytes += static_cast<double>(holdoutLayers + 1)
                * static_cast<double>(width)
                * static_cast<double>(height) * 4.0;
     }
@@ -2033,7 +2036,7 @@ inline double worstFetchWindowSum(const std::vector<double>& rowCounts,
 template <typename FragmentsForBandHeight>
 inline BandPlan planBands(double memoryLimitBytes,
                           int    frameHeight,
-                          int    bucketCount,
+                          int    holdoutLayers,
                           int    channelCount,
                           int    width,
                           bool   holdoutConnected,
@@ -2055,11 +2058,11 @@ inline BandPlan planBands(double memoryLimitBytes,
     if (b > frameHeight)
         b = frameHeight;
 
-    double bytes = bandBudgetBytes(bucketCount, channelCount, width, b,
+    double bytes = bandBudgetBytes(holdoutLayers, channelCount, width, b,
                                    holdoutConnected, fragmentsForBandHeight(b), padY);
     while (b > 1 && bytes > memoryLimitBytes) {
         b = (b / 2 > 0) ? b / 2 : 1;
-        bytes = bandBudgetBytes(bucketCount, channelCount, width, b,
+        bytes = bandBudgetBytes(holdoutLayers, channelCount, width, b,
                                 holdoutConnected, fragmentsForBandHeight(b), padY);
     }
 

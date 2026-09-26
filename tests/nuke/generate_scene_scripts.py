@@ -207,13 +207,11 @@ def diffNode(a, b, xpos, ypos):
 CHECK_A = (
     "Scene (a) -- size=0 / all-in-focus parity\n\n"
     "Check: at size=0 the node must match stock DeepToImage (volumetric_"
-    "composition ON) to within a couple of ULP -- NOT bit-exact, because the "
-    "mandatory fractional two-bucket split cannot land a sample exactly on a "
-    "bucket centre.\n\n"
+    "composition ON) bit for bit.\n\n"
     "Pinned here: the point-sample row (4 depth-separated textured layers), "
-    "tolerance 2e-07 absolute. The harness also runs a coincident-depth row "
-    "and an overlapping-volumetric-spans row (tolerance 2.4e-07) and a pair "
-    "of non-occluding-holdout rows, none reproduced here."
+    "tolerance 0. The harness also runs a coincident-depth row and an "
+    "overlapping-volumetric-spans row (both tolerance 0) and a pair of "
+    "non-occluding-holdout rows (tolerance 2e-07), none reproduced here."
 )
 
 CHECK_B = (

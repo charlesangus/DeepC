@@ -12,19 +12,31 @@
 //
 //    frameSetup()  ONCE per Op::hash(), claimed like a band ("band -1"):
 //         computeDepthRange()  alpha-weighted DeepFront/DeepBack/Alpha pass
-//           -> FrameDepthRange + HoldoutBoundaries (uniform in Z,
-//              frame-global) + DiscKernelLUT over the MEASURED radius range
+//           -> FrameDepthRange: the measured range and depth_layers (K)
+//           -> HoldoutBoundaries, K + 1 uniform in Z over that range, and
+//              the volumetric piece step, both frame-global
+//           -> DiscKernelLUT over the MEASURED radius range
 //           -> (fill: background) ONE SurfaceMap + MaxDepthPyramid over the
 //              whole output box, read by every band
 //           -> band decomposition + the memory-limit cap (deepc::planBands)
 //    computeBand() per claimed band, into the claiming thread's PRIVATE
-//         stream state planes (a pooled BandJob):
+//         stream state (a pooled BandJob):
 //         fetch band +/- padY source rows -> flattenPixelToSoA
 //      -> holdout fetch (skipped entirely when it cannot matter) -> HoldoutLut
-//      -> sortFragmentsByDepth -> scatterStreamCPU -> resolveStreamCPU
+//      -> sortFragmentsByDepth: the band's fragments as ONE depth-ordered
+//         stream, ties in emission order
+//      -> scatterStreamCPU: every destination pixel folds the deposits that
+//         reach it front to back on its own running state
+//      -> scatterBackgroundCPU (the fill's arrival) -> resolveStreamCPU
 //      -> write the band's DISJOINT region of the shared flat frame
 //      -> BandLedger::completeBand() publishes it (release/acquire) to the
 //         lock-free row-copy path
+//
+//  No pixel depends on the band plan or the thread count: a destination
+//  pixel's deposits all come from source rows within padY of it, which every
+//  band containing it fetches, the flatten of a source pixel reads only that
+//  pixel and frame-global state, and the stable sort orders those deposits
+//  the same way in every band.  planBands() may therefore pick any height.
 //
 //  A thread whose band another thread is already computing claims a
 //  different Dirty band instead (BandLedger::tryClaimDirtyBand) and only
@@ -89,10 +101,10 @@ using namespace DD::Image;
 // The knob IRanges are deliberately *soft* (IRange::force defaults to false),
 // so a user can type max_radius = 5000 into the panel. Every consumer of a
 // knob value therefore clamps it here rather than trusting the slider bound —
-// the memory formulas (K*W*B*(C+3)*4 per band, LUT ~2*pi*R^3/3) are only
-// bounded if the use sites do the clamping. These caps are shared node-wide
-// so the bbox pad, the LUT extent and the scatter loop can never disagree
-// about how big "big" is.
+// the memory formulas (holdout LUT (K+1)*W*B*4 per band, kernel LUT
+// ~2*pi*R^3/3) are only bounded if the use sites do the clamping. These caps
+// are shared node-wide so the bbox pad, the LUT extent and the scatter loop
+// can never disagree about how big "big" is.
 // ---------------------------------------------------------------------------
 static const int   kMaxRadiusCap    = 2000;   // px
 static const float kEdgeSoftnessCap = 64.0f;  // px
@@ -103,8 +115,9 @@ static const char* const HELP =
     "output is flat 2D.\n"
     "\n"
     "Every deep sample is scattered into a disc whose radius comes from the "
-    "sample's own depth, and the discs are composited back to front in depth "
-    "buckets. Depth comes from the deep front/back channels, so no separate "
+    "sample's own depth, and the discs are composited front to back in exact "
+    "depth order, one sample at a time, at every pixel they reach. Depth "
+    "comes from the deep front/back channels, so no separate "
     "depth channel or Z-defocus pass is involved. The bokeh in this version "
     "is a plain anti-aliased circle.\n"
     "\n"
@@ -146,9 +159,8 @@ static const char* const HELP =
     "no alpha), each claim is scattered with its owner's disc into an "
     "ARRIVAL plane, and a destination pixel whose arrival falls short of 1 "
     "has its premultiplied colour and alpha scaled up together by "
-    "1/arrival. The fill only ever restores a shortfall; where more than "
-    "unit weight arrives, the overlap saturation rule scales down as "
-    "before.\n"
+    "1/arrival. The fill only ever restores a shortfall; a pixel whose "
+    "filled alpha would pass 1 is clamped, colour and alpha together.\n"
     "\n"
     "'fill' chooses what a pixel's shortfall is filled with. FOREGROUND, "
     "the default, is the scheme above exactly: what it invents is "
@@ -238,21 +250,23 @@ static const char* const HELP =
     "linear gain cancels exactly. It takes a non-linear highlight expansion "
     "upstream and its inverse downstream.\n"
     "\n"
-    "VOLUMETRIC SAMPLES ARE SPLIT AND TREATED AT THEIR MIDPOINTS\n"
+    "VOLUMETRIC SAMPLES ARE CUT INTO PIECES, EACH AT ITS MIDPOINT\n"
     "\n"
-    "A sample with a depth span (deep front != deep back) is split where it "
-    "crosses depth bucket boundaries, with its transmittance split "
-    "analytically, so a fog slab does not collapse into one hard layer. Each "
-    "resulting part is then given a single circle of confusion, computed at "
-    "that part's midpoint depth, and scattered as one disc.\n"
+    "A sample with a depth span (deep front != deep back) is cut into "
+    "pieces, with its transmittance split analytically, so a fog slab does "
+    "not collapse into one hard layer. Each piece is given a single circle "
+    "of confusion, computed at its midpoint depth, and scattered as one "
+    "disc.\n"
     "\n"
-    "So a volumetric sample is defocused in as many discrete steps as it "
-    "crosses depth buckets, never continuously. A slab that sits inside one "
-    "bucket gets exactly one radius, taken from its middle, however much the "
-    "true circle of confusion varies across it. This is most visible on slabs "
-    "that span a long depth range close to the camera, where the circle of "
-    "confusion changes fastest. Raising 'depth layers' gives such a slab more "
-    "steps.\n"
+    "The cuts are placed so that the circle of confusion varies by at most "
+    "one step across a piece, and the focal plane is always a cut. The step "
+    "is twice 'merge tolerance' (at least 0.25 pixels), the error the "
+    "pre-merge already accepts, unless the frame's whole circle-of-confusion "
+    "range divided by 'depth layers' is larger, in which case it is that: no "
+    "span is ever cut into more than 'depth layers' + 1 pieces. On a frame "
+    "with a wide range of blur, a slab close to the camera, where the circle "
+    "of confusion changes fastest, is therefore defocused in coarser steps; "
+    "raising 'depth layers' gives it more.\n"
     "\n"
     "NO depth.Z AOV\n"
     "\n"
@@ -414,7 +428,7 @@ class DeepCDefocus : public DD::Image::Iop
 
     // --- Perf --------------------------------------------------------------
     int   _maxRadius;            // Int px, default 100, 1-500
-    int   _depthLayers;          // Int, default 16, 4-128 (K buckets)
+    int   _depthLayers;          // Int, default 16, 4-128 (K)
     bool  _preMerge;             // Bool, default true (tidy pass is always on)
     float _mergeTolerance;       // Float, default 0.25px, 0-2px
     float _memoryLimit;          // Float GB, default 4.0, 1-64
@@ -595,9 +609,10 @@ public:
         _debugStats = (std::getenv("DEEPC_DEFOCUS_DEBUG_STATS") != nullptr);
 
         // Composite instrumentation: for each listed output pixel, the band
-        // that covers it logs the bucket composite's full decomposition to
-        // stderr (printProbe()).  Coordinates are the node's output pixels at
-        // the resolution being rendered, so under proxy they are proxy pixels.
+        // that covers it logs the deposit stream that reached it, in arrival
+        // order, to stderr (printProbe()).  Coordinates are the node's output
+        // pixels at the resolution being rendered, so under proxy they are
+        // proxy pixels.
         _debugProbe = parseProbePixels(std::getenv("DEEPC_DEFOCUS_DEBUG_PROBE"));
     }
 
@@ -783,14 +798,20 @@ public:
                     "output bbox pad and the kernel LUT's worst-case size.");
 
         Int_knob(f, &_depthLayers, IRange(4, 128), "depth_layers", "depth layers");
-        Tooltip(f, "Number (K) of depth buckets used by the scatter "
-                    "compositor. Memory scales with K.\n\n"
-                    "It also sets how many depths the holdout's "
-                    "transmittance is sampled at, so it fixes the width of "
-                    "the bracket in front of a holdout in which unoccluded "
-                    "geometry is erased: that bracket is the frame's depth "
-                    "range divided by this value. Raise it to shrink the "
-                    "artefact. See the node help.");
+        Tooltip(f, "Depth resolution of the holdout, and the cap on how many "
+                    "pieces a volumetric sample is cut into. It plays no part "
+                    "in the colour of point samples, which are composited in "
+                    "exact depth order whatever its value.\n\n"
+                    "The holdout's transmittance is sampled at this many + 1 "
+                    "depths spread evenly over the frame's depth range, which "
+                    "fixes the width of the bracket in front of a holdout in "
+                    "which unoccluded geometry is erased: the frame's depth "
+                    "range divided by this value. Raise it to shrink that "
+                    "artefact; with a holdout connected, memory per band "
+                    "grows with it.\n\n"
+                    "A volumetric sample is cut into at most this many + 1 "
+                    "pieces, each defocused at its own midpoint. See the "
+                    "node help.");
 
         Bool_knob(f, &_preMerge, "pre_merge", "pre-merge");
         Tooltip(f, "Group adjacent-depth samples of one pixel whose CoC radii "
@@ -912,8 +933,8 @@ public:
     // Contract: the channel selection, union {DeepFront, DeepBack, Alpha}.
     //   - the selection, because those are the channels being defocused;
     //   - DeepFront/DeepBack, because every sample's depth span drives CoC,
-    //     bucketing and the tidy pre-pass (they are consumed internally and
-    //     never appear in the output);
+    //     the stream's depth order and the tidy pre-pass (they are consumed
+    //     internally and never appear in the output);
     //   - Alpha, because compositing needs it whether or not the user
     //     selected it (and the output always carries it).
     //
@@ -1043,7 +1064,7 @@ public:
 
         // EXACTLY ONCE, on freshly built params (applyProxyScale mutates and
         // re-derives). From here on _cocParams is in proxy pixels, which is the
-        // space every radius, bucket boundary and kernel entry lives in.
+        // space every radius, piece step and kernel entry lives in.
         deepc::applyProxyScale(_cocParams, _proxyScale);
 
         // Mirror DeepToImage: propagate our caching state to the deep source.
@@ -1338,23 +1359,26 @@ private:
     //                            samples per source row, which is what the
     //                            memory budget's per-band SoA estimate is
     //                            derived from
-    //    2. FrameDepthRange      that range and K, and the volumetric piece step
-    //       HoldoutBoundaries    uniform in Z over the SAME range, built ONCE
-    //                            per frame (a per-band set seams every band
-    //                            boundary — measured vis 0.0448 vs 1.0000 for
-    //                            one fragment either side of one)
+    //    2. FrameDepthRange      that range and K
+    //       HoldoutBoundaries    K + 1, uniform in Z over the SAME range,
+    //                            built ONCE per frame (a per-band set seams
+    //                            every band boundary — measured vis 0.0448 vs
+    //                            1.0000 for one fragment either side of one)
+    //       pieceStepPx          the volumetric cut, from the range's CoC
+    //                            variation, K and merge_tolerance
     //       DiscKernelLUT        over the frame's MEASURED radius range, with
     //                            rMin = 0
     //    3. deepc::planBands()   band height + the memory-limit cap on
     //                            CONCURRENT in-flight bands, from the
-    //                            COMBINED bucket-plane + holdout-LUT +
-    //                            SoA-fragment budget (floor 1 band, then
+    //                            COMBINED stream-state + holdout-LUT +
+    //                            fragment-stream budget (floor 1 band, then
     //                            shrink B — never deadlock at 0)
     //
     //  computeBand() — per CLAIMED band, on whichever render thread claimed
     //  it: fetch band +/- padY source rows -> SoA flatten -> holdout LUT ->
-    //  sort -> scatterStreamCPU -> resolveStreamCPU (fill + clamp) -> write
-    //  the band's disjoint region of the shared frame.
+    //  depth sort -> scatterStreamCPU -> scatterBackgroundCPU ->
+    //  resolveStreamCPU (fill + clamp) -> write the band's disjoint region of
+    //  the shared frame.
     //
     //  Both return false if the cook was aborted or an upstream deepEngine()
     //  failed; the caller then abandons (band -> Dirty, never Done).
@@ -1362,7 +1386,8 @@ private:
 
     // Everything one band needs, plus the scratch that is reused across
     // bands and cooks.  One instance per CONCURRENT band, pooled (_jobPool):
-    // these are the claiming thread's private bucket planes.
+    // the stream state, the order and the sort scratch are the claiming
+    // thread's own.
     struct BandJob {
         DeepOp* src     = nullptr;
         DeepOp* holdout = nullptr;
@@ -1461,13 +1486,13 @@ private:
         fc.data.assign(nPlanes * fc.planeStride(), 0.0f);
 
         // --- plane routing -------------------------------------------------
-        // ALPHA IS NOT A SCATTER CHANNEL. The bucket planes carry alpha as a
-        // first-class quantity (it is what the transmittance split, the
-        // saturation pass and both bucket composites operate on), so the
-        // scatter's channel list is the selection MINUS alpha and the
-        // composite's own outAlpha is what lands in the alpha plane. Carrying
-        // alpha as an ordinary channel as well would composite it through the
-        // colour path — a different expression — and the two would disagree.
+        // ALPHA IS NOT A SCATTER CHANNEL. The stream state carries alpha as a
+        // first-class quantity (the deposit rule's claimed-area and recency
+        // arithmetic operates on it), so the scatter's channel list is the
+        // selection MINUS alpha and the resolve's own outAlpha is what lands
+        // in the alpha plane. Carrying alpha as an ordinary channel as well
+        // would composite it through the colour path — a different
+        // expression — and the two would disagree.
         _shared.colorChannels.clear();
         _shared.colorPlanes.clear();
         foreach(z, _flattenChannels) {
@@ -1520,7 +1545,7 @@ private:
         if (!anyAlpha)
             return true;   // no contributing sample anywhere: frame stays black
 
-        // --- 2. buckets, holdout boundary set, kernel LUT ------------------
+        // --- 2. depth range, holdout boundary set, piece step, kernel LUT --
         _shared.depthRange =
             deepc::makeFrameDepthRange(depthMin, depthMax, clampedDepthLayers());
         const deepc::FrameDepthRange& range = _shared.depthRange;
@@ -1531,9 +1556,9 @@ private:
         // into two bands, and per-band sets put a seam along every boundary.
         // Carried on `fp` itself so the flatten (holdoutBracketOf()) and the
         // holdout LUT build (below, via job->holdoutBoundaries) read the
-        // identical set — neither re-derives it from `buckets`.
-        fp.holdoutBoundaries = deepc::makeUniformHoldoutBoundaries(
-            deepc::makeBoundedDeltaCocBuckets(fp.coc, depthMin, depthMax, range.K));
+        // identical set.
+        fp.holdoutBoundaries = deepc::HoldoutBoundaries();
+        fp.holdoutBoundaries.buildUniformZ(range.depthMin, range.depthMax, range.K + 1);
 
         // The frame's MEASURED radius range. radiusPixels() is monotone away
         // from the focal plane on each side, so the frame's largest radius is
@@ -1657,20 +1682,22 @@ private:
         // 0, so the ledger cannot deadlock).  Every term is evaluated on
         // CLAMPED values, never raw knob values.
         //
-        // The budget is a COMBINED figure: bucket planes K*W*B*(C+3)*4, PLUS
+        // The budget is a COMBINED figure: the stream state W*B*(C+6)*4, PLUS
         // the virtual-background window 2*W*(B+2*padY)*4 (ResidualWindow —
-        // it is owned per-BandJob exactly like the bucket planes, so `padY`
+        // it is owned per-BandJob exactly like the stream state, so `padY`
         // is passed through here rather than left at the default 0), PLUS
-        // the holdout LUT (K+1)*W*B*4 (measured 17.0 MB per 4096x64 band at
-        // K=16), PLUS the SoA fragment stream at ~100 B/fragment RESIDENT
-        // (61 B logical), which is the DOMINANT term at 4K (~1.49GB against
-        // ~117MB of planes).  The fragment count is estimated per
+        // the holdout LUT (K+1)*W*B*4 when a holdout is connected, PLUS the
+        // fragment stream (SoA, order and sort scratch) at its measured
+        // resident bytes per fragment, the DOMINANT term at any real sample
+        // count.  The fragment count is estimated per
         // band as the deep-sample count over its FETCH window (band +/- padY
         // rows), from the per-row counts the depth-range pass just gathered;
         // the cap uses the WORST band's figure, since it is one number for
         // the whole frame.  See deepc::bandBudgetBytes() for the estimate's
         // stated error terms.  The frame's surface map is counted ONCE, off
-        // the top of the limit, never per band.
+        // the top of the limit, never per band.  None of this can move a
+        // pixel: the output does not depend on the band plan (see the file
+        // header), so the limit trades only memory against concurrency.
         // Background mode appends up to one synthetic sample per non-empty
         // source pixel before the flatten, so its fragment bound carries the
         // pixel count too.
@@ -1725,11 +1752,22 @@ private:
         return true;
     }
 
+    // Into FrameDepthRange's window, so the histogram's log stays finite and
+    // makeFrameDepthRange() sees the endpoints it would clamp to anyway.
+    static float sanitizeRangeDepth(float d)
+    {
+        if (!(d > deepc::FrameDepthRange::kMinDepth))
+            return deepc::FrameDepthRange::kMinDepth;
+        if (!(d < deepc::FrameDepthRange::kMaxDepth))
+            return deepc::FrameDepthRange::kMaxDepth;
+        return d;
+    }
+
     // ------------------------------------------------------------------
     // computeDepthRange() — the frame's alpha-weighted depth range
     //
     // A separate, cheap, full-frame DeepFront/DeepBack/Alpha pass. It is what
-    // the ΔCoC bucket boundaries, the holdout boundary set and the kernel
+    // the holdout boundary set, the volumetric piece step and the kernel
     // LUT's extent are all derived from, so getting it wrong is not a
     // resolution question, it is a correctness one:
     //
@@ -1737,7 +1775,7 @@ private:
     //     APPLIES (rayDepthScaleAt(), off the same FlattenParams). The
     //     correction always SHRINKS depth, so a range measured without it
     //     puts every corner-pixel sample below depthMin and piles the
-    //     out-of-range spans into the edge bucket.
+    //     out-of-range samples into the edge holdout bracket.
     //   * it sanitises depths with the flatten's own rule
     //     (sanitizeFragmentDepth), for the same reason.
     //
@@ -1746,12 +1784,13 @@ private:
     // Beyond that, the endpoints are accumulated into a log-spaced histogram
     // weighted by alpha and the outermost bins carrying less than
     // kDepthTailFraction of the frame's total alpha mass are clipped, so one
-    // stray alpha-1e-7 sample at the far clip cannot spend the whole bucket
-    // budget on empty depth. Clipping is SAFE, not merely cheap: bucketOf()
-    // and locateBoundary() clamp an out-of-range depth onto the nearest
-    // bucket, which is monotone, so front-to-back ORDER is preserved and only
-    // the depth RESOLUTION of the clipped tail is lost. The fragment's own
-    // radius is still computed from its own depth, so its blur is unchanged.
+    // stray alpha-1e-7 sample at the far clip cannot spend the whole holdout
+    // resolution on empty depth. Clipping is SAFE, not merely cheap: the
+    // stream orders fragments by their own depths, never by the range, and
+    // HoldoutBoundaries::locate() clamps an out-of-range depth onto the
+    // nearest bracket, so only the holdout's depth RESOLUTION over the
+    // clipped tail is lost. The fragment's own radius is still computed from
+    // its own depth, so its blur is unchanged.
     //
     // Returns false only on abort / upstream failure. `anyAlpha` false means
     // the frame carries no contributing sample at all.
@@ -1833,10 +1872,8 @@ private:
                                       : zfRaw;
 
                     float z[2];
-                    z[0] = deepc::DepthBuckets::sanitizeDepth(
-                        deepc::sanitizeFragmentDepth(zfRaw) * rayScale);
-                    z[1] = deepc::DepthBuckets::sanitizeDepth(
-                        deepc::sanitizeFragmentDepth(zbRaw) * rayScale);
+                    z[0] = sanitizeRangeDepth(deepc::sanitizeFragmentDepth(zfRaw) * rayScale);
+                    z[1] = sanitizeRangeDepth(deepc::sanitizeFragmentDepth(zbRaw) * rayScale);
 
                     for (int e = 0; e < 2; ++e) {
                         if (z[e] < exactLo) exactLo = z[e];
@@ -1976,31 +2013,160 @@ private:
         }
     };
 
-    // One write per pixel, so lines from bands resolving on different
-    // threads never interleave.
-    void printProbe(const deepc::StreamPlanes& planes, const float* outColor,
-                    const float* outAlpha, int x, int y, int y0, int y1) const
+    // One pixel's deposit stream, replayed from the band's sorted SoA through
+    // the shipped deposit body on a one-pixel state, so what is printed is
+    // the arithmetic the scatter did, not a model of it.  The replay's final
+    // state is compared bit for bit against the band's planes: a mismatch
+    // means the weights below were not the scatter's.  One write per pixel,
+    // so lines from bands resolving on different threads never interleave.
+    void printProbe(const BandJob& job, const deepc::HoldoutSoA& holdout,
+                    int x, int y, int y0, int y1) const
     {
+        const deepc::StreamPlanes& planes = job.planes;
+        const deepc::SampleSoA&    soa    = job.soa;
         const int bx = x - _frame.box.x();
         const int by = y - y0;
         if (bx < 0 || bx >= planes.width || by < 0 || by >= y1 - y0)
             return;
         const std::ptrdiff_t i = static_cast<std::ptrdiff_t>(by) * planes.width + bx;
+        const std::size_t    iu = static_cast<std::size_t>(i);
+
+        const int nChan = std::min(soa.channelCount, planes.channelCount);
+        deepc::ChannelGroups groups = soa.groups;
+        if (groups.groupCount <= 0)
+            groups = deepc::makeSingleChannelGroup(nChan);
+        const float sharpRadius = deepc::clampf(job.sp.sharpRadiusPx, 0.0f, 1e6f);
+        const bool  useHoldout  = holdout.enabled() && holdout.pixelCount >= planes.pixelCount;
+
+        float q = 0.0f, a = 0.0f, uo = 0.0f, so = 0.0f, cl = 0.0f, arrival = 0.0f;
+        std::vector<float> color(static_cast<std::size_t>(std::max(nChan, 0)), 0.0f);
+        deepc::StreamPlaneView one;
+        one.claimed      = &q;
+        one.alpha        = &a;
+        one.oldArea      = &uo;
+        one.oldMass      = &so;
+        one.lastCoc      = &cl;
+        one.color        = color.empty() ? nullptr : color.data();
+        one.arrival      = &arrival;
+        one.channelCount = nChan;
+        one.width        = 1;
+        one.height       = 1;
+        one.pixelCount   = 1;
+
+        std::vector<float> row;
         std::string out;
-        char line[256];
-        int n = std::snprintf(line, sizeof(line),
-             "DeepCDefocus: probe (%d,%d) band rows [%d,%d) Q=%.9g A=%.9g arrival=%.9g "
-             "out A=%.9g colour=(",
-             x, y, y0, y1, planes.claimed[static_cast<std::size_t>(i)],
-             planes.alpha[static_cast<std::size_t>(i)],
-             planes.arrival[static_cast<std::size_t>(i)], outAlpha[i]);
-        out.append(line, std::min<std::size_t>(static_cast<std::size_t>(std::max(n, 0)),
-                                                sizeof(line) - 1));
-        for (int c = 0; c < planes.channelCount; ++c) {
-            n = std::snprintf(line, sizeof(line), c ? " %.9g" : "%.9g",
-                              outColor[static_cast<std::ptrdiff_t>(c) * planes.pixelCount + i]);
+        char line[512];
+        const auto emit = [&](int n) {
             out.append(line, std::min<std::size_t>(static_cast<std::size_t>(std::max(n, 0)),
                                                     sizeof(line) - 1));
+        };
+        emit(std::snprintf(line, sizeof(line),
+             "DeepCDefocus: probe (%d,%d) band rows [%d,%d): deposits in arrival order\n"
+             "  #  src(x,y) depth coc alpha w rot | free older newer | x | "
+             "after: Q F A uO sO cLast\n",
+             x, y, y0, y1));
+
+        int deposits = 0;
+        const std::size_t n = (job.order.size() == soa.fragmentCount()) ? job.order.size() : 0;
+        for (std::size_t oi = 0; oi < n; ++oi) {
+            const std::size_t f = job.order[oi];
+            const float  alpha = soa.alpha[f];
+            const float* c     = soa.colorOf(f);
+            if (alpha == 0.0f) {
+                bool anyColor = false;
+                for (int k = 0; k < nChan; ++k)
+                    anyColor = anyColor || (c[k] != 0.0f);
+                if (!anyColor)
+                    continue;
+            }
+            const int   dx        = x - soa.x[f];
+            const int   dy        = y - soa.y[f];
+            const float radius    = deepc::groupRadius(groups, 0, soa.radius[f]);
+            const float signedCoc = deepc::fragmentSignedCoc(soa.flags[f], radius);
+
+            float raw = 0.0f;
+            if (!(radius > sharpRadius)) {
+                if (dx != 0 || dy != 0)
+                    continue;
+                raw = 1.0f;
+            } else {
+                const deepc::KernelGridBracket br = deepc::kernelGridBracket(radius);
+                const bool blend = (br.indexB != br.indexA) && (br.frac != 0.0f);
+                const int destX = soa.x[f] - job.sp.bandX;
+                const int destY = soa.y[f] - job.sp.bandY;
+                const deepc::KernelView kvA = job.kernel->kernel(
+                    deepc::kernelGridRadius(br.indexA), destX, destY, soa.depth[f], 0);
+                deepc::KernelView kvB;
+                if (blend)
+                    kvB = job.kernel->kernel(deepc::kernelGridRadius(br.indexB),
+                                             destX, destY, soa.depth[f], 0);
+                if (!kvA.valid() || (blend && !kvB.valid()))
+                    continue;
+                int xs = 0, count = 0;
+                const float* weights = nullptr;
+                if (blend) {
+                    const int rx = std::max(kvA.radiusX, kvB.radiusX);
+                    row.resize(static_cast<std::size_t>(2 * rx + 1));
+                    count   = deepc::blendBracketRow(kvA, 1.0f - br.frac, kvB, br.frac,
+                                                     dy, row.data(), xs);
+                    weights = row.data();
+                } else {
+                    const int r = dy + kvA.radiusY;
+                    if (r < 0 || r >= kvA.rowCount || kvA.row(r).empty())
+                        continue;
+                    xs      = kvA.row(r).xStart;
+                    count   = kvA.row(r).count();
+                    weights = kvA.rowWeights(r);
+                }
+                const int k = dx - xs;
+                if (count <= 0 || k < 0 || k >= count)
+                    continue;
+                raw = weights[k];
+            }
+
+            float w = raw;
+            if (useHoldout) {
+                const deepc::BoundarySpan hb = holdout.locate(soa.depth[f]);
+                w = raw * deepc::HoldoutVisibility::interpAtBucket(
+                    holdout.pixelLut(i), holdout.boundaryCount(), hb.index, hb.frac);
+            }
+            arrival += raw * soa.arrivalShare[f];
+
+            const float dc   = signedCoc - cl;
+            const bool  rot  = (q > 0.0f) && ((dc > deepc::kCocJumpRotatePx)
+                                              || (dc < -deepc::kCocJumpRotatePx));
+            const float uO   = rot ? q : uo;
+            const float pf   = std::min(w, 1.0f - q);
+            const float pO   = std::min(w - pf, uO);
+            const float pN   = (w - pf) - pO;
+
+            float xw = 0.0f;
+            deepc::depositStreamSpanRecency(one, 0, &w, &xw, 1, alpha, signedCoc, c, nChan);
+            ++deposits;
+
+            emit(std::snprintf(line, sizeof(line),
+                 "  %d (%d,%d) %.9g %.6g %.9g %.9g %c | %.9g %.9g %.9g | %.9g | "
+                 "%.9g %.9g %.9g %.9g %.9g %.6g\n",
+                 deposits, soa.x[f], soa.y[f], soa.depth[f], signedCoc, alpha, w,
+                 rot ? 'R' : '-', pf, pO, pN, xw, q, 1.0f - q, a, uo, so, cl));
+        }
+
+        bool same = q == planes.claimed[iu] && a == planes.alpha[iu]
+                 && uo == planes.oldArea[iu] && so == planes.oldMass[iu]
+                 && cl == planes.lastCoc[iu];
+        for (int k = 0; k < nChan; ++k)
+            same = same && color[static_cast<std::size_t>(k)]
+                        == planes.color[static_cast<std::size_t>(k) * static_cast<std::size_t>(planes.pixelCount) + iu];
+
+        emit(std::snprintf(line, sizeof(line),
+             "  deposits %d, replay %s the band state; fragment arrival %.9g, "
+             "arrival with background %.9g, out A=%.9g colour=(",
+             deposits, same ? "matches" : "DOES NOT MATCH", arrival,
+             planes.arrival[iu], job.bandAlpha[iu]));
+        for (int k = 0; k < planes.channelCount; ++k) {
+            emit(std::snprintf(line, sizeof(line), k ? " %.9g" : "%.9g",
+                               job.bandColor[static_cast<std::size_t>(k)
+                                             * static_cast<std::size_t>(planes.pixelCount) + iu]));
         }
         out += ")\n";
         std::fputs(out.c_str(), stderr);
@@ -2186,7 +2352,9 @@ private:
         if (aborted())
             return false;
 
-        // --- scatter + resolve ---------------------------------------------
+        // --- sort, scatter, resolve -----------------------------------------
+        deepc::sortFragmentsByDepth(job.soa, job.order, job.sortScratch);
+
         job.sp.bandY      = y0;
         job.sp.bandHeight = h;
 
@@ -2209,8 +2377,6 @@ private:
         job.bandColor.assign(static_cast<size_t>(C) * static_cast<size_t>(px), 0.0f);
         job.bandAlpha.assign(static_cast<size_t>(px), 0.0f);
 
-        deepc::sortFragmentsByDepth(job.soa, job.order, job.sortScratch);
-
         deepc::ScatterStats stats;
         deepc::scatterStreamCPU(job.sp, job.soa, job.order, holdoutView, *job.kernel,
                                 job.planes, job.scatterScratch,
@@ -2218,9 +2384,12 @@ private:
         if (_debugStats) {
             std::fprintf(stderr,
                          "DeepCDefocus: stats rows [%d,%d) fragments %zu "
-                         "sharp %zu culled %zu rowSpans %zu pixelDeposits %zu\n",
+                         "sharp %zu culled %zu rowSpans %zu pixelDeposits %zu "
+                         "soaBytes %zu orderSortBytes %zu\n",
                          y0, y1, stats.fragments, stats.sharpFragments,
-                         stats.culled, stats.rowSpans, stats.pixelDeposits);
+                         stats.culled, stats.rowSpans, stats.pixelDeposits,
+                         job.soa.sizeBytes(),
+                         job.order.sizeBytes() + job.sortScratch.sizeBytes());
         }
 
         // Between the fragment scatter and the resolve: the resolve divides by
@@ -2232,8 +2401,7 @@ private:
         deepc::resolveStreamCPU(job.planes, job.bandColor.data(), job.bandAlpha.data());
 
         for (const auto& xy : _debugProbe)
-            printProbe(job.planes, job.bandColor.data(), job.bandAlpha.data(),
-                       xy.first, xy.second, y0, y1);
+            printProbe(job, holdoutView, xy.first, xy.second, y0, y1);
 
         if (aborted())
             return false;
@@ -2281,8 +2449,8 @@ private:
     //     fp-contract parity guard — the CMake-level omission of -mfma is
     //     the belt, the pragma below is the braces.
     // The arithmetic that produces the shipped pixels lives in
-    // DeepCDefocusScatter.{h,cpp} (the pre-merge `over` and the bucket
-    // composites), and that TU has NO such pragma.
+    // DeepCDefocusScatter.{h,cpp} (the merges' `over` and the stream's
+    // deposit rule), and that TU has NO such pragma.
     //
     // Tidy pre-pass first (deepc::tidyOverlapping(), reused rather than
     // reimplemented), then a plain front-to-back over. The tidy pass is

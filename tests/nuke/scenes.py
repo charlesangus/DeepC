@@ -70,24 +70,25 @@ def stripSource(depths, width=None):
 def sceneA(settings):
     """size=0 / all-in-focus => matches stock DeepToImage.
 
-    Three scoped rows, per the Design reference: point samples and
-    coincident-depth samples at <=2e-07 absolute (NOT 0 ULP — the mandatory
-    fractional two-bucket split makes bit-exactness unavailable by design),
-    overlapping volumetric spans at <=2.4e-07 with `volumetric_composition`
-    pinned ON.
+    Three scoped rows, per the Design reference: point samples,
+    coincident-depth samples and overlapping volumetric spans, each
+    bit-exact (gate 0) against DeepToImage with `volumetric_composition`
+    pinned ON.  At size 0 each pixel's fragments reach only that pixel with
+    weight 1 and the merges collapse them back to front, DeepToImage's own
+    order, so the stream's single deposit reproduces its flatten exactly.
     """
     checks = []
     box = formatBox()
 
     rows = [
-        ("a1 point samples,   4 layers", 2.0e-07,
+        ("a1 point samples,   4 layers", 0.0,
          lambda: deepMerge([texturedLayer(4.0, 0),
                             texturedLayer(7.5, 1),
                             texturedLayer(11.0, 2),
                             texturedLayer(17.0, 3)])),
-        ("a2 coincident depth, 5 layers", 2.0e-07,
+        ("a2 coincident depth, 5 layers", 0.0,
          lambda: deepMerge([texturedLayer(9.0, i) for i in range(5)])),
-        ("a3 overlapping volumetric spans", 2.4e-07,
+        ("a3 overlapping volumetric spans", 0.0,
          lambda: deepMerge([slab(3.0, 9.0, (0.30, 0.45, 0.20, 0.40)),
                             slab(6.0, 14.0, (0.15, 0.35, 0.55, 0.60)),
                             slab(10.0, 20.0, (0.50, 0.20, 0.25, 0.30))])),
@@ -106,15 +107,15 @@ def sceneA(settings):
                                note="worst " + diff.where()))
 
     # a4/a5: connecting a holdout that occludes NOTHING must not move the
-    # image. The milestone measured defocused pixels moving by up to 1.78e-01
-    # on 442/4096 px through merge regrouping when one is connected
-    # (Decisions, 2026-07-27), so the sharp and defocused cases are reported
-    # separately — T17/T18 need to know which of their deltas is this.
+    # image; the sharp and defocused cases are reported separately.  a4 keeps
+    # a 2e-07 gate: the bracket gate splits a size-0 pixel into per-bracket
+    # groups, each merged back to front and then composed front to back by
+    # the stream, which rounds once differently from the unsplit pixel.
     holdoutRows = [
-        ("a4 non-occluding holdout connected, size=0", 0.0, False),
-        ("a5 non-occluding holdout connected, size=6", 6.0, True),
+        ("a4 non-occluding holdout connected, size=0", 0.0),
+        ("a5 non-occluding holdout connected, size=6", 6.0),
     ]
-    for name, size, documented in holdoutRows:
+    for name, size in holdoutRows:
         resetScript()
         radius = size * abs(1.0 - 10.0 / 4.0)
         pad = int(math.ceil(radius)) + 6
@@ -136,8 +137,7 @@ def sceneA(settings):
         diff = compareImages(without, withHoldout, box=renderBox)
         checks.append(tolCheck("a", name, diff.maxAbs, 2.0e-07,
                                population=diff.population(),
-                               note="worst " + diff.where(),
-                               expectedFailure=documented))
+                               note="worst " + diff.where()))
     return checks
 
 
