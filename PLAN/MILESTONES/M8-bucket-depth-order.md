@@ -1,4 +1,8 @@
-# Milestone 8: Depth-ordered colour within a bucket, and the silhouette-edge oracle
+# Milestone 8: Depth-ordered colour within a bucket, the silhouette-edge oracle, and nested footprints
+
+> **Scope extended 2026-09-26 (user ruling):** M9 (nested footprints — correlated occlusion in the coverage
+> partition) is folded into this milestone as **Phase 8.5**, run before the Phase 8.4 gate. M8 no longer ships the
+> silhouette band or the volumetric rim as M9 XFAILs; it fixes the nesting term itself. See `## Decisions`.
 
 Scene (o)'s o6c (M7.P3.T5) pins a colour defect that predates M7. On the mixed-opacity rig, colour:alpha
 is up to 0.28 off Bokeh while alpha is exact. There are two mechanisms (see the M7 file's
@@ -197,7 +201,7 @@ at the pixel centre. CoC is `64·|1 − 10/z|`: near card 17.01 px, stack 14.05 
   - size: L
   - depends: M8.P1.T1
 
-- [ ] M8.P1.T3 — USER RULING: which renderer is the oracle for defocused see-around and silhouette weighting, and at what tolerance
+- [x] M8.P1.T3 — USER RULING: which renderer is the oracle for defocused see-around and silhouette weighting, and at what tolerance
   - files: none. The PM records the ruling in `## Decisions`, then finalises Phase 8.3 in place.
   - approach: the PM puts P1.T2's report to the user (profiles and the table, not prose) with these
     questions:
@@ -380,10 +384,13 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
     the sum of the renders' `oTolerance` terms. **o6dα** beside it. **o7 (K-invariance):** the o6 cell at K = 4, 16,
     64 bit-identical (0 ulps). **o8 (determinism):** P2.T4's band-plan/thread bit-identity as harness rows where the
     harness can set them; record which arm is available. **o6e (interior vs reference):** over `MIX_NEAR_BOX` inset
-    2 against the P1.T2 reference map, at the tolerance class the user rules on Q2 (prototype max 6e-4 / mean 1e-4
-    at fog 0.2, 3e-4 at 0.5; reference SE ≤ 2.2e-4). **o6f (silhouette band):** XFAIL for M9 with a hard bound
-    derived from the reference's nested-lens-area term (the disjoint partition's over-weight × (G/A_stack − 0.55)),
-    never from the new output. **o6c** re-oracled to the reference (Bokeh comparison kept as a reported reading).
+    2 against the P1.T2 reference map, at **Q2(i) as ruled 2026-09-26: bound = 3 × the reference's Monte Carlo SE**
+    (per pixel, or its max ≤ 2.2e-4 → ≈ 6.6e-4; no rim-residual term — the inset excludes the rim), plus the row's
+    term-count `N·2⁻²⁴`. Prototype max 6e-4 / mean 1e-4 at fog 0.2, 3e-4 at 0.5 — thin margin. If the committed node
+    exceeds it, **do not widen the bound**: first cut the reference's SE (more samples, fixed seed), and if the node
+    still exceeds 3σ, stop and report to the user. **o6f (silhouette band) moves to Phase 8.5** (the nesting fix):
+    it is gated there against the reference at the same bound, not XFAILed here. **o6c** re-oracled to the reference
+    (Bokeh comparison kept as a reported reading); pixels in the silhouette band are left to Phase 8.5.
     Mutation-test every row: o6d/o6dα must FAIL on `~/deepc-baselines/M8-T0/plugins`; o7 must FAIL under a scratch
     build with a K-dependent term; o6e under the scratch naive-rule build. No vacuous gates. Regenerate only the o
     `.nk`.
@@ -391,7 +398,7 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
     to M8-T0 or each move listed for P2.T6; mutation runs logged under `~/deepc-validation/M8-P2T5/`; the `.nk`
     loads headless.
   - size: M
-  - depends: M8.P2.T4, M8.P1.T3 (Q2 and the silhouette-band ruling)
+  - depends: M8.P2.T4, M8.P1.T3 (Q2 ruled 2026-09-26)
 
 - [ ] M8.P2.T6 — Full a–o on the streaming build: every moved row explained and re-pinned from an independent oracle
   - files: `tests/nuke/scenes.py`, `tests/nuke/harness.py`, `tests/nuke/generate_scene_scripts.py` / `.nk` only
@@ -401,8 +408,10 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
     g4/g5 from the kernel's adjoint sum computed from `DiscKernelLUT` directly (`α + (S−1)α(1−α)`, S = 1.0712 on
     the g rig; prototype 0.90647 vs predicted 0.90641); f3c/f3d back to plain PASS where they meet 1e-5 or a
     term-count arrival bound (f3c is 4.9e-5 off from arrival accumulation: derive its taps like f3b's); a5 PASS;
-    f3e/f3f/f3h/f3h2/f3i per the user's ruling on the volumetric rim (DESIGN §5): pinned XFAIL with hard bounds
-    from P2.T8's oracle, or gated after P2.T10 lands. Scene (i)/(m)/(n) rows re-read (fill interplay) before any is
+    f3e/f3f/f3h/f3h2/f3i (the volumetric rim, DESIGN §5): **not re-pinned here** — the user deferred the rim to
+    Phase 8.5 (2026-09-26); record their readings in the table as "→ P5" and re-read them after Phase 8.5 lands.
+    If the nesting fix does not bring them inside P2.T8/P2.T12's oracle bounds, they go back to the user — no XFAIL
+    without a ruling. Scene (i)/(m)/(n) rows re-read (fill interplay) before any is
     re-pinned. A regression with no bucket-term explanation **stops the task** and goes back to the PM.
     `exrdiff.py` scene (m)'s EXRs against M8-T0.
   - verify: tally stated per batch and in total as `PASS=… FAIL=… XFAIL=… SKIP=2`; every FAIL either fixed or a
@@ -411,9 +420,12 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
     `~/deepc-validation/M8-P2T6/`; re-pinned rows PASS on the new build and FAIL under a recorded mutation; no pin
     derived from the new output.
   - size: L
-  - depends: M8.P2.T5, M8.P2.T8, M8.P2.T12, the user's rim ruling
+  - depends: M8.P2.T5, M8.P2.T8, M8.P2.T12
 
-- [ ] M8.P2.T10 — (only if the user rules the volumetric rim over-read out) Per-parent chain for volumetric pieces
+- [ ] ~~M8.P2.T10 — (only if the user rules the volumetric rim over-read out) Per-parent chain for volumetric pieces~~
+  **Cancelled 2026-09-26:** the user rejected the premise — a deep image stores no "one fog body" identity, so a
+  chain keyed on adjacency cannot know two pieces belong together. The rim is deferred to Phase 8.5's general
+  nesting fix. Kept for history.
   - files: `src/DeepCDefocusScatter.h`, `src/DeepCDefocusScatter.cpp`, `tests/test_defocus_scatter.cpp`
   - approach: DESIGN §5.4 — an open-chain slot per pixel keyed by (source pixel, sample), 12 B/pixel/slot, so
     consecutive pieces of one body from neighbouring source pixels stop being treated as disjoint. Doctests on a
@@ -465,8 +477,11 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
 
 ## Phase 8.3: Mechanism (2) — re-oracle o6c as ruled (stub, finalised after M8.P1.T3)
 
-> The PM rewrites this phase in place from the P1.T3 ruling (IDs kept, new ones appended) before
-> starting it. The branches below are the expected shapes, not briefs to execute as written.
+> **P1.T3 fully ruled (2026-09-26):** Q1 — the thin-lens reference is the oracle; Q2 — **(i)**, a derived bound of
+> 3 × the reference's Monte Carlo SE; Q3 — nested footprints are fixed **in this milestone** (Phase 8.5), not in M9.
+> So P3.T1 is the Monte Carlo tool (the Q2(ii) analytic model is not built), and P3.T2 takes the "reference ruled
+> oracle" branch, with nested-footprint pixels gated after Phase 8.5 rather than XFAILed. The PM still finalises
+> these briefs in place (IDs kept) before starting.
 
 - [ ] M8.P3.T1 — (only if Q1 names the reference, in whole or in part) Land the reference as a harness oracle
   - files: `tests/reference/` (new: the P1.T2 tool, cleaned up and built by CMake under
@@ -502,7 +517,39 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   - verify: `--scenes o` tally stated; every other o row is identical to P2.T6's log; mutation runs
     are logged under `~/deepc-validation/M8-P3T2/`; the `.nk` loads headless.
   - size: M
-  - depends: M8.P1.T3, M8.P2.T6, M8.P3.T1 (if it exists)
+  - depends: M8.P1.T3, M8.P2.T6, M8.P3.T1, and M8.P5 for the nested-footprint pixels
+
+## Phase 8.5: Mechanism (3) — nested footprints (folded in from M9, 2026-09-26; stub — elaborate before starting)
+
+> Runs after Phase 8.2/8.3's reference oracle is in the harness and before Phase 8.4. The PM elaborates it in
+> place at phase start (scout + consultant), appending tasks after P5.T1. Intent carried over from the retired
+> M9 stub (`M9-nested-footprints.md`, kept for history):
+>
+> When a near surface's lens set lies inside a farther surface's, the disjoint-area coverage partition
+> over-weights the farther surface by the near surface's lens area. Known instances, each with its oracle:
+> - **o6 silhouette band (o6f):** whole-map max |ΔG/A| 0.1148 / mean 0.0368 vs the thin-lens reference (T0 0.0934 /
+>   0.0396); P1.T2 points (155,128) +0.105, (104,104) +0.041, (150,150) +0.059.
+> - **Same-source-pixel fog + opaque stack past the pre-merge tolerance (o6g/o6h):** 1 − a up to 9.07e-2.
+> - **Volumetric rim (f4a/f4br/f4cr, f3e/f3f/f3h/f3h2/f3i):** a lone 0.8 fog card over-reads +0.150 alpha / +10.9 %
+>   at its defocused rim; colour over an opaque card +4.0e-2 / +1.43e-2 c:a (the latter mostly sub-pixel kernel
+>   error per the P2.T8 consultant — not expected to move).
+>
+> **User constraint (2026-09-26):** a deep image does not record that two samples belong to "one fog body", so
+> no fix may assume that identity (this is why P2.T10's per-parent chain was cancelled). The fix works from what a
+> deep sample actually carries — depth range, alpha, position — and the rim is expected, not promised, to
+> follow from the general fix. Whatever the rim rows read afterwards goes back to the user if outside its oracle.
+
+- [ ] M8.P5.T1 — Design the nested-footprint correction and predict every affected row
+  - files: none in the repo; design note and prototype under `~/deepc-validation/M8-P5T1/`
+  - approach: consultant-led (opus). Start from P1.T2's REPORT and, if it survived, P2.T7's `DESIGN.md` §5 (see
+    the 2026-09-26 evidence decision). Characterise the over-weight as a function of the two lens sets; propose a
+    correction to the streaming composite's per-deposit rule that needs no body identity, stays K-invariant and
+    deterministic (o7/o8), and fits the memory budget. Prototype it as a scratch patch and read o6f, o6g/o6h,
+    f4a/f4b/f4c and f3e–f3i against their oracles.
+  - verify: note states the rule, its identities (the two-fog-layers identity and o6d must still hold), predicted
+    vs prototype readings for every row above, memory/profile delta, and a go/no-go. A no-go goes to the user.
+  - size: L
+  - depends: M8.P2.T5, M8.P3.T1
 
 ## Phase 8.4: Gate
 
@@ -521,7 +568,7 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
     beside M7's 42.57 s. If not within noise, the measured cost goes to the user before P4.T2
     (accept or optimise).
   - size: S
-  - depends: M8.P2.T6
+  - depends: M8.P2.T6, Phase 8.5's last task
 
 - [ ] M8.P4.T2 — Clean rebuild, doctests, full a–o, the docker gate, and the PR
   - files: none. This task only verifies; any fix lands in the task that owns the code.
@@ -545,7 +592,7 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
     - docker: EXIT=0, 28 plugins including `DeepCDefocus.so`, 0 errors, 0 `DeepCDefocus*` warnings,
       SKIP for 16.1/17.0, and the release `.so` loads headless (no render — AVX2 build).
   - size: M
-  - depends: M8.P3.T2, M8.P4.T1
+  - depends: M8.P3.T2, M8.P4.T1, Phase 8.5
 
 **Verification gate:** all of the following, then the PR to `master` from
 `claude/deep-defocus-node-plan-o0ld83`.
@@ -558,7 +605,11 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
 - **Scene (o):**
   - o6d (node vs the layer-ordered partition of single-layer renders) PASS at term-count bounds on
     all six K × fog cells, and FAIL on M8-T0;
-  - o6c re-oracled or re-pinned exactly as ruled.
+  - o6c re-oracled or re-pinned exactly as ruled;
+  - o6e (interior) PASS at 3 × the reference SE; o6f (silhouette band) and o6g/o6h PASS against the reference after
+    Phase 8.5, or a user ruling recorded.
+- **Nested footprints (Phase 8.5):** every row in Phase 8.5's list read against its oracle; the volumetric rim rows
+  either inside their bounds or explicitly ruled by the user.
 - **Full a–o suite:** tally as restated in P4.T2, with every moved row explained against M8-T0.
   FAILs are f3e/f3f only. Surviving XFAILs keep their hard bounds. Scene (a) is bit-exact, (d) is
   black, and m4a/m4b/n1/n7 hold.
@@ -814,3 +865,16 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   `5f63919`, P2.T4 `ae9b734`, P2.T8 `d927a07`, P2.T11 `376bc88`, P2.T5 part 1 `e2912e9`, P2.T12 `c38c85f`. Waiting: P2.T5 part 2
   (o6e at Q2's tolerance class; o6f after the silhouette-band ruling; o6c re-oracle), P2.T6 (rim ruling: f3e/f3f/f3h/f3h2 stay
   FAIL until ruled XFAIL-with-bound or fixed by P2.T10), P2.T10 (only if ruled in), Phase 8.3, Phase 8.4.
+- 2026-09-26 — **User rulings on the three blocking questions (via `/cat-discuss`).** (1) **Q2 → (i)**, a derived bound of
+  3 × the reference's Monte Carlo SE (project-wide: `PLAN/DECISIONS/2026-09-26-reference-bound-3-sigma.md`); P1.T3 is now fully
+  ruled. (2) **Silhouette band → fold M9 into M8** as Phase 8.5 rather than XFAIL it
+  (`PLAN/DECISIONS/2026-09-26-m9-folded-into-m8.md`); o6f moves from P2.T5 to Phase 8.5. (3) **Volumetric rim → deferred, not
+  ruled:** the user rejects (b)'s premise — "one fog body" is not information a deep image stores — and expects the general
+  nesting fix may address it; P2.T10 cancelled, P2.T6 leaves the rim rows to Phase 8.5 and returns them to the user if still out.
+  Consequence: Phase 8.5 is new scope ahead of the gate, and M8.P1.T3 can be checked off.
+- 2026-09-26 — **Evidence directories may be lost.** `~/deepc-validation/` and `~/deepc-baselines/` do not exist on the host the
+  rulings were given from; they were probably in an ephemeral container and may survive only in the PM's container. On resume,
+  the PM checks for them first. If `~/deepc-baselines/M8-T0/` is missing, rebuild it per M8.P1.T1 from `2ac3550` before any
+  mutation run that uses it. Reports that cannot be rebuilt (P1.T2's REPORT, P2.T7's `DESIGN.md` and prototype patch) — if
+  missing, say so to the user and work from the committed code, the tests and this file's decisions; the P1.T2 reference tool
+  must be re-derived for P3.T1 in that case.

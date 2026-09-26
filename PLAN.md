@@ -95,7 +95,9 @@ Bokeh/pgBokeh don't exhibit; it runs before M2 because it rewrites the kernel st
 - **Pins are float-exact or ulp-derived — never 8-bit.** No tolerance anywhere in this project is
   `1/255` or any other 8-bit-derived figure; solid alpha means `alpha == 1.0`, and any slack is a
   term-count ulp bound (`N·2⁻²⁴`) measured against an independent oracle
-  (`PLAN/DECISIONS/2026-09-18-no-8bit-tolerances.md`).
+  (`PLAN/DECISIONS/2026-09-18-no-8bit-tolerances.md`). **One ruled exception:** rows gated against the Monte Carlo
+  thin-lens reference use 3 × the reference's standard error (plus the row's term count) as their bound
+  (`PLAN/DECISIONS/2026-09-26-reference-bound-3-sigma.md`).
 - **The `plan` branch stays LOCAL — never push it.** This overrides PLAN-FORMAT.md §9's
   "then push the plan branch with `git -C .plan push`" at the milestone gate: skip that step, and
   skip it at every other point too. Planning artifacts are not published for this project. The
@@ -118,66 +120,24 @@ Bokeh/pgBokeh don't exhibit; it runs before M2 because it rewrites the kernel st
 | M5 | Background-coloured coverage fill (`fill: background`) | done   | [M5-background-fill.md](PLAN/MILESTONES/M5-background-fill.md) |
 | M6 | Solid alpha on opaque geometry — diagnosis (scene (o), Bokeh oracle) | done   | [M6-solid-alpha-diagnosis.md](PLAN/MILESTONES/M6-solid-alpha-diagnosis.md) |
 | M7 | Solid alpha on opaque geometry — the fix              | done   | [M7-solid-alpha-fix.md](PLAN/MILESTONES/M7-solid-alpha-fix.md) |
-| M8 | Depth-ordered colour within a bucket + silhouette-edge oracle | doing | [M8-bucket-depth-order.md](PLAN/MILESTONES/M8-bucket-depth-order.md) |
-| M9 | Nested footprints — correlated occlusion in the coverage partition | todo | [M9-nested-footprints.md](PLAN/MILESTONES/M9-nested-footprints.md) |
+| M8 | Depth-ordered colour within a bucket + silhouette-edge oracle + nested footprints | doing | [M8-bucket-depth-order.md](PLAN/MILESTONES/M8-bucket-depth-order.md) |
+| M9 | ~~Nested footprints — correlated occlusion in the coverage partition~~ (folded into M8) | cancelled | [M9-nested-footprints.md](PLAN/MILESTONES/M9-nested-footprints.md) |
+| M10 | Holdout in front of a deep stack — parity with DeepHoldout2 | todo | [M10-holdout-in-front.md](PLAN/MILESTONES/M10-holdout-in-front.md) |
 
-> **Execution order is M4 → M5 → M6 → M7 → M8 → M9 → M2 → M3**, not board order. M4 shipped 2026-09-11 as `c9a36d3` (PR #106),
+> **Execution order is M4 → M5 → M6 → M7 → M8 → M10 → M2 → M3**, not board order (M9 was folded into M8 as its Phase 8.5 on 2026-09-26). M4 shipped 2026-09-11 as `c9a36d3` (PR #106),
 > M5 the same day as `6a51c8c` (PR #107), M6 on 2026-09-23 as `088a76f` (PR #108), M7 on 2026-09-24 as `2ac3550` (PR #109). M6 was (added 2026-09-18: opaque geometry still reads alpha < 1
 > on a slanted plane with objects in front, where Bokeh reads exactly 1; M6 diagnoses, M7 fixes — M7 is a stub
 > ruled local by M6.P2.T2). Then M2, whose kernel-field node builds on the blended kernel step M4 left in
 > place — freshness-check its briefs against `scatterKernelBin`'s blended key first, and against whatever M7
 > changes in the composite. **M8 was redirected on 2026-09-24** (per-tile buckets rejected for seams): it
 > now replaces the K bucket planes with a depth-ordered streaming composite (M8.P2.T7), so M2, M3 and M9
-> must all be freshness-checked against a node with no `DepthBuckets` before they start. **P2.T7 ruled go on 2026-09-25** (amended
+> must all be freshness-checked against a node with no `DepthBuckets` before they start (M9 now lives in M8; M10 too). **P2.T7 ruled go on 2026-09-25** (amended
 > two-recency-chunk rule, `~/deepc-validation/M8-P2T7/DESIGN.md`); M3's brief must move from fragment-parallel
 > atomics to per-tile depth-sorted lists (see the M8 file's 2026-09-25 decision).
 
 # Open questions
 
-- **2026-09-25 23:05 — RUN PAUSED: waiting on the three rulings below; nothing ruling-independent remains in M8.** Code HEAD is
-  `c38c85f` (this session landed the recency-rule fix, P2.T4, P2.T8, P2.T11, P2.T5 part 1, P2.T12 — see the M8 file's
-  2026-09-25 decisions). Doctests 21/21 + 102/102 (+1 skipped); scene (a) bit-exact; scene (o) 41/0/3/1; scene (f) 11/4/6 with
-  the four FAILs (f3e/f3f/f3h/f3h2) awaiting the rim ruling. **Resume point:** answer via `/cat-discuss` (inbox) — (1) Q2
-  tolerance class → P2.T5 part 2 (o6e, o6f, o6c re-oracle) and Phase 8.3; (2) silhouette band → o6f; (3) volumetric rim →
-  P2.T6 (and P2.T10 if (b)). Then P4.T1 profile, P4.T2 gate + PR.
-
-- **2026-09-25 (M8.P2.T7, two rulings for the user; neither blocks P2.T2–T4):**
-  1. **Silhouette band.** With buckets gone, the o6 silhouette carries mechanism (3) — the near card's lens set nested
-     inside the stack's — undiluted: whole-map max |ΔG/A| vs the reference 0.1148 (T0 K=16 0.0934), mean 0.0368
-     (T0 0.0396). Proposal: an M9 XFAIL with a hard bound derived from the reference's nested-lens-area term. Confirm,
-     or pull M9 forward?
-  2. **Isolated fog volumes over-read at their defocused rim** (+0.148 alpha / +10.9 % on a lone 0.8 fog card, where
-     T0 under-reads −0.125 / −4.3 %): neighbouring pieces of one body nest in lens space, the M9 term inside one
-     object. It moves harness f3h/f3h2 to −23.4 % (T0 f3h2 PASS) and f3i to 1.2e-5 vs its 1e-5 gate. Options: (a)
-     accept as a bounded XFAIL for M9 (P2.T8's volumetric oracle supplies the bound); (b) add a per-parent chain now
-     (P2.T10, +12 B/pixel/slot, size L, DESIGN §5.4). **P2.T8 (2026-09-25) sharpened this:** on the committed node V1 reads
-     +0.150 alpha / +10.87 %, and the same over-read shows in **colour:alpha on fog over an opaque card (V2 +4.0e-2, V3
-     +1.43e-2)**, where alpha is exactly 1 and cannot show it — so the ruling covers V2/V3 colour too, and f3e/f3f/f3h/f3h2
-     stay FAIL until it lands. All three rows are XFAIL under a hard ceiling `min(1, E[τ])` from the oracle. **Consultant
-     (2026-09-25):** V1/V2 are the nesting term; V3's is mostly a pre-merge-across-focus bug (fixed in M8 as P2.T11) plus
-     sub-pixel kernel error, which (b) would not touch. P2.T6 waits on this; P2.T10 is the fix for V1/V2 if (b).
-
-- **2026-09-24 (M8.P1.T3, Q2 — tolerance class against the thin-lens reference; still open):** Q1 and Q3
-  are ruled (reference is the oracle; nested footprints → M9). Q2 asks which tolerance class o6c/o6d use
-  against the Monte Carlo reference: (i) a derived bound (calibration rim residual + Monte Carlo error at
-  k σ, an explicit exception to the term-count rule); (ii) an analytic double-precision axis-aligned-card
-  reference, rim excluded, at `N·2⁻²⁴`; or (iii) report-only, o6c stays XFAIL with the reference's verdict
-  in its note. The user asked for more information before ruling. **The information (P2.T7 prototype, confirmed
-  by P2.T4 on the committed node, `~/deepc-validation/M8-P2T7/DESIGN.md` §11.2):** against the thin-lens reference,
-  interior pixels (`MIX_NEAR_BOX` inset 2, 784 px) read max |ΔG/A| **6e-4 / mean 1e-4** at fog 0.2 and 3e-4 / 1e-4 at
-  fog 0.5, K-flat (T0: 0.0756 / 0.0572); the reference's Monte Carlo SE is ≤ 2.2e-4 and the kernel's rim residual
-  ≤ 8.6e-4 (P1.T2 calibration). The whole-map max is 0.1148 / mean 0.0368 (fog 0.2), all of it the silhouette band
-  (M9's nesting term, ruling 1 above). So (i) at 3 σ ≈ 6.6e-4 would pass the interior with almost no margin; (i) at
-  rim residual + 3 σ ≈ 1.5e-3 passes with margin; (ii) needs a second analytic tool; (iii) gates nothing on the
-  interior. P2.T5 and Phase 8.3 wait on this.
-
-- **2026-09-11 (found by M5.P3.T1, pre-existing, not the fill's):** a 0.5-alpha holdout placed *in
-  front of* a two-layer deep stack renders alpha 1.0 / R/A 0.50 inside the silhouette, where stock
-  `DeepHoldout2` gives 0.5 / 0.80 (and `DeepMerge2`'s holdout op 0.75 / 0.60). Same on the M5-T0
-  `.so`, in `fill: foreground`, at size 0, with `pre_merge` off. Scene (b) never sees it because its
-  holdout sits *between* its layers, where all three agree. Is this a defect to schedule (a new
-  milestone: holdout-in-front parity with DeepHoldout2, with scene (b) extended), or intended?
-  Not gated by scene (n); recorded in n7's note.
+_None awaiting an answer. The 2026-09-24/25 M8 rulings and the holdout-in-front question were answered 2026-09-26 — see the M8 file's `## Decisions` and `PLAN/DECISIONS/INDEX.md`._
 
 (Earlier questions all resolved; the bucket-composite ruling — "the bucket composite is
 `CoveragePartition`", 2026-08-16 — is in the archived M1 decisions log,

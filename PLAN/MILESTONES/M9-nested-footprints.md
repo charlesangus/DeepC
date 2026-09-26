@@ -1,6 +1,7 @@
 # Milestone 9: Nested footprints — correlated occlusion in the coverage partition
 
-> Stub — elaborate into phases/tasks before starting (PLAN-FORMAT.md §5).
+> **Cancelled 2026-09-26 — folded into M8 as Phase 8.5** (user ruling: fix the nesting term inside M8 rather than
+> ship the silhouette band as an XFAIL). Kept for history; M8's Phase 8.5 is the live brief.
 
 M8.P1.T2's thin-lens reference (`~/deepc-validation/M8-P1T2/REPORT.md`) found a third mechanism behind
 o6c. When a near surface's lens set lies inside a farther surface's (the near card's defocused
