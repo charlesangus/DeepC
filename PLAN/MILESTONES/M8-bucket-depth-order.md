@@ -400,7 +400,7 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   - size: M
   - depends: M8.P2.T4, M8.P1.T3 (Q2 ruled 2026-09-26)
 
-- [ ] M8.P2.T6 — Full a–o on the streaming build: every moved row explained and re-pinned from an independent oracle
+- [x] M8.P2.T6 — Full a–o on the streaming build: every moved row explained and re-pinned from an independent oracle
   - files: `tests/nuke/scenes.py`, `tests/nuke/harness.py`, `tests/nuke/generate_scene_scripts.py` / `.nk` only
     where a StickyNote carries a moved number
   - approach: run a–f, g–j, k–n, o in batches (`--threads=2`, renders kept). Diff every row against M8-T0
@@ -948,3 +948,14 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   rounding over 35 574 deposits is unbounded; f3b/f3d same pattern). No derived bound on the current rig catches T0; fix the rig
   instead: a size-6/K-4 (or 12/4) row gated at `(κ·n_every + n_arrival)·2⁻²⁴·0.75` with κ derived, f3b/f3c/f3d re-gated at their
   derived worst case, arrival gated directly. Both sent to one follow-up implementer; P2.T6 closes when it lands.
+- 2026-09-26 — **M8.P2.T6 done — follow-up (code `53fc335`; evidence `~/deepc-validation/M8-P2T6-followup/`, κ argument
+  `kappa.md`).** New `densityBound()` gates at `(κ·n_every + n_arrival)·2⁻²⁴·value`, κ derived per rig from the update's forward
+  error (light conserved by construction; per deposit 1 + α·(4 + 2w_A + 2w_M), R = run of boundaries not certain to rotate; assumes
+  glibc ≤ 1 ulp `log1pf`/`expm1f`). **f3j** (size 6, K 4; κ 4.40, bound 7.09e-4): HEAD −4.1e-6 PASS, T0 −5.72e-3 FAIL — the
+  discriminator; f3jr twin. f3b (κ 2.23, 5.22e-3; T0 passes too), **f3c sanity-only** (R = 17, κ 17.0, 2.72e-2; no longer catches
+  T0), f3d (κ 1.98, 6.11e-3; catches T0). **f3a** gates |1 − arrival| ≤ n_arrival·2⁻²⁴ from the probe (0.093 of bound; catches the
+  arrival mutation; SKIP on T0, no probe). n8b / n8b#2 retired; **n8c/n8cr** transpose symmetry (2·(11·922 + 992)·2⁻²⁴ = 1.33e-3):
+  HEAD FAIL 0.174, T0 PASS 5.4e-7; **n8d/n8dr** vs thin-lens over half the band (2 926 px, ~2.5 min): alpha PASS 0 diff, colour FAIL
+  mean 0.042 (T0 also fails, 0.031). n8c/n8cr/n8dr left FAIL → Phase 8.5. Mutations: deposit weight ×0.99 → f3j FAIL; resolve
+  alpha ×0.99 → n8d FAIL (per-deposit mutations heal in the opaque stack). Tallies f 18/4/5/0, n 24/3/0/1; all other rows
+  identical. **Suite total now `PASS=203 FAIL=7 XFAIL=8 SKIP=3`**; FAILs f3e/f3f/f3h/f3h2, n8c/n8cr/n8dr — all Phase 8.5 targets.
