@@ -150,9 +150,14 @@ Bokeh/pgBokeh don't exhibit; it runs before M2 because it rewrites the kernel st
   against the Monte Carlo reference: (i) a derived bound (calibration rim residual + Monte Carlo error at
   k σ, an explicit exception to the term-count rule); (ii) an analytic double-precision axis-aligned-card
   reference, rim excluded, at `N·2⁻²⁴`; or (iii) report-only, o6c stays XFAIL with the reference's verdict
-  in its note. The user asked for more information before ruling; P2.T7's prototype readings against the
-  reference (whole-map |ΔG/A| per cell) are the information the PM will bring back. P2.T5 and Phase 8.3
-  wait on this.
+  in its note. The user asked for more information before ruling. **The information (P2.T7 prototype, confirmed
+  by P2.T4 on the committed node, `~/deepc-validation/M8-P2T7/DESIGN.md` §11.2):** against the thin-lens reference,
+  interior pixels (`MIX_NEAR_BOX` inset 2, 784 px) read max |ΔG/A| **6e-4 / mean 1e-4** at fog 0.2 and 3e-4 / 1e-4 at
+  fog 0.5, K-flat (T0: 0.0756 / 0.0572); the reference's Monte Carlo SE is ≤ 2.2e-4 and the kernel's rim residual
+  ≤ 8.6e-4 (P1.T2 calibration). The whole-map max is 0.1148 / mean 0.0368 (fog 0.2), all of it the silhouette band
+  (M9's nesting term, ruling 1 above). So (i) at 3 σ ≈ 6.6e-4 would pass the interior with almost no margin; (i) at
+  rim residual + 3 σ ≈ 1.5e-3 passes with margin; (ii) needs a second analytic tool; (iii) gates nothing on the
+  interior. P2.T5 and Phase 8.3 wait on this.
 
 - **2026-09-11 (found by M5.P3.T1, pre-existing, not the fill's):** a 0.5-alpha holdout placed *in
   front of* a two-layer deep stack renders alpha 1.0 / R/A 0.50 inside the silhouette, where stock
