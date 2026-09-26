@@ -411,7 +411,7 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
     `~/deepc-validation/M8-P2T6/`; re-pinned rows PASS on the new build and FAIL under a recorded mutation; no pin
     derived from the new output.
   - size: L
-  - depends: M8.P2.T5, M8.P2.T8, the user's rim ruling
+  - depends: M8.P2.T5, M8.P2.T8, M8.P2.T12, the user's rim ruling
 
 - [ ] M8.P2.T10 — (only if the user rules the volumetric rim over-read out) Per-parent chain for volumetric pieces
   - files: `src/DeepCDefocusScatter.h`, `src/DeepCDefocusScatter.cpp`, `tests/test_defocus_scatter.cpp`
@@ -421,6 +421,47 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   - verify: V1 within P2.T8's oracle SE band; f3h/f3h2 back to PASS; V2/V3 unchanged; profile delta vs P2.T4 stated.
   - size: L
   - depends: M8.P2.T8, user ruling
+
+- [ ] M8.P2.T11 — Pre-merge must not group pieces from opposite sides of focus
+  - files: `src/DeepCDefocusScatter.cpp` (pre-merge grouping ~386–430, `setDepthDerived(sampleMidDepth(...))`),
+    `src/DeepCDefocusScatter.h` (pre-merge contract comment ~442–445), `tests/test_defocus_scatter.cpp`
+  - approach: the pre-merge keys on radius tolerance + holdout bracket; across focus |CoC| folds, so a piece at z 9.49–10
+    (r 0.522) and one at 10–10.61 (r 0.588) fall within `merge_tolerance` and are drawn at the union's depth midpoint 10.049,
+    r 0.097 — the sharp path, a delta with α 0.226 at focus (consultant model vs node −1.073e-2 / −1.028e-2 at (95,128) on V3;
+    `pre_merge` off halves the ring deficit). Add **side of focus** to the pre-merge key, matching the collision merge's
+    `sameLensPatch` key, so a group never spans the focal cut; the group's derived depth then maps to a radius between its
+    members'. Fix the two comments that claim this cannot happen (pieces "only regroup on the max_radius plateau"; the group
+    "rasterises at its front member's radius"). No other behaviour change.
+  - verify: builds clean; doctest: a span straddling focus, cut by `volumetricPieceBounds`, pre-merged with tolerance 0.25 →
+    the pieces either side of the focal cut are never in one group and the group radius equals a member's (or lies between
+    members') radius; **mutation:** drop the sign key → the straddling pair merges and the test fails; both suites green
+    (counts); harness `--scenes a` bit-exact (a1–a3 0, a4 ≤ 2e-7, a5 PASS); `--scenes f` with `vref`: V3 (f4c/f4cr) ring
+    deficit at (95,128) moves from −1.075e-2 toward ≈ −4.4e-3 and every other f row byte-identical to `d927a07` or listed.
+  - size: M
+  - depends: M8.P2.T8
+
+- [ ] M8.P2.T12 — f4 rows: a radius-dependent kernel term replaces ε·(1+τ); the provisional V3 figure goes
+  - files: `tests/reference/vref.cpp` (a kernel-spec coverage mode), `tests/nuke/scenes.py` (f4a–f4cr bounds,
+    `VOL_V3_NEAR_FOCUS_DEFICIT` removed), `tests/nuke/harness.py` if the loader needs a second output
+  - approach: P1.T2's ε = 8.6e-4 is the kernel's error at r = 14–17 px; the consultant's table (`eps_table.txt` in its scratch,
+    reproduced in `## Decisions`) shows ε_K(r) = 2.0e-1 at r ≤ 0.5, 4.4e-2 at (1,2], 9.3e-3 at (4,6], 3.1e-3 at (8,10], 3.8e-4
+    at 14 — V1/V2 pieces run r 5–20 and V3's near-focus slices are sub-pixel, so a constant ε is wrong on every f4 row.
+    **Preferred:** a per-pixel `K(p) = Σᵢ αᵢ·|c_spec,i(p) − c̄_true,i(p)|` in share units, with the pieces cut as the node
+    documents (step `max(2·merge_tolerance, CoC variation/K)`, each at its midpoint radius), `c_spec` the kernel **spec**
+    reimplemented in `vref` independently of `src/` (anti-aliased disc with a 1 px ramp, normalised, delta at r ≤ 0.5, bracket
+    blend on the documented grid) and `c̄_true` exact ray coverage; gate low = shareRef − SE term − K(p), high = ceiling + K(p).
+    **Fallback** if the mode is disproportionate: the rigorous scalar `Σᵢ αᵢ·sup_p|Δcᵢ|` (5.33e-2 on V3; the geometry-only
+    `∫σ·ε_K(r(z))dz + ε_K(r_card)` = 3.18e-2 under-counts midpoint quantisation by ~60 % and is not enough). Derivation to cite:
+    `|Π(1−αᵢaᵢ) − Π(1−αᵢbᵢ)| ≤ Σαᵢ|aᵢ−bᵢ|`, and the free-area-first rule reads ≥ the product model. State in the row note the
+    one unproven assumption (truth ≤ F, the free-area composite of exact piece coverages; measured ≥ +1.6e-3 at every probed
+    pixel; per-ray slack ≤ τ_max²/4 = 1.4e-2). The `min(1, E[τ])` ceiling stays (legitimate once the kernel term is right).
+    The tolerance is no longer divided by the 0.3 colour contrast in a way that hides share-unit deficits — gate in share units.
+  - verify: `vref` builds; the K(p) mode reproduces the consultant's 3.29e-2 at (96,96) and 1.89e-2 at (95,128) on V3 (or the
+    scalar is stated); f4a–f4cr re-run on the P2.T11 build: readings vs the new bounds per rig (V3 low side within bound with no
+    provisional figure), V1/V2/V3 colour XFAIL ceilings unchanged; mutation: halved-CoC → V1/V2c/V3c FAIL, M8-T0 → V1/V2/V3 FAIL;
+    every other f row identical; `.nk` loads if regenerated.
+  - size: L
+  - depends: M8.P2.T11
 
 ## Phase 8.3: Mechanism (2) — re-oracle o6c as ruled (stub, finalised after M8.P1.T3)
 
@@ -692,3 +733,19 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   layer-ordered partition of its own single-layer renders, term-count bounds), o7 (K-invariance, 0 ulps), o8 (determinism arm
   the harness can set) — run now as **P2.T5 part 1**; o6e, o6f and the o6c re-oracle stay **part 2**, after the rulings. The
   checkbox flips only when part 2 lands.
+- 2026-09-25 — **Consultant ruling on P2.T8's provisional V3 bound (scratch `…/consult-v3/`, node model reproducing the node to
+  ~1e-3): remove the 2.2e-2; the ring deficit is two node error classes, one a bug.** At (95,128) on V3: **pre-merge bug −6.4e-3**
+  (pieces either side of focus, r 0.522/0.588, are within tolerance and drawn at the union's depth midpoint → r 0.097, sharp
+  delta at focus; `pre_merge` off moves the ring from −1.075e-2 to −4.40e-3, model −4.37e-3) → **P2.T11**; **sub-pixel kernel
+  error ≈ −1.0e-2 gross** (the kernel is a point-sampled disc, a delta at r ≤ 0.5; exact ring-1 coverage of a straight edge is
+  2r/(3π) = 0.106 at r 0.5 where the node spills 0; a corner at r 0.5 reads 1.0 vs 0.7995); nesting +5.9e-3 partly cancels.
+  ε_K(r) table (sup over edge/corner pixels): (0,0.5] 2.01e-1; (0.5,1] 1.85e-1; (1,2] 4.4e-2; (2,3] 2.3e-2; (3,4] 1.4e-2;
+  (4,6] 9.3e-3; (6,8] 5.4e-3; (8,10] 3.1e-3; 14 → 3.8e-4 (agrees with P1.T2's 8.6e-4) — the constant ε is valid only from
+  r ≈ 12 px, so every f4 row needs a radius-dependent term → **P2.T12**. **Q2:** V2's colour over-read is nesting (+0.130 of
+  +0.133 share at (130,95); kernel −7.5e-4; +2.4e-3 free-area-first placement) and so is V1's (+0.140; V1 also exceeds the
+  product model by ≤ +2e-2, the recency rule on 17 pieces, not the fill — `fill: background` is bit-identical); **V3's is mostly
+  not nesting** (+4.76e-2 share at (96,96) = nesting 1.77e-2 + sub-pixel kernel 1.70e-2 + pre-merge 1.19e-2), so a per-parent
+  chain (P2.T10) would leave V3's corner at ≈ +1.7e-2 after P2.T11. The `min(1, E[τ])` ceiling is legitimate only with the
+  radius-dependent kernel term. Also: `sameLensPatch` treats every sharp radius as one lens patch, so the folded r 0.097 group
+  joined its sharp neighbours. **PM decision:** P2.T11 (bug fix, no ruling needed) and P2.T12 (bound rework) appended; P2.T6 now
+  also depends on P2.T12.

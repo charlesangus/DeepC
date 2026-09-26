@@ -2,7 +2,7 @@
 title: DeepCDefocus — deep-input, flat-output defocus node
 status: running
 current: M8.P2.T5
-pm_heartbeat: 2026-09-25T21:13:32-04:00
+pm_heartbeat: 2026-09-25T21:31:16-04:00
 ship: pr-per-milestone
 ---
 
@@ -146,8 +146,9 @@ Bokeh/pgBokeh don't exhibit; it runs before M2 because it rewrites the kernel st
      (P2.T10, +12 B/pixel/slot, size L, DESIGN §5.4). **P2.T8 (2026-09-25) sharpened this:** on the committed node V1 reads
      +0.150 alpha / +10.87 %, and the same over-read shows in **colour:alpha on fog over an opaque card (V2 +4.0e-2, V3
      +1.43e-2)**, where alpha is exactly 1 and cannot show it — so the ruling covers V2/V3 colour too, and f3e/f3f/f3h/f3h2
-     stay FAIL until it lands. All three rows are XFAIL under a hard ceiling `min(1, E[τ])` from the oracle. P2.T6 waits
-     on this; P2.T10 is the fix if (b).
+     stay FAIL until it lands. All three rows are XFAIL under a hard ceiling `min(1, E[τ])` from the oracle. **Consultant
+     (2026-09-25):** V1/V2 are the nesting term; V3's is mostly a pre-merge-across-focus bug (fixed in M8 as P2.T11) plus
+     sub-pixel kernel error, which (b) would not touch. P2.T6 waits on this; P2.T10 is the fix for V1/V2 if (b).
 
 - **2026-09-24 (M8.P1.T3, Q2 — tolerance class against the thin-lens reference; still open):** Q1 and Q3
   are ruled (reference is the oracle; nested footprints → M9). Q2 asks which tolerance class o6c/o6d use
