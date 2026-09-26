@@ -687,3 +687,8 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   the detectable one (V1, V2c, V3c FAIL); M8-T0 plugins: V1/V2/V3 all FAIL. Scene (f): PASS 8→11, FAIL 4 (f3e/f3f/f3h/f3h2, not
   re-pinned), XFAIL 3→6; all 15 prior rows identical. `.nk` header now 16.0v9 (written by Nuke 16). Oracle cost ≈ 13–19 s per rig.
   Docker does not set `DEEPC_BUILD_TESTS`, so `vref` is not built there today. Doctests 21/21, 101 + 1 skipped.
+- 2026-09-25 — **P2.T5 split into two halves (execution deviation).** The user rulings (Q2 tolerance class, the silhouette
+  band, the volumetric rim) are unanswered and the run is autonomous, so the ruling-independent rows — o6d/o6dα (node vs the
+  layer-ordered partition of its own single-layer renders, term-count bounds), o7 (K-invariance, 0 ulps), o8 (determinism arm
+  the harness can set) — run now as **P2.T5 part 1**; o6e, o6f and the o6c re-oracle stay **part 2**, after the rulings. The
+  checkbox flips only when part 2 lands.
