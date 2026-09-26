@@ -915,3 +915,17 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   opaque fragment; on an all-opaque stream the naive rule equals the amended one) — substituted fitshrink, as the brief allowed.
   Reference 3×64 strata × 8 reps, seed 818: scene (o) now 365 s wall (+250 s). P3.T2 is left with only the band pixels, after
   Phase 8.5.
+- 2026-09-26 — **M8.P2.T6 landed except n8b (code `57aae0c`; evidence `~/deepc-validation/M8-P2T6/`, `moved-rows.md` lists 120
+  changed rows with causes).** Total `PASS=199 FAIL=6 XFAIL=8 SKIP=3` (a–f 38/4/5/1, g–j 53/0/0/0, k–n 62/2/0/1, o 46/0/3/1). FAILs:
+  f3e/f3f/f3h/f3h2 (→ P5, status untouched) and **n8b ×2**. a1–a3 0, d black, m4a/m4b/n1/n7 PASS, doctests 21/21 + 102/1 skip.
+  Re-pins, each FAILing on T0 or a recorded scratch mutation (`~/deepc-scratch/M8-P2T6`): **g4/g5** vs α(1+(S−1)(1−α)) with S from
+  the shipped LUT via new tool `tests/reference/kernel_sums.cpp` (CMake target; S = 1.0719210, the brief's 1.0712 was back-derived),
+  node within 5.4e-7, gate (N+8)·2⁻²⁴, N 4 843; **m3c** same law per row, XFAIL dropped; **f3c/f3d** at arrival tap counts (5 520 /
+  4 240), XFAILs dropped; **f3b** gate re-derived to 3 039 taps; **i7/i7d** redesigned on a 128² card edge (full-frame pair no longer
+  shows pre-merge: 2.4e-7); new colour:alpha twins f3br/f3cr/f3dr, g4r, g5r×4, m3cr. Node text: KNOWN LIMITATIONS 1–2 restated
+  for the stream; `pre_merge` tooltip says pre-merge is the more accurate setting for same-pixel stacks. h3c now 1.4e-6 vs 2e-6
+  gate (passes narrowly). exrdiff scene (m) vs T0: halo 1 ulp, α 0.9 ramp ≤ 0.034, α 1 ramp 1.4e-5. **Open, sent to a consultant:**
+  (1) n8b moved by the stream (equal-depth background samples take free area in raster/sort order at the halo edge — rows 124–127
+  show, 128–132 nothing; T0 averaged the disc; foreground reading 0.0648 → 0.0689) and its pins were bake-off readings, so there
+  is no oracle; (2) f3c's arrival-count gate does not bound the composite's own rounding (comment says "empirical") — check it is
+  derived, not fitted. P2.T6 stays open until both are settled.
