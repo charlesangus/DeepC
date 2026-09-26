@@ -143,6 +143,15 @@ inline int holdoutBracketOf(const FlattenParams& params, float depth)
     return params.holdoutBoundaries.locate(depth).index;
 }
 
+// -1 in front of focus, +1 behind it, 0 for every sharp radius: the classes
+// sameLensPatch keeps apart, since a sharp radius sees the whole lens.
+inline int focusSideOf(float signedRadius)
+{
+    if (!(std::fabs(signedRadius) > kSharpRadiusPx))
+        return 0;
+    return (signedRadius < 0.0f) ? -1 : 1;
+}
+
 // A run of staged fragments [first, end) about to be emitted as one.  Depth,
 // radius and bracket are its first pre-merge group's and never move while
 // later groups join, so a chain of joins cannot walk them away one step at a
@@ -379,11 +388,17 @@ void flattenPixelToSoA(const FlattenParams& params,
 
     // PRE-MERGE (pre_merge / merge_tolerance, CoC-RADIUS pixels).  Adjacent
     // fragments join the group while within the tolerance of its first
-    // radius and, with a holdout connected, in its holdout bracket: the group
-    // is emitted at ONE depth and the holdout is sampled per fragment, so an
-    // unbracketed group could carry a sample from behind a card to in front
-    // of it.  No depth key: the stream orders fragments by depth, so a merge
-    // moves nothing between layers.  Volumetric pieces are cut at twice the
+    // radius, on its side of focus and, with a holdout connected, in its
+    // holdout bracket: the group is emitted at ONE depth and the holdout is
+    // sampled per fragment, so an unbracketed group could carry a sample from
+    // behind a card to in front of it.  The side key exists because |CoC|
+    // folds at focus: the two pieces either side of the focal cut can be
+    // within the tolerance of each other, and their union's midpoint then
+    // sits near focus with a radius far below both (measured 0.097 px for
+    // members at 0.522 and 0.588).  On one side CoC is monotone in depth, so
+    // the midpoint's radius lies between its members'.  No depth key: the
+    // stream orders fragments by depth, so a merge moves nothing between
+    // layers.  Within one side volumetric pieces are cut at twice the
     // tolerance and so only regroup on the max_radius plateau, where their
     // kernels are identical.
     //
@@ -405,9 +420,12 @@ void flattenPixelToSoA(const FlattenParams& params,
         std::size_t j = i + 1;
         if (merging) {
             const int headBracket = holdoutBracketOf(params, head.depth);
+            const int headSide    = focusSideOf(head.signedRadius);
             while (j < staged) {
                 const FlattenScratch::Staged& cand = scratch.staged[j];
                 if (!(std::fabs(cand.radius - head.radius) <= tol))
+                    break;
+                if (focusSideOf(cand.signedRadius) != headSide)
                     break;
                 if (holdoutBracketOf(params, cand.depth) != headBracket)
                     break;

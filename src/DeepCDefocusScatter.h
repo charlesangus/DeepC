@@ -441,9 +441,9 @@ constexpr float kSharpRadiusPx = 0.5f;
 // sharp radius is one bin.
 //
 // `pre_merge` does not consult this predicate: it groups on `merge_tolerance`
-// (0.25 px by default) and rasterises the group at its front member's
-// radius, which is lossy whenever the members' radii differ at all (harness
-// check `i7`).
+// (0.25 px by default) within one side of focus and rasterises the group at
+// the radius of its depth union's midpoint, which lies between its members'
+// radii and is lossy whenever those differ at all (harness check `i7`).
 //
 // With several channel groups a group's radius is
 // `groupRadius(groups, g, baseRadius)`, and equal BASE bins do not imply equal

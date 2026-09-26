@@ -353,6 +353,12 @@ std::vector<RefFragment> refFlatten(const FlattenParams& fp,
         return (a < 0.0) == (b < 0.0);
     };
 
+    const auto side = [&](double r) {
+        if (!(std::fabs(r) > kSharpRadiusPx))
+            return 0;
+        return (r < 0.0) ? -1 : 1;
+    };
+
     struct Run { std::size_t first, end; double depth, signedRadius; int bracket; bool vol; };
     std::vector<Run> runs;
     const bool merging = fp.preMerge && fp.mergeTolerancePx > 0.0f;
@@ -362,6 +368,7 @@ std::vector<RefFragment> refFlatten(const FlattenParams& fp,
         if (merging) {
             while (j < staged.size()
                    && std::fabs(staged[j].radius - staged[i].radius) <= fp.mergeTolerancePx
+                   && side(staged[j].signedRadius) == side(staged[i].signedRadius)
                    && bracket(staged[j].depth) == bracket(staged[i].depth))
                 ++j;
         }
@@ -5077,6 +5084,82 @@ TEST_CASE("the collision merge does not carry a fragment across a holdout bracke
             CHECK(band.outAlpha(3, 3) > 0.7f);
         }
     }
+}
+
+TEST_CASE("pre_merge never groups across the focal cut, and a group's radius lies within "
+          "its members'")
+{
+    // |CoC| folds at focus, so the pieces either side of the focal cut can
+    // sit within the tolerance of each other; grouped, their union's midpoint
+    // lands near focus on the sharp path.  The rig is the harness's V3 slab:
+    // its pieces 7 and 8 are 0.522 and 0.588 px either side of focus.
+    const int       C  = 1;
+    const float     focus = 10.0f, zFront = 7.0f, zBack = 14.0f, parentAlpha = 0.8f;
+    const CocParams p  = makeManualRig(20.0f, focus);
+    FlattenParams   fp = makeFlattenParams(p, C, /*preMerge*/ true, /*tol*/ 0.25f);
+    fp.pieceStepPx = 1.15f;
+
+    SampleSoA soa;
+    soa.begin(C, fp.groups);
+    FlattenScratch scratch;
+    // Colour equal to alpha: the partition keeps the ratio, so every emitted
+    // fragment's colour:alpha must read 1.
+    std::vector<SampleRecord> v{makeSample(zFront, zBack, parentAlpha, {parentAlpha})};
+    flattenPixelToSoA(fp, 0, 0, v, scratch, soa, nullptr, nullptr, nullptr);
+
+    const std::size_t n = scratch.stagedCount;
+    std::size_t cut = n;
+    for (std::size_t k = 0; k < n; ++k)
+        if (scratch.staged[k].zFront >= focus) {
+            cut = k;
+            break;
+        }
+    REQUIRE(cut > 0u);
+    REQUIRE(cut < n);
+    const FlattenScratch::Staged& nearPiece = scratch.staged[cut - 1];
+    const FlattenScratch::Staged& farPiece  = scratch.staged[cut];
+    CAPTURE(nearPiece.signedRadius);
+    CAPTURE(farPiece.signedRadius);
+    REQUIRE(nearPiece.signedRadius < -kSharpRadiusPx);
+    REQUIRE(farPiece.signedRadius > kSharpRadiusPx);
+    REQUIRE(std::fabs(nearPiece.radius - farPiece.radius) <= fp.mergeTolerancePx);
+
+    // Recover each emitted fragment's members from its alpha: a group is a
+    // contiguous run of pieces composited `over`.
+    std::size_t k = 0;
+    double      total = 0.0;
+    for (std::size_t f = 0; f < soa.fragmentCount(); ++f) {
+        CAPTURE(f);
+        const double fa = soa.alpha[f];
+        const std::size_t first = k;
+        double acc = 0.0;
+        while (k < n && !(std::fabs(acc - fa) <= 1e-6)) {
+            acc = 1.0 - (1.0 - acc) * (1.0 - static_cast<double>(scratch.staged[k].alpha));
+            ++k;
+        }
+        REQUIRE(std::fabs(acc - fa) <= 1e-6);
+        REQUIRE(k > first);
+        CHECK_FALSE((first < cut && k > cut));
+
+        float rMin = scratch.staged[first].radius, rMax = rMin;
+        for (std::size_t m = first; m < k; ++m) {
+            rMin = std::min(rMin, scratch.staged[m].radius);
+            rMax = std::max(rMax, scratch.staged[m].radius);
+        }
+        CAPTURE(rMin);
+        CAPTURE(rMax);
+        CAPTURE(soa.radius[f]);
+        if (rMax > kSharpRadiusPx) {
+            CHECK(soa.radius[f] >= rMin - 1e-5f);
+            CHECK(soa.radius[f] <= rMax + 1e-5f);
+        } else {
+            CHECK_FALSE(soa.radius[f] > kSharpRadiusPx);
+        }
+        CHECK(std::fabs(static_cast<double>(soa.colorOf(f)[0]) / fa - 1.0) <= 1e-6);
+        total = 1.0 - (1.0 - total) * (1.0 - fa);
+    }
+    CHECK(k == n);
+    CHECK(std::fabs(total - static_cast<double>(parentAlpha)) <= 1e-6);
 }
 
 TEST_CASE("pre_merge does not carry a fragment across a holdout bracket either")
