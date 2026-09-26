@@ -783,6 +783,51 @@ def runThinlensRef(dump, size, focus, pixels, nSub=4, nLens=32, reps=16,
     return out, header
 
 
+
+# --- the kernel-sum oracle ---------------------------------------------------
+
+class KernelSumsUnavailable(Exception):
+    """Raised when the ``kernel_sums`` binary cannot be found or fails; scene
+    code reports SKIP with the message."""
+
+
+def _kernelSumsLines(args):
+    path, searched = _findOracle("kernel_sums", "DEEPC_KERNEL_SUMS")
+    if path is None:
+        raise KernelSumsUnavailable(
+            "kernel_sums not found (set DEEPC_KERNEL_SUMS, or build the "
+            "kernel_sums target with DEEPC_BUILD_TESTS=ON); searched %s"
+            % ", ".join(searched))
+    return [line for line in _runOracle(path, args, KernelSumsUnavailable)
+            if not line.startswith("#")]
+
+
+def rampAdjointSums(size, focus, yHorizon, yFocus, softness, height, y0, y1):
+    """{y: (S, N, dS)} for destination rows [y0, y1) of the receding plane
+    the ``kernel_sums ramp`` header documents: the adjoint sum of the node's
+    own kernel, its nonzero tap count, and its radius-rounding headroom."""
+    out = {}
+    for line in _kernelSumsLines(["ramp", float(size), float(focus),
+                                  float(yHorizon), float(yFocus),
+                                  float(softness), int(height), int(y0),
+                                  int(y1)]):
+        fields = line.split()
+        out[int(fields[0])] = (float(fields[1]), int(fields[2]),
+                               float(fields[3]))
+    return out
+
+
+def kernelTaps(softness, radii):
+    """[(nonzero taps, weight sum)] of the kernel the scatter rasterises at
+    each radius in ``radii``."""
+    out = []
+    for line in _kernelSumsLines(["taps", float(softness)]
+                                 + [float(r) for r in radii]):
+        fields = line.split()
+        out.append((int(fields[1]), float(fields[2])))
+    return out
+
+
 # --- measurement -------------------------------------------------------------
 
 def ulps(a, b):

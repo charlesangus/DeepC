@@ -21,7 +21,8 @@ from harness import (
     depthRampLayer, formatBox, insetBox, makeBokeh, makeDefocus, pointLayer,
     rectangle2d, render, resetScript, rowMeans, runVref, runVrefKernel,
     saveRender, slab, stepProfile, tolCheck, ulps, VrefUnavailable,
-    ThinlensUnavailable, dumpDeep, runThinlensRef,
+    ThinlensUnavailable, dumpDeep, runThinlensRef, KernelSumsUnavailable,
+    kernelTaps, rampAdjointSums,
 )
 
 
@@ -677,12 +678,13 @@ def sceneF(settings):
                 onsetNote, detail),
         expectedFailure=True, hardTol=F2_HARD, hardValue=erasedFraction))
 
-    # --- f3: fog density against M1.P3.T8's coverage-head fix. Two
-    # fully-covering 50% layers composite to exactly 0.75. Three arrangements,
-    # reported separately, because the residual only appears when fragments
-    # carrying DIFFERENT split fractions land in one bucket.
+    # --- f3: fog density.  Two fully-covering 50% layers composite to exactly
+    # 0.75, in three arrangements: separated slabs, overlapping slabs (the
+    # tidy cuts them at each other's ends), and a span with a point sample
+    # inside it.
     exact = 1.0 - 0.5 * 0.5
     grey = (0.5, 0.5, 0.5, 0.5)
+    F3_SIZE, F3_FOCUS = 12.0, 30.0
 
     def separatedSlabs():
         return deepMerge([slab(6.0, 10.0, grey), slab(12.0, 16.0, grey)])
@@ -695,79 +697,125 @@ def sceneF(settings):
                           pointLayer(constant2d(grey), 10.0,
                                      keepZeroAlpha=False, premult=False)])
 
-    # HARD BOUNDS on f3c/f3d, same discipline as scene (g) (harness.boolCheck's
-    # hardTol/hardValue, reusing tolCheck's mechanism) — measured against the
-    # exact fraction, |mean-exact|/exact, i.e. the loss %.
-    #   f3c (overlapping slabs) is K-CONVERGENT: 0.763/0.610/0.113% at
-    #   K=4/8/16, exact (0.0003%) at K=64/128 (M1.P3.T16 review, reproducing
-    #   M1.P3.T12's K=4/8/16 numbers exactly). Worst on record is K=4's
-    #   0.763%; F3C_HARD is ~2.6x that.
-    #   f3d (span + point) is NON-MONOTONE in K: 1.539/1.395/1.675/1.950% at
-    #   K=4/8/16/64, exact (0.0004%) at K=128 (M1.P3.T16 review, reproducing
-    #   M1.P3.T12's K=4/8/16 numbers exactly and confirming the K=64 peak and
-    #   K=128 convergence). Worst on record is K=64's 1.950%; F3D_HARD is
-    #   ~2.6x that, the same multiple as f3c's for a residual whose peak K
-    #   is not pinned down as tightly (non-monotone, only sampled at
-    #   K=4/8/16/64/128).
-    F3C_HARD = 2.0e-02
-    F3D_HARD = 5.0e-02
-    # f3b's gate is the float accumulation bound of the ARRIVAL plane, not
-    # 1e-5.  Two fog layers over the whole frame make shares + residual sum to
-    # exactly 1 in exact arithmetic, so the fill is meant to be inert here;
-    # in float the arrival plane is a naive sum of one term per non-zero
-    # kernel tap that reaches the pixel -- the [6,10] slab's pooled claim at
-    # its deepest part's 24 px disc, the [12,16] slab's at 11.6 px, and the
-    # 0.25 residual at 11.6 px, 5630 taps between them (counted from
-    # DiscKernelLUT) -- and lands 1.6e-05 under 1, past the fill's 1e-05
-    # deficit tolerance, so the pair is divided by it: 0.75 comes out
-    # +1.6e-05 high.  Recursive summation of n terms is exact to n * 2^-24,
-    # so that is the gate.  Derived from the geometry and the LUT, never from
-    # a reading; a plain gate, not an XFAIL, because the identity holds to
-    # the precision the arithmetic has.  (The kernel-independent version of
-    # the same identity is f3 at size 0, still 1e-5.)
-    F3B_TERMS = 5630
-    F3B_TOL = F3B_TERMS * 2.0 ** -24                            # 3.36e-04
+    # THE DEFOCUSED GATES ARE TERM COUNTS, derived from the geometry and the
+    # kernel, never from a reading.  Each layer covers the whole frame, so
+    # the shares plus the residual sum to exactly 1 in exact arithmetic and
+    # the fill is meant to be inert; in float the arrival plane is a naive
+    # sum of one term per nonzero kernel tap that reaches the pixel, and when
+    # it lands more than the fill's 1e-05 tolerance under 1 the pair is
+    # divided by it and 0.75 comes out high by that much.  Recursive
+    # summation of n terms is exact to n * 2^-24, so that is the gate.  The
+    # arrival terms are few: a volumetric parent is cut into pieces uniform in
+    # CoC (step max(2 merge_tolerance, frame CoC variation / depth_layers)),
+    # but only its deepest piece carries the parent's share, and the residual
+    # is drawn at the pixel's deepest fragment's radius.  The composite's own
+    # sums take every piece's deposits (35 574 at f3c's centre pixel) and
+    # their rounding is not in this gate: its worst case (n * 2^-24 there is
+    # 1.6e-03) would admit twice the -8.3e-04 a composite that pools the two
+    # slabs' per-unit opacities makes here, so the arrival count is the
+    # tighter, empirical bound -- f3c
+    # reads +4.9e-05 against 3.3e-04, of which the fill's division by an
+    # arrival 2.2e-05 short of 1 is +1.7e-05 and the pre-fill alpha the
+    # rest.  The colour:alpha twins carry every piece's taps, since every
+    # deposit adds to both sums and their ratio has no fill to hide behind.
+    # (The kernel-independent version of the identity is f3 at size 0, 1e-5.)
+    def cocAt(z):
+        return F3_SIZE * (1.0 - F3_FOCUS / z)
+
+    def frontPieces(zFront, zBack, step):
+        """The documented cut of one front-of-focus parent: [(zFront, zBack)]
+        of its pieces."""
+        r0, r1 = abs(cocAt(zFront)), abs(cocAt(zBack))
+        n = max(1, int(math.ceil(abs(r1 - r0) / step)))
+        cuts = [zFront]
+        for j in range(1, n):
+            r = r0 + (r1 - r0) * j / float(n)
+            cuts.append(F3_FOCUS / (r / F3_SIZE + 1.0))
+        cuts.append(zBack)
+        return list(zip(cuts[:-1], cuts[1:]))
+
+    def pieceRadius(piece):
+        return abs(cocAt(0.5 * (piece[0] + piece[1])))
+
+    def densityTerms(depthRange, parents, points, softness):
+        """(arrival taps, every deposit's taps) at an interior pixel.
+        ``parents`` are the tidied volumetric samples, ``points`` the point
+        samples' depths; the deepest sample must be a parent."""
+        step = max(2.0 * max(settings.mergeTolerance, 0.125),
+                   abs(cocAt(depthRange[1]) - cocAt(depthRange[0]))
+                   / float(settings.k))
+        cut = [frontPieces(a, b, step) for a, b in parents]
+        shareRadii = ([pieceRadius(p[-1]) for p in cut]
+                      + [abs(cocAt(z)) for z in points]
+                      + [pieceRadius(cut[-1][-1])])
+        allRadii = ([pieceRadius(q) for p in cut for q in p]
+                    + [abs(cocAt(z)) for z in points]
+                    + [pieceRadius(cut[-1][-1])])
+        arrival = sum(n for n, _ in kernelTaps(softness, shareRadii))
+        every = sum(n for n, _ in kernelTaps(softness, allRadii))
+        return arrival, every
+
     densityRows = [
-        ("f3  fog density, size=0, separated slabs", separatedSlabs, 0.0,
-         1.0e-05, 8, False, None),
-        ("f3b fog density, defocused, separated slabs", separatedSlabs, 12.0,
-         F3B_TOL, settings.maxRadius + 4, False, None),
-        ("f3c fog density, defocused, overlapping slabs", overlappingSlabs,
-         12.0, 1.0e-05, settings.maxRadius + 4, True, F3C_HARD),
-        ("f3d fog density, defocused, span + point (shared bucket, "
-         "different split fractions)", spanPlusPoint, 12.0, 1.0e-05,
-         settings.maxRadius + 4, True, F3D_HARD),
+        ("f3 ", "fog density, size=0, separated slabs", separatedSlabs, 0.0,
+         None, 8),
+        ("f3b", "fog density, defocused, separated slabs", separatedSlabs,
+         F3_SIZE, ((6.0, 16.0), [(6.0, 10.0), (12.0, 16.0)], []),
+         settings.maxRadius + 4),
+        ("f3c", "fog density, defocused, overlapping slabs", overlappingSlabs,
+         F3_SIZE, ((8.0, 13.0), [(8.0, 9.0), (9.0, 12.0), (12.0, 13.0)], []),
+         settings.maxRadius + 4),
+        ("f3d", "fog density, defocused, span + point", spanPlusPoint,
+         F3_SIZE, ((5.0, 25.0), [(5.0, 10.0), (10.0, 25.0)], [10.0]),
+         settings.maxRadius + 4),
     ]
-    for name, build, size, tol, inset, documented, hardPct in densityRows:
+    for tag, name, build, size, geometry, inset in densityRows:
         resetScript()
-        node = makeDefocus(settings, build(), size=size, focusDistance=30.0,
-                           cocMode="manual")
+        node = makeDefocus(settings, build(), size=size,
+                           focusDistance=F3_FOCUS, cocMode="manual")
+        tol, ratioTol, termNote = 1.0e-05, None, ""
+        if geometry is not None:
+            try:
+                arrivalTaps, everyTap = densityTerms(
+                    geometry[0], geometry[1], geometry[2],
+                    node["edge_softness"].value())
+            except KernelSumsUnavailable as exc:
+                for suffix, what in (("", "alpha"), ("r", "colour:alpha")):
+                    checks.append(Check("f", "%s%s %s: %s" % (tag.strip(),
+                                                              suffix, name,
+                                                              what),
+                                        "-", "-", SKIP, note=str(exc)))
+                continue
+            tol = arrivalTaps * O_ULP
+            ratioTol = 2.0 * (everyTap + 8) * O_ULP
+            termNote = ("gate is %d arrival taps x 2^-24 (share-carrying "
+                        "pieces and the residual, counted from "
+                        "DiscKernelLUT)" % arrivalTaps)
         img = render(settings, node, "f_density", box=formatBox())
-        stats = channelStats(img, "A", insetBox(formatBox(), inset))
+        interior = insetBox(formatBox(), inset)
+        stats = channelStats(img, "A", interior)
         loss = (exact - stats.mean) / exact * 100.0
-        gate = "0.75 +/- %.1e" % tol
-        if hardPct is not None:
-            gate += " (xfail < %.1f%% loss)" % (100.0 * hardPct)
         checks.append(boolCheck(
-            "f", name, abs(stats.mean - exact) <= tol,
-            "%.7f (%+.3f%%)" % (stats.mean, -loss), gate,
+            "f", "%s %s" % (tag, name), abs(stats.mean - exact) <= tol,
+            "%.7f (%+.3f%%)" % (stats.mean, -loss),
+            "0.75 +/- %.2e" % tol,
             population="interior flat field, %d px" % stats.count,
-            # The Decisions entry of 2026-07-26 calls this a "~4%/layer LOSS"
-            # and "identical under both bucket-combine candidates". Neither
-            # held as stated: the deviation is SIGNED and flipped with the
-            # candidate (-0.113%/-1.675% under the shipped composite against
-            # +0.074%/+0.967% under the one M1.P3.T17 deleted), which is why
-            # T17 weighed it as evidence rather than as a common-mode term.
-            note=("documented different-split-fraction residual (Decisions "
-                  "2026-07-26); signed, and NOT candidate-independent as that "
-                  "entry states — see the T12 review and M1.P3.T17"
-                  if documented else
-                  ("gate is %d taps * 2^-24, the float accumulation bound of "
-                   "the arrival plane the fill divides by" % F3B_TERMS
-                   if tol == F3B_TOL else "")),
-            expectedFailure=documented,
-            hardTol=hardPct,
-            hardValue=(abs(loss) / 100.0) if hardPct is not None else None))
+            note=termNote))
+        if ratioTol is None:
+            continue
+        resetScript()
+        flat = render(settings, deepToImage(build()), "f_density_flat",
+                      box=formatBox())
+        flatRatio = flat.at("R", 128, 128) / flat.at("A", 128, 128)
+        worst, worstAt, count = _worstUnpremult(img, "R", flatRatio, interior)
+        checks.append(boolCheck(
+            "f", "%sr ...colour:alpha (R/A) vs the stock flatten" % tag,
+            worst <= ratioTol * flatRatio,
+            "%.3e at %s" % (worst, worstAt),
+            "<= %.2e" % (ratioTol * flatRatio),
+            population="%d px" % count,
+            note="flatten R/A %.6f; gate 2 x (%d deposit taps + 8) x 2^-24, "
+                 "every piece's taps, since both sums take every deposit"
+                 % (flatRatio, everyTap)))
 
     checks.extend(unequalDensityChecks(settings))
     checks.extend(volumetricOracleChecks(settings))
@@ -1385,7 +1433,7 @@ def unequalDensityChecks(settings):
     # px, step 1.640625, so the deepest part is [z(22.09375 px), 12] =
     # [11.6355, 12], midpoint 11.8177, radius 21.5385 px.
     # THESE TWO CHECKS CANNOT PASS, BY CONSTRUCTION: each is a band around a
-    # residual, exactly as g4/g5/m3c are, so an "improvement" -- the fill
+    # residual, so an "improvement" -- the fill
     # forced off returns both to additive -- turns them FAIL (excursion 14.9
     # and 5.4 points against a 0.5 band) instead of quietly passing.  Whoever
     # moves either must re-pin it in the same commit.
@@ -2047,14 +2095,9 @@ def sceneG(settings):
     they swamp exactly the two metrics built to ISOLATE the bucketing.  The
     exclusion stays; only its justification changed.
 
-    g4 (added at M1.P3.T17) runs the same ramp at alpha < 1, where the fragment
-    split is not a no-op and the saturation clamp does not hide the positive
-    half of the error.  It WAS the largest residual the bucket-composite
-    bake-off found on the composite it kept; M1.P3.T20 fixed the mechanism
-    behind it (0.1607 -> 0.0543, K-divergence gone) and re-pinned it, and
-    M1.P3.T21 -- fixing the upward error T20 traded for that -- took it to
-    0.0325 and re-pinned it again.  The T20 fix is why g1/g2/g3 are no longer
-    XFAILs: see the note above g1.
+    g4/g5 run the same ramp at alpha < 1, where the saturation clamp no
+    longer hides the kernel's adjoint surplus, and hold it to the value the
+    kernel itself predicts (see the block above g4).
     """
     checks = []
     size = 86.0
@@ -2247,337 +2290,116 @@ def sceneG(settings):
                  % (row, groundRadius(size, row),
                     (worstStep / medianStep) if medianStep > 0.0 else 0.0)))
 
-    # --- g4: THE SAME RAMP AT alpha < 1.  Found at M1.P3.T17, RULED ON at
-    # M1.P3.T20, and RE-PINNED here in the same change as the fix.
+    # --- g4/g5: THE SAME RAMP AT alpha < 1, against the kernel's adjoint sum.
     #
-    # WHAT IT MEASURED, AND WHAT IS LEFT.  An ordinary semi-transparent surface
-    # receding through focus used to lose 12.5 / 16.1 / 9.2% of its alpha at
-    # alpha 0.99 / 0.90 / 0.50 at K=16, and to DIVERGE in K (-5.0 / -9.2 /
-    # -13.7 / -19.6 / -26.6% at K=8/16/32/64/128 at alpha 0.5).  M1.P3.T20
-    # rebuilt the composite's transmittance bookkeeping — a co-located deposit
-    # is now attenuated by ITS OWN head's sub-area transmittance rather than by
-    # the pooled mean over everything claimed, and a residual's occlusion is
-    # subtracted from that mean in proportion to the area it covers instead of
-    # multiplying the whole of it.  The same rig now reads:
+    # Each fragment's disc is normalised to sum 1 over its OWN kernel, and on
+    # this steep CoC gradient the weight a destination pixel RECEIVES is not
+    # 1: nearer-focus rows arrive with denser discs than farther rows lose, so
+    # the deposits at an interior pixel sum to S(y) > 1.  The stream deposits
+    # them in depth order: the first unit of weight covers the pixel's free
+    # area, and the surplus S - 1 lands on area the same plane already claimed
+    # at transmittance (1 - alpha), with no CoC jump between neighbouring rows
+    # (0.5 px) to rotate the claimed chunk.  So, exactly,
     #
-    #   alpha  K=2      K=4      K=8      K=16     K=32     K=64     K=128
-    #   1.00   -0.000   -0.000   -0.000   -0.000   -0.000   -0.000   -0.000
-    #   0.99   -4.363   -4.363   -5.552   -4.886   -3.923   -3.539   -5.036
-    #   0.90   -3.290   -3.290   -5.583   -5.426   -4.784   -4.665   -6.055
-    #   0.50   +1.373   +1.373   -0.090   -0.128   +0.104   -0.022   -1.007
+    #     A(y) = alpha * (1 + (S(y) - 1) * (1 - alpha))
     #
-    # i.e. the K-DIVERGENCE IS GONE (alpha 0.50 went from -26.6% at K=128 to
-    # -1.0%, and its worst reading anywhere is now +1.4%), and what is left is
-    # bounded and roughly K-flat.
+    # which is inert at alpha 1 (g1 reads exact there on the same weights) and
+    # reads S - 1 as alpha -> 0.  S(y) comes from `kernel_sums`, which reads
+    # DiscKernelLUT and the scatter's bracket blend directly: no render of the
+    # node enters the prediction.  Arrival is S(y) >= 1.06 on every interior
+    # row, so the deficit-only fill never engages here.
     #
-    # RE-PINNED AT M1.P3.T21, 0.0543 -> 0.0325.  T20 bought the ramp with an
-    # upward error on staggered multi-part parents (up to +21.1% on hand-built
-    # planes, an over-read) because it
-    # carried ONE head tile and had to discard one whenever a bucket both
-    # claimed area and continued a chain.  T21 carries a STACK of them
-    # (kCompositeHeadTiles = 16) and allocates a residual across it by area from
-    # the newest end.  That closes the upward error to +0.000% on the same
-    # sweep AND takes another 40% off this reading, because a dense ramp's
-    # buckets each leave two tiles as well.
-    #
-    # THE REMAINING TERM IS A DIFFERENT MECHANISM, and the control that says so
-    # is in the unit suite ("the depth-ramp mosaic ...", M1.P3.T20/T21).  On
-    # hand-built planes with no kernel, no holdout, no flatten and no
-    # quantisation, a ramp whose fragments each occupy their OWN bucket pair is
-    # EXACT at every bucket count, N, alpha AND split fraction -- where the
-    # pre-T20 composite read -4.11 / -17.44 / -21.63% at N=2/16/64 for alpha
-    # 0.90.  Pack the pairs ADJACENTLY, as a real ramp does, and a deficit comes
-    # back at exactly this scale, because bucket k then pools fragment k's head
-    # and fragment k-1's rear, whose per-unit opacities are
-    # partitionAlpha(alpha, 1-frac) and partitionAlpha(alpha, frac) --
-    # different for every split fraction but 0.5 -- and the composite's
-    # C_k : D_k area split cannot separate them.  That is harness f3c/f3d's
-    # mechanism: information lost at ACCUMULATION, not at composition, and no
-    # per-bucket composite rule can undo it.
-    #
-    # SINCE M1.P3.T21 THAT TERM HAS A CLOSED FORM, which is what makes it a
-    # residual rather than a mystery: the composite hands both sub-layers the
-    # mean m = (a0 + a1)/2, so each fragment's tile reads 1 - (1-m)^2 instead of
-    # 1 - (1-a0)(1-a1) = alpha, and AM-GM makes that a DEFICIT for every
-    # fraction but 0.5.  At alpha 0.90 it is -4.107% at frac 0.25 AND at 0.75,
-    # at every N -- pinned in the unit suite against the closed form, not
-    # against a re-run.  (T20 read -2.42/-3.69/-4.00% and -5.79/-4.53/-4.21%
-    # there: N-dependent and asymmetric in the fraction, because the single tile
-    # mixed this term with the mosaic error T21 removed.)  This scene's ramp
-    # gives every scanline its own split fraction, so it cannot reach zero.
-    #
-    # CORRECTED AT M1.P3.T20's REVIEW.  T20 first attributed this to fragments
-    # carrying DIFFERENT split fractions from one another.  It is not that: the
-    # unit suite's own cells hold the fraction CONSTANT across every fragment
-    # and still read a deficit.  Only frac == 0.5 is exact.
-    #
-    # PINNED AS A BAND, not as a ceiling, and K IS FIXED AT 16 here rather than
-    # taken from --k: a one-sided bound would be satisfied by every improvement
-    # AND by a --k that moved it, and neither is what this check is for.
-    # MUTATION-TESTED at M1.P3.T20 by rendering this very scene through seven
-    # separate mutations of compositePixelCoveragePartition(), and RE-TESTED at
-    # M1.P3.T21 against the mutations the head-tile stack makes available:
-    #
-    #   full pre-T20 revert                                   0.1607
-    #   always carry the chain's tile forward                 0.1315
-    #   scale the co-located residual's alpha by 0.75         0.1196
-    #   merge the two candidate tiles by area                 0.0913
-    #   claim area = cov instead of fit                       0.0703
-    #   multiplicative `tClaimed *= (1 - resLocal)` again     0.0598
-    #   the excess share does not attenuate tHead             0.0491
-    #   ---- added at M1.P3.T21 ----
-    #   M1.P3.T20's single head tile (i.e. this fix reverted) 0.0543
-    #   allocate the residual OLDEST tile first (FIFO)        0.0718  (+8 FAILs)
-    #   the residual never overflows onto this bucket's claim 0.0325  NOT CAUGHT
-    #   the partly-covered frontier tile does not split       0.0325  NOT CAUGHT
-    #
-    # The band stays 0.004: the nearest mutation is now 0.0218 away (a straight
-    # revert of this fix) and the nearest of the old seven 0.0166, so every one
-    # of the eleven lands outside it.  The last two are recorded as NOT CAUGHT
-    # here rather than left unstated: this check does not bound them.
-    #
-    # CORRECTED AT M1.P3.T21's REVIEW, which re-ran both against the unit suite.
-    # "the residual never overflows onto this bucket's claim" is caught, by 9
-    # assertions, as recorded.  "the partly-covered frontier tile does not
-    # split" is caught by NOTHING: forcing the whole-tile branch (which is what
-    # the stack-overflow path itself does) leaves all 175 429 unit assertions
-    # passing AND leaves this check at 0.0325.  The branch is not dead -- it
-    # fires 14 600 times in the unit suite -- so the suite exercises it without
-    # constraining it.  What IS caught, by 3 assertions on T9's pinned
-    # behind-focus residue, is the OTHER formulation the source names: scaling
-    # `resLocal` by the covered share instead of splitting (61.00% -> 70.53%).
-    # The unguarded direction is DOWNWARD (the whole-tile branch over-occludes
-    # the uncovered ring), a deficit rather than an over-read, so this is a
-    # gap in coverage rather than an unbounded hazard -- but it is a gap, and
-    # "caught by 1 assertion" was not measured.
-    #
-    # An eighth mutation from T20 -- registering the `excess` share as its own
-    # head tile, which the isolated arithmetic argues FOR -- reads 0.0825 here
-    # and takes g1/g2/g3 back to 1.082e-02 / 4.954e-02 / 3.200e-02, i.e. the
-    # fit-only rule is confirmed by pixels and not only by argument.
-    #
-    # ("claim area = cov" was recorded by T20 as caught HERE and nowhere else.
-    # Re-run at the review it is also caught by g1 (9.980e-03 against a
-    # 1.0e-03 gate), g2 (4.906e-02) and g3 (3.191e-02) -- four rendered checks,
-    # not one.  It does still survive the whole unit suite.)
-    #
-    # THE COVERAGE FILL DOES NOT REACH THIS CELL, AND THE PIN IS UNCHANGED.
-    # The fill divides a pixel by its arrival only where that arrival falls
-    # short of 1, and on this ramp's interior it never does: the arrival plane
-    # reads 1.060..1.092 on every interior row (min 1.0602, mean 1.0719 --
-    # the POD rig's readout of the same geometry; the near-focus rows 126/130
-    # are the only ones under 1, and they are excluded here and pinned by
-    # scene (m)).  Deficit-only division is inert at D > 1 by construction,
-    # so this reading is the composite's bucket pooling exactly as before,
-    # and the same rig resolved with the fill forced off reads the identical
-    # 0.870770.  What changed under it is nothing: 0.870724 -> 0.870770 is
-    # the blended kernel, 5e-05 inside a 4e-03 band.
-    #
-    # THIS CHECK CANNOT PASS, BY CONSTRUCTION: it is a band around a residual,
-    # so any change to the reading -- an improvement included -- turns it FAIL.
-    # Whoever moves it next must RE-PIN it in the same commit, exactly as
-    # M1.P3.T20 and M1.P3.T21 did.
-    G4_PIN, G4_BAND = 0.0325, 0.004
-    g4K = 16
-    g4Alpha = 0.90
-    g4Colour = tuple(c * g4Alpha for c in GROUND_COLOR[:3]) + (g4Alpha,)
-    g4Cell = settings.derive(k=g4K)
-    resetScript()
-    fogImage = render(g4Cell,
-                      makeDefocus(g4Cell, groundPlane(color=g4Colour),
-                                  size=size, focusDistance=GROUND_FOCUS,
-                                  cocMode="manual"),
-                      "g_ramp_alpha%g" % g4Alpha)
-    fogProfile = (rowMeans(fogImage, "A", lowBox)
-                  + rowMeans(fogImage, "A", highBox))
-    fogMean = sum(fogProfile) / len(fogProfile)
-    fogDeficit = 1.0 - fogMean / g4Alpha
-    fogBad = sum(1 for v in fogProfile
-                 if abs(v - g4Alpha) > g4Alpha / 255.0)
-    checks.append(boolCheck(
-        "g", "g4 K=%d interior flat-field alpha at alpha %.2f (the alpha<1 "
-             "residual)" % (g4K, g4Alpha),
-        False,
-        "%.4f low (%.6f vs %.2f)" % (fogDeficit, fogMean, g4Alpha),
-        "0.0000 (xfail %.4f +/- %.4f)" % (G4_PIN, G4_BAND),
-        population="%d/%d interior rows over A/255" % (fogBad, rowCount),
-        note="min %.6f (y=%d) max %.6f; the opaque twin (g1, same rig, K=%d) "
-             "reads %+.3f%% — what is left is ONE BUCKET POOLING A HEAD AND A "
-             "REAR AT UNEQUAL PER-UNIT OPACITY (f3c/f3d's mechanism; any split "
-             "fraction but 0.5), not the tClaimed mosaic term M1.P3.T20 "
-             "removed. Arrival is 1.06..1.09 on every interior row, so the "
-             "deficit-only coverage fill never engages here and cannot: this "
-             "is not a coverage shortfall"
-             % (min(fogProfile),
-                profileRow(fogProfile.index(min(fogProfile))),
-                max(fogProfile), g4K,
-                (sum(profiles[g4K]) / len(profiles[g4K]) - 1.0) * 100.0),
-        expectedFailure=True, hardTol=G4_BAND,
-        hardValue=abs(fogDeficit - G4_PIN)))
-
-    # --- g5: THE LOW-ALPHA ARM OF THE SAME RAMP (M1.P3.T24).  g4 pins one
-    # alpha (0.90, a DEFICIT); below alpha ~0.5 the SAME rig reads HIGH --
-    # a surplus of alpha, at the shipping default K --
-    # and until this check existed nothing bounded it.  ALL FIGURES HERE ARE
-    # g4-RIG FIGURES (this scene's ground ramp), NOT the f3e/f3f two-card
-    # family: M1.P3.T23 read this arm against that other rig, got +0.370%,
-    # and reported the record transposed -- the seventh wrong-rig instance in
-    # this milestone.  The full sweep on this rig (interior-mean excursion
-    # mean/alpha - 1, this plugin, M1.P3.T24):
-    #
-    #   alpha    K=4      K=8     K=16     K=32     K=64    K=128
-    #   0.10   +6.526   +6.156   +5.926   +5.803   +5.664   +5.388
-    #   0.30   +5.166   +4.073   +3.399   +3.039   +2.648   +1.901
-    #   0.50   +3.757   +1.987   +0.897   +0.319   -0.287   -1.409
-    #   0.90   +0.819   -1.698   -3.253   -4.084   -4.935   -6.576
-    #   0.99   -0.943   -1.855   -2.536   -2.970   -3.714   -5.497
-    #
-    # THE MECHANISM IS THE SCATTER'S, NOT THE COMPOSITE'S (M1.P3.T24), which
-    # corrects two recorded attributions at once: it is NOT f3c/f3d's
-    # accumulation-time pooling "seen from its positive side" (M1.P3.T21) and
-    # NOT the covariance term the second-moment plane reaches (M1.P3.T23's
-    # review direction).  Each fragment's disc is normalised to sum 1 over its
-    # OWN kernel, and on a steep CoC gradient the adjoint sum at a DESTINATION
-    # pixel is not 1: nearer-focus rows arrive with denser discs than
-    # farther rows lose, so the deposited weight itself sums to ~1.07 here
-    # (this scene's deliberately steep 0.5 CoC-px/scanline slope).  The
-    # alpha-0.01 control below reads that number directly -- rendered
-    # +7.124 / +7.063 / +7.037% at K=4/16/64, K-FLAT because the scatter is K-
-    # independent -- and the alpha dependence is the composite honestly
-    # `over`-attenuating the spurious excess by tClaimed ~ (1 - alpha): fully
-    # visible as alpha -> 0, absorbed entirely by the area clamp at alpha = 1
-    # (which is why g1 reads 1e-08 on the SAME weights).  The unit suite pins
-    # the decomposition on a faithful 1-column model of this rig ("the g4
-    # rig's low-alpha over-read...", M1.P3.T24): at alpha 0.001 the composite
-    # reproduces sum(w) - 1 to 0.1 points at every K, and RENORMALISING the
-    # weights per pixel flips every low-alpha cell to a small DEFICIT
-    # (alpha 0.10: -0.25/-0.70/-0.87% at K=4/16/64), i.e. the composite's own
-    # low-alpha term is a small deficit and the whole surplus enters at
-    # scatter time.
-    #
-    # WHY IT IS ACCEPTED RATHER THAN FIXED, said with numbers:
-    #   * no composite rule, at ANY plane count, can reach it: the same
-    #     bucket planes arise from ~190 INDEPENDENT small cards at the same
-    #     depths (each deposit shape is a legitimate lone fragment), and for
-    #     those the over-composited truth is HIGHER than alpha, not equal to
-    #     it -- one plane set, two truths, so no function of the planes (the
-    #     second-moment plane included, computed from the same deposits) can
-    #     be right on both.  "One receding surface" vs "many overlapping
-    #     surfaces" is parent identity, which the planes do not carry.
-    #   * the node's coverage fill IS per-destination-pixel renormalisation,
-    #     and it is deliberately DEFICIT-ONLY: a pixel is divided by its
-    #     arrival (each source pixel's unit area, kernel-weighted, shares
-    #     plus virtual background) only where that arrival falls short of
-    #     1.  On this ramp's interior the arrival reads 1.060..1.092 (POD
-    #     readout, min 1.0602, mean 1.0719), so the fill never engages and
-    #     these cells are resolved exactly as they were before it existed
-    #     -- the same rig with the fill forced off reads the identical
-    #     numbers.  Dividing at D > 1 as well was built and measured and is
-    #     REJECTED: the raw arrival cannot tell a continuous surface's
-    #     over-delivery from a defocused neighbour legitimately overlapping
-    #     an occluder, so it double-corrects against the area model's
-    #     saturation (an alpha-1 version of this ramp reads 0.833 at focus,
-    #     an in-focus opaque card beside a defocused opaque background bleeds
-    #     28% background, an alpha-0.5 bloom over an opaque background
-    #     punches it to 0.859) and it worsens g4 (-0.030 -> -0.044) by
-    #     removing the surplus that cancels part of its pooling deficit.
-    #     Two full-coverage fog layers at alpha 0.5 still read exactly 0.75
-    #     under the fill (f3b, and the `two 50% fog layers` identity),
-    #     because their shares and residual sum to exactly 1 -- the fill
-    #     divides by a partition of source area, not by the kernel-weight
-    #     sum, which is what lets it leave genuine overlap alone.
-    #   * it is content-driven, scaling with the CoC gradient: RENDERED at
-    #     alpha 0.01 / K=16 this ramp reads +7.06% at slope 0.5, +1.54% at
-    #     slope 0.25 (size 43) and +0.34% at slope 0.125 (size 21.5),
-    #     tracking the real-LUT adjoint sums +7.19/+1.63/+0.39% computed
-    #     from DiscKernelLUT directly (T24 review; the chord model's -0.6%
-    #     at slope 0.125 had the WRONG SIGN -- the real kernel's shallow-
-    #     slope residue stays slightly high), so ordinary content (scene
-    #     (l)'s 40x shallower ramp) sits orders of magnitude inside these
-    #     pins.
-    #
-    # PINNED AS BANDS, K FIXED per cell, like g4.  Two-sided ON PURPOSE, so
-    # the gate cannot be satisfied by trading the over-read for a deficit of
-    # the same size.  MUTATION-TESTED IN BOTH DIRECTIONS at M1.P3.T24 by
-    # rendering THIS SCENE through four perturbed builds (values are this
-    # check's `excursion` at the mutated build; * = inside the band, i.e.
-    # that cell alone does not catch that mutation):
-    #
-    #                                     a=.10/K16  a=.30/K16  a=.10/K4  a=.01/K16
-    #   pin                                +0.0593    +0.0340    +0.0653   +0.0706
-    #   UP:   excess term loses its
-    #         tClaimed attenuation         +0.0620*   +0.0425    +0.0669*  +0.0709*
-    #   UP:   tHeadIn = 1 (residual
-    #         unattenuated)                +0.0877    +0.1256    +0.0871   +0.0734*
-    #   DOWN: residual alpha scaled 0.75   -0.0705    -0.0854    -0.0511   -0.0634
-    #   SCATTER: alpha deposits x 1.02     +0.0798    +0.0527    +0.0861   +0.0920
-    #
-    #   Every mutation flips at least one g5 cell (and g4) to FAIL; the DOWN
-    #   row is the sign-trade case and all four cells catch it.  The
-    #   alpha-0.01 control barely moves under COMPOSITE mutations BY DESIGN
-    #   (tClaimed ~ 0.99 there, so the composite has almost nothing left to
-    #   get wrong) -- its job is the SCATTER row, where it moves 5.4x its
-    #   band, i.e. it bounds exactly the uniform-scaling class the
-    #   f3e/f3f ratio oracle is structurally invariant to.
-    #
-    # RE-DERIVED UNDER THE COVERAGE FILL AND THE BLENDED KERNEL, from the POD
-    # rig rather than from this plugin's output: the same ramp flattened,
-    # scattered and composited in the unit-test rig (4 px wide, the harness's
-    # own interior rows) reads +0.05929 / +0.03403 / +0.06529 / +0.07066 for
-    # the four cells with the fill live and, to the digit, the SAME four with
-    # the fill forced off -- because arrival is 1.060..1.092 on every interior
-    # row and deficit-only division never engages.  The alpha-0.01 control
-    # moved +0.0706 -> +0.0707 under the blended kernel (6e-05 in excursion,
-    # 1e-06 in alpha) and is re-pinned at the POD value; the other three are
-    # unchanged to four decimals.  These are the scatter's over-delivery
-    # attenuated by (1 - alpha), exactly as the table above describes, and
-    # the fill neither adds to them nor could remove them.
-    #
-    # THIS CHECK CANNOT PASS, BY CONSTRUCTION (a band around a residual);
-    # whoever moves any of these readings must RE-PIN in the same commit,
-    # exactly as g4's history demands.
-    G5_BAND = 0.004
-    g5Cells = [
-        # (alpha, K, pin, role)
-        (0.10, 16, +0.0593, "the shipping default K"),
-        (0.30, 16, +0.0340, "the alpha the record left ungated"),
-        (0.10, 4,  +0.0653, "the sweep's worst corner"),
-        (0.01, 16, +0.0707, "mechanism control: reads sum(w)-1, the "
-                            "scatter's own over-delivery, K-flat"),
+    # The gate is the float accumulation bound of A: N nonzero taps reach the
+    # pixel, one term each, plus a few roundings per term in the blend and the
+    # claimed-area ratio, so (N + 8) * 2^-24 of the value; plus alpha(1-alpha)
+    # times S's movement under eight ulps of radius rounding.  Each alpha cell
+    # has its colour:alpha twin against a stock flatten of the same source.
+    # K varies across the cells on purpose: the prediction has no K in it.
+    G45_ROUNDING_TERMS = 8
+    g45Cells = [
+        ("g4", 0.90, 16, "the high-alpha end, where the surplus is mostly "
+                         "absorbed"),
+        ("g5", 0.10, 16, "the shipping default K"),
+        ("g5", 0.30, 16, "mid alpha"),
+        ("g5", 0.10, 4, "the coarsest K"),
+        ("g5", 0.01, 16, "reads S - 1 almost undiluted"),
     ]
-    for g5Alpha, g5K, g5Pin, g5Role in g5Cells:
-        g5Cell = settings.derive(k=g5K)
-        g5Colour = tuple(c * g5Alpha for c in GROUND_COLOR[:3]) + (g5Alpha,)
+    interiorRows = [profileRow(i) for i in range(rowCount)]
+    try:
+        softness = makeDefocus(settings, groundPlane())["edge_softness"].value()
+        sums = rampAdjointSums(size, GROUND_FOCUS, GROUND_Y_HORIZON,
+                               GROUND_Y_FOCUS, softness, FORMAT_H, 0,
+                               FORMAT_H)
+    except KernelSumsUnavailable as exc:
+        for tag, alpha, k, _ in g45Cells:
+            for suffix, what in (("", "alpha"), ("r", "colour:alpha")):
+                checks.append(Check(
+                    "g", "%s%s K=%d alpha %.2f %s vs the adjoint sum"
+                         % (tag, suffix, k, alpha, what),
+                    "-", "-", SKIP, note=str(exc)))
+        return checks
+    meanS = sum(sums[y][0] for y in interiorRows) / len(interiorRows)
+    taps = max(sums[y][1] for y in interiorRows)
+    radiusSlack = max(sums[y][2] for y in interiorRows)
+    relTol = (taps + G45_ROUNDING_TERMS) * O_ULP
+
+    for tag, alpha, k, role in g45Cells:
+        cell = settings.derive(k=k)
+        colour = tuple(c * alpha for c in GROUND_COLOR[:3]) + (alpha,)
         resetScript()
-        g5Image = render(g5Cell,
-                         makeDefocus(g5Cell, groundPlane(color=g5Colour),
-                                     size=size, focusDistance=GROUND_FOCUS,
-                                     cocMode="manual"),
-                         "g_ramp_alpha%g_k%d" % (g5Alpha, g5K))
-        g5Profile = (rowMeans(g5Image, "A", lowBox)
-                     + rowMeans(g5Image, "A", highBox))
-        g5Mean = sum(g5Profile) / len(g5Profile)
-        g5Excursion = g5Mean / g5Alpha - 1.0
-        g5High = sum(1 for v in g5Profile
-                     if v - g5Alpha > g5Alpha / 255.0)
+        image = render(cell,
+                       makeDefocus(cell, groundPlane(color=colour),
+                                   size=size, focusDistance=GROUND_FOCUS,
+                                   cocMode="manual"),
+                       "g_ramp_alpha%g_k%d" % (alpha, k))
+        resetScript()
+        flat = render(cell, deepToImage(groundPlane(color=colour)),
+                      "g_ramp_flat_alpha%g" % alpha)
+        profile = (rowMeans(image, "A", lowBox)
+                   + rowMeans(image, "A", highBox))
+        mean = sum(profile) / len(profile)
+        predicted = alpha * (1.0 + (meanS - 1.0) * (1.0 - alpha))
+        tol = relTol * predicted + alpha * (1.0 - alpha) * radiusSlack
         checks.append(boolCheck(
-            "g", "g5 K=%-2d alpha %.2f low-alpha over-read (the alpha arm; "
-                 "g4 rig)" % (g5K, g5Alpha),
-            False,
-            "%+.4f (%.6f vs %.2f)" % (g5Excursion, g5Mean, g5Alpha),
-            "0.0000 (xfail %+.4f +/- %.4f)" % (g5Pin, G5_BAND),
-            population="%d/%d interior rows over A/255 HIGH" % (g5High,
-                                                                rowCount),
-            note="%s; min %.6f max %.6f (y=%d); POSITIVE is a surplus -- the "
-                 "scatter's weight over-delivery on this rig's steep CoC "
-                 "slope, accepted and bounded at M1.P3.T24 (see the block "
-                 "above); arrival is 1.06..1.09 on every interior row, so the "
-                 "deficit-only coverage fill is inert here by construction "
-                 "and the fill forced off reads the identical number"
-                 % (g5Role, min(g5Profile), max(g5Profile),
-                    profileRow(g5Profile.index(max(g5Profile)))),
-            expectedFailure=True, hardTol=G5_BAND,
-            hardValue=abs(g5Excursion - g5Pin)))
+            "g", "%s K=%-2d interior alpha at alpha %.2f vs the kernel's "
+                 "adjoint sum" % (tag, k, alpha),
+            abs(mean - predicted) <= tol,
+            "%.7f (%+.4f%%; oracle %.7f, off by %.2e)"
+            % (mean, (mean / alpha - 1.0) * 100.0, predicted,
+               mean - predicted),
+            "|mean - a(1 + (S-1)(1-a))| <= %.2e" % tol,
+            population="%d interior rows x %d px" % (rowCount, colCount),
+            note="%s; S = %.7f (interior mean from DiscKernelLUT), N = %d "
+                 "taps, gate (N + %d) x 2^-24 x oracle + a(1-a) x %.1e "
+                 "radius slack; row min %.6f max %.6f (y=%d)"
+                 % (role, meanS, taps, G45_ROUNDING_TERMS, radiusSlack,
+                    min(profile), max(profile),
+                    profileRow(profile.index(max(profile))))))
+
+        flatRatio = [flat.at(c, FORMAT_W // 2, FORMAT_H // 2)
+                     / flat.at("A", FORMAT_W // 2, FORMAT_H // 2)
+                     for c in ("R", "G", "B")]
+        ratioTol = 2.0 * relTol * max(flatRatio)
+        arm = _Excess()
+        for box in (lowBox, highBox):
+            for y in range(box[1], box[3]):
+                rowA = image.row("A", y)
+                rowC = [image.row(c, y) for c in ("R", "G", "B")]
+                for x in range(box[0], box[2]):
+                    i = x - image.x0
+                    a = rowA[i]
+                    arm.add(max(abs(rowC[c][i] / a - flatRatio[c])
+                                for c in range(3)), x, y, ratioTol)
+        checks.append(boolCheck(
+            "g", "%sr ...colour:alpha (R/A, G/A, B/A) vs the stock flatten"
+                 % tag,
+            arm.at is None, arm.describe(),
+            "|c/A - flatten c/A| <= %.2e per px" % ratioTol,
+            population="%d px" % arm.count,
+            note="flatten ratios %s; both sums carry N + %d terms, so the "
+                 "gate is twice the alpha arm's relative bound"
+                 % (" ".join("%.6f" % r for r in flatRatio),
+                    G45_ROUNDING_TERMS)))
     return checks
 
 
@@ -2997,39 +2819,35 @@ def sceneI(settings):
                  "i7 is the reachability proof"))
 
     # --- i7: pre_merge REACHABILITY.  The pre-merge groups adjacent same-pixel
-    # fragments when they share a containing bucket, a FragmentKind and a
-    # holdout bracket, and their radii are within merge_tolerance; the group
-    # then rasterises ONE disc, at its front member's radius.  The scatter
-    # rasterises a radius as a blend of the two kernel-grid nodes bracketing
-    # it, so two radii rasterise one kernel only when they are EQUAL
-    # (`sameScatterKernel`), and the merge is lossy whenever the grouped radii
-    # differ at all -- which the 0.25px DEFAULT tolerance permits.  A pair the
-    # default never groups reads 0 because nothing merged, not because merging
-    # is free, so the pair below sits 0.20px apart.
+    # fragments on one side of focus (and in one holdout bracket) whose radii
+    # are within merge_tolerance; the group then rasterises ONE disc, at the
+    # radius of its depth union's midpoint.  The scatter rasterises a radius as
+    # a blend of the two kernel-grid nodes bracketing it, so the merge is lossy
+    # whenever the grouped radii differ at all -- which the 0.25px DEFAULT
+    # tolerance permits.  A pair the default never groups reads 0 because
+    # nothing merged, not because merging is free, so the pair below sits
+    # 0.20px apart.
     #
-    # WHERE THE DELTA IS.  Both layers are full-frame constants at alpha 0.6.
-    # Wherever nothing else reaches a pixel, grouped and ungrouped both
-    # composite the pair to its `over`, 1 - (1 - a)^2: the group arrives as
-    # one fragment of that alpha, the ungrouped pair as one saturated
-    # two-area bucket whose raw alpha is split over its clamped areas, which
-    # is the same `over` when the pixel's area is all free.  That is an
-    # independent oracle -- alpha from the algebra, colour ratio from a stock
-    # flatten of the same source -- and both renders are held to it (the
-    # interior arms).  The pair differs only under the z=3 corner element's
-    # bloom, where the corner's partial front coverage has already claimed
-    # some of the pixel's area: the grouped fragment pays for its excess
-    # through the fit/excess path, the ungrouped pair partly through the
-    # co-located residual, and the two weight the claimed area differently.
-    # That delta has no independent value, so the reachability arms state
-    # only that it exists, above the term-count bound, and that its argmax
-    # lies inside the corner bloom -- the magnitude is reported, not pinned.
-    #
-    # The corner element also widens the frame's measured CoC range so the
-    # pair still shares one containing ΔCoC bucket.
+    # WHERE THE DELTA IS.  Both layers are the same alpha-0.6 card.  Wherever a
+    # pixel receives a full unit of weight from each layer, grouped and
+    # ungrouped both composite the pair to its `over`, 1 - (1 - a)^2: the
+    # group arrives as one fragment of that alpha, and the ungrouped rear
+    # layer finds the front layer's area claimed and lands on it at
+    # transmittance 1 - a.  That is an independent oracle -- alpha from the
+    # algebra, colour ratio from a stock flatten of the same source -- and
+    # both renders are held to it on the card's interior (the interior
+    # arms).  The pair can differ only across the card's defocused edge,
+    # where each layer delivers less than a unit and the ungrouped rear
+    # deposit meets free area its front neighbour's disc did not reach.  A
+    # full-frame pair has no such edge: it composites identically grouped or
+    # not, so it cannot show the merge at all.  The edge delta has no
+    # independent value, so the reachability arms state only that it exists,
+    # above the term-count bound, and that its argmax lies in the edge band
+    # -- the magnitude is reported, not pinned.
     SIZE, FOCUS = 20.0, 10.0
     LAYER_ALPHA = 0.60
     pairOver = 1.0 - (1.0 - LAYER_ALPHA) ** 2              # 0.84
-    CORNER, CORNER_Z = (0, 0, 24, 24), 3.0
+    PAIR_BOX = (64, 64, 192, 192)
 
     def zForRadius(radiusPx):
         """Behind focus: r = size*(1 - focus/z)."""
@@ -3039,14 +2857,12 @@ def sceneI(settings):
 
     def reachSource(radiusA, radiusB):
         return deepMerge([
-            pointLayer(constant2d((0.30, 0.30, 0.30, LAYER_ALPHA)),
+            pointLayer(rectangle2d(PAIR_BOX, (0.30, 0.30, 0.30, LAYER_ALPHA)),
                        zForRadius(radiusA), keepZeroAlpha=False,
                        premult=False),
-            pointLayer(constant2d((0.30, 0.30, 0.30, LAYER_ALPHA)),
+            pointLayer(rectangle2d(PAIR_BOX, (0.30, 0.30, 0.30, LAYER_ALPHA)),
                        zForRadius(radiusB), keepZeroAlpha=False,
-                       premult=False),
-            pointLayer(rectangle2d(CORNER, (0.5, 0.5, 0.5, 1.0)),
-                       CORNER_Z, keepZeroAlpha=False, premult=True)])
+                       premult=False)])
 
     def reachability(radiusA, radiusB, tolerance, maxRadius=None):
         """(pre_merge on, pre_merge off, their difference) over reachBox."""
@@ -3075,14 +2891,12 @@ def sceneI(settings):
         """The reachability arm and the interior arm for one pair."""
         clamp = settings.maxRadius if maxRadius is None else maxRadius
         radii = [min(r, clamp) for r in (radiusA, radiusB)]
-        cornerRadius = min(SIZE * abs(1.0 - FOCUS / CORNER_Z), clamp)
-        bloom = _outsetBox(CORNER, int(math.ceil(cornerRadius)) + 1)
+        reach = int(math.ceil(max(radii))) + 1
+        edge = (_outsetBox(PAIR_BOX, reach), insetBox(PAIR_BOX, reach))
         perRender = O_TERMS_PER_TAP * sum(discTaps(r) for r in radii) * O_ULP
-        # Only the pair's bucket differs between the renders: the corner is
-        # never grouped with it, so its deposits are identical in both and
-        # drop out of the difference.  The grouped render rasterises the pair
-        # once, at the front radius, and the ungrouped render both discs.
-        diffBound = perRender + O_TERMS_PER_TAP * discTaps(radii[0]) * O_ULP
+        # The ungrouped render rasterises both discs, the grouped render one
+        # disc at a radius between them, which the larger disc's count bounds.
+        diffBound = perRender + O_TERMS_PER_TAP * discTaps(max(radii)) * O_ULP
 
         on, off, diff = reachability(radiusA, radiusB,
                                      settings.mergeTolerance, maxRadius)
@@ -3094,10 +2908,8 @@ def sceneI(settings):
         arms = [(name, image, _Excess(), _Excess())
                 for name, image in (("on", on), ("off", off))]
         outside, outsideAt = 0.0, None
-        for y in range(reachBox[1], reachBox[3]):
-            for x in range(reachBox[0], reachBox[2]):
-                if _inBox(bloom, x, y):
-                    continue
+        for y in range(edge[1][1], edge[1][3]):
+            for x in range(edge[1][0], edge[1][2]):
                 flatAlpha = flat.at("A", x, y)
                 for _, image, alphaArm, ratioArm in arms:
                     alpha = image.at("A", x, y)
@@ -3114,15 +2926,16 @@ def sceneI(settings):
                     outside, outsideAt = step, (x, y)
 
         at = diff.maxAt
-        inBloom = at is not None and _inBox(bloom, at[0], at[1])
+        inEdge = (at is not None and _inBox(edge[0], at[0], at[1])
+                  and not _inBox(edge[1], at[0], at[1]))
         checks.append(boolCheck(
             "i", label,
-            inBloom and diff.maxAbs > diffBound,
+            inEdge and diff.maxAbs > diffBound,
             "%.4e at %s" % (diff.maxAbs, at),
-            "> %.2e, argmax inside the corner bloom %s"
-            % (diffBound, bloom),
+            "> %.2e, argmax inside the card's edge band %s less %s"
+            % (diffBound, edge[0], edge[1]),
             population=diff.population(),
-            note="%s; max |on - off| outside the corner bloom %.3e at %s; "
+            note="%s; max |on - off| on the card's interior %.3e at %s; "
                  "the magnitude is reported, not pinned: it has no "
                  "independent oracle" % (note, outside, outsideAt)))
         parts = []
@@ -3136,8 +2949,8 @@ def sceneI(settings):
             "i", guardLabel, clean, "; ".join(parts),
             "|A - %.2f| and |c/A - flatten c/A| <= %.2e per px"
             % (pairOver, perRender),
-            population="%d px, reachBox %s less the corner bloom"
-                       % (arms[0][2].count, reachBox),
+            population="%d px, the card's interior %s"
+                       % (arms[0][2].count, edge[1]),
             note="alpha oracle 1 - (1 - %.2f)^2; colour oracle the stock "
                  "flatten's own ratio (%.4f at the box centre); bound "
                  "%d terms/tap x (%d + %d taps, radii %.1f/%.1f px) x 2^-24"
@@ -3150,7 +2963,7 @@ def sceneI(settings):
     # 1.2 and 1.4 CoC px: 0.20 apart, i.e. inside the SHIPPING DEFAULT
     # tolerance, and two different kernels.
     reachRows("i7 pre_merge reaches the render at the DEFAULT merge_tolerance",
-              "i7o ...and outside the corner bloom both renders are the "
+              "i7o ...and on the card's interior both renders are the "
               "pair's `over`",
               1.2, 1.4, None,
               "two full-frame same-pixel layers at CoC radius 1.2 and 1.4 px "
@@ -3187,7 +3000,7 @@ def sceneI(settings):
     # clamp, so its two radii stay distinct.
     reachRows("i7d guard: the same pair 0.4px under the clamp, two kernels, "
               "DOES move",
-              "i7do ...and outside the corner bloom both renders are the "
+              "i7do ...and on the card's interior both renders are the "
               "pair's `over`",
               16.6, 16.8, SAME_KERNEL_CLAMP,
               "16.6 and 16.8 px at max_radius %d are unclamped and distinct, "
@@ -4003,8 +3816,8 @@ def sceneM(settings):
           slope (0.5 CoC px per scanline), read over EVERY interior row
           including the near-focus ones scene (g) excludes: at alpha 1 the
           field is flat (m3a); at alpha 0.9 no row reads short (m3b), and the
-          near-focus SURPLUS that the deficit-only fill cannot touch, and
-          was never meant to, is pinned where it stands (m3c).
+          near-focus rows read the value the kernel's adjoint sum predicts,
+          row by row (m3c).
       m4  fill and holdout commute -- the fill divides by the RAW arrival,
           deposited before holdout visibility is folded in, while every
           colour and alpha deposit carries that visibility: a 0.5-alpha
@@ -4286,32 +4099,25 @@ def sceneM(settings):
     # this fill is for.  K is fixed at 16 like g4/g5, so the pins compare
     # across runs whatever --k says.
     #
-    # WHAT THE FILL DID HERE, AND WHAT IT DID NOT (the decomposition that
-    # split this into three cells).  Arrival on this ramp at K=16 reads
-    # 1.201 at the two r=0.5 rows either side of focus (the row's own
-    # delta share plus its neighbours' discs), ~1.07 across the far field,
-    # and BELOW 1 on exactly two rows -- 126 and 130, at 0.972.  Those two
-    # are the rows the fill moves: 0.972 -> 1 at alpha 1, 0.874 -> 0.899 at
-    # alpha 0.9.  Every other row carries a SURPLUS, which deficit-only
-    # division leaves alone by construction: at alpha 1 the clamp absorbs it
-    # (g1 reads 1e-08 on the same weights); at alpha 0.9 it is visible --
-    # +0.073 on the r=0.5 rows (g5's over-read arm: un-pooled it reads the
-    # +0.100 alpha-clamp ceiling, and K=16's bucket pooling masks 0.027 of
-    # it) and -0.030 across the far field (g4's head-and-rear pooling,
-    # 0.0328 here against g4's 0.0325 pin).  Both pre-date the fill, both
-    # are K- and kernel-independent, and neither is the fill's to fix -- a
-    # symmetric 1/D was tried and rejected: post-composite it double-corrects
-    # against the area model's saturation (alpha 1 reads 0.833 at focus),
-    # pre-composite it cannot tell a continuous surface's adjoint surplus
-    # from a defocused neighbour legitimately overlapping an occluder.
+    # WHAT THE FILL DOES HERE.  Arrival on this ramp reads 1.201 at the two
+    # r=0.5 rows either side of focus (the row's own delta share plus its
+    # neighbours' discs), ~1.07 across the far field, and BELOW 1 on exactly
+    # two rows -- 126 and 130, at 0.972.  Those two are the rows the fill
+    # moves (0.972 -> 1 at alpha 1).  Every other row carries the kernel's
+    # adjoint surplus, which deficit-only division leaves alone by
+    # construction: at alpha 1 the clamp absorbs it, at alpha 0.9 it is
+    # visible and follows from the kernel alone (m3c).  A symmetric 1/D was
+    # tried and rejected: post-composite it double-corrects against the area
+    # model's saturation (alpha 1 reads 0.833 at focus), pre-composite it
+    # cannot tell a continuous surface's adjoint surplus from a defocused
+    # neighbour legitimately overlapping an occluder.
     #
-    # So: m3a and m3b are MUST-HOLD, m3c is a band pin.  m3b is one-sided
-    # because the deficit is the artifact and the surplus is m3c's.  m3c
-    # does NOT re-pin the far field: that is g4, and g4 keeps its own pin.
+    # m3a and m3b are MUST-HOLD; m3b is one-sided because the deficit is the
+    # artifact.  m3c holds the near-focus rows to the kernel's own value; the
+    # far field is g4/g5's.
     #
     # MUTATION (fill forced off, arrival = 1): rows 126/130 read 0.9723 at
-    # alpha 1 and 0.874 at alpha 0.9 -- m3a fails by 0.028, m3b by 0.025;
-    # m3c does not move, as it must not (its rows have D > 1).
+    # alpha 1 and 0.874 at alpha 0.9 -- m3a fails by 0.028, m3b by 0.025.
     size = 86.0
     slope = groundSlope(size)
     edgeRadius = slope * GROUND_Y_FOCUS
@@ -4446,47 +4252,74 @@ def sceneM(settings):
              "colour is premultiplied again by DeepFromImage, so it is "
              "0.40 * 0.90); worst at (%d,%d)" % ((redRatio,) + worstAt)))
 
-    # --- m3c: the near-focus SURPLUS, pinned two-sided.
-    # +0.0734 is the reading at the r=0.5 rows (127/129) at K=16 on the
-    # independent probe (and the pre-fill plugin reads +0.0734 on the same
-    # row: the fill did not touch it).  Band 0.004, the house width for a
-    # residual pin.  [0, +0.100] is the PHYSICAL range of this residual:
-    # +0.100 is the alpha-clamp ceiling at alpha 0.9 (read directly at K=128
-    # and under whole-bucket assignment), and a reading below 0 is a
-    # deficit, which would be a different mechanism altogether -- a reading
-    # outside the band but inside the range has moved and must be re-pinned;
-    # one outside the range is not this residual at all.
-    #
-    # THIS CHECK CANNOT PASS, BY CONSTRUCTION: it is a band around a
-    # residual.  Whoever moves it must re-pin it in the same commit.
-    M3C_PIN, M3C_BAND = +0.0734, 0.004
-    M3C_RANGE = (0.0, +0.100)
-    wideBand = [(y, v) for y, v in zip(rampRows, fogRows) if abs(y - 128) <= 8]
-    surplusY, surplusValue = max(wideBand, key=lambda t: abs(t[1] - m3Alpha))
-    surplus = surplusValue - m3Alpha
-    inRange = M3C_RANGE[0] <= surplus <= M3C_RANGE[1]
-    checks.append(boolCheck(
-        "m", "m3c K=16 alpha 0.9 ramp, worst row |y-128| <= 8: the near-focus "
-             "surplus (pinned)",
-        False,
-        "%+.4f (%.5f vs %.2f) at y=%d%s"
-        % (surplus, surplusValue, m3Alpha, surplusY,
-           "" if inRange else "; OUTSIDE the physical range"),
-        "0.0000 (xfail %+.4f +/- %.4f; range [%+.3f, %+.3f])"
-        % (M3C_PIN, M3C_BAND, M3C_RANGE[0], M3C_RANGE[1]),
-        population="%d rows x %d px" % (len(wideBand),
-                                        rampBox[2] - rampBox[0]),
-        note="rows 120-136: " + " ".join("%d:%.4f" % (y, v)
-                                         for y, v in wideBand)
-             + "; arrival is 1.201 at rows 127/129, K- and "
-               "kernel-independent, so deficit-only division never engages "
-               "there -- this is the scatter's own over-delivery on a steep "
-               "CoC gradient (g5's arm; un-pooled it reads the +0.100 clamp "
-               "ceiling, K=16 bucket pooling masks 0.027).  The far field's "
-               "-0.030 is NOT pinned here: it is g4, which keeps its own "
-               "pin.  Fill forced off leaves this cell exactly where it is",
-        expectedFailure=True, hardTol=M3C_BAND,
-        hardValue=abs(surplus - M3C_PIN) if inRange else float("inf")))
+    # --- m3c: the near-focus rows against the kernel's adjoint sum, row by
+    # row.  Scene (g)'s g4/g5 derive the interior from S(y), the weight the
+    # kernel delivers to a destination row; the same law holds on every row
+    # here with the fill added: where S(y) >= 1 the fill is inert and the
+    # surplus lands on the plane's own claimed area,
+    # A = alpha (1 + (S - 1)(1 - alpha)); where S(y) < 1 (rows 126/130) the
+    # shares and the residual both arrive with weight S, so the fill divides
+    # alpha S by S and the row reads alpha.  S comes from `kernel_sums`
+    # (DiscKernelLUT and the scatter's blend, no render involved).  Gate per
+    # row: (N + 8) x 2^-24 of the value, two more terms where the fill
+    # divides, plus the radius-rounding slack.
+    M3C_ROUNDING_TERMS = 8
+    wideRows = [(y, v) for y, v in zip(rampRows, fogRows) if abs(y - 128) <= 8]
+    try:
+        softness = fogNode["edge_softness"].value()
+        sums = rampAdjointSums(size, GROUND_FOCUS, GROUND_Y_HORIZON,
+                               GROUND_Y_FOCUS, softness, FORMAT_H,
+                               wideRows[0][0], wideRows[-1][0] + 1)
+    except KernelSumsUnavailable as exc:
+        sums = None
+        for name in ("m3c K=16 alpha 0.9 ramp, rows |y-128| <= 8 vs the "
+                     "kernel's adjoint sum",
+                     "m3cr ...and colour:alpha ratio vs the source (R/A), "
+                     "same rows"):
+            checks.append(Check("m", name, "-", "-", SKIP, note=str(exc)))
+    if sums is not None:
+        rowArm = _Excess()
+        rowNotes = []
+        rowRel = {}
+        for y, value in wideRows:
+            S, taps, slack = sums[y]
+            if S >= 1.0:
+                predicted = m3Alpha * (1.0 + (S - 1.0) * (1.0 - m3Alpha))
+                terms = taps + M3C_ROUNDING_TERMS
+            else:
+                predicted = m3Alpha
+                terms = taps + M3C_ROUNDING_TERMS + 2
+            rowRel[y] = terms * O_ULP
+            rowArm.add(abs(value - predicted), FORMAT_W // 2, y,
+                       rowRel[y] * predicted
+                       + m3Alpha * (1.0 - m3Alpha) * slack)
+            rowNotes.append("%d:%.5f/%.5f" % (y, value, predicted))
+        checks.append(boolCheck(
+            "m", "m3c K=16 alpha 0.9 ramp, rows |y-128| <= 8 vs the kernel's "
+                 "adjoint sum",
+            rowArm.at is None, rowArm.describe(),
+            "row mean vs a(1 + (S-1)(1-a)), or a where S < 1, within "
+            "(N + %d) x 2^-24 of it" % M3C_ROUNDING_TERMS,
+            population="%d rows x %d px" % (len(wideRows),
+                                            rampBox[2] - rampBox[0]),
+            note="measured/oracle per row " + " ".join(rowNotes)
+                 + "; S per row from DiscKernelLUT: "
+                 + " ".join("%d:%.4f" % (y, sums[y][0]) for y, _ in wideRows)))
+        ratioArm = _Excess()
+        for y, _ in wideRows:
+            alphaRow = fog.row("A", y)
+            colourRow = fog.row("R", y)
+            for x in range(rampBox[0], rampBox[2]):
+                i = x - fog.x0
+                ratioArm.add(abs(colourRow[i] / alphaRow[i] - redRatio), x, y,
+                             2.0 * rowRel[y] * redRatio)
+        checks.append(boolCheck(
+            "m", "m3cr ...and colour:alpha ratio vs the source (R/A), same rows",
+            ratioArm.at is None, ratioArm.describe(),
+            "|R/A - src| <= 2 (N + %d) x 2^-24 x src per px"
+            % M3C_ROUNDING_TERMS,
+            population="%d px" % ratioArm.count,
+            note="source R/A %.4f (stock flatten)" % redRatio))
 
     # ------------------------------------------------------------------
     # m4: fill and holdout commute.

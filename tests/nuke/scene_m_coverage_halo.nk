@@ -240,7 +240,7 @@ DeepCDefocus {
  coc_mode Manual
  size 86
  name DeepCDefocus6
- label "K=16; m3b: no near-focus row short of 0.9 - 1/255; m3c: near-focus surplus pinned +0.0734"
+ label "K=16; m3b: no near-focus row short of 0.9 - 1/255; m3c: near-focus rows at the kernel's value"
  xpos 90
  ypos 540
 }
@@ -263,7 +263,7 @@ Merge2 {
 StickyNote {
  inputs 0
  name StickyNote2
- label "Scene (m) -- coverage fill: the bands either side of the focal line (m3)\n\nScene (g)'s ground plane at scene (g)'s own steep slope (size 86, focus 10: 0.5 CoC px per scanline, 64 px at the frame edges), depth_layers 16, read over EVERY interior row (66-189) INCLUDING the near-focus rows scene (g) excludes -- those are the rows this fill is for.\n\n  alpha 1 (m3a, must hold): every row mean and every pixel within 1/255 of 1. Rows 126/130 -- the only rows whose arrival falls below 1 on this ramp (0.972) -- read 0.9723 before the fill and 1 now.\n  alpha 0.9 (m3b, must hold; one-sided): no row within 3 of focus reads below 0.9 - 1/255. Rows 126/130 read 0.874 before the fill, 0.899 now.\n  alpha 0.9 (m3c, XFAIL band pin): the worst row within 8 of focus reads +0.0734 +/- 0.004 ABOVE 0.9 (rows 127/129, arrival 1.201). That surplus is the scatter's own over-delivery on a steep CoC gradient -- scene (g)'s g5 arm -- which a deficit-only fill never touches, by design. Physical range \[0, +0.100], the alpha-clamp ceiling. The far field's -0.030 is g4's and keeps g4's pin; it is not re-pinned here.\n\nColour:alpha ratio is asserted beside every alpha reading. Note that at alpha 0.9 the sample's own unpremultiplied red is 0.36, not 0.40: DeepFromImage premultiplies the plane's already-premultiplied colour once more, and the harness reads the source's ratio from a stock flatten rather than assuming it."
+ label "Scene (m) -- coverage fill: the bands either side of the focal line (m3)\n\nScene (g)'s ground plane at scene (g)'s own steep slope (size 86, focus 10: 0.5 CoC px per scanline, 64 px at the frame edges), depth_layers 16, read over EVERY interior row (66-189) INCLUDING the near-focus rows scene (g) excludes -- those are the rows this fill is for.\n\n  alpha 1 (m3a, must hold): every row mean and every pixel within 1/255 of 1. Rows 126/130 -- the only rows whose arrival falls below 1 on this ramp (0.972) -- read 0.9723 before the fill and 1 now.\n  alpha 0.9 (m3b, must hold; one-sided): no row within 3 of focus reads below 0.9 - 1/255. Rows 126/130 read 0.874 before the fill, 0.899 now.\n  alpha 0.9 (m3c): every row within 8 of focus reads the value the kernel's adjoint sum predicts for it -- +0.0181 at rows 127/129, where 1.201 of weight arrives, exactly 0.9 at rows 126/130, where the fill divides -- the same law as scene (g)'s g4/g5.\n\nColour:alpha ratio is asserted beside every alpha reading. Note that at alpha 0.9 the sample's own unpremultiplied red is 0.36, not 0.40: DeepFromImage premultiplies the plane's already-premultiplied colour once more, and the harness reads the source's ratio from a stock flatten rather than assuming it."
  note_font_size 14
  xpos 480
  ypos 420

@@ -83,6 +83,13 @@ if (DEEPC_BUILD_TESTS)
     if (OpenMP_CXX_FOUND)
         target_link_libraries(thinlens_ref PRIVATE OpenMP::OpenMP_CXX)
     endif()
+
+    # The harness's kernel-sum oracle reads the shipped kernel itself, so
+    # unlike the two references above it includes src/ on purpose.
+    add_executable(kernel_sums tests/reference/kernel_sums.cpp)
+    target_compile_features(kernel_sums PRIVATE cxx_std_17)
+    target_include_directories(kernel_sums PRIVATE src)
+    target_compile_options(kernel_sums PRIVATE -O2)
 endif()
 
 # install directory
