@@ -384,11 +384,11 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
     the sum of the renders' `oTolerance` terms. **o6dα** beside it. **o7 (K-invariance):** the o6 cell at K = 4, 16,
     64 bit-identical (0 ulps). **o8 (determinism):** P2.T4's band-plan/thread bit-identity as harness rows where the
     harness can set them; record which arm is available. **o6e (interior vs reference):** over `MIX_NEAR_BOX` inset
-    2 against the P1.T2 reference map, at **Q2(i) as ruled 2026-09-26: bound = 3 × the reference's Monte Carlo SE**
-    (per pixel, or its max ≤ 2.2e-4 → ≈ 6.6e-4; no rim-residual term — the inset excludes the rim), plus the row's
-    term-count `N·2⁻²⁴`. Prototype max 6e-4 / mean 1e-4 at fog 0.2, 3e-4 at 0.5 — thin margin. If the committed node
+    2 against the P1.T2 reference map, at **Q2(i) as ruled 2026-09-26: bound = the kernel's calibrated rim residual +
+    3 × the reference's Monte Carlo SE** (P1.T2: residual ≤ 8.6e-4, SE ≤ 2.2e-4 → ≈ 1.5e-3), plus the row's
+    term-count `N·2⁻²⁴`. Prototype max 6e-4 / mean 1e-4 at fog 0.2, 3e-4 at 0.5 — about 2.5× margin. If the committed node
     exceeds it, **do not widen the bound**: first cut the reference's SE (more samples, fixed seed), and if the node
-    still exceeds 3σ, stop and report to the user. **o6f (silhouette band) moves to Phase 8.5** (the nesting fix):
+    still exceeds the bound, stop and report to the user. **o6f (silhouette band) moves to Phase 8.5** (the nesting fix):
     it is gated there against the reference at the same bound, not XFAILed here. **o6c** re-oracled to the reference
     (Bokeh comparison kept as a reported reading); pixels in the silhouette band are left to Phase 8.5.
     Mutation-test every row: o6d/o6dα must FAIL on `~/deepc-baselines/M8-T0/plugins`; o7 must FAIL under a scratch
@@ -478,7 +478,7 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
 ## Phase 8.3: Mechanism (2) — re-oracle o6c as ruled (stub, finalised after M8.P1.T3)
 
 > **P1.T3 fully ruled (2026-09-26):** Q1 — the thin-lens reference is the oracle; Q2 — **(i)**, a derived bound of
-> 3 × the reference's Monte Carlo SE; Q3 — nested footprints are fixed **in this milestone** (Phase 8.5), not in M9.
+> the kernel's rim residual + 3 × the reference's Monte Carlo SE; Q3 — nested footprints are fixed **in this milestone** (Phase 8.5), not in M9.
 > So P3.T1 is the Monte Carlo tool (the Q2(ii) analytic model is not built), and P3.T2 takes the "reference ruled
 > oracle" branch, with nested-footprint pixels gated after Phase 8.5 rather than XFAILed. The PM still finalises
 > these briefs in place (IDs kept) before starting.
@@ -606,7 +606,7 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   - o6d (node vs the layer-ordered partition of single-layer renders) PASS at term-count bounds on
     all six K × fog cells, and FAIL on M8-T0;
   - o6c re-oracled or re-pinned exactly as ruled;
-  - o6e (interior) PASS at 3 × the reference SE; o6f (silhouette band) and o6g/o6h PASS against the reference after
+  - o6e (interior) PASS at rim residual + 3 × the reference SE; o6f (silhouette band) and o6g/o6h PASS against the reference after
     Phase 8.5, or a user ruling recorded.
 - **Nested footprints (Phase 8.5):** every row in Phase 8.5's list read against its oracle; the volumetric rim rows
   either inside their bounds or explicitly ruled by the user.
@@ -866,7 +866,8 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   (o6e at Q2's tolerance class; o6f after the silhouette-band ruling; o6c re-oracle), P2.T6 (rim ruling: f3e/f3f/f3h/f3h2 stay
   FAIL until ruled XFAIL-with-bound or fixed by P2.T10), P2.T10 (only if ruled in), Phase 8.3, Phase 8.4.
 - 2026-09-26 — **User rulings on the three blocking questions (via `/cat-discuss`).** (1) **Q2 → (i)**, a derived bound of
-  3 × the reference's Monte Carlo SE (project-wide: `PLAN/DECISIONS/2026-09-26-reference-bound-3-sigma.md`); P1.T3 is now fully
+  the kernel's calibrated rim residual + 3 × the reference's Monte Carlo SE, ≈ 1.5e-3 (user corrected 3σ-only the same day;
+  project-wide: `PLAN/DECISIONS/2026-09-26-reference-bound-3-sigma.md`); P1.T3 is now fully
   ruled. (2) **Silhouette band → fold M9 into M8** as Phase 8.5 rather than XFAIL it
   (`PLAN/DECISIONS/2026-09-26-m9-folded-into-m8.md`); o6f moves from P2.T5 to Phase 8.5. (3) **Volumetric rim → deferred, not
   ruled:** the user rejects (b)'s premise — "one fog body" is not information a deep image stores — and expects the general

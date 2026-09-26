@@ -96,7 +96,8 @@ Bokeh/pgBokeh don't exhibit; it runs before M2 because it rewrites the kernel st
   `1/255` or any other 8-bit-derived figure; solid alpha means `alpha == 1.0`, and any slack is a
   term-count ulp bound (`N·2⁻²⁴`) measured against an independent oracle
   (`PLAN/DECISIONS/2026-09-18-no-8bit-tolerances.md`). **One ruled exception:** rows gated against the Monte Carlo
-  thin-lens reference use 3 × the reference's standard error (plus the row's term count) as their bound
+  thin-lens reference use the kernel's calibrated rim residual + 3 × the reference's standard error (plus the row's
+  term count) as their bound
   (`PLAN/DECISIONS/2026-09-26-reference-bound-3-sigma.md`).
 - **The `plan` branch stays LOCAL — never push it.** This overrides PLAN-FORMAT.md §9's
   "then push the plan branch with `git -C .plan push`" at the milestone gate: skip that step, and

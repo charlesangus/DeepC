@@ -10,6 +10,6 @@
 - 2026-09-18 — no-8bit-tolerances: never cite 1/255 (or any 8-bit figure) as a tolerance; solid alpha means `== 1.0`, slack only as a term-count ulp bound → DECISIONS/2026-09-18-no-8bit-tolerances.md
 - 2026-09-22 — sdk-is-16.0v9: host reprovisioned, only Nuke16.0v9 installed; all builds/runs use it (`build/local-16.0`), 17.0v3 references read as 16.0v9 → DECISIONS/2026-09-22-sdk-is-16.0v9.md
 - 2026-09-22 — no-avx2-on-dev-host: host CPU lacks AVX2; local builds pass `-D "DEEPC_DEFOCUS_ISA_FLAGS=-mavx;-mfma"` (option added 8da4f9d, default unchanged); AVX-vs-AVX2 identity argued, not measured → DECISIONS/2026-09-22-no-avx2-on-dev-host.md
-- 2026-09-26 — reference-bound-3-sigma: rows gated against the Monte Carlo thin-lens reference use 3 × its SE (+ term count) as the bound — the one exception to the term-count-only rule → DECISIONS/2026-09-26-reference-bound-3-sigma.md
+- 2026-09-26 — reference-bound-3-sigma: rows gated against the Monte Carlo thin-lens reference use the kernel's rim residual + 3 × its SE (+ term count) as the bound — the one exception to the term-count-only rule → DECISIONS/2026-09-26-reference-bound-3-sigma.md
 - 2026-09-26 — m9-folded-into-m8: nested footprints (incl. the deferred volumetric rim) are fixed in M8 Phase 8.5; M9 cancelled; per-parent chain rejected (no body identity in deep data) → DECISIONS/2026-09-26-m9-folded-into-m8.md
 - 2026-09-26 — holdout-in-front-is-a-defect: a holdout in front of a deep stack must match DeepHoldout2; new milestone M10 after M8 → DECISIONS/2026-09-26-holdout-in-front-is-a-defect.md
