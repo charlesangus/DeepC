@@ -483,7 +483,7 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
 > oracle" branch, with nested-footprint pixels gated after Phase 8.5 rather than XFAILed. The PM still finalises
 > these briefs in place (IDs kept) before starting.
 
-- [ ] M8.P3.T1 — Land the P1.T2 thin-lens reference as a harness oracle (Q2(i): Monte Carlo, fixed seed)
+- [x] M8.P3.T1 — Land the P1.T2 thin-lens reference as a harness oracle (Q2(i): Monte Carlo, fixed seed)
   - files: `tests/reference/thinlens_ref.cpp` (new: promoted from `~/deepc-validation/M8-P1T2/tool/thinlens_ref.cpp`,
     cleaned to house style and the comment policy, still including no `src/` header), the top-level `CMakeLists.txt`
     (a `thinlens_ref` target beside `vref` under `DEEPC_BUILD_TESTS`, same OpenMP handling), `tests/nuke/harness.py`
@@ -890,3 +890,14 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   and the reference must be in the harness to be an oracle (not a pasted map). Then P2.T5 part 2 → P2.T6 → P5.T1 → the rest
   of Phase 8.5 → P3.T2 → Phase 8.4. P3.T1 finalised in place (Monte Carlo tool promoted from P1.T2, `analytic` kept as the
   cross-check). Evidence directories confirmed present on the PM's host (the 2026-09-26 loss note does not apply).
+- 2026-09-26 — **M8.P3.T1 done (code `5e5f633`; evidence `~/deepc-validation/M8-P3T1/`).** `tests/reference/thinlens_ref.cpp`
+  (the P1.T2 tool in house style, arithmetic unchanged, `mc` + `analytic`), CMake target `thinlens_ref` beside `vref`;
+  harness `findThinlensRef()` (`DEEPC_THINLENS_REF`), `runThinlensRef()` (RGBA + SE, colour ratios, per-layer weights),
+  `dumpDeep()` via DeepWrite at 32-bit float (`deepSample()` reads stale data headless), `exrio.readDeepExr()`. **Risers on**
+  (without them rays slip between plane rows: opaque o6 alpha 0.945 at (150,150) where the flatten is 1). Reproduction: all six
+  P1.T2 dumps' five-pixel outputs and the cal790 map **identical** (0 difference), o6 fog-0.2 fresh dump → 4 096/4 096 map px
+  identical. New rows **o0c** (alpha, 289 px incl. rim, bound 8.6e-4 + 3·SE + N·2⁻²⁴: worst 7.9e-4 / 0.60 of bound) and **o0cr**
+  (c/a, 3·SE + N·2⁻²⁴: 0.03 of bound). Mutations: half-pixel centre shift → FAIL 16.6×; CoC ×(1+1e-2) → FAIL 4.0×; **CoC ×(1+1e-3)
+  is undetectable under the ruled bound by construction** (straight-edge δa ≤ δr/(πr) = 3.2e-4 < 8.6e-4 rim allowance) — the
+  brief's suggested mutation was too small; stated in the row note. Runtime 12.6 s per calibration call; scene (o) 90.8 → 104.3 s;
+  a 4 096-px o6 map costs 325 s. Scene (o) `PASS=43 FAIL=0 XFAIL=3 SKIP=1`, prior rows identical.
