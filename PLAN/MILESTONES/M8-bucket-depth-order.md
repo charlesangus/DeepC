@@ -354,7 +354,7 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   - size: M
   - depends: M8.P2.T3
 
-- [ ] M8.P2.T8 — Thin-lens volumetric oracle: the reference extended to spans, with harness rigs V1–V3
+- [x] M8.P2.T8 — Thin-lens volumetric oracle: the reference extended to spans, with harness rigs V1–V3
   - files: `tests/reference/vref.cpp` (promoted from `~/deepc-validation/M8-P2T7/vol/vref.cpp`; standalone C++17,
     built by CMake under `DEEPC_BUILD_TESTS`, **no `src/` header included**), the top-level `CMakeLists.txt` (the doctest
     targets live there, ~51–65; there is no `tests/CMakeLists.txt`),
@@ -668,3 +668,22 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   Scene (f) side check: f1/f2 unchanged, f3i now PASS 2.3e-6, f3e/f3f/f3h/f3h2 FAIL as predicted (await the rim ruling, P2.T6).
   Profile (interleaved, 5 reps): wall 27.3/27.6 s vs T0 40.4/40.4 (**−32.1 %**), CPU −36.2 %, RSS 1.219 vs 1.787 GB (−0.57 GB);
   spreads T0 0.02 s, M8 0.32 s. Left for P2.T6: node help "KNOWN LIMITATIONS" 1–2 still quote T0-era numbers.
+- 2026-09-25 — **M8.P2.T8 done (code `d927a07`; evidence `~/deepc-validation/M8-P2T8/`), with two findings that change the
+  rim question.** `tests/reference/vref.cpp` (standalone, exact per-ray path length, 4×4 px × 16×16 lens strata × 8 jittered
+  replicates, fixed per-pixel seed, prints RGBA + SE + E[τ]); CMake target `vref` under `DEEPC_BUILD_TESTS`; harness `findVref()`
+  (`DEEPC_VREF`, then beside the plugins, then `build/local-16.0/vref`; SKIP with reason if absent); six scene (f) rows f4a/f4ar
+  (V1), f4b/f4br (V2), f4c/f4cr (V3) at K=16, R/G/B all gated (G contrasts only 0.50 vs 0.55 and hides the over-read). Bound:
+  alpha `5·SE_max + ε·(1+τ_box)` with ε = 8.6e-4 (P1.T2's worst class, no rim exclusion) → 2.24e-3 (V2/V3), 5.55e-3 (V1);
+  colour:alpha propagated per pixel for a ≥ 0.05; XFAIL hard ceiling `min(1, E[τ])` from the oracle (never crossed; closest
+  1.25e-2 on V1). **Readings:** V1 alpha +0.150 / +10.87 % XFAIL, colour:alpha 4e-7 PASS; V2 alpha −8.8e-6 PASS, **colour:alpha
+  +4.0e-2 XFAIL** (11 374 of 34 992 channel-px); V3 alpha −8.1e-6 PASS, **colour:alpha 1.43e-2 XFAIL**. (1) The over-card rigs'
+  alpha is a leak test only (truth is 1 across the window) — the rim over-read shows in their colour, so the user's rim ruling now
+  covers V2/V3 colour as well as V1. (2) The prototype's "V2/V3 worst 1.8e-3" was the old oracle's own aliasing at the card corner
+  (true 0.570881 by 1-D quadrature; node 0.570910, 2.9e-5 off). (3) **V3 near-focus ring:** one pixel outside the box the fog share
+  reads up to 1.08e-2 low (matching high just inside), where slices have sub-pixel radii the P1.T2 calibration (r 14/17 px) never
+  covered; the implementer could not derive a bound and left a **provisional** 2.2e-2 (2× the reading, flagged in code and note,
+  `VOL_V3_NEAR_FOCUS_DEFICIT`) — a fitted figure the board's rule forbids; sent to a consultant for derivation. (4) The CoC-sign
+  mutation is undetectable by construction (lens integral even in u, and the card covers every ray); the halved-CoC mutation is
+  the detectable one (V1, V2c, V3c FAIL); M8-T0 plugins: V1/V2/V3 all FAIL. Scene (f): PASS 8→11, FAIL 4 (f3e/f3f/f3h/f3h2, not
+  re-pinned), XFAIL 3→6; all 15 prior rows identical. `.nk` header now 16.0v9 (written by Nuke 16). Oracle cost ≈ 13–19 s per rig.
+  Docker does not set `DEEPC_BUILD_TESTS`, so `vref` is not built there today. Doctests 21/21, 101 + 1 skipped.

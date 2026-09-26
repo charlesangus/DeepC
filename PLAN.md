@@ -1,8 +1,8 @@
 ---
 title: DeepCDefocus — deep-input, flat-output defocus node
 status: running
-current: M8.P2.T8
-pm_heartbeat: 2026-09-25T20:59:27-04:00
+current: M8.P2.T5
+pm_heartbeat: 2026-09-25T21:13:32-04:00
 ship: pr-per-milestone
 ---
 
@@ -143,7 +143,11 @@ Bokeh/pgBokeh don't exhibit; it runs before M2 because it rewrites the kernel st
      T0 under-reads −0.125 / −4.3 %): neighbouring pieces of one body nest in lens space, the M9 term inside one
      object. It moves harness f3h/f3h2 to −23.4 % (T0 f3h2 PASS) and f3i to 1.2e-5 vs its 1e-5 gate. Options: (a)
      accept as a bounded XFAIL for M9 (P2.T8's volumetric oracle supplies the bound); (b) add a per-parent chain now
-     (P2.T10, +12 B/pixel/slot, size L, DESIGN §5.4). P2.T6 and P2.T8's V1 arm wait on this.
+     (P2.T10, +12 B/pixel/slot, size L, DESIGN §5.4). **P2.T8 (2026-09-25) sharpened this:** on the committed node V1 reads
+     +0.150 alpha / +10.87 %, and the same over-read shows in **colour:alpha on fog over an opaque card (V2 +4.0e-2, V3
+     +1.43e-2)**, where alpha is exactly 1 and cannot show it — so the ruling covers V2/V3 colour too, and f3e/f3f/f3h/f3h2
+     stay FAIL until it lands. All three rows are XFAIL under a hard ceiling `min(1, E[τ])` from the oracle. P2.T6 waits
+     on this; P2.T10 is the fix if (b).
 
 - **2026-09-24 (M8.P1.T3, Q2 — tolerance class against the thin-lens reference; still open):** Q1 and Q3
   are ruled (reference is the oracle; nested footprints → M9). Q2 asks which tolerance class o6c/o6d use
