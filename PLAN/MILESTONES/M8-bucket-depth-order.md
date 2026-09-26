@@ -375,7 +375,7 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   - size: M
   - depends: M8.P2.T4 (V1's PASS/XFAIL status additionally on the user's rim ruling)
 
-- [ ] M8.P2.T5 — Scene (o): o6d against the layer-ordered partition, K-invariance, interior vs the thin-lens reference, o6c re-oracled
+- [x] M8.P2.T5 — Scene (o): o6d against the layer-ordered partition, K-invariance, interior vs the thin-lens reference, o6c re-oracled
   - files: `tests/nuke/scenes.py` (`MIX_*`, `O6_PIN_COLOUR`, the o6 block, a single-layer render helper),
     `tests/nuke/harness.py` (reference-map loader if needed), `tests/nuke/generate_scene_scripts.py` (StickyNote),
     `tests/nuke/scene_o_solid_alpha.nk` (regenerated)
@@ -901,3 +901,17 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   is undetectable under the ruled bound by construction** (straight-edge δa ≤ δr/(πr) = 3.2e-4 < 8.6e-4 rim allowance) — the
   brief's suggested mutation was too small; stated in the row note. Runtime 12.6 s per calibration call; scene (o) 90.8 → 104.3 s;
   a 4 096-px o6 map costs 325 s. Scene (o) `PASS=43 FAIL=0 XFAIL=3 SKIP=1`, prior rows identical.
+- 2026-09-26 — **M8.P2.T5 done — part 2 (code `0a0a709`; evidence `~/deepc-validation/M8-P2T5/part2/`).** Scene (o) `PASS=46
+  FAIL=0 XFAIL=3 SKIP=1`; 45/47 prior rows byte-identical (o5b differs only in its printed out-dir; old o6c renamed **o6cb**, the
+  Bokeh reading, unchanged two-sided XFAIL). **o6c** now node vs thin-lens reference (G/A, B/A, R/A; K 4/16/64 × fog 0.2/0.5) over
+  MIX_BOX minus the **silhouette band** — geometric: pixels whose footprint the stack's larger disc (fog, r 14.2396) sees across
+  MIX_BOX's edge AND the near card's disc (r 17.0127) reaches; leaves the saturated core (115,115,141,141), 676 px, band 2 460 px.
+  **o6e** (alpha, K=16) / **o6er** (c/a) over the same 676 px (deviation: the band clips one ring off "MIX_NEAR_BOX inset 2", 784
+  px). Bound 8.6e-4 + 3·SE + term count; B/A SE bounded as (SE_B + (B/A)·SE_A)/A. Readings: c/a worst 6.56e-4 / mean 1.0e-4 / 0.378
+  of bound (fog 0.2), 4.13e-4 / 0.254 (0.5); alpha exactly 1 both sides. Bokeh vs reference over the core: 7.2e-2 / 4.5e-2. Band
+  readings (node − ref, fog 0.2): (155,128) +0.046, (104,104) +0.019, (150,150) +0.027 — Phase 8.5's targets. Mutations: M8-T0 →
+  o6c 163×, o6er 63× FAIL (o6e PASS: T0 alpha was already exact here); fitshrink / free-area ceiling → o6c, o6er FAIL; output ×(1−2⁻⁸)
+  → o6e FAIL 2.7×. **The naive-rule mutant is undetectable on these cells by construction** (pre-merge folds fog + card into one
+  opaque fragment; on an all-opaque stream the naive rule equals the amended one) — substituted fitshrink, as the brief allowed.
+  Reference 3×64 strata × 8 reps, seed 818: scene (o) now 365 s wall (+250 s). P3.T2 is left with only the band pixels, after
+  Phase 8.5.
