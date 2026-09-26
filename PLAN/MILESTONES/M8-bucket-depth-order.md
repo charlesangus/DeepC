@@ -785,3 +785,14 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   (`pre_merge` off; gap 0.03 with it on) added as XFAIL with hard bound `1 − A ≤ (1 − fog α)·w_fog` (0.218 vs 0.0907 at fog
   0.2; 0.136 vs 0.0567 at 0.5); the `pre_merge` tooltip must say the pre-merge is the *more* accurate setting for same-pixel
   stacks under the stream (→ P2.T6's node-text clean-up); o6c and scene (i) i6 would show B with the knob off or a wider gap.
+- 2026-09-25 — **M8.P2.T5 part 1 done (code `e2912e9`; evidence `~/deepc-validation/M8-P2T5/final*`).** Scene (o) `PASS=41
+  FAIL=0 XFAIL=3 SKIP=1` (was 36/0/1/0); all 36 prior rows identical. o6d/o6da: stack-alone render's `background_depth` at its
+  merged radius (`sampleMid` = a Python copy of `sampleMidDepth`, 14.144078 px), worst |Δ(G/A, B/A)| 4.97e-6 (fog 0.2) /
+  2.17e-6 (0.5) vs ~1.2e-3 bounds, alpha exactly 1 on both sides, identical at K 4/16/64. o7 0 ulps whole frame. o8 SKIP (thread
+  count is only Nuke's `-m`). **o6g** (`pre_merge` off) / **o6h** (gap `MIX_DELTA_UNFOLDED` 0.03): XFAIL, worst 1 − a 9.07e-2 (fog
+  0.2) / 5.67e-2 (0.5) at 0.414 of the hard bound `(1 − fog α)·w_fog + N·2⁻²⁴` (w_fog from the solo fog render), two-sided; twins
+  o6gr/o6hr gate the fog share ≥ 0 and G/B agreement (≤ 5.8e-5 vs ~6e-4) — the upper c/a side is not gateable because the fill
+  scale (1/arrival, up to 1.0231) is not an output. Mutations: M8-T0 → o6d FAIL 0.261, o7 FAIL; ceiling 1−2⁻⁸ → o6d/o6da FAIL;
+  ceiling 0.75 → o6g/o6h FAIL (1.14×/1.82× bound); B×(1−2⁻⁸) → o6gr/o6hr FAIL; doubled transmitted mass shrinks the deficit
+  (0.171 of bound, still XFAIL — the band is wide by construction). `.nk` not regenerated (its StickyNote covers only o6c's nodes).
+  Part 2 (o6e, o6f, o6c re-oracle) waits on the rulings.
