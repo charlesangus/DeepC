@@ -959,3 +959,8 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   mean 0.042 (T0 also fails, 0.031). n8c/n8cr/n8dr left FAIL → Phase 8.5. Mutations: deposit weight ×0.99 → f3j FAIL; resolve
   alpha ×0.99 → n8d FAIL (per-deposit mutations heal in the opaque stack). Tallies f 18/4/5/0, n 24/3/0/1; all other rows
   identical. **Suite total now `PASS=203 FAIL=7 XFAIL=8 SKIP=3`**; FAILs f3e/f3f/f3h/f3h2, n8c/n8cr/n8dr — all Phase 8.5 targets.
+- 2026-09-26 — **Evidence directories lost on resume (PM, ~09:00).** A new PM session found `~/deepc-validation/` and
+  `~/deepc-baselines/` absent on this host (the earlier loss note now applies): P1.T2's REPORT, P2.T7's `DESIGN.md` and
+  prototype patch, every task's evidence logs, and the M8-T0 plugin set are gone. Committed code, tests, the harness oracles
+  (`thinlens_ref`, `vref`, `kernel_sums`) and this file's decisions survive. Actions: M8-T0 is rebuilt per M8.P1.T1 from
+  `2ac3550` in a separate worktree; P5.T1 works from the committed code and this file's recorded figures. The user is told.
