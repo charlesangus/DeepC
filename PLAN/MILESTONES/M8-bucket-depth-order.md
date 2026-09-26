@@ -969,3 +969,8 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   26/26 + 121/121. The headless-load check and the a–o harness are **not run**: the RLM server `5053@172.20.0.1` refuses connections
   (Nuke exits 100, `ENT_STATUS_RLM_LICENSE_COMM_ERROR`). Every Nuke-dependent step (T0 a–o, P5.T1's harness readings, P3.T2, P4.T*)
   waits for it. P5.T1 proceeds on doctests / standalone drivers vs `thinlens_ref`, harness rows flagged as predicted.
+- 2026-09-26 — **M8-T0 rebuilt a second time, into `.evidence/` (PM, ~18:30).** Worktree `.evidence/DeepC-T0` at `2ac3550`;
+  `~/deepc-baselines/M8-T0/plugins/` (→ `.evidence/baselines/M8-T0/plugins/`) holds 28 `.so` + `menu.py`, `PROVENANCE.txt`,
+  `plugins.sha256`; `DeepCDefocus.so` `fa351898…` (differs from P1.T1's `282130b6…` — that build used a different SDK/flags;
+  the a–o readings, not the hash, are the baseline). Doctests 26/26 + 121/121. Headless load and T0 a–o still wait on the
+  licence server (down at 18:25).
