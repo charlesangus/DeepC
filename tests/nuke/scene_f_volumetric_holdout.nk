@@ -156,7 +156,7 @@ DeepMerge2 {
  name DeepMerge1
  xpos 0
 }
-set N3eb6c690 [stack 0]
+set N1b524760 [stack 0]
 DeepCDefocus {
  coc_mode Manual
  size 0
@@ -177,7 +177,7 @@ DeepCConstant {
  label "fog holdout, alpha 0.90, z=\[5, 25]"
  xpos 200
 }
-push $N3eb6c690
+push $N1b524760
 DeepCDefocus {
  inputs 2
  coc_mode Manual
@@ -213,7 +213,7 @@ DeepCrop {
  xpos 20
  ypos 320
 }
-set N3ecbd120 [stack 0]
+set N1b5ac320 [stack 0]
 DeepCDefocus {
  coc_mode Manual
  focus_distance 30
@@ -223,7 +223,7 @@ DeepCDefocus {
  xpos -300
  ypos 460
 }
-push $N3ecbd120
+push $N1b5ac320
 DeepCConstant {
  inputs 0
  color_front {0.03 0.05 0.07 0.1}
@@ -243,7 +243,7 @@ DeepCrop {
  xpos -140
  ypos 320
 }
-set N3edf4410 [stack 0]
+set N1b592600 [stack 0]
 DeepCConstant {
  inputs 0
  color_front {0.693 0.495 0.297 0.99}
@@ -263,7 +263,7 @@ DeepCrop {
  xpos -300
  ypos 320
 }
-set N3ecfc0f0 [stack 0]
+set N1b578af0 [stack 0]
 DeepMerge2 {
  inputs 3
  name DeepMerge4
@@ -277,8 +277,8 @@ DeepCDefocus {
  xpos 180
  ypos 460
 }
-push $N3ecbd120
-push $N3edf4410
+push $N1b5ac320
+push $N1b592600
 DeepMerge2 {
  inputs 2
  name DeepMerge3
@@ -292,8 +292,8 @@ DeepCDefocus {
  xpos 20
  ypos 460
 }
-push $N3ecbd120
-push $N3ecfc0f0
+push $N1b5ac320
+push $N1b578af0
 DeepMerge2 {
  inputs 2
  name DeepMerge2
@@ -382,7 +382,7 @@ DeepCDefocus {
 StickyNote {
  inputs 0
  name StickyNote3
- label "f4a-f4c -- volumetric cards against the thin-lens oracle\n\nA 0.8-alpha fog card (96,96)-(160,160), tint 0.5, defocused at size=20, focus 10, depth_layers=16. The oracle is tests/reference/vref, an external program (not reproducible in a script): exact per-ray path length through the box, with the pixel and lens integrals sampled and their standard error reported. Pinned here: V2, the card at z=\[5,8] over an opaque card at z=20 (colour 0.20,0.55,0.70). V1 is the fog card alone and V3 the card straddling focus at z=\[7,14], both built the same way.\n\nAlpha is gated at k=5 oracle standard errors plus the kernel's residual class once per layer. V2/V3 alpha PASS (the opaque card covers the window, so any leak shows). V1 alpha and V2/V3 colour:alpha are XFAIL: at the card's rim the node over-reads, because pieces of one body from neighbouring source pixels nest in lens space and the node draws them on free area. Their hard bound is the no-nesting ceiling min(1, E\[tau]) the oracle also reports. A user ruling decides PASS/XFAIL."
+ label "f4a-f4c -- volumetric cards against the thin-lens oracle\n\nA 0.8-alpha fog card (96,96)-(160,160), tint 0.5, defocused at size=20, focus 10, depth_layers=16. The oracle is tests/reference/vref, an external program (not reproducible in a script): exact per-ray path length through the box, with the pixel and lens integrals sampled and their standard error reported. Pinned here: V2, the card at z=\[5,8] over an opaque card at z=20 (colour 0.20,0.55,0.70). V1 is the fog card alone and V3 the card straddling focus at z=\[7,14], both built the same way.\n\nEvery pixel is gated at k=5 oracle standard errors plus K(p), which vref's kernel mode computes from the node's documented pieces: the sum over them of alpha times |kernel-spec coverage - exact slice coverage|, and a float32 rounding term. V2/V3 alpha PASS (the opaque card covers the window, so any leak shows). V1 alpha and V2/V3 colour, read as the fog's share and gated in share units, are XFAIL: at the card's rim the node over-reads, because pieces of one body from neighbouring source pixels nest in lens space and the node draws them on free area. Their hard bound is the no-nesting ceiling min(1, E\[tau]) the oracle also reports, plus K(p). A user ruling decides PASS/XFAIL."
  note_font_size 14
  xpos 1100
  ypos 320

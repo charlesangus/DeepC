@@ -623,9 +623,7 @@ class VrefPixel(object):
         self.seTau = values[9]
 
 
-def runVref(args):
-    """Run the oracle with the positional ``args`` its header documents and
-    return {(x, y): VrefPixel}."""
+def _vrefLines(args):
     path, searched = findVref()
     if path is None:
         raise VrefUnavailable("vref not found (set DEEPC_VREF, or build the "
@@ -640,14 +638,43 @@ def runVref(args):
     if proc.returncode != 0:
         raise VrefUnavailable("%s exited %d: %s" % (path, proc.returncode,
                                                     proc.stderr.strip()))
+    return [line for line in proc.stdout.splitlines() if line]
+
+
+def runVref(args):
+    """Run the oracle with the positional ``args`` its header documents and
+    return {(x, y): VrefPixel}."""
     out = {}
-    for line in proc.stdout.splitlines():
-        if not line or line.startswith("#"):
+    for line in _vrefLines(args):
+        if line.startswith("#"):
             continue
         fields = line.split()
         out[(int(fields[0]), int(fields[1]))] = VrefPixel(
             [float(v) for v in fields[2:12]])
     return out
+
+
+def runVrefKernel(extra, args):
+    """Run the oracle's kernel mode (``extra`` = dMin, dMax, layers,
+    mergeTol) and return ({(x, y): (K, Kcard, Kfloat)}, header), header
+    holding the piece step, count, smallest same-side radius gap and piece
+    alphas."""
+    out = {}
+    header = dict(alphas=[])
+    for line in _vrefLines(["kernel"] + list(extra) + list(args)):
+        fields = line.split()
+        if line.startswith("# step"):
+            header.update(step=float(fields[2]), pieces=int(fields[4]),
+                          minGap=float(fields[6]))
+            continue
+        if line.startswith("# piece"):
+            header["alphas"].append(float(fields[6]))
+            continue
+        if line.startswith("#"):
+            continue
+        out[(int(fields[0]), int(fields[1]))] = tuple(
+            float(v) for v in fields[2:5])
+    return out, header
 
 
 # --- measurement -------------------------------------------------------------

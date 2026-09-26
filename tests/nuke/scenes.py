@@ -19,8 +19,8 @@ from harness import (
     boolCheck, channelStats, compareImages, constant2d, cropDeep,
     currentFormat, deepHoldout, deepMerge, deepMergeHoldout, deepToImage,
     depthRampLayer, formatBox, insetBox, makeBokeh, makeDefocus, pointLayer,
-    rectangle2d, render, resetScript, rowMeans, runVref, saveRender, slab,
-    stepProfile, tolCheck, ulps, VrefUnavailable,
+    rectangle2d, render, resetScript, rowMeans, runVref, runVrefKernel,
+    saveRender, slab, stepProfile, tolCheck, ulps, VrefUnavailable,
 )
 
 
@@ -1514,28 +1514,46 @@ def unequalDensityChecks(settings):
 # V1 is the fog card alone, V2 the same card over an opaque card, V3 a card
 # straddling focus over the opaque card.
 #
-# THE BOUND.  Per rig, tolA = k * seA + eps * (1 + tauBox): k = VOL_K_SIGMA
-# standard errors of the oracle (its largest per-pixel error over the window,
-# so one figure covers every pixel rather than trusting an 8-replicate
-# estimate at each), plus the kernel's residual class eps from the opaque-card
-# calibration (8.6e-4, the worst of its rim and off-rim classes, so no pixel
-# is excluded as rim) once per layer a ray meets: the opaque card, and the
-# fog's pieces, whose alphas sum to at most its optical depth tauBox =
-# -ln(1 - alpha).  The colour arm is the same per channel, the kernel term
-# scaled by the largest unpremultiplied colour of any layer, carried through
-# c/a: |dc/a| <= (tolC + (c/a) * tolA) / (a - tolA).
+# THE BOUND.  Per rig and pixel, tol(p) = k * SE + K(p) + Phi(p).  k * SE is
+# VOL_K_SIGMA standard errors of the oracle (its largest per-pixel error over
+# the window, so one figure covers every pixel rather than trusting an
+# 8-replicate estimate at each).  K(p) is vref's kernel mode: the node draws
+# every piece of the fog, and the opaque card, through a point-sampled disc,
+# and K(p) = sum_i a_i |c_spec,i(p) - c_true,i(p)| over the pieces the node
+# documents at this cell's depth_layers and merge_tolerance, c_spec the
+# coverage the kernel spec gives the pixel, c_true the exact coverage of the
+# slice.  It has to be per pixel and per piece because the kernel's error is
+# a function of radius: under 1e-3 at V1/V2's 14-20 px pieces, 2e-1 at the
+# sub-pixel pieces V3 has beside focus.  Phi(p) is the same mode's float32
+# term, 2^-24 (2 sum_i a_i n_i(p) + 2 L) for n_i(p) kernel taps per layer
+# and L layers: the spec is exact and the node is not, and on V2/V3, where
+# the oracle's alpha has no SE, it is the whole of the leak test's room away
+# from the fog's edges.  In colour it carries the layer's largest colour
+# through c/a as |d(c/a)| <= Phi (rho + c/a) / (a - Phi).
+#
+# WHY K BOUNDS THE NODE.  For x, y in [0, 1],
+# |prod(1 - a_i x_i) - prod(1 - a_i y_i)| <= sum a_i |x_i - y_i|, so the
+# product composite of the kernel's coverages is within K(p) of
+# F = 1 - prod(1 - a_i c_true,i), the product composite of the exact ones.
+# The node's free-area-first rule reads at least the product composite, so
+# node >= F - K; F >= truth is the one step that is measured, not proven
+# (F - truth >= +1.6e-3 at every probed V3 pixel; nesting pulls the truth
+# below F, and the only push the other way is the concavity of 1 - exp(-tau)
+# within one piece, at most tau_piece^2 / 4 per ray), and it gives the low
+# side, node >= truth - tol.  The high side is the ceiling plus K.
 #
 # THE CEILING.  The node draws each piece of a volume as an independent
 # deposit on free area, but pieces of one body from neighbouring source pixels
 # nest in lens space (the same ray crosses them in turn), so at the card's
 # rim it over-reads.  The largest alpha a composite that never nests slices
 # can read is the oracle's mean optical depth E[tau], clamped to 1: every
-# piece's alpha is below its slice's sigma * dz.  So min(1, E[tau]) is the
-# hard outer bound of that mechanism, from the oracle's own geometry; on V2
-# and V3 alpha is 1 throughout the window (the opaque card covers it) and the
-# same ceiling applies to the fog's share of the colour, recovered from R/A
-# as (R/A - bgR) / (tintR - bgR).  Whether the over-read is accepted or fixed
-# (a per-parent chain) is the user's ruling; until then these rows are XFAIL
+# piece's alpha is below its slice's sigma * dz.  So min(1, E[tau]) + K(p) is
+# the hard outer bound of that mechanism.  On V2 and V3 alpha is 1 throughout
+# the window (the opaque card covers it), so the fog's share of the colour,
+# (c/a - bg) / (tint - bg) per channel, is 1 - the fog's transmittance and
+# takes the same bound, in share units: the channel's SE is divided by its
+# contrast, K(p) is not.  Whether the over-read is accepted or fixed (a
+# per-parent chain) is the user's ruling; until then those rows are XFAIL
 # inside the ceiling and FAIL outside it.
 #
 # WHAT THESE RIGS CANNOT SEE.  A CoC sign error in the oracle is invisible
@@ -1560,14 +1578,7 @@ VOL_RIGS = (
 )
 VOL_SUB, VOL_LENS, VOL_REPS, VOL_SEED = 4, 16, 8, 1
 VOL_K_SIGMA = 5.0
-VOL_KERNEL_RESIDUAL = 8.6e-4
 VOL_RATIO_FLOOR = 0.05
-# PROVISIONAL, not derived: V3's fog share reads up to 1.075e-2 LOW on the
-# one-pixel ring just outside the box (and as much high just inside), where
-# the slices near focus have sub-pixel radii the kernel calibration (r = 14
-# and 17 px) never covered.  Twice that reading, until that class is
-# calibrated.
-VOL_V3_NEAR_FOCUS_DEFICIT = 2.2e-02
 
 
 def volBackground():
@@ -1599,28 +1610,72 @@ def volSource(zRange, background):
     return deepMerge([fog, oCard(VOL_BG_BOX, VOL_BG_Z, VOL_BG_RED)])
 
 
-def volOracle(zRange, background, window):
+def volDepthRange(zRange, background):
+    """The frame's depth range the node cuts pieces against: every sample's
+    endpoints, the opaque card's included."""
+    if not background:
+        return zRange
+    return (min(zRange[0], VOL_BG_Z), max(zRange[1], VOL_BG_Z))
+
+
+def volArgs(zRange, background, window):
     args = list(VOL_BOX) + [zRange[0], zRange[1], VOL_ALPHA]
     args += list(VOL_TINT) + [VOL_SIZE, VOL_FOCUS, 1 if background else 0]
     args += list(VOL_BG_BOX) + [VOL_BG_Z] + list(volBackground())
     args += list(window) + [VOL_SUB, VOL_LENS, VOL_REPS, VOL_SEED]
-    return runVref(args)
+    return args
+
+
+def volOracle(zRange, background, window):
+    return runVref(volArgs(zRange, background, window))
+
+
+def volKernelTerm(cell, zRange, background, window):
+    dMin, dMax = volDepthRange(zRange, background)
+    return runVrefKernel([dMin, dMax, cell.k, cell.mergeTolerance],
+                         volArgs(zRange, background, window))
 
 
 def _volExcursion(value, low, high):
     return max(low - value, value - high, 0.0)
 
 
+class _VolSide(object):
+    """How far a reading goes toward each end of its bound, as a fraction
+    of the room there (1 = on the bound), and the worst excursion past it."""
+
+    def __init__(self):
+        self.low, self.lowAt = 0.0, None
+        self.high, self.highAt = 0.0, None
+        self.hard, self.hardAt = 0.0, None
+
+    def add(self, p, value, ref, low, high):
+        if ref - low > 0.0 and (ref - value) / (ref - low) > self.low:
+            self.low, self.lowAt = (ref - value) / (ref - low), p
+        if high - ref > 0.0 and (value - ref) / (high - ref) > self.high:
+            self.high, self.highAt = (value - ref) / (high - ref), p
+        excursion = _volExcursion(value, low, high)
+        if excursion > self.hard:
+            self.hard, self.hardAt = excursion, p
+
+    def text(self, highName):
+        return ("low side %.2f of its bound at %s, %s side %.2f at %s, "
+                "worst excursion past either %.3e"
+                % (self.low, self.lowAt, highName, self.high, self.highAt,
+                   self.hard))
+
+
 def volumetricOracleChecks(settings):
     checks = []
     cell = settings.derive(k=VOL_K)
-    tauBox = -math.log(1.0 - VOL_ALPHA)
-    kernel = VOL_KERNEL_RESIDUAL * (1.0 + tauBox)
     bgColour = volBackground()
+    contrast = [VOL_TINT[i] - bgColour[i] for i in range(3)]
     for tag, label, zRange, background in VOL_RIGS:
         window = volWindow(zRange)
         try:
             oracle = volOracle(zRange, background, window)
+            kernelTerm, pieces = volKernelTerm(cell, zRange, background,
+                                               window)
         except VrefUnavailable as exc:
             for suffix, what in (("", "alpha"), ("r", "colour:alpha")):
                 checks.append(Check("f", "%s%s %s: %s vs the thin-lens "
@@ -1638,11 +1693,19 @@ def volumetricOracleChecks(settings):
         seA = max(oracle[p].se[3] for p in pixels)
         seC = [max(oracle[p].se[i] for p in pixels) for i in range(3)]
         seTau = max(oracle[p].seTau for p in pixels)
-        tolA = VOL_K_SIGMA * seA + kernel
-        rhoMax = [max(VOL_TINT[i], bgColour[i] if background else 0.0)
-                  for i in range(3)]
-        tolC = [VOL_K_SIGMA * seC[i] + kernel * rhoMax[i] for i in range(3)]
-        ceilingTol = VOL_K_SIGMA * seTau + tolA
+        sigmaA = VOL_K_SIGMA * seA
+        sigmaC = [VOL_K_SIGMA * s for s in seC]
+        sigmaTau = VOL_K_SIGMA * seTau
+        kMax, kMaxAt = max((kernelTerm[p][0], p) for p in pixels)
+        kCard = max(kernelTerm[p][1] for p in pixels)
+        phiMax = max(kernelTerm[p][2] for p in pixels)
+        rho = [max(VOL_TINT[i], bgColour[i] if background else 0.0)
+               for i in range(3)]
+        tauPiece = max(-math.log(1.0 - a) for a in pieces["alphas"])
+        # A pre-merge that fused two pieces would draw a radius the kernel
+        # term never evaluated, so the bound would not be the node's.
+        piecesHold = not (cell.preMerge
+                          and pieces["minGap"] <= cell.mergeTolerance)
 
         rows = {}
         for y in range(window[1], window[3]):
@@ -1654,141 +1717,153 @@ def volumetricOracleChecks(settings):
             return [r[c][i] if 0 <= i < image.width else 0.0
                     for c in range(4)]
 
-        alphaWorst, alphaAt, alphaPast = 0.0, None, 0
-        alphaHard, alphaHardAt = 0.0, None
+        alphaWorst, alphaAt, alphaRatio, alphaPast = 0.0, None, 0.0, 0
+        alphaSide = _VolSide()
         headroom, headroomAt = float("inf"), None
         ratioWorst, ratioAt, ratioBound, ratioPast, ratioCount = \
             0.0, None, 0.0, 0, 0
-        shareHard, shareHardAt = 0.0, None
-        shareUnprovisional = 0.0
+        shareSide = _VolSide()
         premise = True
         refTotal = nodeTotal = 0.0
         for p in pixels:
             ref = oracle[p]
             n = nodeAt(p)
+            kernel, _, phi = kernelTerm[p]
             refTotal += ref.rgba[3]
             nodeTotal += n[3]
             ceiling = min(1.0, ref.tau)
+            tolA = sigmaA + kernel + phi
             dev = n[3] - ref.rgba[3]
-            if abs(dev) > abs(alphaWorst):
-                alphaWorst, alphaAt = dev, p
+            if abs(dev) / tolA > alphaRatio:
+                alphaWorst, alphaAt, alphaRatio = dev, p, abs(dev) / tolA
             if abs(dev) > tolA:
                 alphaPast += 1
-            high = max(ref.rgba[3], ceiling) + ceilingTol
-            excursion = _volExcursion(n[3], ref.rgba[3] - tolA, high)
-            if excursion > alphaHard:
-                alphaHard, alphaHardAt = excursion, p
-            if not background and n[3] - ref.rgba[3] > tolA \
-                    and high - n[3] < headroom:
+            high = max(ref.rgba[3], ceiling) + sigmaTau + tolA
+            alphaSide.add(p, n[3], ref.rgba[3], ref.rgba[3] - tolA, high)
+            if not background and dev > tolA and high - n[3] < headroom:
                 headroom, headroomAt = high - n[3], p
 
             a = ref.rgba[3]
             if a < VOL_RATIO_FLOOR or n[3] < VOL_RATIO_FLOOR:
                 continue
             ratioCount += 1
+            if background and abs(a - 1.0) > 1.0e-9:
+                premise = False
             for i in range(3):
-                target = ref.rgba[i] / a
-                bound = (tolC[i] + target * tolA) / (a - tolA)
-                d = abs(n[i] / n[3] - target)
+                if background:
+                    target = (ref.rgba[i] / a - bgColour[i]) / contrast[i]
+                    reading = (n[i] / n[3] - bgColour[i]) / contrast[i]
+                    bound = (sigmaC[i] / abs(contrast[i]) + kernel
+                             + phi * (rho[i] + ref.rgba[i] / a)
+                             / ((a - phi) * abs(contrast[i])))
+                    shareSide.add(p, reading, target, target - bound,
+                                  max(target, ceiling) + sigmaTau + bound)
+                else:
+                    target = ref.rgba[i] / a
+                    reading = n[i] / n[3]
+                    tolC = sigmaC[i] + (kernel + phi) * rho[i]
+                    bound = (tolC + target * tolA) / (a - tolA)
+                d = abs(reading - target)
                 if d > bound:
                     ratioPast += 1
                 if ratioAt is None or d / bound > ratioWorst / ratioBound:
                     ratioWorst, ratioAt, ratioBound = d, p, bound
-            if background:
-                if abs(a - 1.0) > 1.0e-9:
-                    premise = False
-                contrast = VOL_TINT[0] - bgColour[0]
-                tolShare = ((tolC[0] + (ref.rgba[0] / a) * tolA)
-                            / (a - tolA) / abs(contrast))
-                shareRef = (ref.rgba[0] / a - bgColour[0]) / contrast
-                shareNode = (n[0] / n[3] - bgColour[0]) / contrast
-                low = shareRef - tolShare
-                high = max(shareRef, ceiling) + VOL_K_SIGMA * seTau + tolShare
-                shareUnprovisional = max(shareUnprovisional,
-                                         _volExcursion(shareNode, low, high))
-                if tag == "f4c":
-                    low -= VOL_V3_NEAR_FOCUS_DEFICIT
-                excursion = _volExcursion(shareNode, low, high)
-                if excursion > shareHard:
-                    shareHard, shareHardAt = excursion, p
-                if shareNode - shareRef > tolShare \
-                        and high - shareNode < headroom:
-                    headroom, headroomAt = high - shareNode, p
 
         total = 100.0 * (nodeTotal - refTotal) / refTotal
         population = ("window %s, %d px; oracle %dx%d pixel x %dx%d lens "
                       "strata x %d replicates, max SE alpha %.2e, colour "
-                      "%s, SE of E[tau] %.2e"
+                      "%s, SE of E[tau] %.2e; %d pieces at step %.4f px, "
+                      "same-side radius gap >= %.3f px, thickest piece tau "
+                      "%.3f; K(p) max %.3e at %s, the card's share of it "
+                      "<= %.1e; Phi(p) max %.2e"
                       % (window, len(pixels), VOL_SUB, VOL_SUB, VOL_LENS,
                          VOL_LENS, VOL_REPS, seA,
-                         "/".join("%.2e" % s for s in seC), seTau))
-        alphaMeasured = ("worst %+.3e at %s (%d px past); total alpha "
-                         "%+.3f%%" % (alphaWorst, alphaAt, alphaPast, total))
-        alphaGate = ("|dA| <= %.2e (%g x SE %.2e + %.1e x (1 + %.3f))"
-                     % (tolA, VOL_K_SIGMA, seA, VOL_KERNEL_RESIDUAL, tauBox))
+                         "/".join("%.2e" % s for s in seC), seTau,
+                         pieces["pieces"], pieces["step"], pieces["minGap"],
+                         tauPiece, kMax, kMaxAt, kCard, phiMax))
+        alphaMeasured = ("worst %+.3e at %s, %.2f of its bound there (%d px "
+                         "past); total alpha %+.3f%%"
+                         % (alphaWorst, alphaAt, alphaRatio, alphaPast,
+                            total))
+        alphaGate = ("|dA| <= %g x SE %.2e + K(p) + Phi(p) per px"
+                     % (VOL_K_SIGMA, seA))
         ratioMeasured = ("worst %.3e at %s against %.3e there; %d of %d "
                          "channel-px past" % (ratioWorst, ratioAt,
                                               ratioBound, ratioPast,
                                               3 * ratioCount))
-        ratioGate = ("|d(c/a)| <= (tolC + (c/a) tolA) / (a - tolA) per px "
-                     "and channel, a >= %.2f" % VOL_RATIO_FLOOR)
+        derivation = ("K(p) = sum a_i |c_spec,i - c_true,i| over the node's "
+                      "pieces; low side: node >= F - K >= truth - K, "
+                      "F = 1 - prod(1 - a_i c_true,i), where truth <= F is "
+                      "measured, not proven (per-ray concavity slack at "
+                      "most tau_piece^2 / 4 = %.1e)" % (tauPiece ** 2 / 4.0))
+        broken = ""
+        if not piecesHold:
+            broken = ("PREMISE BROKEN: two same-side pieces are within "
+                      "merge_tolerance, so the pre-merge draws a radius K(p) "
+                      "never evaluated; ")
         if not background:
             checks.append(boolCheck(
                 "f", "%s %s: alpha vs the thin-lens oracle" % (tag, label),
-                alphaPast == 0, alphaMeasured,
-                alphaGate + " (xfail inside [oracle - tolA, min(1, E[tau]) "
-                "+ %g SE + tolA])" % VOL_K_SIGMA,
+                alphaPast == 0 and piecesHold, alphaMeasured,
+                alphaGate + " (xfail inside [oracle - tol, min(1, E[tau]) "
+                "+ %g SE + tol])" % VOL_K_SIGMA,
                 population=population,
-                note="the rim over-read of independent pieces: pieces of "
-                     "one body from neighbouring source pixels nest in lens "
-                     "space and the node draws them on free area; its hard "
-                     "bound is the no-nesting ceiling min(1, E[tau]) (worst "
-                     "excursion past it %.3e; where it over-reads it comes "
-                     "within %.3e of it, at %s). A user ruling decides "
-                     "whether this is accepted (XFAIL) or fixed by a "
-                     "per-parent chain (PASS)"
-                     % (alphaHard, headroom, headroomAt),
-                expectedFailure=True, hardTol=0.0, hardValue=alphaHard))
+                note=broken + "the rim over-read of independent pieces: "
+                     "pieces of one body from neighbouring source pixels "
+                     "nest in lens space and the node draws them on free "
+                     "area; its hard bound is the no-nesting ceiling "
+                     "min(1, E[tau]) + tol (%s; where it over-reads it comes "
+                     "within %.3e of the ceiling, at %s). %s. A user ruling "
+                     "decides whether this is accepted (XFAIL) or fixed by "
+                     "a per-parent chain (PASS)"
+                     % (alphaSide.text("ceiling"), headroom, headroomAt,
+                        derivation),
+                expectedFailure=True, hardTol=0.0,
+                hardValue=alphaSide.hard if piecesHold else float("inf")))
             checks.append(boolCheck(
                 "f", "%sr ...colour:alpha vs the oracle" % tag,
-                ratioPast == 0, ratioMeasured, ratioGate,
+                ratioPast == 0 and piecesHold, ratioMeasured,
+                "|d(c/a)| <= (tolC + (c/a) tolA) / (a - tolA) per px and "
+                "channel, tolA = %g SE + K + Phi, tolC = %g SE_c + (K + "
+                "Phi) tint, "
+                "a >= %.2f" % (VOL_K_SIGMA, VOL_K_SIGMA, VOL_RATIO_FLOOR),
                 population=population,
-                note="one layer of one colour, so c/a is its tint wherever "
-                     "the alpha is wrong: this catches colour and alpha "
-                     "coming apart, not the over-read"))
+                note=broken + "one layer of one colour, so c/a is its tint "
+                     "wherever the alpha is wrong: this catches colour and "
+                     "alpha coming apart, not the over-read"))
             continue
 
         checks.append(boolCheck(
             "f", "%s %s: alpha vs the thin-lens oracle" % (tag, label),
-            alphaPast == 0, alphaMeasured, alphaGate,
+            alphaPast == 0 and piecesHold, alphaMeasured, alphaGate,
             population=population,
-            note="the opaque card covers the whole window, so the truth is "
-                 "1 at every pixel and this reads any transparency the "
-                 "volume's pieces leak into what they cover"))
-        ratioNote = ("the fog's share of the colour carries V1's rim "
-                     "over-read (pieces nesting in lens space); hard bound: "
-                     "the share recovered from R/A stays inside [oracle - "
-                     "tol, min(1, E[tau]) + tol], worst excursion %.3e; "
-                     "where it over-reads it comes within %.3e of the "
-                     "ceiling, at %s" % (shareHard, headroom, headroomAt))
-        if tag == "f4c":
-            ratioNote += ("; the low side also allows a PROVISIONAL %.1e for "
-                          "the sub-pixel-radius slices near focus at the "
-                          "box's edge, outside the kernel calibration "
-                          "(excursion without it %.3e)"
-                          % (VOL_V3_NEAR_FOCUS_DEFICIT, shareUnprovisional))
-        ratioNote += ". A user ruling decides PASS/XFAIL"
+            note=broken + "the opaque card covers the whole window, so the "
+                 "truth is 1 at every pixel and this reads any transparency "
+                 "the volume's pieces leak into what they cover"))
+        ratioNote = ("the fog's share of the colour, (c/a - bg) / (tint - "
+                     "bg) per channel, carries V1's rim over-read (pieces "
+                     "nesting in lens space); hard bound: [oracle - tol, "
+                     "min(1, E[tau]) + %g SE + tol] in share units, tol = "
+                     "%g SE_c / |tint - bg| + K(p) + Phi(p) (rho + c/a) / "
+                     "((a - Phi) |tint - bg|): %s. %s. A user ruling "
+                     "decides PASS/XFAIL"
+                     % (VOL_K_SIGMA, VOL_K_SIGMA, shareSide.text("ceiling"),
+                        derivation))
         if not premise:
             ratioNote = ("PREMISE BROKEN: the oracle's alpha is not 1 across "
-                         "the window, so R/A is not the fog's share; " +
+                         "the window, so c/a is not the fog's share; " +
                          ratioNote)
         checks.append(boolCheck(
-            "f", "%sr ...colour:alpha vs the oracle" % tag,
-            ratioPast == 0, ratioMeasured, ratioGate + " (xfail inside the "
-            "no-nesting ceiling on the fog's share)",
-            population=population, note=ratioNote,
+            "f", "%sr ...colour:alpha as the fog's share vs the oracle" % tag,
+            ratioPast == 0 and piecesHold, ratioMeasured,
+            "|d share| <= %g SE_c / |tint - bg| + K + Phi-in-share per px "
+            "and channel "
+            "(xfail inside the no-nesting ceiling on the fog's share)"
+            % VOL_K_SIGMA,
+            population=population, note=broken + ratioNote,
             expectedFailure=True, hardTol=0.0,
-            hardValue=shareHard if premise else float("inf")))
+            hardValue=shareSide.hard if premise and piecesHold
+            else float("inf")))
     return checks
 
 
