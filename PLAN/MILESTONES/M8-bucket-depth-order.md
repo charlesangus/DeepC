@@ -554,7 +554,7 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
 > deep sample actually carries — depth range, alpha, position — and the rim is expected, not promised, to
 > follow from the general fix. Whatever the rim rows read afterwards goes back to the user if outside its oracle.
 
-- [ ] M8.P5.T1 — Design the nested-footprint correction and predict every affected row
+- [x] M8.P5.T1 — Design the nested-footprint correction and predict every affected row
   - files: none in the repo; design note and prototype under `~/deepc-validation/M8-P5T1/`
   - approach: consultant-led (opus). Start from P1.T2's REPORT and, if it survived, P2.T7's `DESIGN.md` §5 (see
     the 2026-09-26 evidence decision). Characterise the over-weight as a function of the two lens sets; propose a
@@ -986,3 +986,13 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   by DeepCShuffle2. a–o on T0's own harness: `PASS=172 FAIL=2 XFAIL=12 SKIP=2` (a–f 31/2/5/1, g–j 43/0/5/0, k–n 62/0/1/1,
   o 36/0/1/0). This matches P1.T1 exactly: FAILs f3e/f3f; XFAILs f2, f3c, f3d, f3g, f3h, g4, g5×4, m3c, o6c; SKIPs e4, n4b. The
   rebuilt T0 set is a valid baseline despite its different `.so` hash.
+- 2026-09-27 — **M8.P5.T1 done: NO-GO (evidence `~/deepc-validation/M8-P5T1/DESIGN.md`, `LOG.md`, `runs2/suite_*.txt`).** Candidate C
+  keeps a per-pixel two-segment model of claimed lens area; tiles take free area only outside it, with a resolve-time bank. No
+  body identity; K-invariant (byte-identical K 4/16/64); two-fog identity within 9.4e-6. Driver readings, with HEAD reproduced: o6f
+  (155,128) +0.046 → +0.0001, band max 0.115 → 0.0047, but 530 px still past ≈1.5e-3; o6g/o6h 9.07e-2 → 4.2e-2; f4a +0.150 →
+  +0.127; **f4b PASS → FAIL 1.8e-3**; **f3e/f3f 7.3 %/25 % → 45 %/88 %**; f3h −23.4 → −18.5; n8c 0.174 → 5.9e-3 (bound 1.33e-3);
+  memory 36 → 88 B/px; scatter 5.6× slower in the scalar driver. Why: receding surfaces break area conservation (the kernel's weights
+  don't match the lens area they cover), so position-blocking leaks alpha and the bank re-adds the over-read. The compact
+  region model fails at corners. Even the ideal-region raster oracle reads 1.33e-2 on the band (8× bound). Options sent to the user:
+  (A) keep HEAD, derived-bound two-sided XFAILs (consultant recommends); (B) adopt C as partial; (C) revive M9 as research
+  (needs a per-sample depth-gradient ruling). Remaining Phase 8.5 tasks wait on the ruling.

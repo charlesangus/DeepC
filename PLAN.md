@@ -1,8 +1,8 @@
 ---
 title: DeepCDefocus — deep-input, flat-output defocus node
 status: running
-current: M8.P5.T1
-pm_heartbeat: 2026-09-27T02:12:44-04:00
+current: M8.P5.T2
+pm_heartbeat: 2026-09-27T02:22:59-04:00
 ship: pr-per-milestone
 ---
 
@@ -142,7 +142,10 @@ Bokeh/pgBokeh don't exhibit; it runs before M2 because it rewrites the kernel st
 
 # Open questions
 
-_None awaiting an answer. The 2026-09-24/25 M8 rulings and the holdout-in-front question were answered 2026-09-26 — see the M8 file's `## Decisions` and `PLAN/DECISIONS/INDEX.md`._
+- **M8 Phase 8.5 — nested-footprint fix is a no-go (2026-09-27, M8.P5.T1).** No per-deposit rule brings o6f/o6g/o6h/f4/f3e–f3h
+  inside their bounds without regressing f4b/f3e/f3f; details in the M8 file's `## Decisions`. Choose: (A) keep HEAD's rule, land
+  the targets as two-sided XFAILs with derived bounds; (B) adopt candidate C as a partial fix; (C) revive M9 as a research
+  milestone (needs a ruling on a per-sample depth gradient). Separately: may n8c/n8cr/n8dr (order dependence) become XFAIL?
 
 (Earlier questions all resolved; the bucket-composite ruling — "the bucket composite is
 `CoveragePartition`", 2026-08-16 — is in the archived M1 decisions log,
