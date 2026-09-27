@@ -978,3 +978,6 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   previous P5.T1 consultant was cut off mid-experiment: `~/deepc-validation/M8-P5T1/` holds a standalone driver
   (`tools/p5drv.cpp`), rule runs r2–r6 on an o6 fog-0.2 dump, a V1 reference map, and no design note. P5.T1 is relaunched to
   resume from those files, harness rows still flagged as predicted.
+- 2026-09-27 — **Licence server back (02:00, headless Nuke 16.0v9 exits 0).** The P5.T1 consultant was told to take harness
+  readings where they are cheap. The pending M8-T0 checks (headless load + a–o on `~/deepc-baselines/M8-T0/plugins`) run in parallel,
+  with evidence in `~/deepc-validation/M8-T0-rerun/`.
