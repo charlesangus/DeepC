@@ -981,3 +981,8 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
 - 2026-09-27 — **Licence server back (02:00, headless Nuke 16.0v9 exits 0).** The P5.T1 consultant was told to take harness
   readings where they are cheap. The pending M8-T0 checks (headless load + a–o on `~/deepc-baselines/M8-T0/plugins`) run in parallel,
   with evidence in `~/deepc-validation/M8-T0-rerun/`.
+- 2026-09-27 — **M8-T0 baseline completed (evidence `~/deepc-validation/M8-T0-rerun/`).** Headless load 27/28; DeepCDefocus
+  OK. DeepCShuffle "did not define" is pre-existing at `2ac3550`: the legacy `.cpp` has no `Op::Description`, and it is superseded
+  by DeepCShuffle2. a–o on T0's own harness: `PASS=172 FAIL=2 XFAIL=12 SKIP=2` (a–f 31/2/5/1, g–j 43/0/5/0, k–n 62/0/1/1,
+  o 36/0/1/0). This matches P1.T1 exactly: FAILs f3e/f3f; XFAILs f2, f3c, f3d, f3g, f3h, g4, g5×4, m3c, o6c; SKIPs e4, n4b. The
+  rebuilt T0 set is a valid baseline despite its different `.so` hash.
