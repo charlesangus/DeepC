@@ -974,3 +974,7 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   `plugins.sha256`; `DeepCDefocus.so` `fa351898…` (differs from P1.T1's `282130b6…` — that build used a different SDK/flags;
   the a–o readings, not the hash, are the baseline). Doctests 26/26 + 121/121. Headless load and T0 a–o still wait on the
   licence server (down at 18:25).
+- 2026-09-27 — **PM resumed (~01:30); licence server still down** (RLM `5053@172.20.0.1` COMM_ERROR, no login tokens). The
+  previous P5.T1 consultant was cut off mid-experiment: `~/deepc-validation/M8-P5T1/` holds a standalone driver
+  (`tools/p5drv.cpp`), rule runs r2–r6 on an o6 fog-0.2 dump, a V1 reference map, and no design note. P5.T1 is relaunched to
+  resume from those files, harness rows still flagged as predicted.
