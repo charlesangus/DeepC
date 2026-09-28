@@ -1,8 +1,8 @@
 ---
 title: DeepCDefocus — deep-input, flat-output defocus node
 status: running
-current: M8.P5.T2
-pm_heartbeat: 2026-09-27T02:22:59-04:00
+current: M9 (elaboration)
+pm_heartbeat: 2026-09-27T20:25:20-04:00
 ship: pr-per-milestone
 ---
 
@@ -125,11 +125,11 @@ Bokeh/pgBokeh don't exhibit; it runs before M2 because it rewrites the kernel st
 | M5 | Background-coloured coverage fill (`fill: background`) | done   | [M5-background-fill.md](PLAN/MILESTONES/M5-background-fill.md) |
 | M6 | Solid alpha on opaque geometry — diagnosis (scene (o), Bokeh oracle) | done   | [M6-solid-alpha-diagnosis.md](PLAN/MILESTONES/M6-solid-alpha-diagnosis.md) |
 | M7 | Solid alpha on opaque geometry — the fix              | done   | [M7-solid-alpha-fix.md](PLAN/MILESTONES/M7-solid-alpha-fix.md) |
-| M8 | Depth-ordered colour within a bucket + silhouette-edge oracle + nested footprints | doing | [M8-bucket-depth-order.md](PLAN/MILESTONES/M8-bucket-depth-order.md) |
-| M9 | ~~Nested footprints — correlated occlusion in the coverage partition~~ (folded into M8) | cancelled | [M9-nested-footprints.md](PLAN/MILESTONES/M9-nested-footprints.md) |
+| M8 | Depth-ordered colour within a bucket + silhouette-edge oracle + nested footprints | blocked | [M8-bucket-depth-order.md](PLAN/MILESTONES/M8-bucket-depth-order.md) |
+| M9 | Nested footprints — correlated occlusion in the coverage partition (research; revived 2026-09-27) | doing | [M9-nested-footprints.md](PLAN/MILESTONES/M9-nested-footprints.md) |
 | M10 | Holdout in front of a deep stack — parity with DeepHoldout2 | todo | [M10-holdout-in-front.md](PLAN/MILESTONES/M10-holdout-in-front.md) |
 
-> **Execution order is M4 → M5 → M6 → M7 → M8 → M10 → M2 → M3**, not board order (M9 was folded into M8 as its Phase 8.5 on 2026-09-26). M4 shipped 2026-09-11 as `c9a36d3` (PR #106),
+> **Execution order is M4 → M5 → M6 → M7 → M8 (to P5.T1) → M9 → M8 gate → M10 → M2 → M3** (M9 revived 2026-09-27; M8 blocked until it lands, one PR for both). Earlier order: M4 → M5 → M6 → M7 → M8 → M10 → M2 → M3, not board order (M9 was folded into M8 as its Phase 8.5 on 2026-09-26). M4 shipped 2026-09-11 as `c9a36d3` (PR #106),
 > M5 the same day as `6a51c8c` (PR #107), M6 on 2026-09-23 as `088a76f` (PR #108), M7 on 2026-09-24 as `2ac3550` (PR #109). M6 was (added 2026-09-18: opaque geometry still reads alpha < 1
 > on a slanted plane with objects in front, where Bokeh reads exactly 1; M6 diagnoses, M7 fixes — M7 is a stub
 > ruled local by M6.P2.T2). Then M2, whose kernel-field node builds on the blended kernel step M4 left in
@@ -142,10 +142,7 @@ Bokeh/pgBokeh don't exhibit; it runs before M2 because it rewrites the kernel st
 
 # Open questions
 
-- **M8 Phase 8.5 — nested-footprint fix is a no-go (2026-09-27, M8.P5.T1).** No per-deposit rule brings o6f/o6g/o6h/f4/f3e–f3h
-  inside their bounds without regressing f4b/f3e/f3f; details in the M8 file's `## Decisions`. Choose: (A) keep HEAD's rule, land
-  the targets as two-sided XFAILs with derived bounds; (B) adopt candidate C as a partial fix; (C) revive M9 as a research
-  milestone (needs a ruling on a per-sample depth gradient). Separately: may n8c/n8cr/n8dr (order dependence) become XFAIL?
+_None awaiting an answer. M8 is `blocked` on M9 by the user's ruling (2026-09-27), not on an open question: see `PLAN/DECISIONS/2026-09-27-m9-revived-as-research.md`._
 
 (Earlier questions all resolved; the bucket-composite ruling — "the bucket composite is
 `CoveragePartition`", 2026-08-16 — is in the archived M1 decisions log,

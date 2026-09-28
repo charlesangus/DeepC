@@ -996,3 +996,6 @@ true depth order, "LO(P)") stays as a sanity bar and a secondary row.
   region model fails at corners. Even the ideal-region raster oracle reads 1.33e-2 on the band (8× bound). Options sent to the user:
   (A) keep HEAD, derived-bound two-sided XFAILs (consultant recommends); (B) adopt C as partial; (C) revive M9 as research
   (needs a per-sample depth-gradient ruling). Remaining Phase 8.5 tasks wait on the ruling.
+- 2026-09-27 — **User ruling on the P5.T1 no-go:** (C) revive M9 as research, with no per-sample depth gradient; n8 rows must be
+  fixed; **M8 held (`blocked`) until M9 lands**. Phase 8.5 ends at P5.T1, and its targets move to M9. P3.T2 and Phase 8.4 resume
+  after M9, and the PR covers both milestones (`PLAN/DECISIONS/2026-09-27-m9-revived-as-research.md`).

@@ -14,3 +14,4 @@
 - 2026-09-26 — m9-folded-into-m8: nested footprints (incl. the deferred volumetric rim) are fixed in M8 Phase 8.5; M9 cancelled; per-parent chain rejected (no body identity in deep data) → DECISIONS/2026-09-26-m9-folded-into-m8.md
 - 2026-09-26 — holdout-in-front-is-a-defect: a holdout in front of a deep stack must match DeepHoldout2; new milestone M10 after M8 → DECISIONS/2026-09-26-holdout-in-front-is-a-defect.md
 - 2026-09-26 — evidence-lives-in-project: $HOME is wiped between sessions; evidence/baselines/worktrees live in `.evidence/` (git-excluded) with `~/deepc-*` symlinks recreated each session → DECISIONS/2026-09-26-evidence-lives-in-project.md
+- 2026-09-27 — m9-revived-as-research: nested-footprint fix is M9 research (no per-sample depth gradient; n8 order dependence must be fixed); M8 blocked until M9 lands, one PR for both → DECISIONS/2026-09-27-m9-revived-as-research.md
